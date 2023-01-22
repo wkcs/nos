@@ -1,0 +1,21 @@
+/**
+ * Copyright (C) 2023-2023 胡启航<Nick Hu>
+ *
+ * Author: 胡启航<Nick Hu>
+ *
+ * Email: huqihan@live.com
+ */
+
+#ifndef __NOS_CPU_H__
+#define __NOS_CPU_H__
+
+#include <kernel/kernel.h>
+
+__init void cpu_init(void);
+void system_beat_processing(void);
+u64 cpu_run_ticks(void);
+u64 cpu_run_time_us(void);
+void cpu_reboot(void);
+void cpu_delay_us(u32 us);
+
+#endif /* __NOS_CPU_H__ */

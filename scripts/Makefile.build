@@ -1,0 +1,74 @@
+##############################################
+# Copyright (C) 2023-2023 胡启航<Nick Hu>
+#
+# Author: 胡启航<Nick Hu>
+#
+# Email: huqihan@live.com
+##############################################
+
+scripts-dir := scripts
+
+#宏定义
+DEFINES :=
+INC_DIR :=
+
+-include $(out-dir)/.config
+include arch/$(ARCH)/Makefile.config
+ifneq ($(CONFIG_BOARD),)
+board := $(shell echo $(CONFIG_BOARD) | sed 's/\"//g')
+include board/$(board)/Makefile.config
+endif
+include $(scripts-dir)/Makefile.config
+-include $(dir)/Makefile
+
+dir-obj-now := $(dir:%=$(out-dir)/%)
+dir-y += $(foreach dir-tmp, $(obj-y), $(shell if [ -d $(dir)/$(dir-tmp) ]; then echo $(dir-tmp); fi))
+obj-all := $(foreach obj-tmp, $(obj-y), $(shell if [ ! -d $(dir)/$(obj-tmp) ]; then echo $(obj-tmp); fi))
+objs-all := $(foreach objs-tmp, $(obj-all), $(shell if [ -e $(dir)/$(objs-tmp:%.o=%.s) ] || [ -e $(dir)/$(objs-tmp:%.o=%.S) ]; then echo $(objs-tmp); fi))
+obj-all := $(foreach obj-tmp, $(obj-all), $(shell if [ ! -e $(dir)/$(obj-tmp:%.o=%.s) ] && [ ! -e $(dir)/$(obj-tmp:%.o=%.S) ]; then echo $(obj-tmp); fi))
+
+obj-all := $(obj-all:%=$(dir-obj-now)/%)
+objs-all := $(objs-all:%=$(dir-obj-now)/%)
+
+obj-dir-t = $(dir-y:%=$(dir)/%)
+obj-dir := $(obj-dir-t:%=$(out-dir)/%)
+
+ifndef $(TARGET)
+    TARGET := built-in.o
+endif
+
+.PHONY: built-in.o $(dir-y)
+
+built-in.o:$(dir-y) $(obj-dir) $(objs-all) $(obj-all)
+	$(Q)if [ -n "$(objs-all)" ] || [ -n "$(obj-all)" ] || \
+		[ -n "$(foreach dir-tmp,$(obj-dir), $(wildcard $(dir-tmp)/built-in.o))" ]; then \
+		echo "LD       $(TARGET)"; \
+		$(LD) -EL -r -o $(dir-obj-now)/$(TARGET) $(objs-all) $(obj-all) \
+			$(foreach dir-tmp,$(obj-dir),$(wildcard $(dir-tmp)/built-in.o)); \
+	else \
+		touch $(dir-obj-now)/$(TARGET); \
+	fi
+
+$(dir-y): $(obj-dir)
+	$(Q)$(MAKE) $(N) -f scripts/Makefile.build dir=$(dir)/$@ \
+		out-dir=$(out-dir) Q=$(Q) N=$(N) ARCH=$(ARCH) BOARD=$(BOARD) \
+		TARGET=built-in.o built-in.o;
+
+defs-all := $(objs-all:%.o=%.d)
+defs-all += $(obj-all:%.o=%.d)
+-include $(defs-all)
+
+$(objs-all):$(out-dir)/%.o:%.S
+	@echo "AS       $(@:$(dir-obj-now)/%=%)"
+	$(Q)$(CC) $(ASFLAGS) -o $@ $<
+
+$(obj-all):$(out-dir)/%.o:%.c
+	@echo "CC       $(@:$(dir-obj-now)/%=%)"
+	$(Q)$(CC) $(CCFLAGS) -o $@ $<
+
+$(obj-dir):
+	$(Q)if [ ! -d $@ ]; then \
+		mkdir $@; \
+	fi
+
+

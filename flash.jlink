@@ -1,0 +1,6 @@
+h
+loadfile out/nos.hex
+r
+g
+r
+exit
