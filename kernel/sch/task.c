@@ -1,0 +1,208 @@
+/**
+ * Copyright (C) 2023-2023 胡启航<Nick Hu>
+ *
+ * Author: 胡启航<Nick Hu>
+ *
+ * Email: huqihan@live.com
+ */
+
+#include <kernel/task.h>
+#include <kernel/sch.h>
+#include <lib/string.h>
+#include <kernel/irq.h>
+#include <kernel/cpu.h>
+#include <kernel/mm.h>
+#include <kernel/list.h>
+#include <kernel/pid.h>
+#include <kernel/spinlock.h>
+#include <kernel/printk.h>
+
+static LIST_HEAD(task_list);
+LIST_HEAD(close_task_list);
+static SPINLOCK(task_list_lock);
+
+extern spinlock_t ready_list_lock;
+
+static void task_exit(void)
+{
+    //struct task_struct *task;
+
+    //task = current;
+
+    // task_del(task);
+
+    switch_task();
+}
+
+static void timeout(void *parameter)
+{
+
+}
+
+static struct task_info *alloc_task_info(struct task_struct *task)
+{
+    struct task_info *info;
+
+    info = (struct task_info *)alloc_page(GFP_KERNEL);
+    if (info == NULL) {
+        return NULL;
+    }
+
+    info->task = task;
+
+    return info;
+}
+
+static int free_task_info(struct task_info *info)
+{
+    return free_page((addr_t)info);
+}
+
+static int __task_create(struct task_struct *task,
+                         const char *name,
+                         void (*entry)(void *parameter),
+                         void *parameter,
+                         addr_t *stack_start,
+                         uint8_t priority,
+                         uint32_t tick,
+                         void (*clean)(struct task_struct *task))
+{
+    INIT_LIST_HEAD(&task->list);
+    INIT_LIST_HEAD(&task->tlist);
+    INIT_LIST_HEAD(&task->wait_list);
+    INIT_LIST_HEAD(&task->listen_list);
+    spin_lock_init(&task->lock);
+
+    task->name = name;
+    task->entry = (void *)entry;
+    task->parameter = parameter;
+    task->stack = stack_start;
+    task->sp = (addr_t *)stack_init(task->entry, task->parameter,
+                                    (addr_t *)task->stack,
+                                    (void *)task_exit);
+    task->init_priority    = priority;
+    task->current_priority = priority;
+#if CONFIG_MAX_PRIORITY > 32
+    task->offset = priority >> 3;
+    task->offset_mask = 1UL << task->offset;
+    task->prio_mask = 1UL << (priority & 0x07);
+#else
+    task->offset_mask = 1UL << priority;
+#endif
+    task->init_tick      = tick;
+    task->remaining_tick = tick;
+    task->status  = TASK_SUSPEND;
+    task->cleanup = clean;
+    task->flag = 0;
+
+    spin_lock(&task_list_lock);
+    list_add_tail(&task->tlist, &task_list);
+    spin_unlock(&task_list_lock);
+
+    return 0;
+}
+
+struct task_struct *task_create(const char *name,
+                                void (*entry)(void *parameter),
+                                void *parameter,
+                                uint8_t priority,
+                                uint32_t tick,
+                                void (*clean)(struct task_struct *task))
+{
+    struct task_struct *task;
+    addr_t *stack_start;
+    pid_t pid;
+    struct task_info *info;
+    int rc;
+
+#if CONFIG_MAX_PRIORITY < 256
+    if (priority >= CONFIG_MAX_PRIORITY) {
+        pr_err("%s: Priority should be less than %d\r\n", name, CONFIG_MAX_PRIORITY);
+        return NULL;
+    }
+#endif
+
+    task = kalloc(sizeof(struct task_struct), GFP_KERNEL);
+    if (task == NULL) {
+        pr_err("%s: alloc task struct buf error\r\n", name);
+        goto task_struct_err;
+    }
+
+    info = alloc_task_info(task);
+    if (info == NULL) {
+        pr_err("%s: alloc task info buf error\r\n", name);
+        goto task_info_err;
+    }
+#ifdef CONFIG_STACK_GROWSUP
+    stack_start = (addr_t *)((addr_t)info + sizeof(struct task_info));
+#else
+    stack_start = (addr_t *)((addr_t)info + sizeof(union task_union) - sizeof(addr_t));
+#endif
+
+    pid = pid_alloc();
+    if (!pid) {
+        pr_err("%s: alloc pid error\r\n", name);
+        goto pid_err;
+    }
+
+    task->pid = pid;
+
+    rc = __task_create(task, name, entry, parameter, stack_start, priority, tick, clean);
+    if (rc < 0) {
+        pr_err("%s: task_create error, rc=%d\r\n", name, rc);
+        goto task_create_err;
+    }
+
+    return task;
+
+task_create_err:
+    pid_free(pid);
+pid_err:
+    free_task_info(info);
+task_info_err:
+    kfree(task);
+task_struct_err:
+    return NULL;
+}
+
+int task_ready(struct task_struct *task)
+{
+    if (!task) {
+        pr_err("%s[%d]:task struct is NULL\r\n", __func__, __LINE__);
+        return -EINVAL;
+    }
+
+    if (task->status == TASK_READY || task->status == TASK_RUNING) {
+        pr_warning("%s:task is already in a ready state\r\n", task->name);
+        return -EINVAL;
+    }
+
+    add_task_to_ready_list(task);
+    switch_task();
+
+    return 0;
+}
+
+int task_yield_cpu(void)
+{
+    struct task_struct *task;
+
+    task = current;
+    if (task->status == TASK_RUNING) {
+        spin_lock(&ready_list_lock);
+        if (!list_empty(&task->list)) {
+            list_del(&task->list);
+        } else {
+            spin_unlock(&ready_list_lock);
+            BUG_ON(true);
+            return 0;
+        }
+        spin_unlock(&ready_list_lock);
+        add_task_to_ready_list(task);
+        switch_task();
+    } else {
+        BUG_ON(true);
+    }
+
+    return 0;
+}

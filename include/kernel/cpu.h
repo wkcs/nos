@@ -10,6 +10,7 @@
 #define __NOS_CPU_H__
 
 #include <kernel/kernel.h>
+#include <asm/cpu.h>
 
 __init void cpu_init(void);
 void system_beat_processing(void);
@@ -17,5 +18,8 @@ u64 cpu_run_ticks(void);
 u64 cpu_run_time_us(void);
 void cpu_reboot(void);
 void cpu_delay_us(u32 us);
+#ifndef USE_CPU_FFS
+int __ffs(int value);
+#endif
 
 #endif /* __NOS_CPU_H__ */

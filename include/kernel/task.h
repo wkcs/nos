@@ -1,0 +1,80 @@
+/**
+ * Copyright (C) 2023-2023 胡启航<Nick Hu>
+ *
+ * Author: 胡启航<Nick Hu>
+ *
+ * Email: huqihan@live.com
+ */
+
+#ifndef __NOS_TASK_H__
+#define __NOS_TASK_H__
+
+#include <kernel/kernel.h>
+#include <kernel/pid.h>
+#include <kernel/list.h>
+#include <kernel/spinlock.h>
+#include <asm/task.h>
+
+enum task_status {
+    TASK_RUNING = 0x01,
+    TASK_READY = 0x02,
+    TASK_WAIT = 0x04,
+    TASK_SUSPEND = 0x08,
+    TASK_CLOSE = 0x10
+};
+
+struct task_struct {
+    addr_t *sp;
+
+    const char *name;
+    pid_t pid;
+
+    addr_t *entry;
+    addr_t *parameter;
+    addr_t *stack;
+
+    uint32_t  init_tick;
+    uint32_t  remaining_tick;
+
+    void (*cleanup)(struct task_struct *task);
+
+    uint8_t init_priority;
+    uint8_t current_priority;
+    uint8_t status;
+
+#if CONFIG_MAX_PRIORITY > 32
+    uint8_t  offset;
+    uint8_t  prio_mask;
+#endif
+    uint32_t offset_mask;
+
+    /* struct timer_struct timer; */
+
+    int flag;
+
+    struct list_head list;
+    struct list_head tlist;
+    struct list_head wait_list;
+    struct list_head listen_list;
+
+    spinlock_t lock;
+};
+
+union task_union {
+    struct task_info info;
+    unsigned long stack[CONFIG_PAGE_SIZE / sizeof(long)];
+};
+
+#define get_current() (current_task_info()->task)
+#define current get_current()
+
+struct task_struct *task_create(const char *name,
+                                void (*entry)(void *parameter),
+                                void *parameter,
+                                uint8_t priority,
+                                uint32_t tick,
+                                void (*clean)(struct task_struct *task));
+int task_ready(struct task_struct *task);
+int task_yield_cpu(void);
+
+#endif /* __NOS_TASK_H__ */

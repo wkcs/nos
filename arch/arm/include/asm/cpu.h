@@ -19,5 +19,9 @@ __init void asm_cpu_init(void);
 void asm_cpu_delay_us(uint32_t us);
 void asm_cpu_reboot(void);
 u64 asm_cpu_run_time_us(void);
+addr_t *stack_init(void *task_entry, void *parameter, addr_t *stack_addr, void *task_exit);
+void context_switch_interrupt(addr_t from, addr_t to);
+void context_switch(addr_t from, addr_t to);
+void context_switch_to(addr_t to);
 
 #endif /* __ARM_ASM_CPU_H__ */

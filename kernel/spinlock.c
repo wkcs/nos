@@ -18,21 +18,32 @@ void spin_lock_init(spinlock_t *lock)
         return;
     }
 
+#ifdef CONFIG_SPINLOCK_DEBUG
+    lock->func = __func__;
+    lock->line = __LINE__;
+#endif
+
     lock->lock = false;
 }
 
-void spin_lock(spinlock_t *lock)
+void __spin_lock(spinlock_t *lock)
 {
     if (lock == NULL) {
         pr_err("lock is NULL\r\n");
         return;
     }
+
+#ifdef CONFIG_SPINLOCK_DEBUG
+    if (lock->lock) {
+        pr_err("lock in %s[%u]\r\n", lock->func, lock->line);
+    }
+#endif
     while (lock->lock) {}
     lock->irq_level = disable_irq_save();
     lock->lock = true;
 }
 
-void spin_unlock(spinlock_t *lock)
+void __spin_unlock(spinlock_t *lock)
 {
     if (lock == NULL) {
         pr_err("lock is NULL\r\n");

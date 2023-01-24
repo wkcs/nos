@@ -9,7 +9,9 @@
 obj-y += printk
 obj-y += cpu
 obj-y += mm
+obj-y += sch
 
+obj-y += kernel.o
 obj-y += console.o
 obj-y += sleep.o
 obj-y += irq.o

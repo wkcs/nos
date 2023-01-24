@@ -143,7 +143,6 @@ void pid_init(void)
         pr_err("pid_init error\r\n");
         return;
     }
-    pr_err("range=0x%x\r\n", (addr_t)range);
 
     range->min = 1;
     range->max = U32_MAX;

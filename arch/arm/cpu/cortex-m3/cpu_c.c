@@ -8,7 +8,10 @@
 
 #include <kernel/kernel.h>
 #include <kernel/cpu.h>
+#include <kernel/printk.h>
+#include <kernel/task.h>
 #include <board/board.h>
+#include <asm/irq.h>
 
 struct cpu_reg {
     addr_t r4;
@@ -34,6 +37,61 @@ struct cpu_dump_type {
     addr_t sp;
     struct cpu_reg cpu_reg;
 };
+
+addr_t *stack_init(void *task_entry, void *parameter, addr_t *stack_addr, void *task_exit)
+{
+    addr_t *stk;
+    uint8_t i = 0;
+
+    stk  = stack_addr;
+
+    *stk = 0x01000000L;                                /* PSR */
+    *(--stk) = (unsigned long)task_entry;              /* pc */
+    *(--stk) = (unsigned long)task_exit;               /* lr */
+    *(--stk) = 0;                                      /* r12 */
+    *(--stk) = 0;                                      /* r3 */
+    *(--stk) = 0;                                      /* r2 */
+    *(--stk) = 0;                                      /* r1 */
+    *(--stk) = (unsigned long)parameter;               /* r0 */
+
+    /*r4 - r11*/
+    for(; i < 8; i++)
+        *(--stk) = 0x0badc0de;
+
+    return stk;
+}
+
+void cpu_hard_fault(struct cpu_dump_type *cpu_dump_type)
+{
+    pr_info("-------------------\r\n");
+    pr_info("r0  = 0x%lx\r\n", cpu_dump_type->cpu_reg.r0);
+    pr_info("r1  = 0x%lx\r\n", cpu_dump_type->cpu_reg.r1);
+    pr_info("r2  = 0x%lx\r\n", cpu_dump_type->cpu_reg.r2);
+    pr_info("r3  = 0x%lx\r\n", cpu_dump_type->cpu_reg.r3);
+    pr_info("r4  = 0x%lx\r\n", cpu_dump_type->cpu_reg.r4);
+    pr_info("r5  = 0x%lx\r\n", cpu_dump_type->cpu_reg.r5);
+    pr_info("r6  = 0x%lx\r\n", cpu_dump_type->cpu_reg.r6);
+    pr_info("r7  = 0x%lx\r\n", cpu_dump_type->cpu_reg.r7);
+    pr_info("r8  = 0x%lx\r\n", cpu_dump_type->cpu_reg.r8);
+    pr_info("r9  = 0x%lx\r\n", cpu_dump_type->cpu_reg.r9);
+    pr_info("r10 = 0x%lx\r\n", cpu_dump_type->cpu_reg.r10);
+    pr_info("r11 = 0x%lx\r\n", cpu_dump_type->cpu_reg.r11);
+    pr_info("r12 = 0x%lx\r\n", cpu_dump_type->cpu_reg.r12);
+    pr_info("lr  = 0x%lx\r\n", cpu_dump_type->cpu_reg.lr);
+    pr_info("pc  = 0x%lx\r\n", cpu_dump_type->cpu_reg.pc);
+    pr_info("psr = 0x%lx\r\n", cpu_dump_type->cpu_reg.psr);
+    pr_info("-------------------\r\n");
+    if (cpu_dump_type->sp & 1 << 2) {
+        struct task_struct *task = current;
+        pr_info("cpu hard fault on task(name = %s)\r\n", task->name);
+    } else {
+        pr_info("cpu hard fault on handler\r\n");
+    }
+
+    // dump_all_task();
+
+    while (1);
+}
 
 void NMI_Handler(void)
 {
@@ -72,16 +130,24 @@ void DebugMon_Handler(void)
 {
 }
 
+addr_t interrupt_from_task, interrupt_to_task;
+u32 switch_interrupt_flag;
+
 extern uint32_t SystemCoreClock;
 
 static uint32_t sys_tick_num_by_us;
 static uint32_t sys_tick_num_by_beat;
 __init void asm_cpu_init(void)
 {
+    asm_disable_irq_save();
     SysTick_Config(SystemCoreClock * CONFIG_SYS_TICK_MS / 1000);
 
     sys_tick_num_by_us = SystemCoreClock / 1000000;
     sys_tick_num_by_beat = SystemCoreClock * CONFIG_SYS_TICK_MS / 1000;
+
+    interrupt_from_task = 0;
+    interrupt_to_task = 0;
+    switch_interrupt_flag = 0;
 }
 
 void asm_cpu_delay_us(uint32_t us)

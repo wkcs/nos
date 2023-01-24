@@ -24,7 +24,7 @@ typedef unsigned long long u64;
 typedef unsigned long int size_t;
 typedef long int ssize_t;
 
-typedef unsigned int addr_t;
+typedef unsigned long int addr_t;
 
 #define USHRT_MAX	((u16)(~0U))
 #define SHRT_MAX	((s16)(USHRT_MAX>>1))
