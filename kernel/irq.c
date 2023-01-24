@@ -11,7 +11,8 @@
 #include <kernel/printk.h>
 #include <asm/irq.h>
 
-static u32 irq_disable_level;
+u32 irq_disable_level;
+volatile u32 interrupt_nest;
 
 addr_t disable_irq_save()
 {

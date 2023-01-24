@@ -9,3 +9,6 @@
 obj-y += mm_block.o
 obj-y += mm_core.o
 obj-y += mm.o
+obj-y += mm_buddy.o
+obj-y += mm_node.o
+obj-y += mm_page.o

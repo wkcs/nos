@@ -105,9 +105,9 @@ SECTIONS
     *(.data)           /* .data sections */
     *(.data*)          /* .data* sections */
     . = ALIGN(4);
-    __memory_block_data_start = .;
-    *(.memory_block.data)
-    __memory_block_data_end = .;
+    __memory_node_data_start = .;
+    *(.memory_node.data)
+    __memory_node_data_end = .;
     . = ALIGN(4);
     _edata = .;        /* define a global symbol at data end */
   } >RAM

@@ -6,5 +6,6 @@
 # Email: huqihan@live.com
 ##############################################
 
-obj-y := main.o
-obj-y += init.o
+obj-y += sch.o
+obj-y += task.o
+

@@ -15,6 +15,8 @@
 #include <kernel/errno.h>
 #include <autocfg.h>
 
+extern addr_t kernel_running;
+
 #define ARRAY_SIZE(arr) (sizeof(arr) / sizeof((arr)[0]) + __must_be_array(arr))
 
 #define BUG_ON(ex)

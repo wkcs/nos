@@ -10,62 +10,10 @@
 #include <kernel/kernel.h>
 #include <kernel/printk.h>
 
-LIST_HEAD(g_memblock_list);
+static LIST_HEAD(g_memblock_list);
+static SPINLOCK(g_memblock_lock);
 
-extern addr_t __memory_block_data_start;
-extern addr_t __memory_block_data_end;
-
-static u32 get_memblock_num(void)
-{
-    addr_t addr_size = (addr_t)&__memory_block_data_end - (addr_t)&__memory_block_data_start;
-
-    if (addr_size == 0) {
-        return 0;
-    }
-    if (addr_size % sizeof(struct memblock) != 0) {
-        return 0;
-    }
-
-    return (addr_size / sizeof(struct memblock));
-}
-
-static struct memblock *find_first_memblock(void)
-{
-    addr_t start_addr = (addr_t)&__memory_block_data_start;
-    return (struct memblock *)start_addr;
-}
-
-__init int memblock_early_init(void)
-{
-    u32 num, i;
-    u32 size;
-    struct memblock *block;
-
-    num = get_memblock_num();
-    if (num == 0) {
-        pr_fatal("memblock not found\r\n");
-        return -ENODEV;
-    }
-    pr_info("find %u memblock\r\n", num);
-    block = find_first_memblock();
-
-    for (i = 0; i < num; i++) {
-        size = block->end - block->start;
-        if (size <= sizeof(struct mem_base)) {
-            pr_err("memblock[0x%x - 0x%x] too small, skip\r\n", block->start, block->end);
-            continue;
-        }
-        list_add_tail(&block->list, &g_memblock_list);
-        INIT_LIST_HEAD(&block->base);
-        spin_lock_init(&block->lock);
-        pr_info("memblock[%s]: 0x%x - 0x%x\r\n", block->name, block->start, block->end);
-        block++;
-    }
-
-    return 0;
-}
-
-__init int memblock_init(struct memblock *block)
+static int memblock_init(struct memblock *block)
 {
     u32 size;
     struct mem_base *base;
@@ -75,8 +23,10 @@ __init int memblock_init(struct memblock *block)
         return -EINVAL;
     }
 
-    size = block->end - block->start - sizeof(struct mem_base);
+    size = block->size - sizeof(struct mem_base);
     block->max_alloc_cap = size;
+    INIT_LIST_HEAD(&block->base);
+    spin_lock_init(&block->lock);
 
     base = (struct mem_base *)(block->start);
 #ifdef CONFIG_MM_DEBUG
@@ -87,4 +37,275 @@ __init int memblock_init(struct memblock *block)
     list_add(&base->list, &block->base);
 
     return 0;
+}
+
+static int size_to_order(u32 size)
+{
+    u32 num = (size % CONFIG_PAGE_SIZE == 0) ? (size / CONFIG_PAGE_SIZE) : (size / CONFIG_PAGE_SIZE + 1);
+    int i;
+
+    for (i = 0; i < CONFIG_MAX_ORDER; i++) {
+        if (num <= (u32)(1 << i)) {
+            return i;
+        }
+    }
+
+    return -EINVAL;
+}
+
+static int memblock_alloc(u32 size, gfp_t flag)
+{
+    struct memblock *block;
+    addr_t addr;
+    int order;
+    int rc;
+
+    order = size_to_order(size + sizeof(struct memblock) + sizeof(struct mem_base));
+    if (order < 0) {
+        return order;
+    }
+    addr = alloc_pages(flag, (u32)order);
+    if (addr == 0) {
+        return -ENOMEM;
+    }
+
+    block = (struct memblock *)addr;
+    block->start = addr + sizeof(struct memblock);
+    block->size = (1 << (u32)order) * CONFIG_PAGE_SIZE - sizeof(struct memblock);
+    rc = memblock_init(block);
+    if (rc < 0) {
+        free_pages(addr, (u32)order);
+        return rc;
+    }
+
+    spin_lock(&g_memblock_lock);
+    list_add(&block->list, &g_memblock_list);
+    spin_unlock(&g_memblock_lock);
+
+    return 0;
+}
+
+void *__kalloc(u32 size, gfp_t flag, pid_t pid)
+{
+    struct memblock *block;
+    struct mem_base *base, *new;
+    bool find = false;
+    bool recheck = false;
+    addr_t addr;
+    u32 max = 0;
+    int rc;
+
+recheck:
+    spin_lock(&g_memblock_lock);
+    list_for_each_entry (block, &g_memblock_list, list) {
+        if (block->max_alloc_cap >= size) {
+            find = true;
+            break;
+        }
+    }
+    spin_unlock(&g_memblock_lock);
+    if (!find) {
+        rc = memblock_alloc(size, flag);
+        if (rc < 0) {
+            return NULL;
+        }
+        goto recheck;
+    }
+    find = false;
+
+    spin_lock(&block->lock);
+    list_for_each_entry (base, &block->base, list) {
+#ifdef CONFIG_MM_DEBUG
+        if (base->magic != MEM_BASE_MAGIC) {
+            spin_unlock(&block->lock);
+            BUG_ON(true);
+            pr_err("mem_base magic error\r\n");
+            return NULL;
+        }
+#endif /* CONFIG_MM_DEBUG */
+        if (!base->used && base->size >= size) {
+            find = true;
+            base->used = true;
+            break;
+        }
+    }
+    spin_unlock(&block->lock);
+    if (!find) {
+        BUG_ON(true);
+        pr_err("mem_base not found\r\n");
+        return NULL;
+    }
+
+    base->pid = pid;
+    if (base->size == block->max_alloc_cap) {
+        recheck = true;
+    }
+    addr = ((addr_t)base) + sizeof(struct mem_base);
+    if ((base->size) - size <= sizeof(struct mem_base)) {
+        return (void *)addr;
+    }
+
+    new = (struct mem_base *)(addr + size);
+#ifdef CONFIG_MM_DEBUG
+    new->magic = MEM_BASE_MAGIC;
+#endif
+    new->size = base->size - size - sizeof(struct mem_base);
+    base->size = size;
+    new->used = false;
+    recheck = true;
+
+    spin_lock(&block->lock);
+    list_add(&new->list, &base->list);
+    if (recheck) {
+        list_for_each_entry (base, &block->base, list) {
+            if (base->size > max) {
+                max = base->size;
+            }
+        }
+        block->max_alloc_cap = max;
+    }
+    spin_unlock(&block->lock);
+
+    return (void *)addr;
+}
+
+static int __kfree_base(struct memblock *block, struct mem_base *base)
+{
+    struct mem_base *new;
+
+    spin_lock(&block->lock);
+    if (base->list.prev != &block->base) {
+        new = list_prev_entry(base, list);
+        if (!new->used) {
+            new->size = base->size + sizeof(struct mem_base);
+            list_del(&base->list);
+#ifdef CONFIG_MM_DEBUG
+            base->magic = 0;
+#endif
+            base = new;
+        }
+    }
+    if (base->list.next != &block->base) {
+        new = list_next_entry(base, list);
+        if (!new->used) {
+            base->size = new->size + sizeof(struct mem_base);
+            list_del(&new->list);
+#ifdef CONFIG_MM_DEBUG
+            new->magic = 0;
+#endif
+        }
+    }
+    base->used = false;
+    spin_unlock(&block->lock);
+
+    if (block->max_alloc_cap < base->size) {
+        block->max_alloc_cap = base->size;
+    }
+
+    return 0;
+}
+
+static struct memblock *find_block(void *addr)
+{
+    struct memblock *block;
+
+    spin_lock(&g_memblock_lock);
+    list_for_each_entry (block, &g_memblock_list, list) {
+        if (((addr_t)addr > block->start) && ((addr_t)addr < (block->start + block->size))) {
+            spin_unlock(&g_memblock_lock);
+            return block;
+        }
+    }
+    spin_unlock(&g_memblock_lock);
+    return NULL;
+}
+
+static struct mem_base *find_base(struct memblock *block, void *addr)
+{
+    struct mem_base *base;
+
+    spin_lock(&block->lock);
+    list_for_each_entry (base, &block->base, list) {
+        addr_t base_start = ((addr_t)base) + sizeof(struct mem_base);
+        addr_t base_end = base_start + base->size;
+        if (base->used && ((addr_t)addr >= base_start) && ((addr_t)addr < base_end)) {
+            spin_unlock(&block->lock);
+            return base;
+        }
+    }
+    spin_unlock(&block->lock);
+    return NULL;
+}
+
+static int kfree_base(struct mem_base *base)
+{
+    struct memblock *block;
+
+    block = find_block(base);
+    if (block == NULL) {
+        pr_err("no memblock found for 0x%lx\r\n", (addr_t)base);
+        return -EINVAL;
+    }
+
+    return __kfree_base(block, base);
+}
+
+int __kfree(void *addr)
+{
+    struct memblock *block;
+    struct mem_base *base;
+
+    block = find_block(addr);
+    if (block == NULL) {
+        pr_err("no memblock found for 0x%lx\r\n", (addr_t)addr);
+        return -EINVAL;
+    }
+    base = find_base(block, addr);
+    if (base == NULL) {
+        pr_err("no mem_base found for 0x%lx in memblock\r\n", (addr_t)addr);
+        return -EINVAL;
+    }
+
+    return __kfree_base(block, base);
+}
+
+int __kfree_by_pid(pid_t pid)
+{
+    struct memblock *block;
+    struct mem_base *base;
+    struct list_head *block_next, *base_next;
+    int rc;
+
+    if (list_empty(&g_memblock_list)) {
+        return -ENODEV;
+    }
+
+    block_next = &g_memblock_list;
+check_block:
+    spin_lock(&g_memblock_lock);
+    block_next = block_next->next;
+    if (block_next == &g_memblock_list) {
+        spin_unlock(&g_memblock_lock);
+        return 0;
+    }
+    block = list_entry(block_next, struct memblock, list);
+    spin_unlock(&g_memblock_lock);
+
+    base_next = &block->base;
+check_base:
+    spin_lock(&block->lock);
+    base_next = base_next->next;
+    if (base_next == &block->base) {
+        spin_unlock(&block->lock);
+        goto check_block;
+    }
+    base = list_entry(base_next, struct mem_base, list);
+    spin_unlock(&block->lock);
+
+    rc = __kfree_base(block, base);
+    if (rc < 0) {
+        pr_err("pid(=%u) free error, rc=%d\r\n", pid, rc);
+        return rc;
+    }
+    goto check_base;
 }

@@ -9,9 +9,11 @@
 #ifndef __ARM_ASM_INIT_H__
 #define __ARM_ASM_INIT_H__
 
+#include <kernel/kernel.h>
+
 void arch_init(void);
 
-__init void asm_cpu_init(void);
+void asm_cpu_init(void);
 void asm_cpu_delay_usec(uint32_t usec);
 void asm_cpu_reboot(void);
 

@@ -25,40 +25,42 @@ static char log_buf[CONFIG_LOG_BUF_SIZE];
 static char log_buf[256];
 #endif
 
-__printf(2,3) int pr_log(enum log_level level, const char *fmt, ...)
+__printf(3,4) int pr_log(bool no_tag, enum log_level level, const char *fmt, ...)
 {
     va_list args;
     char *buf = log_buf;
     uint32_t time_sec, time_usec;
-    int len;
+    int len = 0;
 
     if (level > g_log_level) {
-        time_sec = (uint32_t)(cpu_run_time_us() / 1000000);
-        time_usec = (uint32_t)(cpu_run_time_us() % 1000000);
+        if (!no_tag) {
+            time_sec = (uint32_t)(cpu_run_time_us() / 1000000);
+            time_usec = (uint32_t)(cpu_run_time_us() % 1000000);
 
-        switch(level) {
-            case LOG_FATAL:
-                sprintf(buf, "%06d.%06d[FATAL]",  time_sec, time_usec);
-                len = 20;
-                break;
-            case LOG_ERROR:
-                sprintf(buf, "%06d.%06d[ERROR]",  time_sec, time_usec);
-                len = 20;
-                break;
-            case LOG_WARNING:
-                sprintf(buf, "%06d.%06d[WARNING]",  time_sec, time_usec);
-                len = 22;
-                break;
-            case LOG_INFO:
-                sprintf(buf, "%06d.%06d[INFO]",  time_sec, time_usec);
-                len = 19;
-                break;
-            case LOG_DEBUG:
-                sprintf(buf, "%06d.%06d[DEBUG]",  time_sec, time_usec);
-                len = 20;
-                break;
-            default:
-                return 0;
+            switch(level) {
+                case LOG_FATAL:
+                    sprintf(buf, "%06d.%06d[FATAL]",  time_sec, time_usec);
+                    len = 20;
+                    break;
+                case LOG_ERROR:
+                    sprintf(buf, "%06d.%06d[ERROR]",  time_sec, time_usec);
+                    len = 20;
+                    break;
+                case LOG_WARNING:
+                    sprintf(buf, "%06d.%06d[WARNING]",  time_sec, time_usec);
+                    len = 22;
+                    break;
+                case LOG_INFO:
+                    sprintf(buf, "%06d.%06d[INFO]",  time_sec, time_usec);
+                    len = 19;
+                    break;
+                case LOG_DEBUG:
+                    sprintf(buf, "%06d.%06d[DEBUG]",  time_sec, time_usec);
+                    len = 20;
+                    break;
+                default:
+                    return 0;
+            }
         }
 
         va_start(args, fmt);

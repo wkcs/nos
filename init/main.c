@@ -13,6 +13,7 @@
 #include <kernel/cpu.h>
 #include <kernel/sleep.h>
 #include <kernel/mm.h>
+#include <kernel/sch.h>
 
 int nos_start(void)
 {
@@ -21,15 +22,13 @@ int nos_start(void)
     board_init();
     console_init();
     pr_info("console init\r\n");
-    memblock_early_init();
+    mm_node_early_init();
     mm_init();
     pid_init();
-    while (1) {
-        sleep(1);
-        pid_t pid = pid_alloc();
-        pr_info("test...%u\r\n", pid_alloc());
-        pid_free(pid);
-    }
+
+    sch_init();
+    task_init_call();
+    sch_start();
 
     return 0;
 }
