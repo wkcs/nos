@@ -15,7 +15,7 @@ output_file = open(sys.argv[6], 'w')
 
 versionCode = (int(VERSION) << 16) | (int(PATCHLEVEL) << 8) | int(SUBLEVEL)
 output_file.write("CONFIG_VERSION_CODE = %u\n" % (versionCode))
-output_file.write("CONFIG_ARCH = %s\n" % (ARCH))
+output_file.write("CONFIG_ARCH = \"%s\"\n" % (ARCH))
 
 buildInfo = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime())
 output_file.write("CONFIG_BUILD_INFO = \"%s\"\n" % (buildInfo))

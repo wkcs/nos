@@ -33,11 +33,6 @@ for line in input_file.readlines():
         data = '1'
     elif data == 'm' or data == 'M':
         data = '2'
-    elif is_number(data) == False:
-        if data[0] != '\"':
-            data = '\"' + data
-        if data[-1] != '\"':
-            data += '\"'
 
     output_file.write("#define " + config + ' ' + data + '\n')
 
