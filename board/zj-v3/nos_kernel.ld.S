@@ -1,3 +1,4 @@
+#include <autocfg.h>
 
 /* Entry Point */
 ENTRY(reset_handler)
@@ -101,6 +102,8 @@ SECTIONS
   .data : AT ( _sidata )
   {
     . = ALIGN(4);
+    . = ALIGN(CONFIG_PAGE_SIZE);
+    __mm_sys_reserve_start = .;
     _sdata = .;        /* create a global symbol at data start */
     *(.data)           /* .data sections */
     *(.data*)          /* .data* sections */
@@ -131,7 +134,8 @@ SECTIONS
   PROVIDE ( end = _ebss );
   PROVIDE ( _end = _ebss );
 
-  . = ALIGN(4);
+  . = ALIGN(CONFIG_PAGE_SIZE);
+  __mm_sys_reserve_end = .;
   __mm_pool_start = .;
   __mm_pool_end = _estack - _Min_Stack_Size;
 

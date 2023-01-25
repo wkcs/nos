@@ -23,5 +23,6 @@ addr_t *stack_init(void *task_entry, void *parameter, addr_t *stack_addr, void *
 void context_switch_interrupt(addr_t from, addr_t to);
 void context_switch(addr_t from, addr_t to);
 void context_switch_to(addr_t to);
+void asm_cpu_set_lpm(void);
 
 #endif /* __ARM_ASM_CPU_H__ */

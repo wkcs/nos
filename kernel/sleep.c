@@ -9,6 +9,8 @@
 #include <kernel/sleep.h>
 #include <kernel/kernel.h>
 #include <kernel/cpu.h>
+#include <kernel/task.h>
+#include <kernel/sch.h>
 
 void usleep(u32 usec)
 {
@@ -17,18 +19,18 @@ void usleep(u32 usec)
 
 void msleep(u32 msec)
 {
-    int i;
+    u64 run_times;
 
-    for (i = msec; i > 0; i--) {
-        usleep(1000);
+    run_times = cpu_run_time_us();
+    if (run_times - sys_heartbeat_time > (CONFIG_SYS_TICK_MS * 500)) {
+        msec = (msec + CONFIG_SYS_TICK_MS / 2) / CONFIG_SYS_TICK_MS;
+    } else {
+        msec = (msec + CONFIG_SYS_TICK_MS - 1) / CONFIG_SYS_TICK_MS;
     }
+    task_sleep(msec);
 }
 
 void sleep(u32 sec)
 {
-    int i;
-
-    for (i = sec; i > 0; i--) {
-        msleep(1000);
-    }
+    msleep(sec * 1000);
 }

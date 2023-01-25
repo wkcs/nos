@@ -17,3 +17,5 @@ obj-y += sleep.o
 obj-y += irq.o
 obj-y += spinlock.o
 obj-y += pid.o
+obj-y += boot.o
+obj-y += timer.o

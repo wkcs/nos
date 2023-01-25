@@ -23,6 +23,7 @@ obj-y += arch_console.o
 obj-y += system_stm32f10x.o
 obj-y += init.o
 obj-y += board_mm.o
+obj-y += arch_boot.o
 
 obj-y += start.o
 

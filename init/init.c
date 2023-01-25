@@ -11,6 +11,8 @@
 #include <kernel/printk.h>
 #include <kernel/sleep.h>
 #include <kernel/task.h>
+#include <kernel/timer.h>
+#include <kernel/cpu.h>
 
 extern addr_t __task_data_start;
 extern addr_t __task_data_end;
@@ -60,8 +62,7 @@ void task_init_call(void)
 static void idel_task_entry(void* parameter)
 {
     while (1) {
-        sleep(1);
-        pr_info("%s: test...\r\n", current->name);
+        cpu_set_lpm();
     }
 }
 
@@ -69,13 +70,12 @@ int idel_task_init(void)
 {
     struct task_struct *idel;
 
-    idel = task_create("idel", idel_task_entry, NULL, CONFIG_MAX_PRIORITY - 1, 10, NULL);
+    idel = task_create("idel", idel_task_entry, NULL, IDEL_TASK_PRIO, 10, NULL);
     if (idel == NULL) {
         pr_fatal("creat idle task err\n");
         BUG_ON(true);
         return -EINVAL;
     }
-    pr_info("idel=0x%p\r\n", idel);
     task_ready(idel);
 
     return 0;

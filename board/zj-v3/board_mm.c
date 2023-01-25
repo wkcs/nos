@@ -14,7 +14,9 @@
 #define EXR_SRAM_SIZE (1024 * 1024) /* 1m */
 
 extern addr_t __mm_pool_start, __mm_pool_end;
+extern addr_t __mm_sys_reserve_start, __mm_sys_reserve_end;
 
+mm_reserve_node_register((addr_t)&__mm_sys_reserve_start, (addr_t)&__mm_sys_reserve_end, reserve);
 mm_node_register((addr_t)&__mm_pool_start, (addr_t)&__mm_pool_end, inside);
 mm_node_register(EXR_SRAM_ADDR, EXR_SRAM_ADDR + EXR_SRAM_SIZE, external);
 

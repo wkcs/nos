@@ -136,14 +136,14 @@ u32 switch_interrupt_flag;
 extern uint32_t SystemCoreClock;
 
 static uint32_t sys_tick_num_by_us;
-static uint32_t sys_tick_num_by_beat;
+static uint32_t sys_tick_num_by_heartbeat;
 __init void asm_cpu_init(void)
 {
     asm_disable_irq_save();
     SysTick_Config(SystemCoreClock * CONFIG_SYS_TICK_MS / 1000);
 
     sys_tick_num_by_us = SystemCoreClock / 1000000;
-    sys_tick_num_by_beat = SystemCoreClock * CONFIG_SYS_TICK_MS / 1000;
+    sys_tick_num_by_heartbeat = SystemCoreClock * CONFIG_SYS_TICK_MS / 1000;
 
     interrupt_from_task = 0;
     interrupt_to_task = 0;
@@ -178,7 +178,7 @@ void asm_cpu_delay_us(uint32_t us)
 
 void SysTick_Handler(void)
 {
-    system_beat_processing();
+    system_heartbeat_process();
 }
 
 void asm_cpu_reboot(void)
@@ -190,5 +190,5 @@ void asm_cpu_reboot(void)
 u64 asm_cpu_run_time_us(void)
 {
     u64 us = cpu_run_ticks() * CONFIG_SYS_TICK_MS * 1000;
-    return (us + (sys_tick_num_by_beat - SysTick->VAL) / sys_tick_num_by_us);
+    return (us + (sys_tick_num_by_heartbeat - SysTick->VAL) / sys_tick_num_by_us);
 }
