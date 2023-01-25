@@ -44,15 +44,15 @@ static void timeout(void *parameter)
     BUG_ON(task == NULL);
     BUG_ON(task->status != TASK_WAIT);
 
-    spin_lock(&task->lock);
+    spin_lock_irq(&task->lock);
     task->flag = -ETIMEDOUT;
     if (task->list_lock) {
-        spin_lock(task->list_lock);
+        spin_lock_irq(task->list_lock);
         list_del(&task->list);
-        spin_unlock(task->list_lock);
+        spin_unlock_irq(task->list_lock);
         task->list_lock = NULL;
     }
-    spin_unlock(&task->lock);
+    spin_unlock_irq(&task->lock);
     add_task_to_ready_list(task);
     switch_task();
 }
@@ -119,9 +119,9 @@ static int __task_create(struct task_struct *task,
     task->save_sys_cycle = 0;
     task->save_run_time = 0;
 
-    spin_lock(&task_list_lock);
+    spin_lock_irq(&task_list_lock);
     list_add_tail(&task->tlist, &task_list);
-    spin_unlock(&task_list_lock);
+    spin_unlock_irq(&task_list_lock);
     rc = timer_init(&task->timer, task->name, timeout, task);
     if (rc < 0) {
         pr_err("%s init timer error, rc=%d\r\n", task->name, rc);
@@ -238,17 +238,17 @@ void task_del(struct task_struct *task)
         del_task_to_ready_list(task);
     }
 
-    spin_lock(&task->lock);
-    spin_lock(&task_list_lock);
+    spin_lock_irq(&task->lock);
+    spin_lock_irq(&task_list_lock);
     list_del(&task->tlist);
-    spin_unlock(&task_list_lock);
+    spin_unlock_irq(&task_list_lock);
     task->status = TASK_CLOSE;
     timer_stop(&task->timer);
     task->list_lock = &close_list_lock;
-    spin_lock(task->list_lock);
+    spin_lock_irq(task->list_lock);
     list_add_tail(&task->list, &close_task_list);
-    spin_unlock(task->list_lock);
-    spin_unlock(&task->lock);
+    spin_unlock_irq(task->list_lock);
+    spin_unlock_irq(&task->lock);
 
     if (task == current) {
         switch_task();
@@ -271,9 +271,9 @@ int task_hang(struct task_struct *task)
 
     timer_stop(&task->timer);
     del_task_to_ready_list(task);
-    spin_lock(&task->lock);
+    spin_lock_irq(&task->lock);
     task->status = TASK_WAIT;
-    spin_unlock(&task->lock);
+    spin_unlock_irq(&task->lock);
 
     return 0;
 }
@@ -333,9 +333,9 @@ int task_set_prio(struct task_struct *task, uint8_t prio)
     }
 
     del_task_to_ready_list(task);
-    spin_lock(&task->lock);
+    spin_lock_irq(&task->lock);
     task->current_priority = prio;
-    spin_unlock(&task->lock);
+    spin_unlock_irq(&task->lock);
     add_task_to_ready_list(task);
 
     return 0;
