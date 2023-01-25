@@ -23,6 +23,9 @@ addr_t alloc_pages(gfp_t flag, u32 order)
     struct mm_node *node;
 
     list_for_each_entry (node, &g_node_list, list) {
+        if (node->type == NODE_RESERVE) {
+            continue;
+        }
         addr = __alloc_pages(&node->buddy, flag, order);
         if (addr != 0) {
             return addr;

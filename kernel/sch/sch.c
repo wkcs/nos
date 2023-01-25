@@ -20,6 +20,9 @@ static struct list_head ready_task_list[CONFIG_MAX_PRIORITY];
 SPINLOCK(ready_list_lock);
 static uint32_t scheduler_lock_nest;
 
+u32 sys_cycle;
+u64 sys_heartbeat_time;
+
 #if CONFIG_MAX_PRIORITY > 32
 uint32_t ready_task_priority_group;
 uint8_t ready_task_table[32];
@@ -65,6 +68,11 @@ void sch_start(void)
     to_task->status = TASK_RUNING;
 
     /* switch to new task */
+    sys_cycle = 0;
+    sys_heartbeat_time = cpu_run_time_us();
+    to_task->start_time = sys_heartbeat_time;
+    to_task->sys_cycle = sys_cycle;
+    to_task->save_sys_cycle = 0;
     context_switch_to((addr_t)&to_task->sp);
 
     /* never come back */
@@ -91,6 +99,36 @@ static struct task_struct *get_next_task(void)
     return task;
 }
 
+static void calculate_sys_cycle(void)
+{
+    static int count = 0;
+
+    count++;
+    if (count >= (1000 / CONFIG_SYS_TICK_MS)) {
+        count = 0;
+        sys_cycle++;
+    }
+}
+
+static void calculate_task_time(struct task_struct *to_task, struct task_struct *from_task)
+{
+    u64 run_times;
+
+    sys_heartbeat_time = run_times = cpu_run_time_us();
+    if (run_times >= from_task->start_time) {
+        from_task->run_time += run_times - from_task->start_time;
+    } else {
+        from_task->run_time += run_times + U64_MAX - from_task->start_time;
+    }
+    to_task->start_time = run_times;
+    if (to_task->sys_cycle != sys_cycle) {
+        to_task->save_sys_cycle = to_task->sys_cycle;
+        to_task->sys_cycle = sys_cycle;
+        to_task->save_run_time = to_task->run_time;
+        to_task->run_time = 0;
+    }
+}
+
 void switch_task(void)
 {
     struct task_struct *to_task;
@@ -108,10 +146,15 @@ void switch_task(void)
         from_task = current;
         spin_lock(&from_task->lock);
         from_task->status = TASK_READY;
+        calculate_task_time(to_task, from_task);
         spin_unlock(&from_task->lock);
         spin_unlock(&to_task->lock);
         context_switch((addr_t)&from_task->sp, (addr_t)&to_task->sp);
+        return;
     }
+    spin_lock(&to_task->lock);
+    calculate_task_time(to_task, to_task);
+    spin_unlock(&to_task->lock);
 }
 
 void add_task_to_ready_list(struct task_struct *task)
@@ -121,8 +164,9 @@ void add_task_to_ready_list(struct task_struct *task)
         return;
     }
 
-    spin_lock(&ready_list_lock);
     spin_lock(&task->lock);
+    task->list_lock = &ready_list_lock;
+    spin_lock(task->list_lock);
 
     /* change status */
     task->status = TASK_READY;
@@ -136,8 +180,8 @@ void add_task_to_ready_list(struct task_struct *task)
 #endif
     ready_task_priority_group |= task->offset_mask;
 
+    spin_unlock(task->list_lock);
     spin_unlock(&task->lock);
-    spin_unlock(&ready_list_lock);
 }
 
 void del_task_to_ready_list(struct task_struct *task)
@@ -147,13 +191,18 @@ void del_task_to_ready_list(struct task_struct *task)
         return;
     }
 
-    spin_lock(&ready_list_lock);
+    if ((task->list_lock != &ready_list_lock) ||
+        (task->status != TASK_READY && task->status != TASK_RUNING)) {
+        pr_err("%s is not read task, status=%u\r\n", task->name, task->status);
+        return;
+    }
+
     spin_lock(&task->lock);
+    spin_lock(task->list_lock);
 
     /* remove task from ready list */
     list_del(&(task->list));
-    if (list_empty(&(ready_task_list[task->current_priority])))
-    {
+    if (list_empty(&(ready_task_list[task->current_priority]))) {
 #if CONFIG_MAX_PRIORITY > 32
         ready_task_table[task->offset] &= ~task->prio_mask;
         if (ready_task_table[task->offset] == 0)
@@ -165,8 +214,9 @@ void del_task_to_ready_list(struct task_struct *task)
 #endif
     }
 
+    spin_unlock(task->list_lock);
+    task->list_lock = NULL;
     spin_unlock(&task->lock);
-    spin_unlock(&ready_list_lock);
 }
 
 void sch_lock(void)
@@ -189,4 +239,23 @@ void sch_unlock(void)
 uint32_t get_sch_lock_level(void)
 {
     return scheduler_lock_nest;
+}
+
+void sch_heartbeat(void)
+{
+    struct task_struct *task;
+    bool singular;
+
+    task = current;
+    spin_lock(&task->lock);
+    task->remaining_tick--;
+    spin_lock(&ready_list_lock);
+    singular = list_is_singular(&ready_task_list[task->current_priority]);
+    spin_unlock(&ready_list_lock);
+    if (task->remaining_tick == 0 && !singular) {
+        spin_unlock(&task->lock);
+        task_yield_cpu();
+        return;
+    }
+    spin_unlock(&task->lock);
 }

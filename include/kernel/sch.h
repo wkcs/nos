@@ -21,5 +21,9 @@ void del_task_to_ready_list(struct task_struct *task);
 void sch_lock(void);
 void sch_unlock(void);
 uint32_t get_sch_lock_level(void);
+void sch_heartbeat(void);
+
+extern u32 sys_cycle;
+extern u64 sys_heartbeat_time;
 
 #endif /* __NOS_SCH_H__ */

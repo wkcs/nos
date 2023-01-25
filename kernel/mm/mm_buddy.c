@@ -146,6 +146,7 @@ static addr_t mm_buddy_alloc_page(struct mm_buddy *buddy, gfp_t flag, u32 order)
 
     spin_lock(&info->lock);
     info->free_num--;
+    page->node->free_num -= (1 << order);
     list_cut_position(&tmp_list, &info->list, &page->list);
     spin_unlock(&info->lock);
 
@@ -155,7 +156,7 @@ static addr_t mm_buddy_alloc_page(struct mm_buddy *buddy, gfp_t flag, u32 order)
     }
 
     page = list_first_entry(&tmp_list, struct page, list);
-    mm_buddy_dump_info(buddy);
+    // mm_buddy_dump_info(buddy);
     return (page->pfn * CONFIG_PAGE_SIZE);
 }
 
@@ -218,6 +219,7 @@ int __free_pages(addr_t addr, u32 order)
     page->private = order;
     for (num = 0; num < order_num; num++) {
         page->use_cnt = 0;
+        page->node->free_num++;
         list_add_tail(&page->list, &tmp_list);
         page++;
     }
@@ -243,7 +245,7 @@ void mm_buddy_dump_info(struct mm_buddy *buddy)
     node = container_of(buddy, struct mm_node, buddy);
 
     num = 0;
-    pr_info("%s buddy info:", node->name);
+    pr_info("%s node buddy info:", node->name);
     for (i = 0; i < CONFIG_MAX_ORDER; i++) {
         pr_info_no_tag("%u->%u, ", i, buddy->info[i].free_num);
         num += buddy->info[i].free_num * (1 << i);

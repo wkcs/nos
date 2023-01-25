@@ -35,7 +35,7 @@ struct memblock {
     struct list_head base;
     spinlock_t lock;
     struct list_head list;
-};
+} __attribute__((aligned(sizeof(addr_t))));
 
 struct page;
 
@@ -50,14 +50,21 @@ struct mm_buddy {
     struct mm_buddy_info info[CONFIG_MAX_ORDER];
 };
 
+enum mm_node_type {
+    NODE_RESERVE = 0,
+    NODE_NORMAL,
+};
+
 struct mm_node {
     const char * const name;
     addr_t start;
     addr_t end;
+    enum mm_node_type type;
     u32 start_pfn;
     u32 page_num;
-    struct mm_buddy buddy;
+    u32 free_num;
     u32 buddy_page_index; /* 可以使用的第一个页 */
+    struct mm_buddy buddy;
     struct list_head list;
 };
 
@@ -90,6 +97,8 @@ int kfree(void *addr);
 int kfree_by_pid(pid_t pid);
 
 void mm_buddy_dump_info(struct mm_buddy *buddy);
+u32 mm_get_free_page_num(void);
+u32 mm_get_total_page_num(void);
 
 #define ALIGNED(addr, align) (((addr) + (align) - 1) & ~((align) - 1))
 #define ALIGNED_PAGE(addr) ALIGNED(addr, CONFIG_PAGE_SIZE)
@@ -97,11 +106,16 @@ void mm_buddy_dump_info(struct mm_buddy *buddy);
 #define ALIGNED_PAGE_DONE(addr) ALIGNED_DONE(addr, CONFIG_PAGE_SIZE)
 #define GET_PFN(addr) ((addr) / CONFIG_PAGE_SIZE)
 
-#define mm_node_register(__start, __end, __name) \
+#define __mm_node_register(__start, __end, __type, __name) \
 __mem struct mm_node mm_node_##__name = { \
     .name = #__name, \
     .start = __start, \
     .end = __end, \
+    .type = __type, \
 }
+#define mm_reserve_node_register(__start, __end, __name) \
+    __mm_node_register(__start, __end, NODE_RESERVE, __name)
+#define mm_node_register(__start, __end, __name) \
+    __mm_node_register(__start, __end, NODE_NORMAL, __name)
 
 #endif /* __NOS_MEM_H__ */

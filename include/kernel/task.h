@@ -13,6 +13,7 @@
 #include <kernel/pid.h>
 #include <kernel/list.h>
 #include <kernel/spinlock.h>
+#include <kernel/timer.h>
 #include <asm/task.h>
 
 enum task_status {
@@ -48,16 +49,19 @@ struct task_struct {
 #endif
     uint32_t offset_mask;
 
-    /* struct timer_struct timer; */
-
     int flag;
-
     struct list_head list;
     struct list_head tlist;
-    struct list_head wait_list;
-    struct list_head listen_list;
 
     spinlock_t lock;
+    spinlock_t *list_lock;
+    struct timer timer;
+
+    u64 start_time;
+    u32 run_time;
+    u32 sys_cycle;
+    u32 save_run_time;
+    u32 save_sys_cycle;
 };
 
 union task_union {
@@ -76,5 +80,10 @@ struct task_struct *task_create(const char *name,
                                 void (*clean)(struct task_struct *task));
 int task_ready(struct task_struct *task);
 int task_yield_cpu(void);
+void task_del(struct task_struct *task);
+int task_hang(struct task_struct *task);
+int task_resume(struct task_struct *task);
+int task_sleep(u32 tick);
+int task_set_prio(struct task_struct *task, uint8_t prio);
 
 #endif /* __NOS_TASK_H__ */
