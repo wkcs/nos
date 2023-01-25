@@ -6,6 +6,8 @@
  * Email: huqihan@live.com
  */
 
+#define pr_fmt(fmt) "[SCH]:%s[%d]:"fmt, __func__, __LINE__
+
 #include <kernel/sch.h>
 #include <kernel/kernel.h>
 #include <kernel/task.h>
@@ -83,7 +85,7 @@ static struct task_struct *get_next_task(void)
     u32 highest_ready_priority;
     struct task_struct *task;
 
-    spin_lock(&ready_list_lock);
+    spin_lock_irq(&ready_list_lock);
 #if CONFIG_MAX_PRIORITY <= 32
     highest_ready_priority = __ffs(ready_task_priority_group) - 1;
 #else
@@ -94,7 +96,7 @@ static struct task_struct *get_next_task(void)
 #endif
 
     task = list_entry(ready_task_list[highest_ready_priority].next, struct task_struct, list);
-    spin_unlock(&ready_list_lock);
+    spin_unlock_irq(&ready_list_lock);
 
     return task;
 }
@@ -141,32 +143,32 @@ void switch_task(void)
     to_task = get_next_task();
     /* if the destination task is not the same as current task */
     if (to_task != current) {
-        spin_lock(&to_task->lock);
+        spin_lock_irq(&to_task->lock);
         to_task->status = TASK_RUNING;
         from_task = current;
-        spin_lock(&from_task->lock);
+        spin_lock_irq(&from_task->lock);
         from_task->status = TASK_READY;
         calculate_task_time(to_task, from_task);
-        spin_unlock(&from_task->lock);
-        spin_unlock(&to_task->lock);
+        spin_unlock_irq(&from_task->lock);
+        spin_unlock_irq(&to_task->lock);
         context_switch((addr_t)&from_task->sp, (addr_t)&to_task->sp);
         return;
     }
-    spin_lock(&to_task->lock);
+    spin_lock_irq(&to_task->lock);
     calculate_task_time(to_task, to_task);
-    spin_unlock(&to_task->lock);
+    spin_unlock_irq(&to_task->lock);
 }
 
 void add_task_to_ready_list(struct task_struct *task)
 {
     if (task == NULL) {
-        pr_err("%s: task is NULL\r\n", __func__);
+        pr_err("task is NULL\r\n");
         return;
     }
 
-    spin_lock(&task->lock);
+    spin_lock_irq(&task->lock);
     task->list_lock = &ready_list_lock;
-    spin_lock(task->list_lock);
+    spin_lock_irq(task->list_lock);
 
     /* change status */
     task->status = TASK_READY;
@@ -180,14 +182,14 @@ void add_task_to_ready_list(struct task_struct *task)
 #endif
     ready_task_priority_group |= task->offset_mask;
 
-    spin_unlock(task->list_lock);
-    spin_unlock(&task->lock);
+    spin_unlock_irq(task->list_lock);
+    spin_unlock_irq(&task->lock);
 }
 
 void del_task_to_ready_list(struct task_struct *task)
 {
     if (task == NULL) {
-        pr_err("%s: task is NULL\r\n", __func__);
+        pr_err("task is NULL\r\n");
         return;
     }
 
@@ -197,8 +199,8 @@ void del_task_to_ready_list(struct task_struct *task)
         return;
     }
 
-    spin_lock(&task->lock);
-    spin_lock(task->list_lock);
+    spin_lock_irq(&task->lock);
+    spin_lock_irq(task->list_lock);
 
     /* remove task from ready list */
     list_del(&(task->list));
@@ -214,9 +216,9 @@ void del_task_to_ready_list(struct task_struct *task)
 #endif
     }
 
-    spin_unlock(task->list_lock);
+    spin_unlock_irq(task->list_lock);
     task->list_lock = NULL;
-    spin_unlock(&task->lock);
+    spin_unlock_irq(&task->lock);
 }
 
 void sch_lock(void)
@@ -231,9 +233,6 @@ void sch_unlock(void)
     if (scheduler_lock_nest > 0) {
         scheduler_lock_nest--;
     }
-    if (scheduler_lock_nest == 0) {
-        switch_task();
-    }
 }
 
 uint32_t get_sch_lock_level(void)
@@ -247,15 +246,15 @@ void sch_heartbeat(void)
     bool singular;
 
     task = current;
-    spin_lock(&task->lock);
+    spin_lock_irq(&task->lock);
     task->remaining_tick--;
-    spin_lock(&ready_list_lock);
+    spin_lock_irq(&ready_list_lock);
     singular = list_is_singular(&ready_task_list[task->current_priority]);
-    spin_unlock(&ready_list_lock);
+    spin_unlock_irq(&ready_list_lock);
     if (task->remaining_tick == 0 && !singular) {
-        spin_unlock(&task->lock);
+        spin_unlock_irq(&task->lock);
         task_yield_cpu();
         return;
     }
-    spin_unlock(&task->lock);
+    spin_unlock_irq(&task->lock);
 }

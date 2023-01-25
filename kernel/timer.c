@@ -66,7 +66,7 @@ int timer_remove(struct timer *timer)
 
     spin_lock(&g_timer_list_lock);
     list_del(&timer->list);
-    spin_unlock(&g_timer_list_lock);
+    spin_unlock_irq(&g_timer_list_lock);
 
     return 0;
 }
@@ -119,7 +119,7 @@ int timer_start(struct timer *timer, u32 tick)
     } else {
         timer->init_tick = tick + 1;
     }
-    spin_unlock(&timer->lock);
+    spin_unlock_irq(&timer->lock);
 
     spin_lock(&g_timer_list_lock);
     if (list_empty(&g_sys_timer_list))
@@ -136,7 +136,7 @@ int timer_start(struct timer *timer, u32 tick)
         }
         list_add_tail(&timer->list, &timer_temp->list);
     }
-    spin_unlock(&g_timer_list_lock);
+    spin_unlock_irq(&g_timer_list_lock);
 
     return 0;
 }
@@ -166,7 +166,7 @@ void timer_check_handle(void)
             }
         }
     }
-    spin_unlock(&g_timer_list_lock);
+    spin_unlock_irq(&g_timer_list_lock);
 
     if (!list_empty(&tmp_list)) {
         list_for_each_entry (timer, &tmp_list, list) {
