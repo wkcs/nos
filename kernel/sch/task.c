@@ -356,24 +356,3 @@ u32 task_get_cpu_usage(struct task_struct *task)
     }
     return 0;
 }
-
-u32 get_cpu_usage(void)
-{
-    struct task_struct *task;
-    u32 usage = 0;
-
-    spin_lock(&task_list_lock);
-    list_for_each_entry (task, &task_list, tlist) {
-        if (task->sys_cycle == (sys_cycle - 1)) {
-            usage += task->run_time;
-            continue;
-        }
-        if (task->save_sys_cycle == (sys_cycle - 1)) {
-            usage += task->run_time;
-            continue;
-        }
-    }
-    spin_unlock(&task_list_lock);
-
-    return usage;
-}
