@@ -37,9 +37,15 @@ __init int mm_init(void)
 
 static void mm_deamon_task_entry(void* parameter)
 {
+    u32 usage;
+    u32 all_usage;
+
     while (1) {
-        sleep(1);
-        pr_info("%s: test...\r\n", current->name);
+        sleep(2);
+        usage = task_get_cpu_usage(current) / 100;
+        all_usage = get_cpu_usage() / 100;
+        pr_info("%s: usage:%u.%02u%%, total:%u.%02u%%\r\n", current->name,
+                usage / 100, usage % 100, all_usage / 100, all_usage % 100);
     }
 }
 

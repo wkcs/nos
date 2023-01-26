@@ -136,16 +136,16 @@ void switch_task(void)
     struct task_struct *to_task;
     struct task_struct *from_task;
 
-    if (!kernel_running || scheduler_lock_nest)
+    if (!kernel_running)
         return;
 
     /* get switch to task */
     to_task = get_next_task();
+    from_task = current;
     /* if the destination task is not the same as current task */
-    if (to_task != current) {
+    if (to_task != current || scheduler_lock_nest == 0) {
         spin_lock_irq(&to_task->lock);
         to_task->status = TASK_RUNING;
-        from_task = current;
         spin_lock_irq(&from_task->lock);
         from_task->status = TASK_READY;
         calculate_task_time(to_task, from_task);
@@ -154,9 +154,9 @@ void switch_task(void)
         context_switch((addr_t)&from_task->sp, (addr_t)&to_task->sp);
         return;
     }
-    spin_lock_irq(&to_task->lock);
-    calculate_task_time(to_task, to_task);
-    spin_unlock_irq(&to_task->lock);
+    spin_lock_irq(&from_task->lock);
+    calculate_task_time(from_task, from_task);
+    spin_unlock_irq(&from_task->lock);
 }
 
 void add_task_to_ready_list(struct task_struct *task)
@@ -245,9 +245,12 @@ void sch_heartbeat(void)
     struct task_struct *task;
     bool singular;
 
+    calculate_sys_cycle();
     task = current;
     spin_lock_irq(&task->lock);
-    task->remaining_tick--;
+    if (task->remaining_tick > 0) {
+        task->remaining_tick--;
+    }
     spin_lock_irq(&ready_list_lock);
     singular = list_is_singular(&ready_task_list[task->current_priority]);
     spin_unlock_irq(&ready_list_lock);

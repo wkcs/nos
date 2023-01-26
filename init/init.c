@@ -47,6 +47,7 @@ void task_init_call(void)
     for(i = 0; i < int_task_num; i++) {
         if (init_task_info->task_init_func == NULL) {
             pr_err("%s: init func is NULL\r\n", init_task_info->name);
+            init_task_info++;
             continue;
         }
 
@@ -54,8 +55,10 @@ void task_init_call(void)
         rc = init_task_info->task_init_func();
         if (rc != 0) {
             pr_err("%s: init error\r\n", init_task_info->name);
+            init_task_info++;
             continue;
         }
+        init_task_info++;
     }
 }
 

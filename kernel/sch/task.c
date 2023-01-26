@@ -119,9 +119,9 @@ static int __task_create(struct task_struct *task,
     task->save_sys_cycle = 0;
     task->save_run_time = 0;
 
-    spin_lock_irq(&task_list_lock);
+    spin_lock(&task_list_lock);
     list_add_tail(&task->tlist, &task_list);
-    spin_unlock_irq(&task_list_lock);
+    spin_unlock(&task_list_lock);
     rc = timer_init(&task->timer, task->name, timeout, task);
     if (rc < 0) {
         pr_err("%s init timer error, rc=%d\r\n", task->name, rc);
@@ -239,9 +239,9 @@ void task_del(struct task_struct *task)
     }
 
     spin_lock_irq(&task->lock);
-    spin_lock_irq(&task_list_lock);
+    spin_lock(&task_list_lock);
     list_del(&task->tlist);
-    spin_unlock_irq(&task_list_lock);
+    spin_unlock(&task_list_lock);
     task->status = TASK_CLOSE;
     timer_stop(&task->timer);
     task->list_lock = &close_list_lock;
@@ -339,4 +339,41 @@ int task_set_prio(struct task_struct *task, uint8_t prio)
     add_task_to_ready_list(task);
 
     return 0;
+}
+
+u32 task_get_cpu_usage(struct task_struct *task)
+{
+    if (task == NULL) {
+        pr_err("task is NULL\r\n");
+        return 0;
+    }
+
+    if (task->sys_cycle == (sys_cycle - 1)) {
+        return task->run_time;
+    }
+    if (task->save_sys_cycle == (sys_cycle - 1)) {
+        return task->save_run_time;
+    }
+    return 0;
+}
+
+u32 get_cpu_usage(void)
+{
+    struct task_struct *task;
+    u32 usage = 0;
+
+    spin_lock(&task_list_lock);
+    list_for_each_entry (task, &task_list, tlist) {
+        if (task->sys_cycle == (sys_cycle - 1)) {
+            usage += task->run_time;
+            continue;
+        }
+        if (task->save_sys_cycle == (sys_cycle - 1)) {
+            usage += task->run_time;
+            continue;
+        }
+    }
+    spin_unlock(&task_list_lock);
+
+    return usage;
 }
