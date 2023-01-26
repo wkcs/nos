@@ -86,6 +86,5 @@ int task_resume(struct task_struct *task);
 int task_sleep(u32 tick);
 int task_set_prio(struct task_struct *task, uint8_t prio);
 u32 task_get_cpu_usage(struct task_struct *task);
-u32 get_cpu_usage(void);
 
 #endif /* __NOS_TASK_H__ */

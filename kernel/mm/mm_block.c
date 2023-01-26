@@ -95,7 +95,7 @@ void *__kalloc(u32 size, gfp_t flag, pid_t pid)
     u32 max = 0;
     int rc;
 
-recheck:
+recheck_memblock:
     spin_lock(&g_memblock_lock);
     list_for_each_entry (block, &g_memblock_list, list) {
         if (block->max_alloc_cap >= size) {
@@ -109,7 +109,7 @@ recheck:
         if (rc < 0) {
             return NULL;
         }
-        goto recheck;
+        goto recheck_memblock;
     }
     find = false;
 
@@ -142,7 +142,12 @@ recheck:
     }
     addr = ((addr_t)base) + sizeof(struct mem_base);
     if ((base->size) - size <= sizeof(struct mem_base)) {
+        if (!recheck) {
         return (void *)addr;
+        } else {
+            spin_lock(&block->lock);
+            goto check_max_alloc_cap;
+        }
     }
 
     new = (struct mem_base *)(addr + size);
@@ -156,9 +161,10 @@ recheck:
 
     spin_lock(&block->lock);
     list_add(&new->list, &base->list);
+check_max_alloc_cap:
     if (recheck) {
         list_for_each_entry (base, &block->base, list) {
-            if (base->size > max) {
+            if (!base->used && base->size > max) {
                 max = base->size;
             }
         }

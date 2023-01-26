@@ -24,6 +24,9 @@ static uint32_t scheduler_lock_nest;
 
 u32 sys_cycle;
 u64 sys_heartbeat_time;
+static u32 cpu_total_run_time;
+static u32 cpu_total_run_time_save;
+static u32 pre_sys_cycle;
 
 #if CONFIG_MAX_PRIORITY > 32
 uint32_t ready_task_priority_group;
@@ -115,12 +118,18 @@ static void calculate_sys_cycle(void)
 static void calculate_task_time(struct task_struct *to_task, struct task_struct *from_task)
 {
     u64 run_times;
+    u32 run_time;
 
     sys_heartbeat_time = run_times = cpu_run_time_us();
     if (run_times >= from_task->start_time) {
-        from_task->run_time += run_times - from_task->start_time;
+        run_time = run_times - from_task->start_time;
     } else {
-        from_task->run_time += run_times + U64_MAX - from_task->start_time;
+        run_time = run_times + U64_MAX - from_task->start_time;
+    }
+    from_task->run_time += run_time;
+    /* 不统计IDEL任务 */
+    if (from_task->pid != IDEL_TASK_PID) {
+        cpu_total_run_time += run_time;
     }
     to_task->start_time = run_times;
     if (to_task->sys_cycle != sys_cycle) {
@@ -128,6 +137,12 @@ static void calculate_task_time(struct task_struct *to_task, struct task_struct 
         to_task->sys_cycle = sys_cycle;
         to_task->save_run_time = to_task->run_time;
         to_task->run_time = 0;
+    }
+
+    if (sys_cycle != pre_sys_cycle) {
+        cpu_total_run_time_save = cpu_total_run_time;
+        cpu_total_run_time = 0;
+        pre_sys_cycle = sys_cycle;
     }
 }
 
@@ -258,6 +273,13 @@ void sch_heartbeat(void)
         spin_unlock_irq(&task->lock);
         task_yield_cpu();
         return;
+    } else {
+        calculate_task_time(task, task);
     }
     spin_unlock_irq(&task->lock);
+}
+
+u32 get_cpu_usage(void)
+{
+    return cpu_total_run_time_save;
 }
