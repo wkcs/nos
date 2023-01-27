@@ -20,3 +20,4 @@ obj-y += pid.o
 obj-y += boot.o
 obj-y += timer.o
 obj-y += sem.o
+obj-y += mutex.o
