@@ -87,4 +87,18 @@ int task_sleep(u32 tick);
 int task_set_prio(struct task_struct *task, uint8_t prio);
 u32 task_get_cpu_usage(struct task_struct *task);
 
+#define task_list_lock(lock_func, lock) \
+do {                                    \
+    if ((lock) != NULL) {               \
+        lock_func(lock);                \
+    }                                   \
+} while (0)
+
+#define task_list_unlock(lock_func, lock) \
+do {                                      \
+    if ((lock) != NULL) {                 \
+        lock_func(lock);                  \
+    }                                     \
+} while (0)
+
 #endif /* __NOS_TASK_H__ */

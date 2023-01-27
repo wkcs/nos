@@ -214,13 +214,21 @@ int task_ready(struct task_struct *task)
 int task_yield_cpu(void)
 {
     struct task_struct *task;
+    spinlock_t *list_lock;
 
     task = current;
+    list_lock = task->list_lock;
+    spin_lock_irq(&task->lock);
+    task_list_lock(spin_lock_irq, list_lock);
     if (task->status == TASK_RUNING) {
-        del_task_to_ready_list(task);
-        add_task_to_ready_list(task);
+        del_task_to_ready_list_lock(task);
+        add_task_to_ready_list_lock(task);
+        task_list_unlock(spin_unlock_irq, list_lock);
+        spin_unlock_irq(&task->lock);
         switch_task();
     } else {
+        task_list_unlock(spin_unlock_irq, list_lock);
+        spin_unlock_irq(&task->lock);
         BUG_ON(true);
     }
 
@@ -229,16 +237,21 @@ int task_yield_cpu(void)
 
 void task_del(struct task_struct *task)
 {
-   if (!task) {
+    spinlock_t *list_lock;
+
+    if (!task) {
         pr_err("task struct is NULL\r\n");
         return;
     }
 
-    if (task->status == TASK_READY || task->status == TASK_RUNING) {
-        del_task_to_ready_list(task);
-    }
-
+    list_lock = task->list_lock;
     spin_lock_irq(&task->lock);
+    task_list_lock(spin_lock_irq, list_lock);
+    if (task->status == TASK_READY || task->status == TASK_RUNING) {
+        del_task_to_ready_list_lock(task);
+    }
+    task_list_unlock(spin_unlock_irq, list_lock);
+
     spin_lock(&task_list_lock);
     list_del(&task->tlist);
     spin_unlock(&task_list_lock);
@@ -323,6 +336,8 @@ int task_sleep(u32 tick)
 
 int task_set_prio(struct task_struct *task, uint8_t prio)
 {
+    spinlock_t *list_lock;
+
     if (task == NULL) {
         pr_err("task is NULL\r\n");
         return -EINVAL;
@@ -332,11 +347,32 @@ int task_set_prio(struct task_struct *task, uint8_t prio)
         return 0;
     }
 
-    del_task_to_ready_list(task);
+    list_lock = task->list_lock;
     spin_lock_irq(&task->lock);
-    task->current_priority = prio;
+    task_list_lock(spin_lock_irq, list_lock);
+    if (task->status == TASK_READY || task->status == TASK_RUNING) {
+        del_task_to_ready_list_lock(task);
+        task->current_priority = prio;
+#if CONFIG_MAX_PRIORITY > 32
+        task->offset = prio >> 3;
+        task->offset_mask = 1UL << task->offset;
+        task->prio_mask = 1UL << (prio & 0x07);
+#else
+        task->offset_mask = 1UL << prio;
+#endif
+        add_task_to_ready_list_lock(task);
+    } else {
+        task->current_priority = prio;
+#if CONFIG_MAX_PRIORITY > 32
+        task->offset = prio >> 3;
+        task->offset_mask = 1UL << task->offset;
+        task->prio_mask = 1UL << (prio & 0x07);
+#else
+        task->offset_mask = 1UL << prio;
+#endif
+    }
+    task_list_unlock(spin_unlock_irq, list_lock);
     spin_unlock_irq(&task->lock);
-    add_task_to_ready_list(task);
 
     return 0;
 }

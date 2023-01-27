@@ -20,7 +20,7 @@
 
 static struct list_head ready_task_list[CONFIG_MAX_PRIORITY];
 SPINLOCK(ready_list_lock);
-static uint32_t scheduler_lock_nest;
+uint32_t scheduler_lock_nest;
 
 u32 sys_cycle;
 u64 sys_heartbeat_time;
@@ -98,7 +98,14 @@ static struct task_struct *get_next_task(void)
     highest_ready_priority = (offset << 3) + __ffs(ready_task_table[offset]) - 1;
 #endif
 
-    task = list_entry(ready_task_list[highest_ready_priority].next, struct task_struct, list);
+    if (list_empty(&ready_task_list[highest_ready_priority])) {
+        spin_unlock_irq(&ready_list_lock);
+        BUG_ON(true);
+        pr_err("prio %u not ready task\r\n", highest_ready_priority);
+        return NULL;
+    }
+
+    task = list_first_entry(&ready_task_list[highest_ready_priority], struct task_struct, list);
     spin_unlock_irq(&ready_list_lock);
 
     return task;
@@ -154,15 +161,17 @@ void switch_task(void)
     if (!kernel_running)
         return;
 
+    from_task = current;
     /* get switch to task */
     to_task = get_next_task();
-    from_task = current;
     /* if the destination task is not the same as current task */
-    if (to_task != current || scheduler_lock_nest == 0) {
+    if (to_task != current && scheduler_lock_nest == 0) {
         spin_lock_irq(&to_task->lock);
         to_task->status = TASK_RUNING;
         spin_lock_irq(&from_task->lock);
-        from_task->status = TASK_READY;
+        if (from_task->status == TASK_RUNING) {
+            from_task->status = TASK_READY;
+        }
         calculate_task_time(to_task, from_task);
         spin_unlock_irq(&from_task->lock);
         spin_unlock_irq(&to_task->lock);
@@ -172,6 +181,25 @@ void switch_task(void)
     spin_lock_irq(&from_task->lock);
     calculate_task_time(from_task, from_task);
     spin_unlock_irq(&from_task->lock);
+}
+
+void add_task_to_ready_list_lock(struct task_struct *task)
+{
+    if (task == NULL) {
+        pr_err("task is NULL\r\n");
+        return;
+    }
+
+    task->list_lock = &ready_list_lock;
+    /* insert task to ready list */
+    list_add_tail(&task->list, &(ready_task_list[task->current_priority]));
+#if CONFIG_MAX_PRIORITY > 32
+    ready_task_table[task->offset] |= task->prio_mask;
+#endif
+    ready_task_priority_group |= task->offset_mask;
+    /* change status */
+    task->status = TASK_READY;
+    task->remaining_tick = task->init_tick;
 }
 
 void add_task_to_ready_list(struct task_struct *task)
@@ -185,10 +213,6 @@ void add_task_to_ready_list(struct task_struct *task)
     task->list_lock = &ready_list_lock;
     spin_lock_irq(task->list_lock);
 
-    /* change status */
-    task->status = TASK_READY;
-    task->remaining_tick = task->init_tick;
-
     /* insert task to ready list */
     list_add_tail(&task->list, &(ready_task_list[task->current_priority]));
 
@@ -197,11 +221,15 @@ void add_task_to_ready_list(struct task_struct *task)
 #endif
     ready_task_priority_group |= task->offset_mask;
 
+    /* change status */
+    task->status = TASK_READY;
+    task->remaining_tick = task->init_tick;
+
     spin_unlock_irq(task->list_lock);
     spin_unlock_irq(&task->lock);
 }
 
-void del_task_to_ready_list(struct task_struct *task)
+void del_task_to_ready_list_lock(struct task_struct *task)
 {
     if (task == NULL) {
         pr_err("task is NULL\r\n");
@@ -210,12 +238,12 @@ void del_task_to_ready_list(struct task_struct *task)
 
     if ((task->list_lock != &ready_list_lock) ||
         (task->status != TASK_READY && task->status != TASK_RUNING)) {
-        pr_err("%s is not read task, status=%u\r\n", task->name, task->status);
+        pr_err("%s is not ready task, status=%u\r\n", task->name, task->status);
         return;
     }
-
-    spin_lock_irq(&task->lock);
-    spin_lock_irq(task->list_lock);
+    if (list_empty(&(task->list))) {
+        return;
+    }
 
     /* remove task from ready list */
     list_del(&(task->list));
@@ -230,24 +258,48 @@ void del_task_to_ready_list(struct task_struct *task)
         ready_task_priority_group &= ~task->offset_mask;
 #endif
     }
+    task->list_lock = NULL;
+    task->status = TASK_SUSPEND;
+}
 
+void del_task_to_ready_list(struct task_struct *task)
+{
+    if (task == NULL) {
+        pr_err("task is NULL\r\n");
+        return;
+    }
+
+    spin_lock_irq(&task->lock);
+    if ((task->list_lock != &ready_list_lock) ||
+        (task->status != TASK_READY && task->status != TASK_RUNING)) {
+        spin_unlock_irq(&task->lock);
+        pr_err("%s is not ready task, status=%u\r\n", task->name, task->status);
+        return;
+    }
+    spin_unlock_irq(&task->lock);
+    if (list_empty(&(task->list))) {
+        return;
+    }
+
+    spin_lock_irq(&task->lock);
+    spin_lock_irq(task->list_lock);
+    /* remove task from ready list */
+    list_del(&(task->list));
+    if (list_empty(&(ready_task_list[task->current_priority]))) {
+#if CONFIG_MAX_PRIORITY > 32
+        ready_task_table[task->offset] &= ~task->prio_mask;
+        if (ready_task_table[task->offset] == 0)
+        {
+            ready_task_priority_group &= ~task->offset_mask;
+        }
+#else
+        ready_task_priority_group &= ~task->offset_mask;
+#endif
+    }
     spin_unlock_irq(task->list_lock);
+    task->status = TASK_SUSPEND;
     task->list_lock = NULL;
     spin_unlock_irq(&task->lock);
-}
-
-void sch_lock(void)
-{
-    BUG_ON(scheduler_lock_nest >= U32_MAX);
-    scheduler_lock_nest++;
-}
-
-
-void sch_unlock(void)
-{
-    if (scheduler_lock_nest > 0) {
-        scheduler_lock_nest--;
-    }
 }
 
 uint32_t get_sch_lock_level(void)

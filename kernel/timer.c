@@ -152,12 +152,12 @@ int timer_stop(struct timer *timer)
 
 void timer_check_handle(void)
 {
-    struct timer *timer;
+    struct timer *timer, *tmp;
     LIST_HEAD(tmp_list);
 
     spin_lock(&g_timer_list_lock);
     if (!list_empty(&g_sys_timer_list)) {
-        list_for_each_entry (timer, &g_sys_timer_list, list) {
+        list_for_each_entry_safe (timer, tmp, &g_sys_timer_list, list) {
             if (get_lave_tick(timer) == 0) {
                 list_del(&timer->list);
                 list_add_tail(&timer->list, &tmp_list);
