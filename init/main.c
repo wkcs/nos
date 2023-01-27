@@ -21,6 +21,7 @@ int nos_start(void)
     arch_init();
     board_init();
     console_init();
+    kernel_log_init();
     pr_info("console init\r\n");
     mm_node_early_init();
     mm_init();

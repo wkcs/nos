@@ -23,6 +23,9 @@ enum log_level {
 
 __printf(3,4) int pr_log(bool no_tag, enum log_level level, const char *fmt, ...);
 void set_log_level(enum log_level level);
+void kernel_log_init(void);
+unsigned int kernel_log_write(const void *buf, unsigned int len);
+unsigned int kernel_log_read(void *buf, unsigned int len);
 
 #ifndef pr_fmt
 #define pr_fmt(fmt) fmt

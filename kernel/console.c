@@ -100,3 +100,11 @@ int console_write(char buf[], int len)
 
     return g_console->ops->write(buf, len);
 }
+
+void console_send_log(void)
+{
+    if (g_console == NULL) {
+        return;
+    }
+    return g_console->ops->send_log();
+}
