@@ -8,4 +8,4 @@
 
 obj-y += string.o
 obj-y += vsprintf.o
-#obj-y += fifo_buf.o
+obj-y += kfifo.o

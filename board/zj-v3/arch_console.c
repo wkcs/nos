@@ -8,11 +8,13 @@
 
 #include <kernel/kernel.h>
 #include <kernel/console.h>
+#include <kernel/printk.h>
 
 #include "board.h"
 
 #ifdef UART_DMA
-char log_buf[UART_LOG_DMA_BUF_SIZE];
+static char log_buf[UART_LOG_DMA_BUF_SIZE];
+static bool dma_transport;
 #endif
 
 int consol_init(void)
@@ -62,8 +64,42 @@ int console_send_data(char *buf, int len)
     return usart_send(buf, len);
 }
 
+void DMA1_Channel4_IRQHandler(void)
+{
+    unsigned int len;
+
+    DMA_ClearITPendingBit(DMA1_IT_TC4);
+    len = kernel_log_read(log_buf, UART_LOG_DMA_BUF_SIZE);
+    if (len == 0) {
+        dma_transport = false;
+        return;
+    }
+    DMA_Cmd(uart_log_dev.dma_config->ch, DISABLE );
+    DMA_SetCurrDataCounter(uart_log_dev.dma_config->ch, len);
+    DMA_Cmd(uart_log_dev.dma_config->ch, ENABLE);
+}
+
+static void arch_console_send_log(void)
+{
+    unsigned int len;
+
+    if (dma_transport) {
+        return;
+    }
+
+    len = kernel_log_read(log_buf, UART_LOG_DMA_BUF_SIZE);
+    if (len == 0) {
+        return;
+    }
+    dma_transport = true;
+    DMA_Cmd(uart_log_dev.dma_config->ch, DISABLE );
+    DMA_SetCurrDataCounter(uart_log_dev.dma_config->ch, len);
+    DMA_Cmd(uart_log_dev.dma_config->ch, ENABLE);
+}
+
 static struct console_ops zj_console_ops = {
     .init = consol_init,
     .write = console_send_data,
+    .send_log = arch_console_send_log,
 };
 console_register(tty0, &zj_console_ops);

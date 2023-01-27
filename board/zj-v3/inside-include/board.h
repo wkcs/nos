@@ -16,7 +16,7 @@
 #include "arch_irq.h"
 #include "arch_uart.h"
 
-#define UART_LOG_DMA_BUF_SIZE 256
+#define UART_LOG_DMA_BUF_SIZE 1024
 
 extern struct uart_config_t uart_log_dev;
 

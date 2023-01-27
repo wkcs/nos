@@ -18,12 +18,7 @@ static enum log_level g_log_level = CONFIG_DEFAULT_LOG_LEVEL;
 #else
 static enum log_level g_log_level = LOG_INFO;
 #endif
-
-#ifdef CONFIG_LOG_BUF_SIZE
-static char log_buf[CONFIG_LOG_BUF_SIZE];
-#else
 static char log_buf[256];
-#endif
 
 __printf(3,4) int pr_log(bool no_tag, enum log_level level, const char *fmt, ...)
 {
@@ -67,7 +62,7 @@ __printf(3,4) int pr_log(bool no_tag, enum log_level level, const char *fmt, ...
         len += vsprintf(buf + len, fmt, args);
         va_end(args);
 
-        len = console_write(buf, len);
+        len = kernel_log_write(buf, len);
 
         return len;
     }

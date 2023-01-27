@@ -17,7 +17,7 @@
 #include "arch_irq.h"
 #include "arch_gpio.h"
 
-// #define UART_DMA
+#define UART_DMA    1
 
 struct uart_config_t {
     struct clk_config_t *clk_config;
