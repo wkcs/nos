@@ -11,6 +11,11 @@
 #include <kernel/task.h>
 #include <kernel/init.h>
 #include <kernel/sleep.h>
+#include <kernel/sem.h>
+#include <kernel/mutex.h>
+
+sem_t g_sem;
+struct mutex g_lock;
 
 static void test1_task_entry(void* parameter)
 {
@@ -19,10 +24,12 @@ static void test1_task_entry(void* parameter)
 
     while (1) {
         msleep(500);
+        mutex_lock(&g_lock);
         usage = task_get_cpu_usage(current) / 100;
         all_usage = get_cpu_usage() / 100;
         pr_info("%s: usage:%u.%02u%%, total:%u.%02u%%\r\n", current->name,
                 usage / 100, usage % 100, all_usage / 100, all_usage % 100);
+        mutex_unlock(&g_lock);
     }
 }
 
@@ -40,7 +47,6 @@ static int test1_task_init(void)
 
     return 0;
 }
-task_init(test1_task_init);
 
 static void test2_task_entry(void* parameter)
 {
@@ -49,10 +55,12 @@ static void test2_task_entry(void* parameter)
 
     while (1) {
         msleep(800);
+        mutex_lock(&g_lock);
         usage = task_get_cpu_usage(current) / 100;
         all_usage = get_cpu_usage() / 100;
         pr_info("%s: usage:%u.%02u%%, total:%u.%02u%%\r\n", current->name,
                 usage / 100, usage % 100, all_usage / 100, all_usage % 100);
+        mutex_unlock(&g_lock);
     }
 }
 
@@ -70,7 +78,6 @@ static int test2_task_init(void)
 
     return 0;
 }
-task_init(test2_task_init);
 
 static void test3_task_entry(void* parameter)
 {
@@ -78,7 +85,7 @@ static void test3_task_entry(void* parameter)
     u32 all_usage;
 
     while (1) {
-        msleep(600);
+        sem_get(&g_sem);
         usage = task_get_cpu_usage(current) / 100;
         all_usage = get_cpu_usage() / 100;
         pr_info("%s: usage:%u.%02u%%, total:%u.%02u%%\r\n", current->name,
@@ -100,7 +107,6 @@ static int test3_task_init(void)
 
     return 0;
 }
-task_init(test3_task_init);
 
 static void test4_task_entry(void* parameter)
 {
@@ -130,19 +136,30 @@ static int test4_task_init(void)
 
     return 0;
 }
-task_init(test4_task_init);
 
 static void test5_task_entry(void* parameter)
 {
     u32 usage;
     u32 all_usage;
 
+    mutex_init(&g_lock);
+    sem_init(&g_sem, 0);
+
+    test4_task_init();
+    test3_task_init();
+    test2_task_init();
+    test1_task_init();
+
     while (1) {
-        sleep(2);
+        sleep(1);
+        mutex_lock(&g_lock);
         usage = task_get_cpu_usage(current) / 100;
         all_usage = get_cpu_usage() / 100;
         pr_info("%s: usage:%u.%02u%%, total:%u.%02u%%\r\n", current->name,
                 usage / 100, usage % 100, all_usage / 100, all_usage % 100);
+        sleep(1);
+        sem_send_one(&g_sem);
+        mutex_unlock(&g_lock);
     }
 }
 
