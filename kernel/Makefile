@@ -19,3 +19,4 @@ obj-y += spinlock.o
 obj-y += pid.o
 obj-y += boot.o
 obj-y += timer.o
+obj-y += sem.o
