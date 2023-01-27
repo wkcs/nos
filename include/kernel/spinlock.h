@@ -33,23 +33,32 @@ static inline void raw_spin_lock_init(raw_spinlock_t *lock)
     lock->raw_lock.tickets.owner = 0;
 }
 
-#define spin_lock_init(_lock)				\
-do {							\
-	raw_spin_lock_init(&(_lock)->rlock);		\
+#ifdef CONFIG_SPINLOCK_DEBUG
+#define spin_lock_init(_lock)            \
+do {                                     \
+    raw_spin_lock_init(&(_lock)->rlock); \
+    (_lock)->func = NULL;                  \
+    (_lock)->line = 0;                     \
 } while (0)
+#else
+#define spin_lock_init(_lock)            \
+do {                                     \
+    raw_spin_lock_init(&(_lock)->rlock); \
+} while (0)
+#endif
 
 #define ___LOCK(rlock) \
   do { __acquire(rlock); arch_spin_lock(&(rlock)->raw_lock); } while (0)
 #define __LOCK(rlock) \
   do { sch_lock(); ___LOCK(rlock); } while (0)
 #define __LOCK_IRQ(lock) \
-  do { lock->irq_level = disable_irq_save(); __LOCK(&(lock)->rlock); } while (0)
+  do { (lock)->irq_level = disable_irq_save(); __LOCK(&(lock)->rlock); } while (0)
 #define ___UNLOCK(rlock) \
   do { arch_spin_unlock(&(rlock)->raw_lock); __release(rlock); } while (0)
 #define __UNLOCK(rlock) \
   do { ___UNLOCK(rlock); sch_unlock(); } while (0)
 #define __UNLOCK_IRQ(lock) \
-  do { __UNLOCK(&(lock)->rlock); enable_irq_save(lock->irq_level); } while (0)
+  do { __UNLOCK(&(lock)->rlock); enable_irq_save((lock)->irq_level); } while (0)
 
 #define _raw_spin_lock(rlock) __LOCK(rlock)
 #define raw_spin_lock(rlock) _raw_spin_lock(rlock)
@@ -61,6 +70,21 @@ do {							\
 #define _raw_spin_unlock_irq(lock) __UNLOCK_IRQ(lock)
 #define raw_spin_unlock_irq(lock) _raw_spin_unlock_irq(lock)
 
+#ifdef CONFIG_SPINLOCK_DEBUG
+#define SPINLOCK(name)      \
+spinlock_t name = {         \
+    .rlock = {              \
+        .raw_lock = {       \
+            .tickets = {    \
+                .owner = 0, \
+                .next = 0,  \
+            },              \
+        },                  \
+    },                      \
+    .func = NULL,           \
+    .line = 0,              \
+}
+#else
 #define SPINLOCK(name)      \
 spinlock_t name = {         \
     .rlock = {              \
@@ -72,25 +96,56 @@ spinlock_t name = {         \
         },                  \
     },                      \
 }
+#endif
 
+#ifdef CONFIG_SPINLOCK_DEBUG
+#define spin_lock(lock) \
+do { \
+    raw_spin_lock(&(lock)->rlock); \
+    (lock)->func = __func__; \
+    (lock)->line = __LINE__; \
+} while (0)
+
+#define spin_lock_irq(lock) \
+do { \
+    raw_spin_lock_irq(lock); \
+    (lock)->func = __func__; \
+    (lock)->line = __LINE__; \
+} while (0)
+
+#define spin_unlock(lock) \
+do { \
+    raw_spin_unlock(&(lock)->rlock); \
+    (lock)->func = NULL; \
+    (lock)->line = 0; \
+} while (0)
+
+#define spin_unlock_irq(lock) \
+do { \
+    raw_spin_unlock_irq(lock); \
+    (lock)->func = NULL; \
+    (lock)->line = 0; \
+} while (0)
+#else
 static inline void spin_lock(spinlock_t *lock)
 {
-	raw_spin_lock(&lock->rlock);
+    raw_spin_lock(&lock->rlock);
 }
 
 static inline void spin_unlock(spinlock_t *lock)
 {
-	raw_spin_unlock(&lock->rlock);
+    raw_spin_unlock(&lock->rlock);
 }
 
 static inline void spin_lock_irq(spinlock_t *lock)
 {
-	raw_spin_lock_irq(lock);
+    raw_spin_lock_irq(lock);
 }
 
 static inline void spin_unlock_irq(spinlock_t *lock)
 {
-	raw_spin_unlock_irq(lock);
+    raw_spin_unlock_irq(lock);
 }
+#endif
 
 #endif /* __NOS_SPINLOCK_H__ */
