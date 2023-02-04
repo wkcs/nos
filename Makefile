@@ -113,25 +113,29 @@ $(out-dir):
 	fi
 
 # 使用OpenOCD下载hex程序
-flash: $(TARGET_HEX)
+flash:
 	@echo "OPEN_OCD FLASH $(TARGET_HEX:$(out-dir)/%=%)"
-	$(Q)$(OOCD) $(OOCDFLAGS) -c "program $< verify reset exit"
+	$(Q)$(OOCD) $(OOCDFLAGS) -c "program $(TARGET_HEX) verify reset exit"
 
 # 使用st-link下载bin程序
-stflash: $(TARGET_BIN)
+stflash:
 	@echo "ST-FLASH     $(TARGET_BIN:$(out-dir)/%=%)"
-	$(Q)st-flash write $< 0x08000000
+	$(Q)st-flash write $(TARGET_BIN) 0x08000000
 
 # 使用J-link下载hex程序
-jflash: $(TARGET_HEX)
+jflash:
 	@echo "J-FLASH     $(TARGET_HEX:$(out-dir)/%=%)"
-	$(Q)scripts/jflash.sh $<
+	$(Q)scripts/jflash.sh $(TARGET_HEX)
 
 # 使用GDB 通过sdtin/out管道与OpenOCD连接 并在main函数处打断点后运行
-debug: $(TARGET_ELF)
-	@echo "GDB DEBUG $<"
+debug:
+	@echo "GDB DEBUG $(TARGET_ELF)"
 	$(Q)$(GDB) -iex 'target extended | $(OOCD) $(OOCDFLAGS) -c "gdb_port pipe"' \
-	-iex 'monitor reset halt' -ex 'load' -ex 'break wkos_start' -ex 'c' $<
+	-iex 'monitor reset halt' -ex 'load' -ex 'break nos_start' -ex 'c' $(TARGET_ELF)
+
+debug-server:
+	@echo "GDB DEBUG $(TARGET_ELF)"
+	$(Q)$(OOCD) $(OOCDFLAGS) -c "gdb_port 1234"
 
 %_config: $(obj-dir)
 	@echo "write to .config"
@@ -140,7 +144,8 @@ debug: $(TARGET_ELF)
 		mkdir $(out-dir)/include; \
 	fi
 	$(Q)$(PYTHON) scripts/autocfg.py $(out-dir)/.config $(out-dir)/include/autocfg.h
-#	$(Q)cp $(OOCDCFG) $(out-dir)/
+	$(Q)cp $(OOCDCFG) $(out-dir)/
+	$(Q)cp $(SVD_CFG) $(out-dir)/board.svd
 
 defconfig: $(obj-dir)
 	@echo "write to .config"
@@ -149,7 +154,8 @@ defconfig: $(obj-dir)
 		mkdir $(out-dir)/include; \
 	fi
 	$(Q)$(PYTHON) scripts/autocfg.py $(out-dir)/.config $(out-dir)/include/autocfg.h
-#	$(Q)cp $(OOCDCFG) $(out-dir)/
+	$(Q)cp $(OOCDCFG) $(out-dir)/
+	$(Q)cp $(SVD_CFG) $(out-dir)/board.svd
 
 clean:
 	$(Q)-$(RM) $(out-dir)
