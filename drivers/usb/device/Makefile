@@ -6,5 +6,5 @@
 # Email: huqihan@live.com
 ##############################################
 
-obj-y += base
-obj-$(CONFIG_USB) += usb
+obj-y += class
+obj-y += core

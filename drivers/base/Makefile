@@ -6,5 +6,4 @@
 # Email: huqihan@live.com
 ##############################################
 
-obj-y += base
-obj-$(CONFIG_USB) += usb
+obj-y += device.o

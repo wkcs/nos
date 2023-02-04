@@ -6,5 +6,5 @@
 # Email: huqihan@live.com
 ##############################################
 
-obj-y += base
-obj-$(CONFIG_USB) += usb
+obj-$(CONFIG_USB_HID) = hid.o
+obj-$(CONFIG_USB_WINUSB) += winusb.o

@@ -6,9 +6,10 @@
  * Email: huqihan@live.com
  */
 
-#include <wk/irq.h>
-#include <drivers/usb_device.h>
+#include <kernel/kernel.h>
+#include <usb/usb_device.h>
 #include <lib/string.h>
+#include "arch_usb.h"
 #include "board.h"
 static PCD_HandleTypeDef _stm_pcd;
 static struct udcd _stm_udc;
@@ -25,9 +26,7 @@ static struct ep_id _ep_pool[] =
 
 void USB_LP_CAN1_RX0_IRQHandler(void)
 {
-    wk_interrupt_enter();
     HAL_PCD_IRQHandler(&_stm_pcd);
-    wk_interrupt_leave();
 }
 
 void HAL_PCD_ResetCallback(PCD_HandleTypeDef *pcd)
@@ -163,8 +162,6 @@ static int _ep_enable(uep_t ep)
 
 static int _ep_disable(uep_t ep)
 {
-    WK_ERROR(ep != NULL);
-    WK_ERROR(ep->ep_desc != NULL);
     HAL_PCD_EP_Close(&_stm_pcd, ep->ep_desc->bEndpointAddress);
     return 0;
 }
@@ -172,7 +169,6 @@ static int _ep_disable(uep_t ep)
 static size_t _ep_read(__maybe_unused uint8_t address, void *buffer)
 {
     size_t size = 0;
-    WK_ERROR(buffer != NULL);
     return size;
 }
 
