@@ -14,6 +14,7 @@
 #include <kernel/sem.h>
 #include <kernel/mutex.h>
 #include <kernel/msg_queue.h>
+#include <usb/usb_device.h>
 
 sem_t g_sem;
 struct mutex g_lock;
@@ -35,10 +36,9 @@ static void test1_task_entry(void* parameter)
     }
 }
 
+struct task_struct *test1;
 static int test1_task_init(void)
 {
-    struct task_struct *test1;
-
     test1 = task_create("test1", test1_task_entry, NULL, 5, 10, NULL);
     if (test1 == NULL) {
         pr_fatal("creat test1 task err\r\n");
@@ -52,8 +52,8 @@ static int test1_task_init(void)
 
 static void test2_task_entry(void* parameter)
 {
-    u32 usage;
-    u32 all_usage;
+    __maybe_unused u32 usage;
+    __maybe_unused u32 all_usage;
     char buf[128];
     int size;
 
@@ -65,15 +65,14 @@ static void test2_task_entry(void* parameter)
         size = msg_q_recv(&msg_q, buf, sizeof(buf));
         if (size > 0) {
             buf[size] = 0;
-            pr_info("%s: recv %s\r\n", current->name, buf);
+            pr_info("%s: recv %s, status=%d\r\n", current->name, buf, current->status);
         }
     }
 }
 
+struct task_struct *test2;
 static int test2_task_init(void)
 {
-    struct task_struct *test2;
-
     test2 = task_create("test2", test2_task_entry, NULL, 5, 10, NULL);
     if (test2 == NULL) {
         pr_fatal("creat test2 task err\r\n");
@@ -87,8 +86,8 @@ static int test2_task_init(void)
 
 static void test3_task_entry(void* parameter)
 {
-    u32 usage;
-    u32 all_usage;
+    __maybe_unused u32 usage;
+    __maybe_unused u32 all_usage;
 
     while (1) {
         sem_get(&g_sem);
@@ -99,10 +98,9 @@ static void test3_task_entry(void* parameter)
     }
 }
 
+struct task_struct *test3;
 static int test3_task_init(void)
 {
-    struct task_struct *test3;
-
     test3 = task_create("test3", test3_task_entry, NULL, 15, 10, NULL);
     if (test3 == NULL) {
         pr_fatal("creat test3 task err\r\n");
@@ -128,10 +126,9 @@ static void test4_task_entry(void* parameter)
     }
 }
 
+struct task_struct *test4;
 static int test4_task_init(void)
 {
-    struct task_struct *test4;
-
     test4 = task_create("test4", test4_task_entry, NULL, 25, 10, NULL);
     if (test4 == NULL) {
         pr_fatal("creat test4 task err\r\n");
@@ -143,11 +140,19 @@ static int test4_task_init(void)
     return 0;
 }
 
+extern void winusb_read_test(void);
+extern void winusb_write_test(void);
+extern int stm_usbd_register(void);
 static void test5_task_entry(void* parameter)
 {
-    u32 usage;
-    u32 all_usage;
+    __maybe_unused u32 usage;
+    __maybe_unused u32 all_usage;
     char buf[] = "lalala";
+    __maybe_unused struct task_info *info;
+
+    usbd_hid_class_register();
+    usbd_winusb_class_register();
+    stm_usbd_register();
 
     mutex_init(&g_lock);
     sem_init(&g_sem, 0);
@@ -157,6 +162,8 @@ static void test5_task_entry(void* parameter)
     test3_task_init();
     test2_task_init();
     test1_task_init();
+
+    info = current_task_info();
 
     while (1) {
         sleep(1);
@@ -172,10 +179,9 @@ static void test5_task_entry(void* parameter)
     }
 }
 
+struct task_struct *test5;
 static int test5_task_init(void)
 {
-    struct task_struct *test5;
-
     test5 = task_create("test5", test5_task_entry, NULL, 68, 10, NULL);
     if (test5 == NULL) {
         pr_fatal("creat test5 task err\r\n");
