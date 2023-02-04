@@ -66,7 +66,7 @@ static void insert_page_to_buddy(struct mm_buddy_info *info, struct list_head *l
     struct page *old, *new;
 
     old = list_first_entry(list, struct page, list);
-    spin_lock(&info->lock);
+    spin_lock_irq(&info->lock);
     if (info->free_num == 0) {
         tmp = &info->list;
     } else {
@@ -80,7 +80,7 @@ static void insert_page_to_buddy(struct mm_buddy_info *info, struct list_head *l
     }
     list_splice(list, tmp);
     info->free_num += 2;
-    spin_unlock(&info->lock);
+    spin_unlock_irq(&info->lock);
 }
 
 static int __mm_buddy_split(struct mm_buddy *buddy, u32 order)
@@ -109,10 +109,10 @@ static int __mm_buddy_split(struct mm_buddy *buddy, u32 order)
     struct page *page = list_first_entry(&info->list, struct page, list);
     page = &page[(1 << order) - 1];
 
-    spin_lock(&info->lock);
+    spin_lock_irq(&info->lock);
     info->free_num--;
     list_cut_position(&tmp_list, &info->list, &page->list);
-    spin_unlock(&info->lock);
+    spin_unlock_irq(&info->lock);
 
     insert_page_to_buddy(last_info, &tmp_list);
 
@@ -144,11 +144,11 @@ static addr_t mm_buddy_alloc_page(struct mm_buddy *buddy, gfp_t flag, u32 order)
         return 0;
     }
 
-    spin_lock(&info->lock);
+    spin_lock_irq(&info->lock);
     info->free_num--;
     page->node->free_num -= (1 << order);
     list_cut_position(&tmp_list, &info->list, &page->list);
-    spin_unlock(&info->lock);
+    spin_unlock_irq(&info->lock);
 
     list_for_each_entry (page, &tmp_list, list) {
         page->use_cnt = 1;

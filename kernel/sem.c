@@ -40,7 +40,7 @@ static void __sem_get(struct task_struct *task, sem_t *sem)
         return;
     }
 
-    spin_lock(&sem->lock);
+    spin_lock_irq(&sem->lock);
     list_for_each_entry (task_temp, &sem->wait_list, list) {
         if (task->current_priority < task_temp->current_priority) {
             break;
@@ -48,7 +48,7 @@ static void __sem_get(struct task_struct *task, sem_t *sem)
     }
     list_add_tail(&task->list, &task_temp->list);
     task->list_lock = &sem->lock;
-    spin_unlock(&sem->lock);
+    spin_unlock_irq(&sem->lock);
 }
 
 void sem_get(sem_t *sem)
@@ -122,7 +122,7 @@ void sem_send(sem_t *sem, uint8_t num)
         return;
     }
 
-    spin_lock(&sem->lock);
+    spin_lock_irq(&sem->lock);
     if (!list_empty(&sem->wait_list)) {
         list_for_each_entry_safe (task, tmp, &sem->wait_list, list) {
             num--;
@@ -135,7 +135,7 @@ void sem_send(sem_t *sem, uint8_t num)
         }
     }
     sem->count += num;
-    spin_unlock(&sem->lock);
+    spin_unlock_irq(&sem->lock);
 
     if (!list_empty(&tmp_list)) {
         list_for_each_entry_safe (task, tmp, &tmp_list, list) {
