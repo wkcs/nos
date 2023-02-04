@@ -120,7 +120,7 @@ flash:
 # 使用st-link下载bin程序
 stflash:
 	@echo "ST-FLASH     $(TARGET_BIN:$(out-dir)/%=%)"
-	$(Q)st-flash write $(TARGET_BIN) 0x08000000
+	$(Q)st-flash --connect-under-reset write $(TARGET_BIN) 0x08000000
 
 # 使用J-link下载hex程序
 jflash:
