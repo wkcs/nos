@@ -26,7 +26,7 @@ struct mem_base {
     u32 size;
     u32 used;
     struct list_head list;
-};
+} __attribute__((aligned(sizeof(addr_t))));
 
 struct memblock {
     addr_t start;

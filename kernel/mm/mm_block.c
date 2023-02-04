@@ -95,6 +95,10 @@ void *__kalloc(u32 size, gfp_t flag, pid_t pid)
     u32 max = 0;
     int rc;
 
+    /* 内存必须按照cpu位宽的字节对齐 */
+    if (size % sizeof(addr_t))
+        size = size + sizeof(addr_t) - (size % sizeof(addr_t));
+
 recheck_memblock:
     spin_lock(&g_memblock_lock);
     list_for_each_entry (block, &g_memblock_list, list) {

@@ -64,22 +64,22 @@ addr_t *stack_init(void *task_entry, void *parameter, addr_t *stack_addr, void *
 void cpu_hard_fault(struct cpu_dump_type *cpu_dump_type)
 {
     pr_info("-------------------\r\n");
-    pr_info("r0  = 0x%lx\r\n", cpu_dump_type->cpu_reg.r0);
-    pr_info("r1  = 0x%lx\r\n", cpu_dump_type->cpu_reg.r1);
-    pr_info("r2  = 0x%lx\r\n", cpu_dump_type->cpu_reg.r2);
-    pr_info("r3  = 0x%lx\r\n", cpu_dump_type->cpu_reg.r3);
-    pr_info("r4  = 0x%lx\r\n", cpu_dump_type->cpu_reg.r4);
-    pr_info("r5  = 0x%lx\r\n", cpu_dump_type->cpu_reg.r5);
-    pr_info("r6  = 0x%lx\r\n", cpu_dump_type->cpu_reg.r6);
-    pr_info("r7  = 0x%lx\r\n", cpu_dump_type->cpu_reg.r7);
-    pr_info("r8  = 0x%lx\r\n", cpu_dump_type->cpu_reg.r8);
-    pr_info("r9  = 0x%lx\r\n", cpu_dump_type->cpu_reg.r9);
-    pr_info("r10 = 0x%lx\r\n", cpu_dump_type->cpu_reg.r10);
-    pr_info("r11 = 0x%lx\r\n", cpu_dump_type->cpu_reg.r11);
-    pr_info("r12 = 0x%lx\r\n", cpu_dump_type->cpu_reg.r12);
-    pr_info("lr  = 0x%lx\r\n", cpu_dump_type->cpu_reg.lr);
-    pr_info("pc  = 0x%lx\r\n", cpu_dump_type->cpu_reg.pc);
-    pr_info("psr = 0x%lx\r\n", cpu_dump_type->cpu_reg.psr);
+    pr_info("r0  = 0x%08lx\r\n", cpu_dump_type->cpu_reg.r0);
+    pr_info("r1  = 0x%08lx\r\n", cpu_dump_type->cpu_reg.r1);
+    pr_info("r2  = 0x%08lx\r\n", cpu_dump_type->cpu_reg.r2);
+    pr_info("r3  = 0x%08lx\r\n", cpu_dump_type->cpu_reg.r3);
+    pr_info("r4  = 0x%08lx\r\n", cpu_dump_type->cpu_reg.r4);
+    pr_info("r5  = 0x%08lx\r\n", cpu_dump_type->cpu_reg.r5);
+    pr_info("r6  = 0x%08lx\r\n", cpu_dump_type->cpu_reg.r6);
+    pr_info("r7  = 0x%08lx\r\n", cpu_dump_type->cpu_reg.r7);
+    pr_info("r8  = 0x%08lx\r\n", cpu_dump_type->cpu_reg.r8);
+    pr_info("r9  = 0x%08lx\r\n", cpu_dump_type->cpu_reg.r9);
+    pr_info("r10 = 0x%08lx\r\n", cpu_dump_type->cpu_reg.r10);
+    pr_info("r11 = 0x%08lx\r\n", cpu_dump_type->cpu_reg.r11);
+    pr_info("r12 = 0x%08lx\r\n", cpu_dump_type->cpu_reg.r12);
+    pr_info("lr  = 0x%08lx\r\n", cpu_dump_type->cpu_reg.lr);
+    pr_info("pc  = 0x%08lx\r\n", cpu_dump_type->cpu_reg.pc);
+    pr_info("psr = 0x%08lx\r\n", cpu_dump_type->cpu_reg.psr);
     pr_info("-------------------\r\n");
     if (cpu_dump_type->sp & 1 << 2) {
         struct task_struct *task = current;
