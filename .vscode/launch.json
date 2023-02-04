@@ -5,15 +5,36 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "Debug (J-Link)",
+            "name": "kernel-debug",
+            "type": "cppdbg",
+            "request": "launch",
+            "miDebuggerServerAddress": "localhost:50000",
+            "program": "${workspaceFolder}/out/nos.elf",
+            "args": [],
+            "stopAtEntry": false,
+            "cwd": "${workspaceFolder}",
+            "environment": [],
+            "externalConsole": false,
+            "logging": {
+                "engineLogging": false
+            },
+            "MIMode": "gdb",
+            "miDebuggerPath": "gdb-multiarch"
+        },
+        {
+            "name": "Debug",
             "cwd": "${workspaceFolder}",
             "executable": "./out/nos.elf",
             "request": "launch",
             "type": "cortex-debug",
-            "servertype": "jlink",
+            "servertype": "openocd",
             "device": "STM32F103ZET6",
             "interface": "swd",
-            "runToEntryPoint": "reset_handler"
+            "runToEntryPoint": "nos_start",
+            "svdFile": "./out/board.svd",
+            "configFiles": [
+                "./out/openocd.cfg"
+            ]
         }
     ]
 }
