@@ -120,7 +120,6 @@ int timer_start(struct timer *timer, u32 tick)
     } else {
         timer->init_tick = tick + 1;
     }
-    spin_unlock_irq(&timer->lock);
 
     spin_lock_irq(&g_timer_list_lock);
     if (list_empty(&g_sys_timer_list))
@@ -138,6 +137,7 @@ int timer_start(struct timer *timer, u32 tick)
         list_add_tail(&timer->list, &timer_temp->list);
     }
     spin_unlock_irq(&g_timer_list_lock);
+    spin_unlock_irq(&timer->lock);
 
     return 0;
 }
