@@ -17,6 +17,7 @@
 
 static LIST_HEAD(g_sys_timer_list);
 static SPINLOCK(g_timer_list_lock);
+extern uint32_t switch_pending;
 
 int timer_init(struct timer *timer, const char *name,
                void (*timeout)(void *parameter), void *parameter)
@@ -154,6 +155,9 @@ void timer_check_handle(void)
 {
     struct timer *timer, *tmp;
     LIST_HEAD(tmp_list);
+
+    if (switch_pending)
+        return;
 
     spin_lock_irq(&g_timer_list_lock);
     if (!list_empty(&g_sys_timer_list)) {

@@ -226,10 +226,6 @@ int task_yield_cpu(void)
         task_list_unlock(spin_unlock_irq, list_lock);
         spin_unlock_irq(&task->lock);
         switch_task();
-    } else {
-        task_list_unlock(spin_unlock_irq, list_lock);
-        spin_unlock_irq(&task->lock);
-        BUG_ON(true);
     }
 
     return 0;
@@ -285,7 +281,11 @@ int task_hang(struct task_struct *task)
     timer_stop(&task->timer);
     del_task_to_ready_list(task);
     spin_lock_irq(&task->lock);
-    task->status = TASK_WAIT;
+    if (task->status == TASK_SUSPEND) {
+        task->status = TASK_WAIT;
+    } else {
+        pr_err("%s task status is %d\r\n", task->name, task->status);
+    }
     spin_unlock_irq(&task->lock);
 
     return 0;

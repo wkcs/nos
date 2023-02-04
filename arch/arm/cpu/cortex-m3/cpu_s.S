@@ -18,6 +18,7 @@
     .global kernel_running
     .global interrupt_nest
     .global irq_disable_level
+    .global switch_pending
 
     .equ    SCB_VTOR, 0xE000ED08            /* Vector Table Offset Register */
     .equ    ICSR, 0xE000ED04                /* interrupt control state register */
@@ -124,6 +125,9 @@ restore_irq:
     /* restore interrupt */
     msr     PRIMASK, r2
 pendsv_exit_2:
+    ldr     r0, =switch_pending
+    mov     r1, #0
+    str     r1, [r0]
     orr     lr, lr, #0x04
     bx      lr
 
@@ -177,4 +181,3 @@ context_switch_to:
     /* never reach here! */
 loop:
     b loop
-
