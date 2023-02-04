@@ -20,10 +20,10 @@
 #include <kernel/printk.h>
 #include <kernel/timer.h>
 
-static LIST_HEAD(task_list);
-LIST_HEAD(close_task_list);
-static SPINLOCK(task_list_lock);
-static SPINLOCK(close_list_lock);
+static LIST_HEAD(g_task_list);
+LIST_HEAD(g_close_task_list);
+static SPINLOCK(g_task_list_lock);
+static SPINLOCK(g_close_list_lock);
 
 extern spinlock_t ready_list_lock;
 
@@ -119,9 +119,9 @@ static int __task_create(struct task_struct *task,
     task->save_sys_cycle = 0;
     task->save_run_time = 0;
 
-    spin_lock(&task_list_lock);
-    list_add_tail(&task->tlist, &task_list);
-    spin_unlock(&task_list_lock);
+    spin_lock(&g_task_list_lock);
+    list_add_tail(&task->tlist, &g_task_list);
+    spin_unlock(&g_task_list_lock);
     rc = timer_init(&task->timer, task->name, timeout, task);
     if (rc < 0) {
         pr_err("%s init timer error, rc=%d\r\n", task->name, rc);
@@ -252,14 +252,14 @@ void task_del(struct task_struct *task)
     }
     task_list_unlock(spin_unlock_irq, list_lock);
 
-    spin_lock(&task_list_lock);
+    spin_lock(&g_task_list_lock);
     list_del(&task->tlist);
-    spin_unlock(&task_list_lock);
+    spin_unlock(&g_task_list_lock);
     task->status = TASK_CLOSE;
     timer_stop(&task->timer);
-    task->list_lock = &close_list_lock;
+    task->list_lock = &g_close_list_lock;
     spin_lock_irq(task->list_lock);
-    list_add_tail(&task->list, &close_task_list);
+    list_add_tail(&task->list, &g_close_task_list);
     spin_unlock_irq(task->list_lock);
     spin_unlock_irq(&task->lock);
 
@@ -275,7 +275,7 @@ int task_hang(struct task_struct *task)
         return -EINVAL;
     }
     if (task->status != TASK_READY && task->status != TASK_RUNING) {
-        pr_err("task status is not TASK_READY or TASK_RUNING\r\n");
+        pr_err("%s task status is %d, not is TASK_READY or TASK_RUNING\r\n", task->name, task->status);
         if (task == current) {
             BUG_ON(true);
         }

@@ -64,7 +64,7 @@ int timer_remove(struct timer *timer)
         return -EINVAL;
     }
 
-    spin_lock(&g_timer_list_lock);
+    spin_lock_irq(&g_timer_list_lock);
     list_del(&timer->list);
     spin_unlock_irq(&g_timer_list_lock);
 
@@ -107,7 +107,7 @@ int timer_start(struct timer *timer, u32 tick)
         pr_err("remove %s timer error, rc=%d\r\n", timer->name, rc);
         return rc;
     }
-    spin_lock(&timer->lock);
+    spin_lock_irq(&timer->lock);
     if (U64_MAX - cpu_run_ticks() >= timer->init_tick) {
         timer->timeout_tick = cpu_run_ticks() + timer->init_tick;
     } else {
@@ -121,7 +121,7 @@ int timer_start(struct timer *timer, u32 tick)
     }
     spin_unlock_irq(&timer->lock);
 
-    spin_lock(&g_timer_list_lock);
+    spin_lock_irq(&g_timer_list_lock);
     if (list_empty(&g_sys_timer_list))
         list_add_tail(&timer->list, &g_sys_timer_list);
     else {
@@ -155,7 +155,7 @@ void timer_check_handle(void)
     struct timer *timer, *tmp;
     LIST_HEAD(tmp_list);
 
-    spin_lock(&g_timer_list_lock);
+    spin_lock_irq(&g_timer_list_lock);
     if (!list_empty(&g_sys_timer_list)) {
         list_for_each_entry_safe (timer, tmp, &g_sys_timer_list, list) {
             if (get_lave_tick(timer) == 0) {

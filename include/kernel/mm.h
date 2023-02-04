@@ -99,6 +99,8 @@ int kfree_by_pid(pid_t pid);
 void mm_buddy_dump_info(struct mm_buddy *buddy);
 u32 mm_get_free_page_num(void);
 u32 mm_get_total_page_num(void);
+void mm_node_dump(void);
+void mm_block_dump(void);
 
 #define ALIGNED(addr, align) (((addr) + (align) - 1) & ~((align) - 1))
 #define ALIGNED_PAGE(addr) ALIGNED(addr, CONFIG_PAGE_SIZE)

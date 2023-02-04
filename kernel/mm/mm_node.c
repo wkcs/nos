@@ -174,3 +174,20 @@ u32 mm_get_total_page_num(void)
 
     return num;
 }
+
+static void __mm_node_dump(struct mm_node *node)
+{
+    pr_info("node[%s]: 0x%lx-0x%lx, start_pfn=%u, page_num=%u, buddy_page_num=%u, free_num=%u\r\n",
+            node->name, node->start, node->end, node->start_pfn, node->page_num,
+            node->page_num - node->buddy_page_index, node->free_num);
+    mm_buddy_dump_info(&node->buddy);
+}
+
+void mm_node_dump(void)
+{
+    struct mm_node *node;
+
+    list_for_each_entry (node, &g_node_list, list) {
+        __mm_node_dump(node);
+    }
+}

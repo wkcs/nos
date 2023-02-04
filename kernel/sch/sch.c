@@ -165,14 +165,18 @@ void switch_task(void)
     /* get switch to task */
     to_task = get_next_task();
     /* if the destination task is not the same as current task */
-    if (to_task != current && scheduler_lock_nest == 0) {
+    if (to_task != from_task && scheduler_lock_nest == 0) {
         spin_lock_irq(&to_task->lock);
-        to_task->status = TASK_RUNING;
+        if (to_task->status != TASK_READY) {
+            BUG_ON(true);
+            pr_err("%s task status=%d\r\n", to_task->name, to_task->status);
+        }
         spin_lock_irq(&from_task->lock);
         if (from_task->status == TASK_RUNING) {
             from_task->status = TASK_READY;
         }
         calculate_task_time(to_task, from_task);
+        to_task->status = TASK_RUNING;
         spin_unlock_irq(&from_task->lock);
         spin_unlock_irq(&to_task->lock);
         context_switch((addr_t)&from_task->sp, (addr_t)&to_task->sp);

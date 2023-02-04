@@ -156,7 +156,6 @@ static addr_t mm_buddy_alloc_page(struct mm_buddy *buddy, gfp_t flag, u32 order)
     }
 
     page = list_first_entry(&tmp_list, struct page, list);
-    // mm_buddy_dump_info(buddy);
     return (page->pfn * CONFIG_PAGE_SIZE);
 }
 
