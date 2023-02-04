@@ -183,7 +183,7 @@ static int __kfree_base(struct memblock *block, struct mem_base *base)
     if (base->list.prev != &block->base) {
         new = list_prev_entry(base, list);
         if (!new->used) {
-            new->size = base->size + sizeof(struct mem_base);
+            new->size += base->size + sizeof(struct mem_base);
             list_del(&base->list);
 #ifdef CONFIG_MM_DEBUG
             base->magic = 0;
@@ -194,7 +194,7 @@ static int __kfree_base(struct memblock *block, struct mem_base *base)
     if (base->list.next != &block->base) {
         new = list_next_entry(base, list);
         if (!new->used) {
-            base->size = new->size + sizeof(struct mem_base);
+            base->size += new->size + sizeof(struct mem_base);
             list_del(&new->list);
 #ifdef CONFIG_MM_DEBUG
             new->magic = 0;
@@ -314,4 +314,30 @@ check_base:
         return rc;
     }
     goto check_base;
+}
+
+void __mm_block_dump(struct memblock *block)
+{
+    struct mem_base *base;
+    int i = 0;
+
+    pr_info("mm_block: start=0x%lx, size=%lu, free=%u\r\n", block->start, block->size, block->max_alloc_cap);
+    return;
+    spin_lock(&block->lock);
+    list_for_each_entry (base, &block->base, list) {
+        pr_info("mm_base[%d]: size=%u, used=%u\r\n", i, base->size, base->used);
+        i++;
+    }
+    spin_unlock(&block->lock);
+}
+
+void mm_block_dump(void)
+{
+    struct memblock *block;
+
+    spin_lock(&g_memblock_lock);
+    list_for_each_entry (block, &g_memblock_list, list) {
+        __mm_block_dump(block);
+    }
+    spin_unlock(&g_memblock_lock);
 }
