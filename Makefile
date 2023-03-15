@@ -144,8 +144,12 @@ debug-server:
 		mkdir $(out-dir)/include; \
 	fi
 	$(Q)$(PYTHON) scripts/autocfg.py $(out-dir)/.config $(out-dir)/include/autocfg.h
-	$(Q)cp $(OOCDCFG) $(out-dir)/
-	$(Q)cp $(SVD_CFG) $(out-dir)/board.svd
+	$(Q)if [ $(OOCDCFG) ]; then \
+		cp $(OOCDCFG) $(out-dir)/; \
+	fi
+	$(Q)if [ $(SVD_CFG) ]; then \
+		cp $(SVD_CFG) $(out-dir)/board.svd; \
+	fi
 
 defconfig: $(obj-dir)
 	@echo "write to .config"
@@ -154,8 +158,12 @@ defconfig: $(obj-dir)
 		mkdir $(out-dir)/include; \
 	fi
 	$(Q)$(PYTHON) scripts/autocfg.py $(out-dir)/.config $(out-dir)/include/autocfg.h
-	$(Q)cp $(OOCDCFG) $(out-dir)/
-	$(Q)cp $(SVD_CFG) $(out-dir)/board.svd
+	$(Q)if [ $(OOCDCFG) ]; then \
+		cp $(OOCDCFG) $(out-dir)/; \
+	fi
+	$(Q)if [ $(SVD_CFG) ]; then \
+		cp $(SVD_CFG) $(out-dir)/board.svd; \
+	fi
 
 clean:
 	$(Q)-$(RM) $(out-dir)
