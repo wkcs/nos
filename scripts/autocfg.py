@@ -21,6 +21,9 @@ def is_number(s):
     return False
 
 for line in input_file.readlines():
+    line = line.strip()
+    if line[0] == '#':
+        continue
     matchObj = re.search( r'.*( *)?=( *)?.*', line, re.M|re.I)
     if matchObj is None:
         continue

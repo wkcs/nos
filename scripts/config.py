@@ -21,6 +21,9 @@ buildInfo = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime())
 output_file.write("CONFIG_BUILD_INFO = \"%s\"\n" % (buildInfo))
 
 for line in input_file.readlines():
+    line = line.strip()
+    if line[0] == '#':
+        continue
     matchObj = re.search( r'.*( *)?=( *)?.*', line, re.M|re.I)
     if matchObj is None:
         continue
