@@ -86,7 +86,7 @@ int console_init(void)
     return 0;
 }
 
-int console_write(char buf[], int len)
+int console_write(const char buf[], int len)
 {
     if (g_console == NULL) {
         return -ENODEV;

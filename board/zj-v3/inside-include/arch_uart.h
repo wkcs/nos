@@ -17,11 +17,9 @@
 #include "arch_irq.h"
 #include "arch_gpio.h"
 
-#define UART_DMA    1
-
 struct uart_config_t {
     struct clk_config_t *clk_config;
-#ifdef UART_DMA
+#ifdef CONFIG_UART_DMA
     struct dma_config_t *dma_config;
     uint16_t dma_tx_rx;
 #endif
@@ -34,7 +32,7 @@ struct uart_config_t {
 };
 
 int uart_config(struct uart_config_t *config);
-int usart_send(char *ptr, int len);
+int usart_send(const char *ptr, int len);
 #endif
 
 

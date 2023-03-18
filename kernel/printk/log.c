@@ -31,8 +31,9 @@ void kernel_log_init(void)
 
 unsigned int kernel_log_write(const void *buf, unsigned int len)
 {
-    unsigned int rc;
+    unsigned int rc = 0;
 
+#ifdef CONFIG_UART_DMA
     if (g_log_fifo.data == NULL || buf == NULL) {
         return 0;
     }
@@ -42,6 +43,9 @@ unsigned int kernel_log_write(const void *buf, unsigned int len)
     spin_unlock_irq(&log_buf_lock);
 
     console_send_log();
+#else
+    console_write(buf, len);
+#endif
 
     return rc;
 }

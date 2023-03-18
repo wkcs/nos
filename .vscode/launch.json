@@ -5,10 +5,10 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "kernel-debug",
+            "name": "qemu-debug",
             "type": "cppdbg",
             "request": "launch",
-            "miDebuggerServerAddress": "localhost:50000",
+            "miDebuggerServerAddress": "localhost:1234",
             "program": "${workspaceFolder}/out/nos.elf",
             "args": [],
             "stopAtEntry": false,

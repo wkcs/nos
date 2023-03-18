@@ -12,14 +12,14 @@
 
 #include "board.h"
 
-#ifdef UART_DMA
+#ifdef CONFIG_UART_DMA
 static char log_buf[UART_LOG_DMA_BUF_SIZE];
 static bool dma_transport;
 #endif
 
 int consol_init(void)
 {
-#ifdef UART_DMA
+#ifdef CONFIG_UART_DMA
     uart_log_dev.dma_config->init_type.DMA_MemoryBaseAddr = (uint32_t)log_buf;
 #endif
 
@@ -59,13 +59,14 @@ void USART1_IRQHandler(void)
     }
 }
 
-int console_send_data(char *buf, int len)
+int console_send_data(const char *buf, int len)
 {
     return usart_send(buf, len);
 }
 
 void DMA1_Channel4_IRQHandler(void)
 {
+#ifdef CONFIG_UART_DMA
     unsigned int len;
 
     DMA_ClearITPendingBit(DMA1_IT_TC4);
@@ -77,10 +78,12 @@ void DMA1_Channel4_IRQHandler(void)
     DMA_Cmd(uart_log_dev.dma_config->ch, DISABLE );
     DMA_SetCurrDataCounter(uart_log_dev.dma_config->ch, len);
     DMA_Cmd(uart_log_dev.dma_config->ch, ENABLE);
+#endif
 }
 
 static void arch_console_send_log(void)
 {
+#ifdef CONFIG_UART_DMA
     unsigned int len;
 
     if (dma_transport) {
@@ -95,6 +98,7 @@ static void arch_console_send_log(void)
     DMA_Cmd(uart_log_dev.dma_config->ch, DISABLE );
     DMA_SetCurrDataCounter(uart_log_dev.dma_config->ch, len);
     DMA_Cmd(uart_log_dev.dma_config->ch, ENABLE);
+#endif
 }
 
 static struct console_ops zj_console_ops = {

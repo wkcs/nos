@@ -14,7 +14,7 @@ static inline void usart_send_blocking(uint8_t data)
 	USART_SendData(USART1, data);
 }
 
-int usart_send(char *ptr, int len)
+int usart_send(const char *ptr, int len)
 {
     int i = 0;
 
@@ -36,7 +36,7 @@ int uart_config(struct uart_config_t *config)
     }
 
 	clk_enable_all(config->clk_config);
-#ifdef UART_DMA
+#ifdef CONFIG_UART_DMA
     dma_config(config->dma_config);
 #endif
 
@@ -45,7 +45,7 @@ int uart_config(struct uart_config_t *config)
 
 	USART_Init(config->uart, &config->init_type);
 
-#ifdef UART_DMA
+#ifdef CONFIG_UART_DMA
     if (config->dma_config) {
         USART_DMACmd(config->uart, config->dma_tx_rx, ENABLE);
     }

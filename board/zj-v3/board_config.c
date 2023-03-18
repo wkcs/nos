@@ -10,7 +10,7 @@
 
 #include "board.h"
 
-#ifdef UART_DMA
+#ifdef CONFIG_UART_DMA
 static struct clk_config_t uart_log_dev_dma_clk = {
     .clk[CLK_GROUP_AHB] = RCC_AHBPeriph_DMA1
 };
@@ -43,7 +43,7 @@ static struct dma_config_t uart_log_dev_dma = {
 	    .DMA_M2M = DMA_M2M_Disable
     }
 };
-#endif /* UART_DMA */
+#endif /* CONFIG_UART_DMA */
 
 static struct clk_config_t uart_log_dev_gpio_clk = {
     .clk[CLK_GROUP_APB2] = RCC_APB2Periph_GPIOA
@@ -87,7 +87,7 @@ static struct irq_config_t uart_log_dev_irq = {
 
 struct uart_config_t uart_log_dev = {
     .clk_config = &uart_log_dev_clk,
-#ifdef UART_DMA
+#ifdef CONFIG_UART_DMA
     .dma_config = &uart_log_dev_dma,
     .dma_tx_rx = USART_DMAReq_Tx,
 #endif
