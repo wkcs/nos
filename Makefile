@@ -143,9 +143,9 @@ qemu-run:
 		exit 1; \
 	fi
 	$(Q)if [ ! "$(QEMU_DIR)" ]; then \
-		$(QEMU_CMD) -M nos_stm32 -nographic -kernel $(TARGET_ELF); \
+		$(QEMU_CMD) -kernel $(TARGET_ELF); \
 	else \
-		$(QEMU_DIR)/$(QEMU_CMD) -M nos_stm32 -nographic -kernel $(TARGET_ELF); \
+		$(QEMU_DIR)/$(QEMU_CMD) -kernel $(TARGET_ELF); \
 	fi
 
 qemu-run-gdb:
@@ -154,9 +154,9 @@ qemu-run-gdb:
 		exit 1; \
 	fi
 	$(Q)if [ ! "$(QEMU_DIR)" ]; then \
-		$(QEMU_CMD) -M nos_stm32 -nographic -kernel $(TARGET_ELF) -S -s; \
+		$(QEMU_CMD) -kernel $(TARGET_ELF) -S -s; \
 	else \
-		$(QEMU_DIR)/$(QEMU_CMD) -M nos_stm32 -nographic -kernel $(TARGET_ELF) -S -s; \
+		$(QEMU_DIR)/$(QEMU_CMD) -kernel $(TARGET_ELF) -S -s; \
 	fi
 
 %_config: $(obj-dir)
