@@ -139,7 +139,9 @@ static uint32_t sys_tick_num_by_us;
 static uint32_t sys_tick_num_by_heartbeat;
 __init void asm_cpu_init(void)
 {
+#ifndef CONFIG_QEMU
     asm_disable_irq_save();
+#endif
     SysTick_Config(SystemCoreClock * CONFIG_SYS_TICK_MS / 1000);
 
     sys_tick_num_by_us = SystemCoreClock / 1000000;

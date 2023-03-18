@@ -137,6 +137,28 @@ debug-server:
 	@echo "GDB DEBUG $(TARGET_ELF)"
 	$(Q)$(OOCD) $(OOCDFLAGS) -c "gdb_port 1234"
 
+qemu-run:
+	$(Q)if [ ! "$(QEMU_CMD)" ]; then \
+		echo "$(board) does not support running on qemu"; \
+		exit 1; \
+	fi
+	$(Q)if [ ! "$(QEMU_DIR)" ]; then \
+		$(QEMU_CMD) -M nos_stm32 -nographic -kernel $(TARGET_ELF); \
+	else \
+		$(QEMU_DIR)/$(QEMU_CMD) -M nos_stm32 -nographic -kernel $(TARGET_ELF); \
+	fi
+
+qemu-run-gdb:
+	$(Q)if [ ! "$(QEMU_CMD)" ]; then \
+		echo "$(board) does not support running on qemu"; \
+		exit 1; \
+	fi
+	$(Q)if [ ! "$(QEMU_DIR)" ]; then \
+		$(QEMU_CMD) -M nos_stm32 -nographic -kernel $(TARGET_ELF) -S -s; \
+	else \
+		$(QEMU_DIR)/$(QEMU_CMD) -M nos_stm32 -nographic -kernel $(TARGET_ELF) -S -s; \
+	fi
+
 %_config: $(obj-dir)
 	@echo "write to .config"
 	$(Q)$(PYTHON) scripts/config.py $(VERSION) $(PATCHLEVEL) $(SUBLEVEL) $(ARCH) arch/$(ARCH)/config/$@ $(out-dir)/.config

@@ -14,7 +14,7 @@
 
 struct console_ops {
     int (* init)(void);
-    int (* write)(char buf[], int len);
+    int (* write)(const char buf[], int len);
     void (* send_log)(void);
 };
 
@@ -30,7 +30,7 @@ __console struct console console_##__name = { \
 }
 
 int console_init(void);
-int console_write(char buf[], int len);
+int console_write(const char buf[], int len);
 void console_send_log(void);
 
 #endif /* __NOS_CONSOLE_H__ */
