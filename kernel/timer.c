@@ -156,7 +156,7 @@ void timer_check_handle(void)
     struct timer *timer, *tmp;
     LIST_HEAD(tmp_list);
 
-    if (switch_pending)
+    if (READ_ONCE(switch_pending))
         return;
 
     spin_lock_irq(&g_timer_list_lock);

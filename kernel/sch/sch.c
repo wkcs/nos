@@ -160,8 +160,12 @@ void switch_task(void)
     struct task_struct *from_task;
     addr_t level;
 
-    if (!kernel_running)
+    if (unlikely(!kernel_running)) {
         return;
+    }
+    if (unlikely(switch_pending)) {
+        return;
+    }
 
     level = disable_irq_save();
     from_task = current;
@@ -320,13 +324,23 @@ uint32_t get_sch_lock_level(void)
 void sch_heartbeat(void)
 {
     struct task_struct *task;
+    struct task_struct *next_task;
     bool singular;
 
     calculate_sys_cycle();
     task = current;
+    next_task = get_next_task();
     spin_lock_irq(&task->lock);
-    if (task->remaining_tick > 0) {
+    if (likely(task->remaining_tick > 0)) {
         task->remaining_tick--;
+    }
+    if (unlikely(task != next_task)) {
+        /*
+         * 优先级最高的任务可能由于switch_pending的限制
+         * 并未切换成功，这里检查到如果优先级最高的任务不是
+         * 当前任务则需要让出CPU
+         */
+        task->remaining_tick = 0;
     }
     spin_lock_irq(&ready_list_lock);
     singular = list_is_singular(&ready_task_list[task->current_priority]);

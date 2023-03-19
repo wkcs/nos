@@ -14,13 +14,18 @@
 #include <kernel/section.h>
 #include <kernel/errno.h>
 #include <kernel/minmax.h>
+#include <kernel/printk.h>
 #include <autocfg.h>
 
 extern addr_t kernel_running;
 
 #define ARRAY_SIZE(arr) (sizeof(arr) / sizeof((arr)[0]) + __must_be_array(arr))
 
-#define BUG_ON(ex)
+#define BUG_ON(ex) ({ \
+    if (unlikely(ex)) { \
+        pr_log(false, LOG_FATAL, "BUG_ON: %s:%d\r\n", __FILE__, __LINE__); \
+    } \
+})
 
 #define IDEL_TASK_PID 1
 #define IDEL_TASK_PRIO (CONFIG_MAX_PRIORITY - 1)

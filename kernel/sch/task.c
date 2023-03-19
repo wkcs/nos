@@ -227,6 +227,8 @@ int task_yield_cpu(void)
         spin_unlock_irq(&task->lock);
         switch_task();
     }
+    task_list_unlock(spin_unlock_irq, list_lock);
+    spin_unlock_irq(&task->lock);
 
     return 0;
 }
