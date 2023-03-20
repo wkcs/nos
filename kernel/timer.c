@@ -156,7 +156,7 @@ void timer_check_handle(void)
     struct timer *timer, *tmp;
     LIST_HEAD(tmp_list);
 
-    if (READ_ONCE(switch_pending))
+    if (unlikely(READ_ONCE(switch_pending)))
         return;
 
     spin_lock_irq(&g_timer_list_lock);
@@ -176,6 +176,7 @@ void timer_check_handle(void)
         list_for_each_entry (timer, &tmp_list, list) {
             timer->timeout_func(timer->parameter);
         }
+        switch_task();
     }
 }
 
