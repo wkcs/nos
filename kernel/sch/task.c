@@ -54,7 +54,6 @@ static void timeout(void *parameter)
     }
     spin_unlock_irq(&task->lock);
     add_task_to_ready_list(task);
-    switch_task();
 }
 
 static struct task_info *alloc_task_info(struct task_struct *task)
@@ -274,9 +273,7 @@ int task_hang(struct task_struct *task)
     }
     if (task->status != TASK_READY && task->status != TASK_RUNING) {
         pr_err("%s task status is %d, not is TASK_READY or TASK_RUNING\r\n", task->name, task->status);
-        if (task == current) {
-            BUG_ON(true);
-        }
+        BUG_ON(task == current);
         return -EINVAL;
     }
 

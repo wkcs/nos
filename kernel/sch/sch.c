@@ -163,9 +163,7 @@ void switch_task(void)
     if (unlikely(!kernel_running)) {
         return;
     }
-    if (unlikely(switch_pending)) {
-        return;
-    }
+    BUG_ON(switch_pending);
 
     level = disable_irq_save();
     from_task = current;
