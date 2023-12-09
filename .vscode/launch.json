@@ -35,6 +35,21 @@
             "configFiles": [
                 "./out/openocd.cfg"
             ]
+        },
+        {
+            "name": "keyboard-debug",
+            "cwd": "${workspaceFolder}",
+            "executable": "./out/nos.elf",
+            "request": "launch",
+            "type": "cortex-debug",
+            "servertype": "openocd",
+            "device": "STM32F401RCT6",
+            "interface": "swd",
+            "runToEntryPoint": "nos_start",
+            "svdFile": "./out/board.svd",
+            "configFiles": [
+                "./out/openocd.cfg"
+            ]
         }
     ]
 }

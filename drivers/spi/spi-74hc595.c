@@ -1,17 +1,17 @@
-/*
- * Copyright (C) 2019 胡启航<Hu Qihang>
+/**
+ * Copyright (C) 2023-2023 胡启航<Nick Hu>
  *
- * Author: wkcs
- * 
- * Email: hqh2030@gmail.com, huqihan@live.com
+ * Author: 胡启航<Nick Hu>
+ *
+ * Email: huqihan@live.com
  */
 
-#include <wk/task.h>
-#include <wk/err.h>
-#include <wk/delay.h>
-#include <wk/cpu.h>
-#include <wk/irq.h>
-#include <wk/device.h>
+#include <kernel/task.h>
+#include <kernel/errno.h>
+#include <kernel/delay.h>
+#include <kernel/cpu.h>
+#include <kernel/irq.h>
+#include <kernel/device.h>
 #include <init/init.h>
 #include <lib/string.h>
 #include <gpio.h>
@@ -28,7 +28,7 @@ static uint8_t backlight_lum = LUM_MAX;
 #define HC_595_CLK  PBout(13)
 #define HC_595_DATA PBout(15)
 
-static inline void hc_595_load(void)  
+static inline void hc_595_load(void)
 {
     SPI_595_EN = 0;
 	delay_usec(1);
@@ -36,11 +36,11 @@ static inline void hc_595_load(void)
 	delay_usec(1);
 }
 
-static void HC_595_send(uint16_t data)  
+static void HC_595_send(uint16_t data)
 {
  	uint8_t j;
 
-  	for (j = 16; j > 0; j--) {  
+  	for (j = 16; j > 0; j--) {
 		if(data & 0x8000)
 			HC_595_DATA = 1;
 		else
@@ -54,7 +54,7 @@ static void HC_595_send(uint16_t data)
 	hc_595_load();
 }
 
-static void HC_595_send_bit(uint8_t data)  
+static void HC_595_send_bit(uint8_t data)
 {
 	HC_595_DATA = data;
     HC_595_CLK = 0;
@@ -98,22 +98,22 @@ static void tim7_int_init(void)
 {
 	TIM_TimeBaseInitTypeDef TIM_TimeBaseInitStructure;
 	NVIC_InitTypeDef NVIC_InitStructure;
-	
+
 	RCC_APB2PeriphClockCmd(RCC_APB2Periph_TIM9, ENABLE);
-	
+
   	TIM_TimeBaseInitStructure.TIM_Period = 83;
 	TIM_TimeBaseInitStructure.TIM_Prescaler = 499;
 	TIM_TimeBaseInitStructure.TIM_CounterMode = TIM_CounterMode_Up;
 	TIM_TimeBaseInitStructure.TIM_ClockDivision = TIM_CKD_DIV1;
-	
+
 	TIM_TimeBaseInit(TIM9, &TIM_TimeBaseInitStructure);
-	
+
 	TIM_ITConfig(TIM9, TIM_IT_Update, ENABLE);
 	if (backlight_on_off == BACKLIGHT_ON)
 		TIM_Cmd(TIM9, ENABLE);
 	else
 		TIM_Cmd(TIM9, DISABLE);
-	
+
 	NVIC_InitStructure.NVIC_IRQChannel = TIM1_BRK_TIM9_IRQn;
 	NVIC_InitStructure.NVIC_IRQChannelPreemptionPriority = 0x03;
 	NVIC_InitStructure.NVIC_IRQChannelSubPriority = 0x03;
@@ -124,7 +124,7 @@ static void tim7_int_init(void)
 int spi_74hc595_init(void)
 {
     GPIO_InitTypeDef  GPIO_InitStructure;
-        
+
     RCC_AHB1PeriphClockCmd(RCC_AHB1Periph_GPIOB, ENABLE);
 
 	GPIO_InitStructure.GPIO_Pin = GPIO_Pin_12 | GPIO_Pin_13 | GPIO_Pin_15;

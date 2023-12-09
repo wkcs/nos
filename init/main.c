@@ -22,13 +22,14 @@ int nos_start(void)
     board_init();
     console_init();
     kernel_log_init();
-    pr_info("console init\r\n");
+    pr_info("nos running\r\n");
+
     mm_node_early_init();
     mm_init();
     pid_init();
-
     sch_init();
     task_init_call();
+
     sch_start();
 
     return 0;

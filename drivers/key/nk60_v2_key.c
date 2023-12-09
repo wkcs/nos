@@ -7,44 +7,26 @@
  */
 
 #include <kernel/task.h>
-#include <kernel/err.h>
+#include <kernel/errno.h>
 #include <kernel/sleep.h>
-#include <init/init.h>
+#include <kernel/cpu.h>
+#include <kernel/irq.h>
+#include <kernel/device.h>
+#include <kernel/init.h>
+#include <kernel/gpio.h>
 #include <lib/string.h>
-#include <gpio.h>
-#include <board.h>
-#include <cmd/cmd.h>
+#include <board/board.h>
 #include "keyboard.h"
+
+#define HC595_EN   PBout(14)
+#define HC595_CLK  PBout(13)
+#define HC595_DATA PBout(15)
+#define KEY_DATA   PAin(0)
 
 #define KEY_NUM 61
 #define KEY_RAW_DATA_NUM ((KEY_NUM) / 32 + (((KEY_NUM) % 32) ? 1 : 0))
 #define KEY_RAW_DATA_GROUP(index) ((index) / 32)
 #define KEY_RAW_DATA_INDEX(index) ((index) % 32)
-
-#define KEY_X1 PCout(14)
-#define KEY_X2 PAout(4)
-#define KEY_X3 PAout(8)
-#define KEY_X4 PAout(15)
-#define KEY_X5 PBout(14)
-
-#define KEY_Y1  PCin(0)
-#define KEY_Y2  PCin(1)
-#define KEY_Y3  PCin(2)
-#define KEY_Y4  PCin(3)
-#define KEY_Y5  PCin(4)
-#define KEY_Y6  PCin(5)
-#define KEY_Y7  PCin(6)
-#define KEY_Y8  PCin(7)
-#define KEY_Y9  PCin(8)
-#define KEY_Y10 PCin(9)
-#define KEY_Y11 PCin(10)
-#define KEY_Y12 PCin(11)
-#define KEY_Y13 PCin(12)
-#define KEY_Y14 PCin(13)
-
-#define KEY_TASK_PRIO       6
-#define KEY_TASK_STACK_SIZE 4096
-#define KEY_TASK_TICK       3
 
 #define KEY_UP   0
 #define KEY_DOWN 1
@@ -53,9 +35,7 @@
 #define FN_LAYER  1
 #define PN_LAYER  2
 
-static struct task_struct_t *key_task;
-
-extern void hid_write_test(const void *buffer, size_t size);
+#define HC595_BIT_NUM (8 * 9)
 
 static int def_key_code_layout[3][KEY_NUM] = {
     KEYMAP(
@@ -101,90 +81,87 @@ static int def_action_layout[3][KEY_NUM] = {
 
 static struct key_info def_key_info[KEY_NUM];
 
-static int position_index[5][14] = {
-    {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13},
-    {14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27},
-    {28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, -1, 40},
-    {41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, -1, -1, 52},
-    {53, 54, 55, -1, -1, 56, -1, -1, -1, 57, 58, 59, -1 ,60},
+struct task_struct *key_task;
+
+static int position_index[HC595_BIT_NUM] = {
+     0,  1,  2,  3,  4,  5,  6,  7,
+     8,  9, 10, 11, 12, 13, -1, -1,
+    14, 15, 16, 17, 18, 19, 20, 21,
+    22, 23, 24, 25, 26, 27, -1, -1,
+    36, 37, 38, 39, 40, -1, -1, -1,
+    49, 50, 51, 52, -1, -1, -1, -1,
+    53, 54, 55, 56, 57, 58, 59, 60,
+    41, 42, 43, 44, 45, 46, 47, 48,
+    28, 29, 30, 31, 32, 33, 34, 35
 };
 
-static inline void key_set_x_out(uint8_t x, int val)
+static void hc595_load(void)
 {
-    switch(x) {
-        case 0: KEY_X1 = val; break;
-        case 1: KEY_X2 = val; break;
-        case 2: KEY_X3 = val; break;
-        case 3: KEY_X4 = val; break;
-        case 4: KEY_X5 = val; break;
-        default:
-            pr_err("no this key line(%d)\r\n", x);
-            break;
-    }
-
-    return;
+    HC595_EN = 1;
+	usleep(1);
+    HC595_EN = 0;
+	usleep(1);
 }
 
-static inline int key_get_y_val(uint8_t y)
+static void hc595_send(uint8_t data)
 {
-    switch(y) {
-        case 0: return KEY_Y1;
-        case 1: return KEY_Y2;
-        case 2: return KEY_Y3;
-        case 3: return KEY_Y4;
-        case 4: return KEY_Y5;
-        case 5: return KEY_Y6;
-        case 6: return KEY_Y7;
-        case 7: return KEY_Y8;
-        case 8: return KEY_Y9;
-        case 9: return KEY_Y10;
-        case 10: return KEY_Y11;
-        case 11: return KEY_Y12;
-        case 12: return KEY_Y13;
-        case 13: return KEY_Y14;
-        default:
-            pr_err("no this key line(%d)\r\n", y);
-            return -1;
+    uint8_t i;
+
+    for (i = 8; i > 0; i--) {
+        if(data & 0x1)
+            HC595_DATA = 1;
+        else
+            HC595_DATA = 0;
+        usleep(1);
+        HC595_CLK = 1;
+        usleep(1);
+        data >>= 1;
+        HC595_CLK = 0;
     }
+    hc595_load();
 }
 
-static void key_scan(uint32_t *raw_data)
+static void hc595_send_bit(uint8_t data)
+{
+    HC595_DATA = data;
+    usleep(1);
+    HC595_CLK = 1;
+    usleep(1);
+    HC595_CLK = 0;
+    hc595_load();
+}
+
+static void nk60_v2_key_scan(uint32_t *raw_data)
 {
     uint32_t raw_data_old[KEY_RAW_DATA_NUM] = { 0 };
-    int x, y;
+    int i;
     int index;
 
     memset(raw_data, 0, KEY_RAW_DATA_NUM * sizeof(uint32_t));
 
-    for (x = 0; x < 5; x++) {
-        key_set_x_out(x, KEY_DOWN);
-        for (y = 0; y < 14; y ++) {
-            index = position_index[x][y];
-            if (index < 0)
-                continue;
-            if (key_get_y_val(y) == KEY_DOWN)
-                raw_data_old[KEY_RAW_DATA_GROUP(index)] |= 1 << KEY_RAW_DATA_INDEX(index);
-        }
-        key_set_x_out(x, KEY_UP);
+    for (i = 0; i < HC595_BIT_NUM; i++) {
+        hc595_send_bit(i == 0);
+        index = position_index[i];
+        if (index < 0)
+            continue;
+        if (KEY_DATA == KEY_DOWN)
+            raw_data_old[KEY_RAW_DATA_GROUP(index)] |= 1 << KEY_RAW_DATA_INDEX(index);
     }
-    delay_msec(10);
-    for (x = 0; x < 5; x++) {
-        key_set_x_out(x, KEY_DOWN);
-        for (y = 0; y < 14; y ++) {
-            index = position_index[x][y];
-            if (index < 0)
-                continue;
-            if (key_get_y_val(y) == KEY_DOWN)
-                raw_data[KEY_RAW_DATA_GROUP(index)] |= 1 << KEY_RAW_DATA_INDEX(index);
-        }
-        key_set_x_out(x, KEY_UP);
+    msleep(10);
+    for (i = 0; i < HC595_BIT_NUM; i++) {
+        hc595_send_bit(i == 0);
+        index = position_index[i];
+        if (index < 0)
+            continue;
+        if (KEY_DATA == KEY_DOWN)
+            raw_data[KEY_RAW_DATA_GROUP(index)] |= 1 << KEY_RAW_DATA_INDEX(index);
     }
 
     for (index = 0; index < KEY_RAW_DATA_NUM; index++)
         raw_data[index] &= raw_data_old[index];
 }
 
-static int get_key_layer(uint32_t *raw_data, struct key_info *old_info, int *special_key_layout)
+static int nk60_v2_get_key_layer(uint32_t *raw_data, struct key_info *old_info, int *special_key_layout)
 {
     int layer = DEF_LAYER;
     int i;
@@ -206,19 +183,19 @@ static int get_key_layer(uint32_t *raw_data, struct key_info *old_info, int *spe
     return layer;
 }
 
-static void key_info_update(uint32_t *raw_data, struct key_info *info)
+static void nk60_v2_key_info_update(uint32_t *raw_data, struct key_info *info)
 {
     int i;
     int layer;
 
-    layer = get_key_layer(raw_data, info, def_key_code_layout[DEF_LAYER]);
-    for (i = 0; i < 64; i++) {
+    layer = nk60_v2_get_key_layer(raw_data, info, def_key_code_layout[DEF_LAYER]);
+    for (i = 0; i < KEY_NUM; i++) {
         if ((raw_data[KEY_RAW_DATA_GROUP(i)] >> KEY_RAW_DATA_INDEX(i)) & 0x01) {
             if (info[i].val != KEY_DOWN) {
                 info[i].code = def_key_code_layout[layer][i];
                 info[i].val = KEY_DOWN;
                 info[i].action = def_action_layout[layer][i];
-                //pr_info("key down: layer=%d, index=%d, code=0x%02x, action=%d\r\n", layer, i, info[i].code, info[i].action);
+                // pr_info("key down: layer=%d, index=%d, code=0x%02x, action=%d\r\n", layer, i, info[i].code, info[i].action);
                 if (((layer == FN_LAYER) && (def_key_code_layout[DEF_LAYER][i] == KC_FN)) ||
                     ((layer == PN_LAYER) && (def_key_code_layout[DEF_LAYER][i] == KC_PN))) {
                     info[i].code = def_key_code_layout[DEF_LAYER][i];
@@ -233,7 +210,7 @@ static void key_info_update(uint32_t *raw_data, struct key_info *info)
     }
 }
 
-static void key_hid_data_update(struct key_info *info, uint8_t *hid_data)
+static void nk60_v2_hid_data_update(struct key_info *info, uint8_t *hid_data)
 {
     int i, n, m;
     uint8_t data_bck[6] = { 0 };
@@ -315,21 +292,8 @@ static void key_hid_data_update(struct key_info *info, uint8_t *hid_data)
         memcpy(&hid_data[2 + bck_num], data_new, 6 - bck_num);
 }
 
-static void key_action(struct key_info *info)
-{
-    int i;
-
-    for (i = 0; i < 64; i++) {
-        if (info[i].val != KEY_DOWN)
-            continue;
-        if (info[i].action == KA_NO)
-            continue;
-
-        key_action_run(info[i].action);
-    }
-}
-
-static void key_task_entry(__maybe_unused void* parameter)
+extern void hid_write_test(const void *buffer, size_t size);
+static void nc60_v2_key_task_entry(void* parameter)
 {
     uint8_t hid_data[8] = { 0 };
     uint8_t hid_data_old[8] = { 0 };
@@ -341,7 +305,7 @@ static void key_task_entry(__maybe_unused void* parameter)
     memset(def_key_info, 0, sizeof(struct key_info) * KEY_NUM);
 
     while (1) {
-        key_scan(key_raw_data);
+        nk60_v2_key_scan(key_raw_data);
         for (i = 0; i < KEY_RAW_DATA_NUM; i++) {
             if (key_raw_data[i] != key_raw_data_old[i]) {
                 key_raw_data_old[i] = key_raw_data[i];
@@ -350,9 +314,9 @@ static void key_task_entry(__maybe_unused void* parameter)
         }
         if (update) {
             update = false;
-            key_info_update(key_raw_data, def_key_info);
-            key_action(def_key_info);
-            key_hid_data_update(def_key_info, hid_data);
+            nk60_v2_key_info_update(key_raw_data, def_key_info);
+            // key_action(def_key_info);
+            nk60_v2_hid_data_update(def_key_info, hid_data);
             for (i = 0; i < 8; i++) {
                 if (hid_data[i] != hid_data_old[i]) {
                     hid_data_old[i] = hid_data[i];
@@ -364,51 +328,47 @@ static void key_task_entry(__maybe_unused void* parameter)
                 hid_write_test(hid_data, 8);
             }
         }
-        delay_msec(20);
+        msleep(10);
     }
 }
 
-int keyboard_init(void)
+static int nk60_v2_key_gpio_init(void)
 {
-    GPIO_InitTypeDef  GPIO_InitStructure;
+    GPIO_InitTypeDef GPIO_InitStructure;
 
-    RCC_AHB1PeriphClockCmd(RCC_AHB1Periph_GPIOA, ENABLE);
     RCC_AHB1PeriphClockCmd(RCC_AHB1Periph_GPIOB, ENABLE);
-    RCC_AHB1PeriphClockCmd(RCC_AHB1Periph_GPIOC, ENABLE);
-
-    GPIO_InitStructure.GPIO_Pin = GPIO_Pin_4 | GPIO_Pin_8 | GPIO_Pin_15;
+    GPIO_InitStructure.GPIO_Pin = GPIO_Pin_13 | GPIO_Pin_14 | GPIO_Pin_15;
     GPIO_InitStructure.GPIO_Mode = GPIO_Mode_OUT;
     GPIO_InitStructure.GPIO_OType = GPIO_OType_PP;
     GPIO_InitStructure.GPIO_Speed = GPIO_Speed_100MHz;
     GPIO_InitStructure.GPIO_PuPd = GPIO_PuPd_UP;
-    GPIO_Init(GPIOA, &GPIO_InitStructure);
-    GPIO_ResetBits(GPIOA, GPIO_Pin_4 | GPIO_Pin_8 | GPIO_Pin_15);
-
-    GPIO_InitStructure.GPIO_Pin = GPIO_Pin_14;
     GPIO_Init(GPIOB, &GPIO_InitStructure);
-    GPIO_ResetBits(GPIOB, GPIO_Pin_14);
 
-    GPIO_InitStructure.GPIO_Pin = GPIO_Pin_14;
-    GPIO_Init(GPIOC, &GPIO_InitStructure);
-    GPIO_ResetBits(GPIOC, GPIO_Pin_14);
-
-    GPIO_InitStructure.GPIO_Pin = GPIO_Pin_0 | GPIO_Pin_1 | GPIO_Pin_2 |
-        GPIO_Pin_3 | GPIO_Pin_4 | GPIO_Pin_5 | GPIO_Pin_6 | GPIO_Pin_7 |
-        GPIO_Pin_8 | GPIO_Pin_9 | GPIO_Pin_10 | GPIO_Pin_11 | GPIO_Pin_12 |
-        GPIO_Pin_13;
+    RCC_AHB1PeriphClockCmd(RCC_AHB1Periph_GPIOA, ENABLE);
+    GPIO_InitStructure.GPIO_Pin = GPIO_Pin_0;
     GPIO_InitStructure.GPIO_Mode = GPIO_Mode_IN;
-    GPIO_InitStructure.GPIO_Speed = GPIO_Speed_100MHz;
     GPIO_InitStructure.GPIO_PuPd = GPIO_PuPd_DOWN;
-    GPIO_Init(GPIOC, &GPIO_InitStructure);
+    GPIO_Init(GPIOA, &GPIO_InitStructure);
 
-    key_task = task_create("key", key_task_entry, NULL, KEY_TASK_STACK_SIZE, KEY_TASK_PRIO,
-        KEY_TASK_TICK, NULL, NULL);
+    HC595_CLK = 0;
+    HC595_DATA = 0;
+    HC595_EN = 0;
+
+    return 0;
+}
+
+static int nk60_v2_key_init(void)
+{
+    nk60_v2_key_gpio_init();
+
+    key_task = task_create("nc60_v2-key", nc60_v2_key_task_entry, NULL, 3, 10, NULL);
     if (key_task == NULL) {
-        pr_err("creat key task err\n");
-        return -1;
+        pr_fatal("creat nc60_v2-key task err\r\n");
+        BUG_ON(true);
+        return -EINVAL;
     }
     task_ready(key_task);
 
     return 0;
 }
-task_init(keyboard_init);
+task_init(nk60_v2_key_init);
