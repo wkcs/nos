@@ -28,11 +28,11 @@
 /*
  * __addr_t asm_disable_irq_save();
  */
-.global asm_disable_irq_save
-.type asm_disable_irq_save, %function
+    .global asm_disable_irq_save
+    .type asm_disable_irq_save, %function
 asm_disable_irq_save:
-    mrs     r0, PRIMASK
-    cpsid   I
+    mrs     r0, primask
+    cpsid   i
     bx      lr
 
 /*
@@ -41,7 +41,7 @@ asm_disable_irq_save:
     .global asm_enable_irq_save
     .type asm_enable_irq_save, %function
 asm_enable_irq_save:
-    msr     PRIMASK, r0
+    msr     primask, r0
     bx      lr
 
     .global context_switch_interrupt
@@ -82,8 +82,8 @@ PendSV_Handler:
     ldr     r1, [r0]
     adds    r1, r1, #1
     str     r1, [r0]
-    mrs     r2, PRIMASK
-    cpsid   I
+    mrs     r2, primask
+    cpsid   i
 
     /* get switch_interrupt_flag */
     ldr     r0, =switch_interrupt_flag
@@ -98,17 +98,17 @@ PendSV_Handler:
     ldr     r1, [r0]
     cbz     r1, switch_to_task      /* skip register save at the first time */
 
-    mrs     r1, PSP                 /* get from task stack pointer */
+    mrs     r1, psp                 /* get from task stack pointer */
 #if defined (__VFP_FP__) && !defined(__SOFTFP__)
     tst     lr, #0x10           /* if(!EXC_RETURN[4]) */
-    VSTMDBEQ r1!, {d8 - d15}    /* push FPU register s16~s31 */
+    vstmdbeq r1!, {d8 - d15}    /* push FPU register s16~s31 */
 #endif
-    STMFD   r1!, {R4 - R11}         /* push R4 - R11 register */
+    stmfd   r1!, {r4 - r11}         /* push r4 - r11 register */
 #if defined (__VFP_FP__) && !defined(__SOFTFP__)
     mov     r4, #0x00           /* flag = 0 */
     tst     lr, #0x10           /* if(!EXC_RETURN[4]) */
-    MOVEQ   r4, #0x01           /* flag = 1 */
-    STMFD   r1!, {r4}           /* push flag */
+    moveq   r4, #0x01           /* flag = 1 */
+    stmfd   r1!, {r4}           /* push flag */
 #endif
     ldr     r0, [r0]
     str     r1, [r0]                /* update from task stack pointer */
@@ -120,16 +120,16 @@ switch_to_task:
 #if defined (__VFP_FP__) && !defined(__SOFTFP__)
     ldmfd   r1!, {r3}           /* pop flag */
 #endif
-    ldmfd   r1!, {R4 - R11}         /* pop R4 - R11 register */
+    ldmfd   r1!, {r4 - r11}         /* pop r4 - r11 register */
 #if defined (__VFP_FP__) && !defined(__SOFTFP__)
     cmp     r3,  #0             /* if(flag_r3 != 0) */
-    VLDMIANE  r1!, {d8 - d15}   /* pop FPU register s16~s31 */
+    vldmiane  r1!, {d8 - d15}   /* pop FPU register s16~s31 */
 #endif
-    msr     PSP, r1                 /* update stack pointer */
+    msr     psp, r1                 /* update stack pointer */
 #if defined (__VFP_FP__) && !defined(__SOFTFP__)
     orr     lr, lr, #0x10       /* lr |=  (1 << 4), clean FPCA. */
     cmp     r3,  #0             /* if(flag_r3 != 0) */
-    BICNE   lr, lr, #0x10       /* lr &= ~(1 << 4), set FPCA. */
+    bicne   lr, lr, #0x10       /* lr &= ~(1 << 4), set FPCA. */
 #endif
 
 pendsv_exit:
@@ -142,7 +142,7 @@ pendsv_exit:
     b       pendsv_exit_2
 restore_irq:
     /* restore interrupt */
-    msr     PRIMASK, r2
+    msr     primask, r2
 pendsv_exit_2:
     ldr     r0, =switch_pending
     mov     r1, #0
@@ -164,7 +164,7 @@ context_switch_to:
 #if defined (__VFP_FP__) && !defined(__SOFTFP__)
     /* CLEAR CONTROL.FPCA */
     mrs     r2, CONTROL         /* read */
-    BIC     r2, #0x04           /* modify */
+    bic     r2, #0x04           /* modify */
     msr     CONTROL, r2         /* write-back */
 #endif
 
@@ -226,15 +226,15 @@ HardFault_Handler:
     mrs     r0, psp                 /* get fault context from task. */
 _get_sp_done:
 
-    STMFD   r0!, {r4 - r11}         /* push r4 - r11 register */
+    stmfd   r0!, {r4 - r11}         /* push r4 - r11 register */
 #if defined (__VFP_FP__) && !defined(__SOFTFP__)
-    STMFD   r0!, {lr}               /* push dummy for flag */
+    stmfd   r0!, {lr}               /* push dummy for flag */
 #endif
-    STMFD   r0!, {lr}               /* push exec_return register */
+    stmfd   r0!, {lr}               /* push exec_return register */
 
     tst     lr, #0x04               /* if(!EXC_RETURN[2]) */
     beq     _update_msp
-    msr     psp, r0                 /* update stack pointer to PSP. */
+    msr     psp, r0                 /* update stack pointer to psp. */
     B       _update_done
 _update_msp:
     msr     msp, r0                 /* update stack pointer to MSP. */

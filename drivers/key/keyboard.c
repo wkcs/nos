@@ -1,14 +1,14 @@
-/*
- * Copyright (C) 2019-2021 胡启航 <Hu Qihang>
+/**
+ * Copyright (C) 2023-2023 胡启航<Nick Hu>
  *
- * Author: wkcs
- * 
- * Email: hqh2030@gmail.com, huqihan@live.com
+ * Author: 胡启航<Nick Hu>
+ *
+ * Email: huqihan@live.com
  */
 
-#include <wk/task.h>
-#include <wk/err.h>
-#include <wk/delay.h>
+#include <kernel/task.h>
+#include <kernel/err.h>
+#include <kernel/sleep.h>
 #include <init/init.h>
 #include <lib/string.h>
 #include <gpio.h>

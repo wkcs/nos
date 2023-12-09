@@ -33,8 +33,8 @@
     .global asm_disable_irq_save
     .type asm_disable_irq_save, %function
 asm_disable_irq_save:
-    mrs     r0, PRIMASK
-    cpsid   I
+    mrs     r0, primask
+    cpsid   i
     bx      lr
 
 /*
@@ -43,7 +43,7 @@ asm_disable_irq_save:
     .global asm_enable_irq_save
     .type asm_enable_irq_save, %function
 asm_enable_irq_save:
-    msr     PRIMASK, r0
+    msr     primask, r0
     bx      lr
 
     .global context_switch_interrupt
@@ -84,7 +84,7 @@ PendSV_Handler:
     ldr     r1, [r0]
     adds    r1, r1, #1
     str     r1, [r0]
-    mrs     r2, PRIMASK
+    mrs     r2, primask
     cpsid   i
 
     /* get switch_interrupt_flag */
@@ -123,7 +123,7 @@ pendsv_exit:
     b       pendsv_exit_2
 restore_irq:
     /* restore interrupt */
-    msr     PRIMASK, r2
+    msr     primask, r2
 pendsv_exit_2:
     ldr     r0, =switch_pending
     mov     r1, #0

@@ -47,7 +47,7 @@ include scripts/Makefile.config
 include arch/$(ARCH)/Makefile.config
 ifneq ($(CONFIG_BOARD),)
 board := $(shell echo $(CONFIG_BOARD) | sed 's/\"//g')
-include board/$(board)/Makefile.config
+-include board/$(board)/Makefile.config
 endif
 
 OOCD		:= openocd
@@ -58,6 +58,10 @@ LDSCRIPT_S := $(LDSCRIPT_S:%.S=$(out-dir)/%)
 LDSCRIPT_LD := $(filter-out %.S,$(LDSCRIPT))
 LDSCRIPT_LD := $(LDSCRIPT_LD:%=$(out-dir)/%)
 LDFLAGS += $(LDSCRIPT:%.S=-T$(out-dir)/%)
+
+BOARD_SVD := $(out-dir)/board.svd
+OPENOCD_CFG := $(out-dir)/openocd.cfg
+OOCDFLAGS := -f $(OPENOCD_CFG)
 
 .PHONY: all flash debug clean %_config defconfig size stflash jflash
 
@@ -92,6 +96,20 @@ $(LDSCRIPT_LD): $(out-dir)/%:%
 	@echo "CP       $(notdir $@)"
 	$(Q)cp $< $@
 
+$(OPENOCD_CFG):
+	$(Q)if [ -f "board/$(board)/$(OOCDCFG)" ]; then \
+		cp board/$(board)/$(OOCDCFG) $@; \
+	else \
+		touch $@; \
+	fi
+
+$(BOARD_SVD):
+	$(Q)if [ -f "board/$(board)/$(SVD_CFG)" ]; then \
+		cp board/$(board)/$(SVD_CFG) $@; \
+	else \
+		touch $@; \
+	fi
+
 
 $(LDSCRIPT_S): $(out-dir)/%:%.S
 	@echo "E        $(notdir $@)"
@@ -113,7 +131,7 @@ $(out-dir):
 	fi
 
 # 使用OpenOCD下载hex程序
-flash:
+flash: $(OPENOCD_CFG)
 	@echo "OPEN_OCD FLASH $(TARGET_HEX:$(out-dir)/%=%)"
 	$(Q)$(OOCD) $(OOCDFLAGS) -c "program $(TARGET_HEX) verify reset exit"
 
@@ -128,7 +146,7 @@ jflash:
 	$(Q)scripts/jflash.sh $(TARGET_HEX)
 
 # 使用GDB 通过sdtin/out管道与OpenOCD连接 并在main函数处打断点后运行
-debug:
+debug: $(OPENOCD_CFG) $(BOARD_SVD)
 	@echo "GDB DEBUG $(TARGET_ELF)"
 	$(Q)$(GDB) -iex 'target extended | $(OOCD) $(OOCDFLAGS) -c "gdb_port pipe"' \
 	-iex 'monitor reset halt' -ex 'load' -ex 'break nos_start' -ex 'c' $(TARGET_ELF)
@@ -166,12 +184,6 @@ qemu-run-gdb:
 		mkdir $(out-dir)/include; \
 	fi
 	$(Q)$(PYTHON) scripts/autocfg.py $(out-dir)/.config $(out-dir)/include/autocfg.h
-	$(Q)if [ $(OOCDCFG) ]; then \
-		cp $(OOCDCFG) $(out-dir)/; \
-	fi
-	$(Q)if [ $(SVD_CFG) ]; then \
-		cp $(SVD_CFG) $(out-dir)/board.svd; \
-	fi
 
 defconfig: $(obj-dir)
 	@echo "write to .config"
