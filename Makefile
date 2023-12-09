@@ -65,7 +65,7 @@ OOCDFLAGS := -f $(OPENOCD_CFG)
 
 .PHONY: all flash debug clean %_config defconfig size stflash jflash
 
-all:$(TARGET_LIST) $(TARGET_BIN) $(TARGET_HEX) $(TARGET_ELF) $(TARGET_IMG) size
+all:$(TARGET_LIST) $(TARGET_BIN) $(TARGET_HEX) $(TARGET_ELF) $(TARGET_IMG) $(BOARD_SVD) size
 
 size: $(TARGET_ELF)
 	@echo "SIZE     $(<:$(out-dir)/%=%)"
@@ -88,7 +88,7 @@ $(TARGET_IMG): $(TARGET_BIN)
 $(TARGET_LIST): $(TARGET_ELF)
 	@echo "OBJDUMP  $(@:$(out-dir)/%=%)"
 	$(Q)$(OBJDUMP) -S $< > $@
-$(TARGET_ELF): $(obj-all) $(LDSCRIPT_S) $(LDSCRIPT_LD)
+$(TARGET_ELF): $(obj-all) $(LDSCRIPT_S) $(LDSCRIPT_LD) $(BOARD_SVD)
 	@echo "LD       $(@:$(out-dir)/%=%)"
 	$(Q)$(CC) $(LDFLAGS) -o $@ $(obj-all)
 
@@ -97,6 +97,7 @@ $(LDSCRIPT_LD): $(out-dir)/%:%
 	$(Q)cp $< $@
 
 $(OPENOCD_CFG):
+	@echo "CP       $@"
 	$(Q)if [ -f "board/$(board)/$(OOCDCFG)" ]; then \
 		cp board/$(board)/$(OOCDCFG) $@; \
 	else \
@@ -104,6 +105,7 @@ $(OPENOCD_CFG):
 	fi
 
 $(BOARD_SVD):
+	@echo "CP       $@"
 	$(Q)if [ -f "board/$(board)/$(SVD_CFG)" ]; then \
 		cp board/$(board)/$(SVD_CFG) $@; \
 	else \
