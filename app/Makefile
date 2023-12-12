@@ -6,4 +6,5 @@
 # Email: huqihan@live.com
 ##############################################
 
-obj-y := test.o
+obj-$(CONFIG_TEST_APP) += test.o
+obj-$(CONFIG_KEYBOARD) += keyboard.o

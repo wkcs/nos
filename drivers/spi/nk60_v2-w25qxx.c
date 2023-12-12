@@ -1,23 +1,26 @@
-/*
- * Copyright (C) 2019 胡启航<Hu Qihang>
+/**
+ * Copyright (C) 2023-2023 胡启航<Nick Hu>
  *
- * Author: wkcs
- * 
- * Email: hqh2030@gmail.com, huqihan@live.com
+ * Author: 胡启航<Nick Hu>
+ *
+ * Email: huqihan@live.com
  */
 
-#include <wk/task.h>
-#include <wk/err.h>
-#include <wk/delay.h>
-#include <wk/cpu.h>
-#include <wk/irq.h>
-#include <wk/device.h>
-#include <init/init.h>
-#include <lib/string.h>
-#include <gpio.h>
-#include <board.h>
+#define pr_fmt(fmt) "[W25QXX]:%s[%d]:"fmt, __func__, __LINE__
 
-#define W25Q80 	0XEF13 	
+#include <kernel/task.h>
+#include <kernel/errno.h>
+#include <kernel/sleep.h>
+#include <kernel/cpu.h>
+#include <kernel/irq.h>
+#include <kernel/device.h>
+#include <kernel/init.h>
+#include <kernel/gpio.h>
+#include <kernel/mm.h>
+#include <lib/string.h>
+#include <board/board.h>
+
+#define W25Q80 	0XEF13
 #define W25Q16 	0XEF14
 #define W25Q32 	0XEF15
 #define W25Q64 	0XEF16
@@ -157,7 +160,7 @@ void w25qxx_write_disable(void)
 void w25qxx_wait_busy(void)
 {
     while ((w25qxx_read_sr() & 0x01) == 0x01)
-        delay_msec(1);
+        msleep(1);
 }
 //擦除整个芯片
 //等待时间超长...
@@ -194,7 +197,7 @@ void w25qxx_power_down(void)
     W25QXX_CS = 0;                      //使能器件
     spi1_read_write_byte(W25X_PowerDown); //发送掉电命令
     W25QXX_CS = 1;                      //取消片选
-    delay_usec(3);                        //等待TPD
+    usleep(3);                        //等待TPD
 }
 //唤醒
 void w25qxx_wakeup(void)
@@ -202,7 +205,7 @@ void w25qxx_wakeup(void)
     W25QXX_CS = 0;                             //使能器件
     spi1_read_write_byte(W25X_ReleasePowerDown); //  send W25X_PowerDown command 0xAB
     W25QXX_CS = 1;                             //取消片选
-    delay_usec(3);                               //等待TRES1
+    usleep(3);                               //等待TRES1
 }
 
 //读取芯片ID
@@ -227,7 +230,7 @@ uint16_t w25qxx_read_id(void)
 }
 //读取SPI FLASH
 //在指定地址开始读取指定长度的数据
-size_t w25qxx_read(__maybe_unused struct device *dev, addr_t pos, void *buffer, size_t size)
+ssize_t w25qxx_read(__maybe_unused struct device *dev, addr_t pos, void *buffer, size_t size)
 {
     uint16_t i;
     W25QXX_CS = 0;                              //使能器件
@@ -295,14 +298,14 @@ void w25qxx_write_no_check(uint8_t *pBuffer, uint32_t WriteAddr, uint16_t NumByt
 //写SPI FLASH
 //在指定地址开始写入指定长度的数据
 //该函数带擦除操作!
-size_t w25qxx_write(struct device *dev, addr_t pos, const void *buffer, size_t size)
+ssize_t w25qxx_write(struct device *dev, addr_t pos, const void *buffer, size_t size)
 {
     uint32_t secpos;
     uint16_t secoff;
     uint16_t secremain;
     uint16_t i;
     size_t index = 0;
-    struct w25qxx_info *chip_info = wk_container_of(dev, struct w25qxx_info, dev);
+    struct w25qxx_info *chip_info = container_of(dev, struct w25qxx_info, dev);
 
     secpos = pos / 4096; //扇区地址
     secoff = pos % 4096; //在扇区内的偏移
@@ -351,13 +354,13 @@ int spi_w25qxx_init(void)
     struct w25qxx_info *info;
     GPIO_InitTypeDef GPIO_InitStructure;
 
-    info = wk_alloc(sizeof(*info), 0, 0);
+    info = kalloc(sizeof(*info), GFP_KERNEL);
     if (info == NULL) {
         pr_err("alloc w25qxx info buf err\r\n");
         return -ENOMEM;
     }
     device_init(&info->dev);
-    info->dev.name = "spi-flash";
+    info->dev.name = "nk60-flash";
     info->dev.ops.write = w25qxx_write;
     info->dev.ops.read = w25qxx_read;
     device_register(&info->dev);

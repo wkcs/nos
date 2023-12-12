@@ -14,5 +14,6 @@
 void sleep(u32 sec);
 void msleep(u32 msec);
 void usleep(u32 usec);
+void nsleep(u32 nsec);
 
 #endif /* __NOS_SLEEP_H__ */

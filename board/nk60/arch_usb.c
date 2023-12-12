@@ -7,6 +7,7 @@
  */
 
 #include <kernel/kernel.h>
+#include <kernel/init.h>
 #include <usb/usb_device.h>
 #include <lib/string.h>
 #include "arch_usb.h"

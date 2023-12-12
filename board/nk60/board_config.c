@@ -53,6 +53,14 @@ static struct clk_config_t uart_log_dev_gpio_clk = {
     .clk[CLK_GROUP_AHB1] = RCC_AHB1Periph_GPIOA
 };
 
+static struct clk_config_t cc1_gpio_clk = {
+    .clk[CLK_GROUP_AHB1] = RCC_AHB1Periph_GPIOC
+};
+
+static struct clk_config_t cc2_gpio_clk = {
+    .clk[CLK_GROUP_AHB1] = RCC_AHB1Periph_GPIOD
+};
+
 static struct gpio_config_t uart_log_dev_gpio[2] = {
     {
         .clk_config = &uart_log_dev_gpio_clk,
@@ -87,6 +95,35 @@ static struct gpio_config_t uart_log_dev_gpio[2] = {
             .mux_func = GPIO_AF_USART1,
             .mux_pin = GPIO_PinSource10,
         },
+    }
+};
+
+struct gpio_config_t cc_gpio[2] = {
+    {
+        .clk_config = &cc1_gpio_clk,
+        .irq_config = NULL,
+        .gpio = GPIOC,
+        .init_type = {
+            .GPIO_Pin = GPIO_Pin_15,
+            .GPIO_Speed = GPIO_Speed_50MHz,
+            .GPIO_Mode = GPIO_Mode_IN,
+            .GPIO_OType = GPIO_OType_PP,
+            .GPIO_PuPd = GPIO_PuPd_NOPULL,
+        },
+        .mux_enable = false,
+    },
+    {
+        .clk_config = &cc2_gpio_clk,
+        .irq_config = NULL,
+        .gpio = GPIOD,
+        .init_type = {
+            .GPIO_Pin = GPIO_Pin_2,
+            .GPIO_Speed = GPIO_Speed_50MHz,
+            .GPIO_Mode = GPIO_Mode_IN,
+            .GPIO_OType = GPIO_OType_PP,
+            .GPIO_PuPd = GPIO_PuPd_NOPULL,
+        },
+        .mux_enable = false,
     }
 };
 

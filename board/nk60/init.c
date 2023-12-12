@@ -12,5 +12,7 @@
 
 __init void board_init(void)
 {
+    gpio_config(&cc_gpio[0]);
+    gpio_config(&cc_gpio[1]);
     board_mm_init();
 }
