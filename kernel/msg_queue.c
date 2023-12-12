@@ -191,12 +191,15 @@ int msg_q_recv_timeout(struct msg_queue *msg_q, char *buf, int size, u32 tick)
     spin_lock_irq(&msg_q->lock);
     if (list_empty(&msg_q->msg_list)) {
         spin_unlock_irq(&msg_q->lock);
-        rc = task_hang(task);
+        spin_lock_irq(&task->lock);
+        rc = task_hang_lock(task);
         if (rc < 0) {
+            spin_unlock_irq(&task->lock);
             pr_err("%s task hang error, rc=%d\r\n", task->name, rc);
             return rc;
         }
         timer_start(&task->timer, tick);
+        spin_unlock_irq(&task->lock);
         switch_task();
     } else {
         spin_unlock_irq(&msg_q->lock);

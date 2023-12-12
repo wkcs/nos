@@ -133,6 +133,9 @@ switch_to_task:
 #endif
 
 pendsv_exit:
+    ldr     r0, =switch_pending
+    mov     r1, #0
+    str     r1, [r0]
     ldr     r0, =irq_disable_level
     ldr     r1, [r0]
     cbz     r1, restore_irq
@@ -144,9 +147,6 @@ restore_irq:
     /* restore interrupt */
     msr     primask, r2
 pendsv_exit_2:
-    ldr     r0, =switch_pending
-    mov     r1, #0
-    str     r1, [r0]
     orr     lr, lr, #0x04
     bx      lr
 

@@ -82,6 +82,7 @@ int task_ready(struct task_struct *task);
 int task_yield_cpu(void);
 void task_del(struct task_struct *task);
 int task_hang(struct task_struct *task);
+int task_hang_lock(struct task_struct *task);
 int task_resume(struct task_struct *task);
 int task_sleep(u32 tick);
 int task_set_prio(struct task_struct *task, uint8_t prio);

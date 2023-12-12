@@ -29,6 +29,8 @@ static u32 cpu_total_run_time;
 static u32 cpu_total_run_time_save;
 static u32 pre_sys_cycle;
 
+static SPINLOCK(g_switch_lock);
+
 #if CONFIG_MAX_PRIORITY > 32
 uint32_t ready_task_priority_group;
 uint8_t ready_task_table[32];
@@ -158,19 +160,18 @@ void switch_task(void)
 {
     struct task_struct *to_task;
     struct task_struct *from_task;
-    addr_t level;
 
     if (unlikely(!kernel_running)) {
         return;
     }
     BUG_ON(switch_pending);
 
-    level = disable_irq_save();
+    spin_lock_irq(&g_switch_lock);
     from_task = current;
     /* get switch to task */
     to_task = get_next_task();
     /* if the destination task is not the same as current task */
-    if (to_task != from_task && scheduler_lock_nest == 0) {
+    if (to_task != from_task) {
         spin_lock_irq(&to_task->lock);
         if (to_task->status != TASK_READY) {
             BUG_ON(true);
@@ -185,14 +186,18 @@ void switch_task(void)
         spin_unlock_irq(&from_task->lock);
         spin_unlock_irq(&to_task->lock);
         switch_pending = true;
-        enable_irq_save(level);
+        spin_unlock_irq(&g_switch_lock);
         context_switch((addr_t)&from_task->sp, (addr_t)&to_task->sp);
         return;
+    } else {
+        spin_lock_irq(&to_task->lock);
+        to_task->status = TASK_RUNING;
+        spin_unlock_irq(&to_task->lock);
     }
     spin_lock_irq(&from_task->lock);
     calculate_task_time(from_task, from_task);
     spin_unlock_irq(&from_task->lock);
-    enable_irq_save(level);
+    spin_unlock_irq(&g_switch_lock);
 }
 
 void add_task_to_ready_list_lock(struct task_struct *task)
@@ -343,7 +348,8 @@ void sch_heartbeat(void)
     spin_lock_irq(&ready_list_lock);
     singular = list_is_singular(&ready_task_list[task->current_priority]);
     spin_unlock_irq(&ready_list_lock);
-    if ((switch_pending == 0) && (task->remaining_tick == 0) && !singular) {
+    if ((switch_pending == 0) && (task->remaining_tick == 0) &&
+        (scheduler_lock_nest == 0) && !singular) {
         spin_unlock_irq(&task->lock);
         task_yield_cpu();
         return;

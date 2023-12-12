@@ -218,15 +218,13 @@ int task_yield_cpu(void)
     task = current;
     list_lock = task->list_lock;
     spin_lock_irq(&task->lock);
-    task_list_lock(spin_lock_irq, list_lock);
     if (task->status == TASK_RUNING) {
+        task_list_lock(spin_lock_irq, list_lock);
         del_task_to_ready_list_lock(task);
         add_task_to_ready_list_lock(task);
         task_list_unlock(spin_unlock_irq, list_lock);
-        spin_unlock_irq(&task->lock);
-        switch_task();
     }
-    task_list_unlock(spin_unlock_irq, list_lock);
+    switch_task();
     spin_unlock_irq(&task->lock);
 
     return 0;
@@ -267,6 +265,8 @@ void task_del(struct task_struct *task)
 
 int task_hang(struct task_struct *task)
 {
+    spinlock_t *list_lock;
+
     if (!task) {
         pr_err("task struct is NULL\r\n");
         return -EINVAL;
@@ -278,14 +278,45 @@ int task_hang(struct task_struct *task)
     }
 
     timer_stop(&task->timer);
-    del_task_to_ready_list(task);
+    list_lock = task->list_lock;
     spin_lock_irq(&task->lock);
+    task_list_lock(spin_lock_irq, list_lock);
+    del_task_to_ready_list_lock(task);
     if (task->status == TASK_SUSPEND) {
         task->status = TASK_WAIT;
     } else {
         pr_err("%s task status is %d\r\n", task->name, task->status);
     }
+    task_list_unlock(spin_unlock_irq, list_lock);
     spin_unlock_irq(&task->lock);
+
+    return 0;
+}
+
+int task_hang_lock(struct task_struct *task)
+{
+    spinlock_t *list_lock;
+
+    if (!task) {
+        pr_err("task struct is NULL\r\n");
+        return -EINVAL;
+    }
+    if (task->status != TASK_READY && task->status != TASK_RUNING) {
+        pr_err("%s task status is %d, not is TASK_READY or TASK_RUNING\r\n", task->name, task->status);
+        BUG_ON(task == current);
+        return -EINVAL;
+    }
+
+    timer_stop(&task->timer);
+    list_lock = task->list_lock;
+    task_list_lock(spin_lock_irq, list_lock);
+    del_task_to_ready_list_lock(task);
+    if (task->status == TASK_SUSPEND) {
+        task->status = TASK_WAIT;
+    } else {
+        pr_err("%s task status is %d\r\n", task->name, task->status);
+    }
+    task_list_unlock(spin_unlock_irq, list_lock);
 
     return 0;
 }
@@ -319,12 +350,15 @@ int task_sleep(u32 tick)
     }
 
     task = current;
-    rc = task_hang(task);
+    spin_lock_irq(&task->lock);
+    rc = task_hang_lock(task);
     if (rc) {
+        spin_unlock_irq(&task->lock);
         pr_err("%s task hang error, rc=%d\r\n", task->name, rc);
         return rc;
     }
     timer_start(&task->timer, tick);
+    spin_unlock_irq(&task->lock);
     switch_task();
 
     if (task->flag == -ETIMEDOUT)
