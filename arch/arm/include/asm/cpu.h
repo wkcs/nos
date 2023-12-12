@@ -16,6 +16,7 @@ inline int __ffs(int value)
 }
 
 __init void asm_cpu_init(void);
+void asm_cpu_delay_ns(uint32_t ns);
 void asm_cpu_delay_us(uint32_t us);
 void asm_cpu_reboot(void);
 u64 asm_cpu_run_time_us(void);

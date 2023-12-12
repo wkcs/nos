@@ -13,6 +13,9 @@ size_t strlen(const char *s)
 {
 	const char *sc;
 
+	if (s == NULL)
+		return 0;
+
 	for (sc = s; *sc != '\0'; ++sc)
 		/* nothing */;
 	return sc - s;

@@ -12,6 +12,11 @@
 #include <kernel/task.h>
 #include <kernel/sch.h>
 
+void nsleep(u32 nsec)
+{
+    cpu_delay_ns(nsec);
+}
+
 void usleep(u32 usec)
 {
     cpu_delay_us(usec);

@@ -28,11 +28,11 @@ struct device_ops {
 
 struct device {
     const char *name;
+    void *priv;
     struct device_ops ops;
     struct mutex mutex;
     struct list_head list;
     uint32_t ref_count;
-
 };
 
 int device_init(struct device *dev);

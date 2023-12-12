@@ -1,19 +1,21 @@
-/*
- * Copyright (C) 2019 胡启航<Hu Qihang>
+/**
+ * Copyright (C) 2023-2023 胡启航<Nick Hu>
  *
- * Author: wkcs
- * 
- * Email: hqh2030@gmail.com, huqihan@live.com
+ * Author: 胡启航<Nick Hu>
+ *
+ * Email: huqihan@live.com
  */
 
-#include <wk/err.h>
-#include <wk/delay.h>
-#include <init/init.h>
-#include <wk/task.h>
-#include <gpio.h>
-#include <board.h>
-
-#include "keyboard.h"
+#include <kernel/task.h>
+#include <kernel/errno.h>
+#include <kernel/sleep.h>
+#include <kernel/cpu.h>
+#include <kernel/irq.h>
+#include <kernel/device.h>
+#include <kernel/init.h>
+#include <kernel/gpio.h>
+#include <lib/string.h>
+#include <board/board.h>
 
 void pwm_set_val(enum led_ch ch, uint8_t val)
 {
@@ -112,7 +114,7 @@ int stm32_pwm_init(void)
 
 	RCC_AHB1PeriphClockCmd(RCC_AHB1Periph_GPIOA, ENABLE);
     RCC_AHB1PeriphClockCmd(RCC_AHB1Periph_GPIOB, ENABLE);
-	
+
 	GPIO_PinAFConfig(GPIOA, GPIO_PinSource5, GPIO_AF_TIM2);
     GPIO_PinAFConfig(GPIOB, GPIO_PinSource10, GPIO_AF_TIM2);
     GPIO_PinAFConfig(GPIOA, GPIO_PinSource6, GPIO_AF_TIM3);
@@ -127,7 +129,7 @@ int stm32_pwm_init(void)
     GPIO_PinAFConfig(GPIOA, GPIO_PinSource1, GPIO_AF_TIM5);
     GPIO_PinAFConfig(GPIOA, GPIO_PinSource2, GPIO_AF_TIM5);
     GPIO_PinAFConfig(GPIOA, GPIO_PinSource3, GPIO_AF_TIM5);
-	
+
 	GPIO_InitStructure.GPIO_Pin = GPIO_Pin_0 | GPIO_Pin_1 | GPIO_Pin_2 | GPIO_Pin_3 |
         GPIO_Pin_5 | GPIO_Pin_6 | GPIO_Pin_7;
 	GPIO_InitStructure.GPIO_Mode = GPIO_Mode_AF;
@@ -139,17 +141,17 @@ int stm32_pwm_init(void)
     GPIO_InitStructure.GPIO_Pin = GPIO_Pin_0 | GPIO_Pin_1 | GPIO_Pin_6 | GPIO_Pin_7 |
         GPIO_Pin_8 | GPIO_Pin_9 | GPIO_Pin_10;
     GPIO_Init(GPIOB, &GPIO_InitStructure);
-	  
+
 	TIM_TimeBaseStructure.TIM_Prescaler = 4;
 	TIM_TimeBaseStructure.TIM_CounterMode = TIM_CounterMode_Up;
 	TIM_TimeBaseStructure.TIM_Period = 255;
-	TIM_TimeBaseStructure.TIM_ClockDivision = TIM_CKD_DIV1; 
+	TIM_TimeBaseStructure.TIM_ClockDivision = TIM_CKD_DIV1;
 	TIM_TimeBaseInit(TIM2,&TIM_TimeBaseStructure);
     TIM_TimeBaseInit(TIM3,&TIM_TimeBaseStructure);
     TIM_TimeBaseInit(TIM4,&TIM_TimeBaseStructure);
     TIM_TimeBaseInit(TIM5,&TIM_TimeBaseStructure);
-	
-	//初始化TIM14 Channel1 PWM模式	 
+
+	//初始化TIM14 Channel1 PWM模式
 	TIM_OCInitStructure.TIM_OCMode = TIM_OCMode_PWM1;
  	TIM_OCInitStructure.TIM_OutputState = TIM_OutputState_Enable;
 	TIM_OCInitStructure.TIM_OCPolarity = TIM_OCPolarity_Low;
@@ -188,12 +190,12 @@ int stm32_pwm_init(void)
     TIM_OC2PreloadConfig(TIM5, TIM_OCPreload_Enable);
     TIM_OC3PreloadConfig(TIM5, TIM_OCPreload_Enable);
     TIM_OC4PreloadConfig(TIM5, TIM_OCPreload_Enable);
- 
+
     TIM_ARRPreloadConfig(TIM2,ENABLE);
     TIM_ARRPreloadConfig(TIM3,ENABLE);
     TIM_ARRPreloadConfig(TIM4,ENABLE);
     TIM_ARRPreloadConfig(TIM5,ENABLE);
-	
+
 	TIM_Cmd(TIM2, ENABLE);
     TIM_Cmd(TIM3, ENABLE);
     TIM_Cmd(TIM4, ENABLE);

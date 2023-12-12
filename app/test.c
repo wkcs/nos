@@ -140,23 +140,12 @@ static int test4_task_init(void)
     return 0;
 }
 
-#ifdef CONFIG_USB
-extern void winusb_read_test(void);
-extern void winusb_write_test(void);
-extern int stm_usbd_register(void);
-#endif
 static void test5_task_entry(void* parameter)
 {
     __maybe_unused u32 usage;
     __maybe_unused u32 all_usage;
     char buf[] = "lalala";
     __maybe_unused struct task_info *info;
-
-#ifdef CONFIG_USB
-    usbd_hid_class_register();
-    usbd_winusb_class_register();
-    stm_usbd_register();
-#endif
 
     mutex_init(&g_lock);
     sem_init(&g_sem, 0);
@@ -186,7 +175,7 @@ static void test5_task_entry(void* parameter)
 struct task_struct *test5;
 static int test5_task_init(void)
 {
-    test5 = task_create("test5", test5_task_entry, NULL, 68, 10, NULL);
+    test5 = task_create("test5", test5_task_entry, NULL, 23, 10, NULL);
     if (test5 == NULL) {
         pr_fatal("creat test5 task err\r\n");
         BUG_ON(true);

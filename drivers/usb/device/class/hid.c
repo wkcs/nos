@@ -11,6 +11,7 @@
 #include <kernel/msg_queue.h>
 #include <kernel/device.h>
 #include <kernel/printk.h>
+#include <kernel/init.h>
 #include <usb/usb_common.h>
 #include <usb/usb_device.h>
 
@@ -712,12 +713,4 @@ int usbd_hid_class_register(void)
     usbd_class_register(&hid_class);
     pr_info("hid register ok\r\n");
     return 0;
-}
-
-void hid_write_test(const void *buffer, size_t size)
-{
-    struct device *dev;
-
-    dev = device_find_by_name("hidd");
-    dev->ops.write(dev, 1, buffer, size);
 }

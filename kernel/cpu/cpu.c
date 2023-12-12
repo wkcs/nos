@@ -52,6 +52,11 @@ void cpu_reboot(u32 flag)
     asm_cpu_reboot();
 }
 
+void cpu_delay_ns(u32 ns)
+{
+    asm_cpu_delay_ns(ns);
+}
+
 void cpu_delay_us(u32 us)
 {
     asm_cpu_delay_us(us);

@@ -158,6 +158,7 @@ u32 switch_interrupt_flag;
 
 extern uint32_t SystemCoreClock;
 
+static uint32_t nop_us_time_ns;
 static uint32_t sys_tick_num_by_us;
 static uint32_t sys_tick_num_by_heartbeat;
 __init void asm_cpu_init(void)
@@ -169,10 +170,47 @@ __init void asm_cpu_init(void)
 
     sys_tick_num_by_us = SystemCoreClock / 1000000;
     sys_tick_num_by_heartbeat = SystemCoreClock * CONFIG_SYS_TICK_MS / 1000;
+    nop_us_time_ns = (10000000000 / SystemCoreClock + 5) / 10;
 
     interrupt_from_task = 0;
     interrupt_to_task = 0;
     switch_interrupt_flag = 0;
+}
+
+void asm_cpu_delay_ns(uint32_t ns)
+{
+    register uint32_t ticks;
+    register uint32_t told, tnow;
+    register uint32_t tcnt = 0;
+    register uint32_t reload = SysTick->LOAD;
+
+    if (SystemCoreClock >= 1000000000) {
+        ticks = ns * SystemCoreClock /  1000000000;
+    } else {
+        if (ns < nop_us_time_ns * 5)
+            return;
+        tcnt = ns / nop_us_time_ns / 4;
+        while (tcnt > 0) {
+            tcnt--;
+        }
+        return;
+    }
+    tcnt = 0;
+
+    told = SysTick->VAL;
+    while (1) {
+        tnow = SysTick->VAL;
+        if (tnow != told) {
+            if (tnow < told)
+                tcnt += told - tnow;
+            else
+                tcnt += reload - tnow + told;
+            told = tnow;
+            if (tcnt >= ticks) {
+                break;
+            }
+        }
+    }
 }
 
 void asm_cpu_delay_us(uint32_t us)

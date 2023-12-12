@@ -17,6 +17,7 @@ void system_heartbeat_process(void);
 u64 cpu_run_ticks(void);
 u64 cpu_run_time_us(void);
 void cpu_reboot(u32 flag);
+void cpu_delay_ns(u32 ns);
 void cpu_delay_us(u32 us);
 #ifndef USE_CPU_FFS
 int __ffs(int value);

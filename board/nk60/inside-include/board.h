@@ -21,6 +21,8 @@
 
 extern struct uart_config_t uart_log_dev;
 
+extern struct gpio_config_t cc_gpio[2];
+
 void board_mm_init(void);
 
 #endif
