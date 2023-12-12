@@ -158,6 +158,8 @@ void timer_check_handle(void)
 
     if (unlikely(READ_ONCE(switch_pending)))
         return;
+    if (unlikely(READ_ONCE(scheduler_lock_nest) != 0))
+        return;
 
     spin_lock_irq(&g_timer_list_lock);
     if (!list_empty(&g_sys_timer_list)) {

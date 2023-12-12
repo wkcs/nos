@@ -66,12 +66,15 @@ void sem_get(sem_t *sem)
         sem->count--;
         return;
     }
-    rc = task_hang(task);
+    spin_lock_irq(&task->lock);
+    rc = task_hang_lock(task);
     if (rc < 0) {
+        spin_unlock_irq(&task->lock);
         pr_err("%s task hang error, rc=%d\r\n", task->name, rc);
         return;
     }
     __sem_get(task, sem);
+    spin_unlock_irq(&task->lock);
     switch_task();
 }
 
@@ -91,18 +94,22 @@ int sem_get_timeout(sem_t *sem, uint32_t tick)
         return 0;
     }
 
+    spin_lock_irq(&task->lock);
     rc = task_hang(task);
     if (rc < 0) {
+        spin_unlock_irq(&task->lock);
         pr_err("%s task hang error, rc=%d\r\n", task->name, rc);
         return rc;
     }
     __sem_get(task, sem);
     if (tick == 0) {
+        spin_unlock_irq(&task->lock);
         switch_task();
         return 0;
     }
 
     timer_start(&task->timer, tick);
+    spin_unlock_irq(&task->lock);
     switch_task();
 
     if (task->flag == -ETIMEDOUT) {
