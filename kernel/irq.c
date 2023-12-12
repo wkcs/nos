@@ -16,17 +16,10 @@ volatile u32 interrupt_nest;
 
 addr_t disable_irq_save()
 {
-    BUG_ON(irq_disable_level >= U32_MAX);
-    irq_disable_level++;
     return asm_disable_irq_save();
 }
 
 void enable_irq_save(addr_t level)
 {
-    if (irq_disable_level > 0) {
-        irq_disable_level--;
-    }
-    if (irq_disable_level == 0) {
-        asm_enable_irq_save(level);
-    }
+    asm_enable_irq_save(level);
 }

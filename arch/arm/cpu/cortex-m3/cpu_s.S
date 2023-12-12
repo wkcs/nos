@@ -17,7 +17,6 @@
     .global interrupt_to_task
     .global kernel_running
     .global interrupt_nest
-    .global irq_disable_level
     .global switch_pending
 
     .equ    SCB_VTOR, 0xE000ED08            /* Vector Table Offset Register */
@@ -80,10 +79,6 @@ _reswitch:
     .type PendSV_Handler, %function
 PendSV_Handler:
     /* disable interrupt to protect context switch */
-    ldr     r0, =irq_disable_level
-    ldr     r1, [r0]
-    adds    r1, r1, #1
-    str     r1, [r0]
     mrs     r2, primask
     cpsid   i
 
@@ -117,17 +112,8 @@ pendsv_exit:
     ldr     r0, =switch_pending
     mov     r1, #0
     str     r1, [r0]
-    ldr     r0, =irq_disable_level
-    ldr     r1, [r0]
-    cbz     r1, restore_irq
-    subs    r1, r1, #1
-    str     r1, [r0]
-    cbz     r1, restore_irq
-    b       pendsv_exit_2
-restore_irq:
     /* restore interrupt */
     msr     primask, r2
-pendsv_exit_2:
     orr     lr, lr, #0x04
     bx      lr
 
