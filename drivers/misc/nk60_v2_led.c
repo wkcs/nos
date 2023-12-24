@@ -23,7 +23,7 @@
 #include <kernel/sem.h>
 #include <kernel/mutex.h>
 
-#include <led/led.h>
+#include <display/led.h>
 
 #define LED_VCC_EN PBout(0)
 
@@ -37,7 +37,6 @@
 static uint8_t g_led_buf[LED_BUF_SZIE];
 
 struct nk60_led {
-    struct task_struct *task;
     struct mutex lock;
     struct device dev;
     sem_t sem;
@@ -130,15 +129,21 @@ static int nk60_v2_led_control(struct device *dev, int cmd, void *args)
 
     switch (cmd) {
     case LED_CTRL_ENABLE:
-        if ((uint32_t)args == 0) {
-            led->enable = false;
-            LED_VCC_EN = 0;
-            nk60_v2_led_buf_init(led);
-        } else {
-            LED_VCC_EN = 1;
-            led->enable = true;
-            sem_send_one(&led->sem);
-        }
+        LED_VCC_EN = 1;
+        led->enable = true;
+        break;
+    case LED_CTRL_DISABLE:
+        led->enable = false;
+        LED_VCC_EN = 0;
+        nk60_v2_led_buf_init(led);
+        break;
+    case LED_CTRL_GET_ENABLE_STATUS:
+        return led->enable;
+    case LED_CTRL_REFRESH:
+        mutex_lock(&led->lock);
+        nk60_v2_led_dma_start();
+        sem_get(&led->sem);
+        mutex_unlock(&led->lock);
         break;
     default:
         pr_err("unknown cmd: %d\r\n", cmd);
@@ -146,24 +151,6 @@ static int nk60_v2_led_control(struct device *dev, int cmd, void *args)
     }
 
     return 0;
-}
-
-static void nk60_v2_led_task_entry(void* parameter)
-{
-    struct nk60_led *led = parameter;
-
-    while (true) {
-        if (led->enable) {
-            mutex_lock(&led->lock);
-            nk60_v2_led_dma_start();
-            sem_get(&led->sem);
-            mutex_unlock(&led->lock);
-            msleep(10);
-        } else {
-            sem_get(&led->sem);
-            msleep(10);
-        }
-    }
 }
 
 static void nk60_v2_led_spi_set_speed(uint8_t SPI_BaudRatePrescaler)
@@ -296,14 +283,6 @@ static int nk60_v2_led_init(void)
     led->dev.ops.control = nk60_v2_led_control;
     led->dev.priv = led;
     device_register(&led->dev);
-
-    led->task = task_create("nk60_v2-led", nk60_v2_led_task_entry, led, 2, 10, NULL);
-    if (led->task == NULL) {
-        pr_fatal("creat nk60_v2-led task err\r\n");
-        BUG_ON(true);
-        return -EINVAL;
-    }
-    task_ready(led->task);
 
     return 0;
 }
