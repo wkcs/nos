@@ -53,6 +53,8 @@ struct cpu_dump_type {
 
 static void reboot_to_bootloader(void)
 {
+    // TODO
+    while(1) {}
 }
 
 addr_t *stack_init(void *task_entry, void *parameter, addr_t *stack_addr, void *task_exit)
