@@ -20,142 +20,195 @@
 #include <kernel/mm.h>
 #include <lib/string.h>
 #include <board/board.h>
+#include <kernel/sem.h>
+#include <kernel/mutex.h>
+
+#include <led/led.h>
 
 #define LED_VCC_EN PBout(0)
-#define LED_DATA_1 PBout(6)
-#define LED_DATA_2 PBout(7)
-#define LED_DATA_3 PBout(8)
-#define LED_DATA_4 PBout(9)
-#define LED_DATA_5 PBout(10)
-#define LED_DATA_6 PBout(12)
 
-enum {
-    COLOR_R = 0,
-    COLOR_G,
-    COLOR_B,
-    COLOR_MAX,
-};
+#define LED_DATA_0 0xc0
+#define LED_DATA_1 0xf0
+#define LED_COLOR_BIT_WIDTH 8
+
 #define LED_NUM 61
+#define LED_BUF_SZIE (LED_NUM * COLOR_MAX * LED_COLOR_BIT_WIDTH)
 
-static uint8_t g_led_buf[LED_NUM][COLOR_MAX];
-
-#define DELAY_11_9_NS __NOP()
-#define DELAY_80_NS DELAY_11_9_NS;DELAY_11_9_NS;DELAY_11_9_NS;DELAY_11_9_NS;DELAY_11_9_NS;DELAY_11_9_NS;DELAY_11_9_NS
+static uint8_t g_led_buf[LED_BUF_SZIE];
 
 struct nk60_led {
     struct task_struct *task;
-    spinlock_t lock;
+    struct mutex lock;
     struct device dev;
+    sem_t sem;
     uint8_t *buf;
+
+    bool enable;
 };
+struct nk60_led *g_led;
 
-static void nk60_v2_led_reset(void)
+static void nk60_v2_led_dma_start(void)
 {
-    LED_DATA_1 = 0;
-    usleep(90);
+    DMA_Cmd(DMA1_Stream4, DISABLE);
+    DMA_SetCurrDataCounter(DMA1_Stream4, LED_BUF_SZIE);
+    DMA_Cmd(DMA1_Stream4, ENABLE);
 }
 
-static void nk60_v2_led_write_bit(bool high)
+static void nk60_v2_led_dma_stop(void)
 {
-    LED_DATA_1 = 1;
-    if (high) {
-        nsleep(400);
-        LED_DATA_1 = 0;
-        nsleep(800);
-    } else {
-        DELAY_80_NS;
-        LED_DATA_1 = 0;
-        usleep(1);
-    }
+    DMA_Cmd(DMA1_Stream4, DISABLE);
 }
 
-static void nk60_v2_led_write_byte(uint8_t data)
+static void nk60_v2_led_write_single_color_buf(uint8_t data, uint8_t color_type, int index)
 {
     int i;
+    uint8_t tmp;
 
     for (i = 0; i < 8; i++) {
-        nk60_v2_led_write_bit(data & 0x80);
-        data <<= 1;
+        tmp = (0x80 & (data << i)) ? LED_DATA_1 : LED_DATA_0;
+        g_led_buf[index * (COLOR_MAX * LED_COLOR_BIT_WIDTH) + (color_type * LED_COLOR_BIT_WIDTH) + i] = tmp;
     }
 }
 
-static void nk60_v2_led_write_rgb_data(uint8_t r, uint8_t g, uint8_t b)
+static void nk60_v2_led_write_buf(uint8_t r, uint8_t g, uint8_t b, int index)
 {
-    nk60_v2_led_write_byte(g);
-    nk60_v2_led_write_byte(r);
-    nk60_v2_led_write_byte(b);
+    int i;
+    uint8_t data;
+
+    if (unlikely(index >= LED_NUM))
+        return;
+
+    /* green */
+    for (i = 0; i < 8; i++) {
+        data = (0x80 & (g << i)) ? LED_DATA_1 : LED_DATA_0;
+        g_led_buf[index * (COLOR_MAX * LED_COLOR_BIT_WIDTH) + i + LED_COLOR_BIT_WIDTH * COLOR_G] = data;
+    }
+
+    /* red */
+    for (i = 0; i < 8; i++) {
+        data = (0x80 & (r << i)) ? LED_DATA_1 : LED_DATA_0;
+        g_led_buf[index * (COLOR_MAX * LED_COLOR_BIT_WIDTH) + i + LED_COLOR_BIT_WIDTH * COLOR_R] = data;
+    }
+
+    /* blue */
+    for (i = 0; i < 8; i++) {
+        data = (0x80 & (b << i)) ? LED_DATA_1 : LED_DATA_0;
+        g_led_buf[index * (COLOR_MAX * LED_COLOR_BIT_WIDTH) + i + LED_COLOR_BIT_WIDTH * COLOR_B] = data;
+    }
 }
 
-ssize_t nk60_v2_led_buf_write(struct device *dev, addr_t pos, const void *buffer, size_t size)
+static ssize_t nk60_v2_led_buf_write(struct device *dev, addr_t pos, const void *buffer, size_t size)
 {
     struct nk60_led *led = dev->priv;
+    const uint8_t *buf = buffer;
+    int i;
 
     if (size != LED_NUM * COLOR_MAX) {
         pr_err("data size error\r\n");
         return -EINVAL;
     }
 
-    spin_lock(&led->lock);
-    memcpy(led->buf, buffer, size);
-    spin_unlock(&led->lock);
+    mutex_lock(&led->lock);
+    for (i = 0; i < (LED_NUM * COLOR_MAX); i += 3) {
+        nk60_v2_led_write_buf(buf[i + COLOR_R], buf[i + COLOR_G], buf[i + COLOR_B], i / 3);
+    }
+    mutex_unlock(&led->lock);
 
     return size;
 }
 
-static void nk60_v2_led_refresh(struct nk60_led *led)
+static void nk60_v2_led_buf_init(struct nk60_led *led)
 {
-    int i;
+    mutex_lock(&led->lock);
+    memset(led->buf, LED_DATA_0, LED_BUF_SZIE);
+    mutex_unlock(&led->lock);
+}
 
-    spin_lock(&led->lock);
-    for (i = 0; i < LED_NUM; i++)
-        nk60_v2_led_write_rgb_data(
-            led->buf[i * COLOR_MAX + COLOR_R],
-            led->buf[i * COLOR_MAX + COLOR_G],
-            led->buf[i * COLOR_MAX + COLOR_B]);
-    spin_unlock(&led->lock);
+static int nk60_v2_led_control(struct device *dev, int cmd, void *args)
+{
+    struct nk60_led *led = dev->priv;
+
+    switch (cmd) {
+    case LED_CTRL_ENABLE:
+        if ((uint32_t)args == 0) {
+            led->enable = false;
+            LED_VCC_EN = 0;
+            nk60_v2_led_buf_init(led);
+        } else {
+            LED_VCC_EN = 1;
+            led->enable = true;
+            sem_send_one(&led->sem);
+        }
+        break;
+    default:
+        pr_err("unknown cmd: %d\r\n", cmd);
+        return -EINVAL;
+    }
+
+    return 0;
 }
 
 static void nk60_v2_led_task_entry(void* parameter)
 {
     struct nk60_led *led = parameter;
-    uint8_t i = 0, n = 0;
-    int m;
 
     while (true) {
-        switch (i) {
-        case 0:
-            for (m = 0; m < LED_NUM; m++) {
-                led->buf[m * COLOR_MAX + COLOR_G] = n;
-                led->buf[m * COLOR_MAX + COLOR_R] = 255 - n;
-            }
-            n += 1;
-            if (n == 255)
-                i++;
-            break;
-        case 1:
-            for (m = 0; m < LED_NUM; m++) {
-                led->buf[m * COLOR_MAX + COLOR_G] = n;
-                led->buf[m * COLOR_MAX + COLOR_B] = 255 - n;
-            }
-            n -= 1;
-            if (n == 0)
-                i++;
-            break;
-        case 2:
-            for (m = 0; m < LED_NUM; m++) {
-                led->buf[m * COLOR_MAX + COLOR_R] = n;
-                led->buf[m * COLOR_MAX + COLOR_B] = 255 - n;
-            }
-            n += 1;
-            if (n == 255) {
-                n = 0;
-                i = 0;
-            }
-            break;
+        if (led->enable) {
+            mutex_lock(&led->lock);
+            nk60_v2_led_dma_start();
+            sem_get(&led->sem);
+            mutex_unlock(&led->lock);
+            msleep(10);
+        } else {
+            sem_get(&led->sem);
+            msleep(10);
         }
-        nk60_v2_led_refresh(led);
-        msleep(20);
     }
+}
+
+static void nk60_v2_led_spi_set_speed(uint8_t SPI_BaudRatePrescaler)
+{
+    assert_param(IS_SPI_BAUDRATE_PRESCALER(SPI_BaudRatePrescaler));
+    SPI2->CR1 &= 0XFFC7;
+    SPI2->CR1 |= SPI_BaudRatePrescaler;
+    SPI_Cmd(SPI2, ENABLE);
+}
+
+static int nk60_v2_led_spi_init(void)
+{
+    GPIO_InitTypeDef GPIO_InitStructure;
+    SPI_InitTypeDef SPI_InitStructure;
+
+    RCC_AHB1PeriphClockCmd(RCC_AHB1Periph_GPIOC, ENABLE);
+    RCC_APB1PeriphClockCmd(RCC_APB1Periph_SPI2, ENABLE);
+
+    GPIO_InitStructure.GPIO_Pin = GPIO_Pin_3;
+    GPIO_InitStructure.GPIO_Mode = GPIO_Mode_AF;
+    GPIO_InitStructure.GPIO_OType = GPIO_OType_PP;
+    GPIO_InitStructure.GPIO_Speed = GPIO_Speed_100MHz;
+    GPIO_InitStructure.GPIO_PuPd = GPIO_PuPd_DOWN;
+    GPIO_Init(GPIOC, &GPIO_InitStructure);
+
+    GPIO_PinAFConfig(GPIOC, GPIO_PinSource3, GPIO_AF_SPI2);
+
+    RCC_APB1PeriphResetCmd(RCC_APB1Periph_SPI2, ENABLE);
+    RCC_APB1PeriphResetCmd(RCC_APB1Periph_SPI2, DISABLE);
+
+    SPI_InitStructure.SPI_Direction = SPI_Direction_1Line_Tx;
+    SPI_InitStructure.SPI_Mode = SPI_Mode_Master;
+    SPI_InitStructure.SPI_DataSize = SPI_DataSize_8b;
+    SPI_InitStructure.SPI_CPOL = SPI_CPOL_High;
+    SPI_InitStructure.SPI_CPHA = SPI_CPHA_2Edge;
+    SPI_InitStructure.SPI_NSS = SPI_NSS_Soft;
+    SPI_InitStructure.SPI_BaudRatePrescaler = SPI_BaudRatePrescaler_8;
+    SPI_InitStructure.SPI_FirstBit = SPI_FirstBit_MSB;
+    SPI_InitStructure.SPI_CRCPolynomial = 7;
+    SPI_Init(SPI2, &SPI_InitStructure);
+
+    SPI_Cmd(SPI2, ENABLE);
+    SPI_I2S_DMACmd(SPI2, SPI_I2S_DMAReq_Tx, ENABLE);
+
+    return 0;
 }
 
 static int nk60_v2_led_gpio_init(void)
@@ -163,27 +216,57 @@ static int nk60_v2_led_gpio_init(void)
     GPIO_InitTypeDef GPIO_InitStructure;
 
     RCC_AHB1PeriphClockCmd(RCC_AHB1Periph_GPIOB, ENABLE);
-    GPIO_InitStructure.GPIO_Pin = GPIO_Pin_0 | GPIO_Pin_6;
+    GPIO_InitStructure.GPIO_Pin = GPIO_Pin_0;
     GPIO_InitStructure.GPIO_Mode = GPIO_Mode_OUT;
     GPIO_InitStructure.GPIO_OType = GPIO_OType_PP;
     GPIO_InitStructure.GPIO_Speed = GPIO_Speed_100MHz;
     GPIO_InitStructure.GPIO_PuPd = GPIO_PuPd_UP;
     GPIO_Init(GPIOB, &GPIO_InitStructure);
-
-    GPIO_InitStructure.GPIO_Pin =  GPIO_Pin_7 | GPIO_Pin_8 | GPIO_Pin_9 | GPIO_Pin_10 | GPIO_Pin_12;;
-    GPIO_InitStructure.GPIO_Mode = GPIO_Mode_IN;
-    GPIO_InitStructure.GPIO_PuPd = GPIO_PuPd_DOWN;
-    GPIO_Init(GPIOB, &GPIO_InitStructure);
-
-    LED_VCC_EN = 1;
-    LED_DATA_1 = 0;
-    LED_DATA_2 = 0;
-    LED_DATA_3 = 0;
-    LED_DATA_4 = 0;
-    LED_DATA_5 = 0;
-    LED_DATA_6 = 0;
+    LED_VCC_EN = 0;
 
     return 0;
+}
+
+static int nk60_v2_led_dma_init(void)
+{
+    DMA_InitTypeDef init_type;
+
+    RCC_AHB1PeriphClockCmd(RCC_AHB1Periph_DMA1, ENABLE);
+    DMA_DeInit(DMA1_Stream4);
+
+    init_type.DMA_Channel = DMA_Channel_0;
+    init_type.DMA_PeripheralBaseAddr = (uint32_t)&SPI2->DR;
+    init_type.DMA_Memory0BaseAddr = (uint32_t)g_led_buf;
+    init_type.DMA_DIR = DMA_DIR_MemoryToPeripheral;
+    init_type.DMA_BufferSize = LED_BUF_SZIE;
+    init_type.DMA_PeripheralInc = DMA_PeripheralInc_Disable;
+    init_type.DMA_MemoryInc = DMA_MemoryInc_Enable;
+    init_type.DMA_PeripheralDataSize = DMA_PeripheralDataSize_Byte;
+    init_type.DMA_MemoryDataSize = DMA_MemoryDataSize_Byte;
+    init_type.DMA_Mode = DMA_Mode_Normal;
+    init_type.DMA_Priority = DMA_Priority_High;
+    init_type.DMA_FIFOMode = DMA_FIFOMode_Disable;
+    init_type.DMA_FIFOThreshold = DMA_FIFOThreshold_Full;
+    init_type.DMA_MemoryBurst = DMA_MemoryBurst_INC8;
+    init_type.DMA_PeripheralBurst = DMA_PeripheralBurst_INC8;
+    DMA_Init(DMA1_Stream4, &init_type);
+
+    NVIC_InitTypeDef NVIC_InitStructure;
+    NVIC_InitStructure.NVIC_IRQChannel = DMA1_Stream4_IRQn;
+    NVIC_InitStructure.NVIC_IRQChannelPreemptionPriority = 3;
+    NVIC_InitStructure.NVIC_IRQChannelSubPriority = 3;
+    NVIC_InitStructure.NVIC_IRQChannelCmd = ENABLE;
+    NVIC_Init(&NVIC_InitStructure);
+    DMA_ITConfig(DMA1_Stream4, DMA_IT_TC, ENABLE);
+
+    return 0;
+}
+
+void DMA1_Stream4_IRQHandler(void)
+{
+    DMA_ClearITPendingBit(DMA1_Stream4, DMA_FLAG_TCIF4);
+
+    sem_send_one(&g_led->sem);
 }
 
 static int nk60_v2_led_init(void)
@@ -195,15 +278,22 @@ static int nk60_v2_led_init(void)
         pr_err("alloc led buf error\r\n");
         return -ENOMEM;
     }
-
-    nk60_v2_led_gpio_init();
-
+    g_led = led;
     led->buf = (uint8_t *)g_led_buf;
-    spin_lock_init(&led->lock);
+
+    nk60_v2_led_dma_init();
+    nk60_v2_led_gpio_init();
+    nk60_v2_led_spi_init();
+    memset(led->buf, LED_DATA_0, LED_BUF_SZIE);
+
+    mutex_init(&led->lock);
+    sem_init(&led->sem, 0);
+    led->enable = false;
 
     device_init(&led->dev);
     led->dev.name = "nk60-led";
     led->dev.ops.write = nk60_v2_led_buf_write;
+    led->dev.ops.control = nk60_v2_led_control;
     led->dev.priv = led;
     device_register(&led->dev);
 

@@ -23,3 +23,14 @@ void enable_irq_save(addr_t level)
 {
     asm_enable_irq_save(level);
 }
+
+void irq_entry()
+{
+    interrupt_nest++;
+}
+
+void irq_exit()
+{
+    if (likely(interrupt_nest > 0))
+        interrupt_nest--;
+}

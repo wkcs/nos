@@ -6,7 +6,4 @@
 # Email: huqihan@live.com
 ##############################################
 
-obj-y += server
-
-obj-$(CONFIG_TEST_APP) += test.o
-obj-$(CONFIG_KEYBOARD) += keyboard.o
+obj-y += display_server.o

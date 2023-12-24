@@ -12,6 +12,12 @@
 #include <kernel/kernel.h>
 #include <asm/cpu.h>
 
+enum cpu_reboot_flag {
+    REBOOT_TO_BOOTLOADER,
+    REBOOT_TO_KERNEL_A,
+    REBOOT_TO_KERNEL_B,
+};
+
 __init void cpu_init(void);
 void system_heartbeat_process(void);
 u64 cpu_run_ticks(void);

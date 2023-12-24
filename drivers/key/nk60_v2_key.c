@@ -20,10 +20,10 @@
 #include <board/board.h>
 #include "keyboard.h"
 
-#define HC595_EN   PBout(14)
+#define HC595_EN   PBout(12)
 #define HC595_CLK  PBout(13)
 #define HC595_DATA PBout(15)
-#define KEY_DATA   PAin(0)
+#define KEY_DATA   PBin(14)
 
 #define KEY_NUM 61
 #define KEY_RAW_DATA_NUM ((KEY_NUM) / 32 + (((KEY_NUM) % 32) ? 1 : 0))
@@ -162,7 +162,7 @@ static void nk60_v2_key_scan(uint32_t *raw_data)
 
     for (index = 0; index < KEY_RAW_DATA_NUM; index++) {
         raw_data[index] &= raw_data_old[index];
-        // pr_info("data[%d]=0x%x\r\n", index, raw_data[index]);
+        //pr_info("data[%d]=0x%x\r\n", index, raw_data[index]);
     }
 }
 
@@ -310,22 +310,28 @@ static void nc60_v2_key_task_entry(void* parameter)
     uint32_t key_raw_data_old[KEY_RAW_DATA_NUM] = { 0 };
     bool update = false;
     int i = 0;
-    int m = 0;
 
     memset(def_key_info, 0, sizeof(struct key_info) * KEY_NUM);
 
-    while (1) {
-        if (unlikely(g_hid_dev == NULL)) {
-            g_hid_dev = device_find_by_name("hidd");
-            if (g_hid_dev == NULL) {
-                i++;
-                pr_err("hid device not found, retry=%d\r\n", i);
-                sleep(1);
-                continue;
-            } else {
-                pr_info("hid device found\r\n");
-            }
+    g_hid_dev = NULL;
+    for (i = 0; i < 100; i ++) {
+        g_hid_dev = device_find_by_name("hidd");
+        if (g_hid_dev == NULL) {
+            i++;
+            pr_err("%s device not found, retry=%d\r\n", "hidd", i);
+            sleep(1);
+            continue;
+        } else {
+            pr_info("%s device found\r\n", "hidd");
+            break;
         }
+    }
+    if (i >= 100) {
+        pr_err("%s device not found, exit\r\n", "hidd");
+        return;
+    }
+
+    while (1) {
         nk60_v2_key_scan(key_raw_data);
         for (i = 0; i < KEY_RAW_DATA_NUM; i++) {
             if (key_raw_data[i] != key_raw_data_old[i]) {
@@ -350,12 +356,6 @@ static void nc60_v2_key_task_entry(void* parameter)
             }
         }
         msleep(10);
-
-        m++;
-        if (m == 100) {
-            pr_info("key task running\r\n");
-            m = 0;
-        }
     }
 }
 
@@ -364,12 +364,18 @@ static int nk60_v2_key_gpio_init(void)
     GPIO_InitTypeDef GPIO_InitStructure;
 
     RCC_AHB1PeriphClockCmd(RCC_AHB1Periph_GPIOB, ENABLE);
-    GPIO_InitStructure.GPIO_Pin = GPIO_Pin_13 | GPIO_Pin_14 | GPIO_Pin_15;
+    GPIO_InitStructure.GPIO_Pin = GPIO_Pin_12 | GPIO_Pin_13 | GPIO_Pin_15;
     GPIO_InitStructure.GPIO_Mode = GPIO_Mode_OUT;
     GPIO_InitStructure.GPIO_OType = GPIO_OType_PP;
     GPIO_InitStructure.GPIO_Speed = GPIO_Speed_100MHz;
     GPIO_InitStructure.GPIO_PuPd = GPIO_PuPd_UP;
     GPIO_Init(GPIOB, &GPIO_InitStructure);
+
+    GPIO_InitStructure.GPIO_Pin = GPIO_Pin_14;
+    GPIO_InitStructure.GPIO_Mode = GPIO_Mode_IN;
+    GPIO_InitStructure.GPIO_PuPd = GPIO_PuPd_UP;
+    GPIO_Init(GPIOB, &GPIO_InitStructure);
+
 
     RCC_AHB1PeriphClockCmd(RCC_AHB1Periph_GPIOA, ENABLE);
     GPIO_InitStructure.GPIO_Pin = GPIO_Pin_0;
