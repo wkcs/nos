@@ -22,16 +22,21 @@ struct msg_queue msg_q;
 
 static void test1_task_entry(void* parameter)
 {
-    u32 usage;
-    u32 all_usage;
+    __maybe_unused u32 usage;
+    __maybe_unused u32 all_usage;
+    int i = 0;
 
     while (1) {
         msleep(500);
         mutex_lock(&g_lock);
         usage = task_get_cpu_usage(current) / 100;
         all_usage = get_cpu_usage() / 100;
-        pr_info("%s: usage:%u.%02u%%, total:%u.%02u%%\r\n", current->name,
-                usage / 100, usage % 100, all_usage / 100, all_usage % 100);
+        i++;
+        if (i > 10) {
+            i = 0;
+            pr_info("%s: usage:%u.%02u%%, total:%u.%02u%%\r\n", current->name,
+                    usage / 100, usage % 100, all_usage / 100, all_usage % 100);
+        }
         mutex_unlock(&g_lock);
     }
 }
@@ -56,16 +61,21 @@ static void test2_task_entry(void* parameter)
     __maybe_unused u32 all_usage;
     char buf[128];
     int size;
+    int i = 0;
 
     while (1) {
         usage = task_get_cpu_usage(current) / 100;
         all_usage = get_cpu_usage() / 100;
-        pr_info("%s: usage:%u.%02u%%, total:%u.%02u%%\r\n", current->name,
-                usage / 100, usage % 100, all_usage / 100, all_usage % 100);
+        // pr_info("%s: usage:%u.%02u%%, total:%u.%02u%%\r\n", current->name,
+        //        usage / 100, usage % 100, all_usage / 100, all_usage % 100);
         size = msg_q_recv(&msg_q, buf, sizeof(buf));
         if (size > 0) {
             buf[size] = 0;
-            pr_info("%s: recv %s, status=%d\r\n", current->name, buf, current->status);
+            i++;
+            if (i > 100000) {
+                i = 0;
+                pr_info("%s: recv %s, status=%d\r\n", current->name, buf, current->status);
+            }
         }
     }
 }
@@ -88,13 +98,18 @@ static void test3_task_entry(void* parameter)
 {
     __maybe_unused u32 usage;
     __maybe_unused u32 all_usage;
+    int i = 0;
 
     while (1) {
         sem_get(&g_sem);
         usage = task_get_cpu_usage(current) / 100;
         all_usage = get_cpu_usage() / 100;
-        pr_info("%s: usage:%u.%02u%%, total:%u.%02u%%\r\n", current->name,
-                usage / 100, usage % 100, all_usage / 100, all_usage % 100);
+        i++;
+        if (i > 100000) {
+            i = 0;
+            pr_info("%s: usage:%u.%02u%%, total:%u.%02u%%\r\n", current->name,
+                    usage / 100, usage % 100, all_usage / 100, all_usage % 100);
+        }
     }
 }
 
@@ -146,6 +161,7 @@ static void test5_task_entry(void* parameter)
     __maybe_unused u32 all_usage;
     char buf[] = "lalala";
     __maybe_unused struct task_info *info;
+    int i = 0;
 
     mutex_init(&g_lock);
     sem_init(&g_sem, 0);
@@ -163,10 +179,13 @@ static void test5_task_entry(void* parameter)
         mutex_lock(&g_lock);
         usage = task_get_cpu_usage(current) / 100;
         all_usage = get_cpu_usage() / 100;
-        pr_info("%s: usage:%u.%02u%%, total:%u.%02u%%\r\n", current->name,
-                usage / 100, usage % 100, all_usage / 100, all_usage % 100);
+        i++;
+        if (i > 0) {
+            i = 0;
+            pr_info("%s: usage:%u.%02u%%, total:%u.%02u%%\r\n", current->name,
+                    usage / 100, usage % 100, all_usage / 100, all_usage % 100);
+        }
         msg_q_send(&msg_q, buf, sizeof(buf));
-        sleep(1);
         sem_send_one(&g_sem);
         mutex_unlock(&g_lock);
     }

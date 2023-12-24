@@ -95,7 +95,7 @@ int sem_get_timeout(sem_t *sem, uint32_t tick)
     }
 
     spin_lock_irq(&task->lock);
-    rc = task_hang(task);
+    rc = task_hang_lock(task);
     if (rc < 0) {
         spin_unlock_irq(&task->lock);
         pr_err("%s task hang error, rc=%d\r\n", task->name, rc);
