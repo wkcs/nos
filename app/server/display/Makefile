@@ -7,3 +7,4 @@
 ##############################################
 
 obj-y += display_server.o
+obj-y += draw_demo.o

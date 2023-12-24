@@ -242,6 +242,7 @@ static ssize_t win_usb_read(struct device *dev, __maybe_unused addr_t pos, void 
     read_size = usbd_io_request(win_dev->func->device, win_dev->ep_out, &win_dev->ep_out->request);
     return read_size;
 }
+
 static ssize_t win_usb_write(struct device *dev, __maybe_unused addr_t pos, const void *buffer, size_t size)
 {
     size_t write_size;
@@ -257,6 +258,7 @@ static ssize_t win_usb_write(struct device *dev, __maybe_unused addr_t pos, cons
     write_size = usbd_io_request(win_dev->func->device, win_dev->ep_in, &win_dev->ep_in->request);
     return write_size;
 }
+
 static int  win_usb_control(struct device *dev, int cmd, void *args)
 {
     struct winusb_device *win_dev = container_of(dev, struct winusb_device, dev);

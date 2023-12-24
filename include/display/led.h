@@ -18,6 +18,9 @@ enum color_type {
 
 enum led_ctrl_cmd {
     LED_CTRL_ENABLE,
+    LED_CTRL_DISABLE,
+    LED_CTRL_GET_ENABLE_STATUS,
+    LED_CTRL_REFRESH,
 };
 
 #endif
