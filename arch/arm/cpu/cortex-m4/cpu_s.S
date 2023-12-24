@@ -22,7 +22,6 @@
 .global interrupt_to_task
 .global kernel_running
 .global interrupt_nest
-.global switch_pending
 
 /*
  * __addr_t asm_disable_irq_save();
@@ -128,9 +127,6 @@ switch_to_task:
 #endif
 
 pendsv_exit:
-    ldr     r0, =switch_pending
-    mov     r1, #0
-    str     r1, [r0]
     /* restore interrupt */
     msr     primask, r2
     orr     lr, lr, #0x04

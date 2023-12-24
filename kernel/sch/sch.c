@@ -21,7 +21,6 @@
 static struct list_head ready_task_list[CONFIG_MAX_PRIORITY];
 SPINLOCK(ready_list_lock);
 uint32_t scheduler_lock_nest;
-uint32_t switch_pending;
 
 u32 sys_cycle;
 u64 sys_heartbeat_time;
@@ -164,7 +163,6 @@ void switch_task(void)
     if (unlikely(!kernel_running)) {
         return;
     }
-    BUG_ON(switch_pending);
 
     spin_lock_irq(&g_switch_lock);
     from_task = current;
@@ -173,7 +171,7 @@ void switch_task(void)
     /* if the destination task is not the same as current task */
     if (to_task != from_task) {
         spin_lock_irq(&to_task->lock);
-        if (to_task->status != TASK_READY) {
+        if (to_task->status != TASK_READY && to_task->status != TASK_RUNING) {
             BUG_ON(true);
             pr_err("%s task status=%d\r\n", to_task->name, to_task->status);
         }
@@ -185,9 +183,8 @@ void switch_task(void)
         to_task->status = TASK_RUNING;
         spin_unlock_irq(&from_task->lock);
         spin_unlock_irq(&to_task->lock);
-        switch_pending = true;
-        spin_unlock_irq(&g_switch_lock);
         context_switch((addr_t)&from_task->sp, (addr_t)&to_task->sp);
+        spin_unlock_irq(&g_switch_lock);
         return;
     } else {
         spin_lock_irq(&to_task->lock);
@@ -348,7 +345,7 @@ void sch_heartbeat(void)
     spin_lock_irq(&ready_list_lock);
     singular = list_is_singular(&ready_task_list[task->current_priority]);
     spin_unlock_irq(&ready_list_lock);
-    if ((switch_pending == 0) && (task->remaining_tick == 0) &&
+    if ((task->remaining_tick == 0) &&
         (scheduler_lock_nest == 0) && !singular) {
         spin_unlock_irq(&task->lock);
         task_yield_cpu();
