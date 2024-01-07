@@ -626,7 +626,7 @@ static void usb_hid_init(struct ufunction *func)
     hiddev->dev.ops.write = _hid_write;
     device_register(&hiddev->dev);
 
-    hid_task = task_create("hidd", hid_task_entry, (void *)hiddev, 5, 5, NULL);
+    hid_task = task_create("hidd", hid_task_entry, (void *)hiddev, 5, 1024, 5, NULL);
     if (hid_task == NULL) {
         pr_err("hid task creat err\r\n");
         return;

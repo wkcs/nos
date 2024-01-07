@@ -42,6 +42,7 @@ struct task_struct {
     uint8_t init_priority;
     uint8_t current_priority;
     uint8_t status;
+    uint32_t stack_size;
 
 #if CONFIG_MAX_PRIORITY > 32
     uint8_t  offset;
@@ -64,18 +65,14 @@ struct task_struct {
     u32 save_sys_cycle;
 };
 
-union task_union {
-    struct task_info info;
-    unsigned long stack[CONFIG_PAGE_SIZE / sizeof(long)];
-};
-
-#define get_current() (current_task_info()->task)
-#define current get_current()
+extern struct task_struct *g_current_task;
+#define current g_current_task
 
 struct task_struct *task_create(const char *name,
                                 void (*entry)(void *parameter),
                                 void *parameter,
                                 uint8_t priority,
+                                uint32_t stack_size,
                                 uint32_t tick,
                                 void (*clean)(struct task_struct *task));
 int task_ready(struct task_struct *task);

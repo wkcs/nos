@@ -24,7 +24,7 @@ uint32_t get_sch_lock_level(void);
 void sch_heartbeat(void);
 u32 get_cpu_usage(void);
 
-extern u32 sys_cycle;
+extern u32 g_sys_cycle;
 extern u64 sys_heartbeat_time;
 extern uint32_t scheduler_lock_nest;
 

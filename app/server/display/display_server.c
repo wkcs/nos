@@ -221,7 +221,7 @@ static int display_server_init(void)
     ds->ds_dev.priv = ds;
     device_register(&ds->ds_dev);
 
-    ds->task = task_create("display_server", display_server_task_entry, ds, 2, 10, NULL);
+    ds->task = task_create("display_server", display_server_task_entry, ds, 2, 1024, 10, NULL);
     if (ds->task == NULL) {
         pr_fatal("creat display_server task err\r\n");
         BUG_ON(true);

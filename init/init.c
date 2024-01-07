@@ -73,7 +73,7 @@ int idel_task_init(void)
 {
     struct task_struct *idel;
 
-    idel = task_create("idel", idel_task_entry, NULL, IDEL_TASK_PRIO, 10, NULL);
+    idel = task_create("idel", idel_task_entry, NULL, IDEL_TASK_PRIO, 512, 10, NULL);
     if (idel == NULL) {
         pr_fatal("creat idle task err\n");
         BUG_ON(true);
