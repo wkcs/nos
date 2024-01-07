@@ -12,6 +12,7 @@
 #include <kernel/list.h>
 #include <kernel/spinlock.h>
 #include <kernel/pid.h>
+#include <kernel/task.h>
 
 extern void *__kalloc(u32 size, gfp_t flag, pid_t pid);
 extern int __kfree(void *addr);

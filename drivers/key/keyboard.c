@@ -402,7 +402,7 @@ int keyboard_init(void)
     GPIO_Init(GPIOC, &GPIO_InitStructure);
 
     key_task = task_create("key", key_task_entry, NULL, KEY_TASK_STACK_SIZE, KEY_TASK_PRIO,
-        KEY_TASK_TICK, NULL, NULL);
+        1024, KEY_TASK_TICK, NULL, NULL);
     if (key_task == NULL) {
         pr_err("creat key task err\n");
         return -1;

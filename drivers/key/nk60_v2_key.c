@@ -394,7 +394,7 @@ static int nk60_v2_key_init(void)
 {
     nk60_v2_key_gpio_init();
 
-    key_task = task_create("nc60_v2-key", nc60_v2_key_task_entry, NULL, 3, 10, NULL);
+    key_task = task_create("nc60_v2-key", nc60_v2_key_task_entry, NULL, 3, 1024, 10, NULL);
     if (key_task == NULL) {
         pr_fatal("creat nc60_v2-key task err\r\n");
         BUG_ON(true);

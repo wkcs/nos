@@ -112,8 +112,9 @@ void cpu_hard_fault(struct cpu_dump_type *cpu_dump_type)
     pr_info("pc  = 0x%08lx\r\n", cpu_dump_type->stack_frame.exception_stack_frame.pc);
     pr_info("psr = 0x%08lx\r\n", cpu_dump_type->stack_frame.exception_stack_frame.psr);
     pr_info("-------------------\r\n");
+    struct task_struct *task = current;
+    pr_info("current task is %s\r\n", task->name);
     if (cpu_dump_type->sp & 1 << 2) {
-        struct task_struct *task = current;
         pr_info("cpu hard fault on task(name = %s)\r\n", task->name);
     } else {
         pr_info("cpu hard fault on handler\r\n");

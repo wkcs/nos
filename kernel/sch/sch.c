@@ -18,11 +18,13 @@
 #include <kernel/printk.h>
 #include <lib/string.h>
 
+struct task_struct *g_current_task;
+
 static struct list_head ready_task_list[CONFIG_MAX_PRIORITY];
 SPINLOCK(ready_list_lock);
 uint32_t scheduler_lock_nest;
 
-u32 sys_cycle;
+u32 g_sys_cycle;
 u64 sys_heartbeat_time;
 static u32 cpu_total_run_time;
 static u32 cpu_total_run_time_save;
@@ -75,11 +77,12 @@ void sch_start(void)
     to_task->status = TASK_RUNING;
 
     /* switch to new task */
-    sys_cycle = 0;
+    g_sys_cycle = 0;
     sys_heartbeat_time = cpu_run_time_us();
     to_task->start_time = sys_heartbeat_time;
-    to_task->sys_cycle = sys_cycle;
+    to_task->sys_cycle = g_sys_cycle;
     to_task->save_sys_cycle = 0;
+    g_current_task = to_task;
     context_switch_to((addr_t)&to_task->sp);
 
     /* never come back */
@@ -120,7 +123,7 @@ static void calculate_sys_cycle(void)
     count++;
     if (count >= (1000 / CONFIG_SYS_TICK_MS)) {
         count = 0;
-        sys_cycle++;
+        g_sys_cycle++;
     }
 }
 
@@ -141,17 +144,17 @@ static void calculate_task_time(struct task_struct *to_task, struct task_struct 
         cpu_total_run_time += run_time;
     }
     to_task->start_time = run_times;
-    if (to_task->sys_cycle != sys_cycle) {
+    if (to_task->sys_cycle != g_sys_cycle) {
         to_task->save_sys_cycle = to_task->sys_cycle;
-        to_task->sys_cycle = sys_cycle;
+        to_task->sys_cycle = g_sys_cycle;
         to_task->save_run_time = to_task->run_time;
         to_task->run_time = 0;
     }
 
-    if (sys_cycle != pre_sys_cycle) {
+    if (g_sys_cycle != pre_sys_cycle) {
         cpu_total_run_time_save = cpu_total_run_time;
         cpu_total_run_time = 0;
-        pre_sys_cycle = sys_cycle;
+        pre_sys_cycle = g_sys_cycle;
     }
 }
 
@@ -183,7 +186,11 @@ void switch_task(void)
         to_task->status = TASK_RUNING;
         spin_unlock_irq(&from_task->lock);
         spin_unlock_irq(&to_task->lock);
+        if ((addr_t)to_task->sp > 0x2f000000) {
+            BUG_ON(true);
+        }
         context_switch((addr_t)&from_task->sp, (addr_t)&to_task->sp);
+        g_current_task = to_task;
         spin_unlock_irq(&g_switch_lock);
         return;
     } else {

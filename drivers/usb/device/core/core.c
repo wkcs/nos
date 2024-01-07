@@ -1987,7 +1987,7 @@ static void usbd_task_entry(__maybe_unused void* parameter)
             continue;
         }
 
-        //pr_info("message type %d\r\n", msg.type);
+        // pr_info("message type %d\r\n", msg.type);
 
         switch (msg.type) {
         case USB_MSG_SOF:
@@ -2057,7 +2057,7 @@ int usbd_core_init(void)
     INIT_LIST_HEAD(&usb_device_list);
 
     /* create usb device task */
-    usb_task = task_create("usbd", usbd_task_entry, NULL, 5, 5, NULL);
+    usb_task = task_create("usbd", usbd_task_entry, NULL, 5, 4096, 5, NULL);
 
     /* create an usb message queue */
     msg_q_init(&usb_mq);

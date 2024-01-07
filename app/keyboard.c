@@ -42,7 +42,7 @@ static void keyboard_task_entry(void* parameter)
 struct task_struct *keyboard_task;
 static int keyboard_task_init(void)
 {
-    keyboard_task = task_create("keyboard", keyboard_task_entry, NULL, 23, 10, NULL);
+    keyboard_task = task_create("keyboard", keyboard_task_entry, NULL, 23, 1024, 10, NULL);
     if (keyboard_task == NULL) {
         pr_fatal("creat keyboard task err\r\n");
         BUG_ON(true);

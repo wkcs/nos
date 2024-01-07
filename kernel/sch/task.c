@@ -56,23 +56,27 @@ static void timeout(void *parameter)
     add_task_to_ready_list(task);
 }
 
-static struct task_info *alloc_task_info(struct task_struct *task)
+static void *alloc_task_stack(uint32_t stack_size)
 {
-    struct task_info *info;
+    char *buf;
+    uint32_t i;
 
-    info = (struct task_info *)alloc_page(GFP_KERNEL);
-    if (info == NULL) {
+    buf = kalloc(stack_size, GFP_KERNEL);
+    if (buf == NULL) {
+        pr_err("alloc stack error\r\n");
         return NULL;
     }
 
-    info->task = task;
+    for (i = 0; i < stack_size; i++) {
+        buf[i] = '#';
+    }
 
-    return info;
+    return buf;
 }
 
-static int free_task_info(struct task_info *info)
+static int free_task_stack(void *stack_addr)
 {
-    return free_page((addr_t)info);
+    return kfree(stack_addr);
 }
 
 static int __task_create(struct task_struct *task,
@@ -133,13 +137,14 @@ struct task_struct *task_create(const char *name,
                                 void (*entry)(void *parameter),
                                 void *parameter,
                                 uint8_t priority,
+                                uint32_t stack_size,
                                 uint32_t tick,
                                 void (*clean)(struct task_struct *task))
 {
     struct task_struct *task;
     addr_t *stack_start;
     pid_t pid;
-    struct task_info *info;
+    void *stack_addr;
     int rc;
 
 #if CONFIG_MAX_PRIORITY < 256
@@ -155,15 +160,16 @@ struct task_struct *task_create(const char *name,
         goto task_struct_err;
     }
 
-    info = alloc_task_info(task);
-    if (info == NULL) {
-        pr_err("%s: alloc task info buf error\r\n", name);
-        goto task_info_err;
+    task->stack_size = stack_size;
+    stack_addr = alloc_task_stack(stack_size);
+    if (stack_addr == NULL) {
+        pr_err("%s: alloc task stack buf error\r\n", name);
+        goto task_stack_err;
     }
 #ifdef CONFIG_STACK_GROWSUP
-    stack_start = (addr_t *)((addr_t)info + sizeof(struct task_info));
+    stack_start = (addr_t *)(stack_addr);
 #else
-    stack_start = (addr_t *)((addr_t)info + sizeof(union task_union) - sizeof(addr_t));
+    stack_start = (addr_t *)((addr_t)stack_addr + stack_size - sizeof(addr_t));
 #endif
 
     pid = pid_alloc();
@@ -185,8 +191,8 @@ struct task_struct *task_create(const char *name,
 task_create_err:
     pid_free(pid);
 pid_err:
-    free_task_info(info);
-task_info_err:
+    free_task_stack(stack_addr);
+task_stack_err:
     kfree(task);
 task_struct_err:
     return NULL;
@@ -417,10 +423,10 @@ u32 task_get_cpu_usage(struct task_struct *task)
         return 0;
     }
 
-    if (task->sys_cycle == (sys_cycle - 1)) {
+    if (task->sys_cycle == (g_sys_cycle - 1)) {
         return task->run_time;
     }
-    if (task->save_sys_cycle == (sys_cycle - 1)) {
+    if (task->save_sys_cycle == (g_sys_cycle - 1)) {
         return task->save_run_time;
     }
     return 0;
