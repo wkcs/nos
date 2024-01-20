@@ -16,6 +16,7 @@ enum cpu_reboot_flag {
     REBOOT_TO_BOOTLOADER,
     REBOOT_TO_KERNEL_A,
     REBOOT_TO_KERNEL_B,
+    REBOOT_TO_KERNEL = 0xffffffff,
 };
 
 __init void cpu_init(void);

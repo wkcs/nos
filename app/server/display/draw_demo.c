@@ -140,7 +140,7 @@ static int draw_demo_init(void)
         return -ENOMEM;
     }
 
-    dd->task = task_create("draw_demo", draw_demo_task_entry, dd, 20, 512, 10, NULL);
+    dd->task = task_create("draw_demo", draw_demo_task_entry, dd, 20, 1024, 10, NULL);
     if (dd->task == NULL) {
         pr_fatal("creat draw_demo task err\r\n");
         return -EINVAL;

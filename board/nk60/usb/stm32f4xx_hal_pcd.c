@@ -1,3 +1,5 @@
+#define pr_fmt(fmt) "[USB]:%s[%d]:"fmt, __func__, __LINE__
+
 #include "stm32f4xx_hal_pcd.h"
 
 /** @defgroup PCD_Private_Macros PCD Private Macros
@@ -260,6 +262,7 @@ void HAL_PCD_IRQHandler(PCD_HandleTypeDef *hpcd)
             {
               hpcd->OUT_ep[epnum].xfer_count = hpcd->OUT_ep[epnum].maxpacket- (USBx_OUTEP(epnum)->DOEPTSIZ & USB_OTG_DOEPTSIZ_XFRSIZ); 
               hpcd->OUT_ep[epnum].xfer_buff += hpcd->OUT_ep[epnum].maxpacket;            
+              //pr_info("ep %u, xfer_buff=0x%08lx\r\n", epnum, (addr_t)hpcd->OUT_ep[epnum].xfer_buff);
             }
             
             HAL_PCD_DataOutStageCallback(hpcd, epnum);
@@ -321,6 +324,7 @@ void HAL_PCD_IRQHandler(PCD_HandleTypeDef *hpcd)
             if (hpcd->Init.dma_enable == 1U)
             {
               hpcd->IN_ep[epnum].xfer_buff += hpcd->IN_ep[epnum].maxpacket; 
+              //pr_info("ep %u, xfer_buff=0x%08lx\r\n", epnum, (addr_t)hpcd->IN_ep[epnum].xfer_buff);
             }
                                       
             HAL_PCD_DataInStageCallback(hpcd, epnum);
@@ -556,6 +560,7 @@ void HAL_PCD_IRQHandler(PCD_HandleTypeDef *hpcd)
           USB_ReadPacket(USBx, ep->xfer_buff, (temp & USB_OTG_GRXSTSP_BCNT) >> 4U);
           ep->xfer_buff += (temp & USB_OTG_GRXSTSP_BCNT) >> 4U;
           ep->xfer_count += (temp & USB_OTG_GRXSTSP_BCNT) >> 4U;
+          //pr_info("ep %u, xfer_buff=0x%08lx\r\n", ep->num, (addr_t)ep->xfer_buff);
         }
       }
       else if (((temp & USB_OTG_GRXSTSP_PKTSTS) >> 17U) ==  STS_SETUP_UPDT)
@@ -857,6 +862,7 @@ HAL_StatusTypeDef HAL_PCD_EP_Receive(PCD_HandleTypeDef *hpcd, uint8_t ep_addr, u
   
   /*setup and start the Xfer */
   ep->xfer_buff = pBuf;  
+  //pr_info("ep %u, xfer_buff=0x%08lx\r\n", ep->num, (addr_t)ep->xfer_buff);
   ep->xfer_len = len;
   ep->xfer_count = 0U;
   ep->is_in = 0U;
@@ -905,6 +911,7 @@ HAL_StatusTypeDef HAL_PCD_EP_Transmit(PCD_HandleTypeDef *hpcd, uint8_t ep_addr, 
   
   /*setup and start the Xfer */
   ep->xfer_buff = pBuf;  
+  //pr_info("ep %u, xfer_buff=0x%08lx\r\n", ep->num, (addr_t)ep->xfer_buff);
   ep->xfer_len = len;
   ep->xfer_count = 0U;
   ep->is_in = 1U;
@@ -1129,6 +1136,7 @@ static HAL_StatusTypeDef PCD_WriteEmptyTxFifo(PCD_HandleTypeDef *hpcd, uint32_t 
     
     ep->xfer_buff  += len;
     ep->xfer_count += len;
+    //pr_info("ep %u, xfer_buff=0x%08lx\r\n", ep->num, (addr_t)ep->xfer_buff);
   }
   
   if(len <= 0U)

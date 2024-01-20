@@ -555,4 +555,6 @@ typedef struct ustorage_csw* ustorage_csw_t;
 #define USBD_THREAD_PRIO 8
 #endif
 
+int usb_class_register(void);
+
 #endif /* __NOS_USB_COMMON_H__ */

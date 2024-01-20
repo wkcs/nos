@@ -11,7 +11,7 @@
 
 #include "stm32f4xx.h"
 
-#define CLK_GROUP_NUM 3
+#define CLK_GROUP_NUM 5
 
 struct clk_config_t {
     uint32_t clk[CLK_GROUP_NUM];

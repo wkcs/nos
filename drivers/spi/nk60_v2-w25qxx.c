@@ -46,10 +46,11 @@
 #define W25X_ManufactDeviceID 0x90
 #define W25X_JedecDeviceID    0x9F
 
+#define BLOACK_BUF_SIZE 4096
 struct w25qxx_info {
     struct device dev;
     uint16_t id;
-    uint8_t buf[4096];
+    uint8_t buf[BLOACK_BUF_SIZE];
 };
 
 uint8_t spi1_read_write_byte(uint8_t tx_data)
@@ -179,7 +180,7 @@ void w25qxx_erase_chip(void)
 void w25qxx_erase_sector(uint32_t Dst_Addr)
 {
     //pr_info("fe:%x\r\n", Dst_Addr);
-    Dst_Addr *= 4096;
+    Dst_Addr *= BLOACK_BUF_SIZE;
     w25qxx_write_enable(); //SET WEL
     w25qxx_wait_busy();
     //pr_info("next\r\n");
@@ -307,14 +308,23 @@ ssize_t w25qxx_write(struct device *dev, addr_t pos, const void *buffer, size_t 
     size_t index = 0;
     struct w25qxx_info *chip_info = container_of(dev, struct w25qxx_info, dev);
 
-    secpos = pos / 4096; //扇区地址
-    secoff = pos % 4096; //在扇区内的偏移
-    secremain = 4096 - secoff; //扇区剩余空间大小
+    secpos = pos / BLOACK_BUF_SIZE; //扇区地址
+    secoff = pos % BLOACK_BUF_SIZE; //在扇区内的偏移
+    secremain = BLOACK_BUF_SIZE - secoff; //扇区剩余空间大小
     if (size <= secremain)
         secremain = size; //不大于4096个字节
+
+    /*
+    buf = kalloc(BLOACK_BUF_SIZE, GFP_KERNEL);
+    if (buf == NULL) {
+        pr_err("alloc buf error\r\n");
+        return -ENOMEM;
+    }
+    */
+
     while (1)
     {
-        w25qxx_read(dev, secpos * 4096, (void *)chip_info->buf, 4096); //读出整个扇区的内容
+        w25qxx_read(dev, secpos * BLOACK_BUF_SIZE, (void *)chip_info->buf, BLOACK_BUF_SIZE); //读出整个扇区的内容
         for (i = 0; i < secremain; i++)               //校验数据
         {
             if (chip_info->buf[secoff + i] != 0XFF)
@@ -327,7 +337,7 @@ ssize_t w25qxx_write(struct device *dev, addr_t pos, const void *buffer, size_t 
             {
                 chip_info->buf[i + secoff] = ((uint8_t *)buffer)[i + index];
             }
-            w25qxx_write_no_check(chip_info->buf, secpos * 4096, 4096); //写入整个扇区
+            w25qxx_write_no_check(chip_info->buf, secpos * BLOACK_BUF_SIZE, BLOACK_BUF_SIZE); //写入整个扇区
         }
         else
             w25qxx_write_no_check((uint8_t *)buffer + index, pos, secremain); //写已经擦除了的,直接写入扇区剩余区间.
@@ -340,8 +350,8 @@ ssize_t w25qxx_write(struct device *dev, addr_t pos, const void *buffer, size_t 
             index += secremain;
             pos += secremain;      //写地址偏移
             size -= secremain; //字节数递减
-            if (size > 4096)
-                secremain = 4096; //下一个扇区还是写不完
+            if (size > BLOACK_BUF_SIZE)
+                secremain = BLOACK_BUF_SIZE; //下一个扇区还是写不完
             else
                 secremain = size; //下一个扇区可以写完了
         }
@@ -359,6 +369,7 @@ int spi_w25qxx_init(void)
         pr_err("alloc w25qxx info buf err\r\n");
         return -ENOMEM;
     }
+
     device_init(&info->dev);
     info->dev.name = "nk60-flash";
     info->dev.ops.write = w25qxx_write;

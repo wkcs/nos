@@ -18,7 +18,7 @@ static enum log_level g_log_level = CONFIG_DEFAULT_LOG_LEVEL;
 #else
 static enum log_level g_log_level = LOG_INFO;
 #endif
-static char log_buf[256];
+static char log_buf[4096];
 
 __printf(3,4) int pr_log(bool no_tag, enum log_level level, const char *fmt, ...)
 {

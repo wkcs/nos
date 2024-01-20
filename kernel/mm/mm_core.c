@@ -53,7 +53,7 @@ static int mm_deamon_task_init(void)
 {
     struct task_struct *mm_deamon;
 
-    mm_deamon = task_create("mm_deamon", mm_deamon_task_entry, NULL, MM_DEAMON_TASK_PRIO, 512, 10, NULL);
+    mm_deamon = task_create("mm_deamon", mm_deamon_task_entry, NULL, MM_DEAMON_TASK_PRIO, 1024, 10, NULL);
     if (mm_deamon == NULL) {
         pr_fatal("creat mm_deamon task err\n");
         BUG_ON(true);

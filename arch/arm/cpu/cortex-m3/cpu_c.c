@@ -88,7 +88,7 @@ void cpu_hard_fault(struct cpu_dump_type *cpu_dump_type)
         pr_info("cpu hard fault on handler\r\n");
     }
 
-    // dump_all_task();
+    dump_all_task();
 
     while (1);
 }
