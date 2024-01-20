@@ -8,6 +8,7 @@
 
 #include <kernel/kernel.h>
 #include <kernel/init.h>
+#include <kernel/sleep.h>
 #include <usb/usb_device.h>
 #include <lib/string.h>
 #include "arch_usb.h"
@@ -92,7 +93,17 @@ void usb_gpio_config(void)
 {
     GPIO_InitTypeDef  GPIO_InitStructure;
 
-	RCC_AHB1PeriphClockCmd(RCC_AHB1Periph_GPIOA, ENABLE);//使能GPIOA时钟
+    RCC_AHB1PeriphClockCmd(RCC_AHB1Periph_GPIOA, ENABLE);//使能GPIOA时钟
+	//GPIOA11,A12设置
+	GPIO_InitStructure.GPIO_Pin = GPIO_Pin_11 | GPIO_Pin_12;//PA11/12复用功能输出
+	GPIO_InitStructure.GPIO_Mode = GPIO_Mode_OUT;//复用功能
+	GPIO_InitStructure.GPIO_OType = GPIO_OType_PP;//推挽输出
+	GPIO_InitStructure.GPIO_Speed = GPIO_Speed_100MHz;//100MHz
+	GPIO_InitStructure.GPIO_PuPd = GPIO_PuPd_DOWN;
+	GPIO_Init(GPIOA, &GPIO_InitStructure);//初始化
+    GPIO_ResetBits(GPIOA, GPIO_Pin_11 | GPIO_Pin_12);
+    usleep(200); /* reset usb port */
+
 	RCC_AHB2PeriphClockCmd(RCC_AHB2Periph_OTG_FS, ENABLE);//使能USB OTG时钟
 	//GPIOA11,A12设置
 	GPIO_InitStructure.GPIO_Pin = GPIO_Pin_11 | GPIO_Pin_12;//PA11/12复用功能输出
@@ -246,6 +257,7 @@ static const struct udcd_ops _udc_ops =
 
 int stm_usbd_register(void)
 {
+    usb_class_register();
     memset((void *)&_stm_udc, 0, sizeof(struct udcd));
     device_init(&_stm_udc.dev);
     _stm_udc.dev.name = "usbd";

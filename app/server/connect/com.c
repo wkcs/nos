@@ -6,6 +6,8 @@
  * Email: huqihan@live.com
  */
 
+#define pr_fmt(fmt) "[CONNECT]:%s[%d]:"fmt, __func__, __LINE__
+
 #include <kernel/task.h>
 #include <kernel/sch.h>
 #include <kernel/cpu.h>
@@ -16,6 +18,7 @@
 #include <kernel/device.h>
 #include <kernel/init.h>
 #include <kernel/clk.h>
+#include <lib/string.h>
 
 #include "com.h"
 
@@ -42,7 +45,7 @@ int com_read_data(uint8_t *buf, size_t size)
     int ret;
 
     g_com_data->usb_dev->ops.read(g_com_data->usb_dev, 0, buf, size);
-    ret = sem_get_timeout(&g_com_data->read_sem, sec_to_tick(2));
+    ret = sem_get_timeout(&g_com_data->read_sem, msec_to_tick(100));
     if (ret != 0) {
         // pr_err("winusb read data timedout\r\n");
         return -ETIMEDOUT;
@@ -53,12 +56,12 @@ int com_read_data(uint8_t *buf, size_t size)
 
 int com_write_data(const uint8_t *buf, size_t size)
 {
-    int ret;
+    int rc;
 
     g_com_data->usb_dev->ops.write(g_com_data->usb_dev, 0, buf, size);
-    ret = sem_get_timeout(&g_com_data->write_sem, sec_to_tick(2));
-    if (ret != 0) {
-        pr_err("winusb write data timedout\r\n");
+    rc = sem_get_timeout(&g_com_data->write_sem, sec_to_tick(2));
+    if (rc != 0) {
+        pr_err("winusb write data timedout, rc=%d\r\n", rc);
         return -ETIMEDOUT;
     }
 
@@ -111,6 +114,7 @@ static void connect_server_task_entry(void *parameter)
     static uint8_t data_type;
     struct com_data *com = parameter;
     int i;
+    bool download_start = false;
 
     com->flash_dev = NULL;
     for (i = 0; i < 100; i ++) {
@@ -150,16 +154,18 @@ static void connect_server_task_entry(void *parameter)
     com->usb_dev->ops.read_complete = com_read_complete;
     com->usb_dev->ops.write_complete = com_write_complete;
 
+    data_buf = (uint8_t *)alloc_page(GFP_KERNEL);
+    pr_info("data_buf addr is 0x%08lx - 0x%08lx\r\n", (addr_t)data_buf, (addr_t)data_buf + CONFIG_PAGE_SIZE);
     while (1) {
-        ret = com_read_data((uint8_t *)&cmd_pkg, sizeof(cmd_pkg));
+        ret = com_read_data(data_buf, sizeof(struct com_cmd_package));
         if (ret != 0) {
             continue;
         }
-        pr_info("get com package ok, type=%d, size=%d\r\n", cmd_pkg.type, cmd_pkg.size);
+        memcpy(&cmd_pkg, data_buf, sizeof(struct com_cmd_package));
+        pr_info("get com package ok, type=%d, index=%d, size=%d\r\n", cmd_pkg.type, cmd_pkg.index, cmd_pkg.size);
         if (cmd_pkg.size != 0) {
-            data_buf = kalloc(cmd_pkg.size, GFP_KERNEL);
-            if (data_buf == NULL) {
-                pr_info("can't alloc data buf\r\n");
+            if (cmd_pkg.size > CONFIG_PAGE_SIZE) {
+                pr_err("data size to max\r\n");
                 continue;
             }
             ret = com_read_data(data_buf, cmd_pkg.size);
@@ -186,24 +192,41 @@ static void connect_server_task_entry(void *parameter)
                 data_type = DATA0;
                 break;
             case COM_DOWNLOAD_PKG:
+                if (!download_start) {
+                    download_start = true;
+                    com->info.img_index = 0;
+                    com->info.index_save = 0;
+                    com->info.total_size = 0;
+                    com->info.addr = 0;
+                    data_type = DATA0;
+                }
                 switch (cmd_pkg.data_type) {
                 case DATA0:
-                    if (data_type != DATA0)
+                    if (data_type != DATA0) {
                         pr_err("data type is error, type=%d, need=%d\r\n", cmd_pkg.data_type, data_type);
-                    else
+                        download_start = false;
+                    } else {
                         data_type = DATA1;
+                    }
                     break;
                 case DATA1:
-                    if (data_type != DATA1)
+                    if (data_type != DATA1) {
                         pr_err("data type is error, type=%d, need=%d\r\n", cmd_pkg.data_type, data_type);
-                    else
+                        download_start = false;
+                    } else {
                         data_type = DATA0;
+                    }
                     break;
                 default:
                     pr_err("data type is error, type=%d, need=%d\r\n", cmd_pkg.data_type, data_type);
-                    goto out;
+                    download_start = false;
+                    continue;
                 }
-                com_download_img(com, data_buf, cmd_pkg.size, cmd_pkg.index);
+                ret = com_download_img(com, data_buf, cmd_pkg.size, cmd_pkg.index);
+                if (ret < 0) {
+                    pr_err("download error, rc=%d\r\n", ret);
+                    download_start = false;
+                }
                 break;
             case COM_DATA_PKG:
                 break;
@@ -211,8 +234,6 @@ static void connect_server_task_entry(void *parameter)
                 pr_err("unknown package(%x)\r\n", cmd_pkg.type);
                 break;
         }
-out:
-        kfree(data_buf);
     }
 }
 
@@ -231,7 +252,7 @@ static int connect_server_init(void)
     sem_init(&com->read_sem, 0);
     sem_init(&com->write_sem, 0);
 
-    com->task = task_create("connect_server", connect_server_task_entry, com, 15, 10, NULL);
+    com->task = task_create("connect_server", connect_server_task_entry, com, 15, 4096, 10, NULL);
     if (com->task == NULL) {
         pr_fatal("creat connect_server task err\r\n");
         BUG_ON(true);

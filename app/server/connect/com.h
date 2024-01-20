@@ -14,12 +14,20 @@
 #include <kernel/task.h>
 #include <kernel/device.h>
 
+struct com_download_info {
+    uint32_t index_save;
+    uint32_t total_size;
+    addr_t addr;
+    uint8_t img_index;
+};
+
 struct com_data {
     struct task_struct *task;
     struct device *flash_dev;
     struct device *usb_dev;
     sem_t read_sem;
     sem_t write_sem;
+    struct com_download_info info;
 };
 
 enum com_cmd_type {

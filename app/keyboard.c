@@ -25,8 +25,6 @@ static void keyboard_task_entry(void* parameter)
     __maybe_unused u32 all_usage;
 
 #ifdef CONFIG_USB
-    usbd_hid_class_register();
-    usbd_winusb_class_register();
     stm_usbd_register();
 #endif
 
@@ -42,7 +40,7 @@ static void keyboard_task_entry(void* parameter)
 struct task_struct *keyboard_task;
 static int keyboard_task_init(void)
 {
-    keyboard_task = task_create("keyboard", keyboard_task_entry, NULL, 23, 1024, 10, NULL);
+    keyboard_task = task_create("keyboard", keyboard_task_entry, NULL, 23, 2048, 10, NULL);
     if (keyboard_task == NULL) {
         pr_fatal("creat keyboard task err\r\n");
         BUG_ON(true);

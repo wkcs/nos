@@ -815,13 +815,19 @@ HAL_StatusTypeDef USB_WritePacket(USB_OTG_GlobalTypeDef *USBx, uint8_t *src, uin
   *           1 : DMA feature used
   * @retval pointer to destination buffer
   */
+extern struct task_struct *usb_task;
 void *USB_ReadPacket(USB_OTG_GlobalTypeDef *USBx, uint8_t *dest, uint16_t len)
 {
   uint32_t i=0U;
   uint32_t count32b = (len + 3U) / 4U;
+  uint8_t *start = dest;
 
   for ( i = 0U; i < count32b; i++, dest += 4U )
   {
+    if ((addr_t)dest == (addr_t)usb_task) {
+      pr_err("start=0x%08lx, len=%u\r\n", (addr_t)start, len);
+      BUG_ON(true);
+    }
     *(uint32_t *)dest = USBx_DFIFO(0U);
 
   }

@@ -192,6 +192,9 @@ void switch_task(void)
         context_switch((addr_t)&from_task->sp, (addr_t)&to_task->sp);
         g_current_task = to_task;
         spin_unlock_irq(&g_switch_lock);
+        if ((addr_t)from_task->sp > 0x2f000000) {
+            BUG_ON(true);
+        }
         return;
     } else {
         spin_lock_irq(&to_task->lock);

@@ -6,6 +6,8 @@
  * Email: huqihan@live.com
  */
 
+#define pr_fmt(fmt) "[CONNECT]:%s[%d]:"fmt, __func__, __LINE__
+
 #include <kernel/errno.h>
 #include "com.h"
 

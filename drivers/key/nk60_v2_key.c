@@ -103,7 +103,7 @@ static void hc595_load(void)
     HC595_EN = 1;
 	usleep(1);
     HC595_EN = 0;
-	usleep(1);
+	usleep(10);
 }
 
 static void hc595_send(uint8_t data)
@@ -162,7 +162,7 @@ static void nk60_v2_key_scan(uint32_t *raw_data)
 
     for (index = 0; index < KEY_RAW_DATA_NUM; index++) {
         raw_data[index] &= raw_data_old[index];
-        //pr_info("data[%d]=0x%x\r\n", index, raw_data[index]);
+        // pr_info("data[%d]=0x%x\r\n", index, raw_data[index]);
     }
 }
 
