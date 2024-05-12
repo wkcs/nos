@@ -21,6 +21,7 @@ struct timer {
     void *parameter;
     struct list_head list;
     spinlock_t lock;
+    bool timeout;
 };
 
 int timer_init(struct timer *timer, const char *name,

@@ -31,6 +31,7 @@ int timer_init(struct timer *timer, const char *name,
     timer->timeout_func = timeout;
     timer->parameter = parameter;
     timer->init_tick = 0;
+    timer->timeout = false;
     spin_lock_init(&timer->lock);
 
     return 0;
@@ -76,6 +77,10 @@ static u32 get_lave_tick(struct timer *timer)
     u64 run_tick = cpu_run_ticks();
     u64 lave_tick = 0;
 
+    if (timer->timeout) {
+        return 0;
+    }
+
     if (timer->timeout_tick >= run_tick) {
         return timer->timeout_tick - run_tick;
     } else {
@@ -119,6 +124,7 @@ int timer_start(struct timer *timer, u32 tick)
     } else {
         timer->init_tick = tick + 1;
     }
+    timer->timeout = false;
 
     spin_lock_irq(&g_timer_list_lock);
     if (list_empty(&g_sys_timer_list))
@@ -155,13 +161,26 @@ void timer_check_handle(void)
     struct timer *timer, *tmp;
     LIST_HEAD(tmp_list);
 
+    /* check timeout */
+    spin_lock_irq(&g_timer_list_lock);
+    if (!list_empty(&g_sys_timer_list)) {
+        list_for_each_entry_safe (timer, tmp, &g_sys_timer_list, list) {
+            if (get_lave_tick(timer) == 0) {
+                timer->timeout = true;
+            } else {
+                break;
+            }
+        }
+    }
+    spin_unlock_irq(&g_timer_list_lock);
+
     if (unlikely(READ_ONCE(scheduler_lock_nest) != 0))
         return;
 
     spin_lock_irq(&g_timer_list_lock);
     if (!list_empty(&g_sys_timer_list)) {
         list_for_each_entry_safe (timer, tmp, &g_sys_timer_list, list) {
-            if (get_lave_tick(timer) == 0) {
+            if (timer->timeout) {
                 list_del(&timer->list);
                 list_add_tail(&timer->list, &tmp_list);
             } else {
