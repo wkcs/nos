@@ -16,17 +16,10 @@
 #include <kernel/msg_queue.h>
 #include <usb/usb_device.h>
 
-#ifdef CONFIG_USB
-extern int stm_usbd_register(void);
-#endif
 static void keyboard_task_entry(void* parameter)
 {
     __maybe_unused u32 usage;
     __maybe_unused u32 all_usage;
-
-#ifdef CONFIG_USB
-    stm_usbd_register();
-#endif
 
     while (1) {
         usage = task_get_cpu_usage(current) / 100;

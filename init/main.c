@@ -15,6 +15,17 @@
 #include <kernel/mm.h>
 #include <kernel/sch.h>
 
+void nos_print_kernel_info(void)
+{
+    pr_info("Welcome to NOS:\r\n");
+    pr_info("    arch[%s]\r\n", CONFIG_ARCH);
+    pr_info("    board[%s]\r\n", CONFIG_BOARD);
+    pr_info("    build-time[%s]\r\n", CONFIG_BUILD_INFO);
+    pr_info("    cpu-type[%s]\r\n", CONFIG_CPU_TYPE);
+    pr_info("    version[0x%x]\r\n", CONFIG_VERSION_CODE);
+    pr_info("    page-size[%d]\r\n", CONFIG_PAGE_SIZE);
+}
+
 int nos_start(void)
 {
     cpu_init();
@@ -22,13 +33,12 @@ int nos_start(void)
     board_init();
     console_init();
     kernel_log_init();
-    pr_info("nos running\r\n");
+    nos_print_kernel_info();
 
     mm_node_early_init();
     mm_init();
     pid_init();
     sch_init();
-    task_init_call();
 
     sch_start();
 

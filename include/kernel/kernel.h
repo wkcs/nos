@@ -28,6 +28,8 @@ extern addr_t kernel_running;
 })
 
 #define IDEL_TASK_PID 1
+#define CORE_TASK_PRIO 0
+#define SYSTEM_TASK_PRIO 1
 #define IDEL_TASK_PRIO (CONFIG_MAX_PRIORITY - 1)
 #define MM_DEAMON_TASK_PRIO (CONFIG_MAX_PRIORITY - 2)
 

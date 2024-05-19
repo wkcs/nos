@@ -24,7 +24,6 @@ typedef struct {
             .task_init_func = fn \
         }
 
-void task_init_call(void);
 int idel_task_init(void);
 
 #endif /* __NOS_INIT_H__ */

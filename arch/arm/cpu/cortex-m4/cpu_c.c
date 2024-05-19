@@ -149,11 +149,13 @@ void UsageFault_Handler(void)
 void SVC_Handler(void)
 {
     pr_fatal("%s entry\r\n", __func__);
+    reboot_to_bootloader();
 }
 
 void DebugMon_Handler(void)
 {
     pr_fatal("%s entry\r\n", __func__);
+    reboot_to_bootloader();
 }
 
 addr_t interrupt_from_task, interrupt_to_task;
