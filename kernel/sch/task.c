@@ -245,6 +245,7 @@ void task_del(struct task_struct *task)
         return;
     }
 
+    pr_info("del %s task\r\n", task->name);
     list_lock = task->list_lock;
     spin_lock_irq(&task->lock);
     task_list_lock(spin_lock_irq, list_lock);
@@ -519,4 +520,41 @@ void dump_all_task(void)
     }
     pr_info("----------------------------------------------------------------------------------------\r\n");
     //spin_unlock(&g_task_list_lock);
+}
+
+static void task_free(struct task_struct *task)
+{
+    void *stack_addr;
+
+#ifdef CONFIG_STACK_GROWSUP
+    stack_addr = (void *)(task->stack);
+#else
+    stack_addr = (void *)((addr_t)task->stack + sizeof(addr_t) - task->stack_size);
+#endif
+    pid_free(task->pid);
+    free_task_stack(stack_addr);
+    kfree(task);
+}
+
+void clean_close_task(void)
+{
+    struct task_struct *task, *tmp;
+    LIST_HEAD(tmp_list);
+
+    spin_lock_irq(&g_close_list_lock);
+    list_for_each_entry_safe(task, tmp, &g_close_task_list, list) {
+        if (task->status != TASK_CLOSE) {
+            pr_fatal("%s task status is not close\r\n", task->name);
+            list_del(&task->list);
+        } else {
+            list_del(&task->list);
+            list_add_tail(&task->list, &tmp_list);
+        }
+    }
+    spin_unlock_irq(&g_close_list_lock);
+
+    list_for_each_entry_safe (task, tmp, &tmp_list, list) {
+        pr_info("free %s task\r\n", task->name);
+        task_free(task);
+    }
 }

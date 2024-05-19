@@ -62,9 +62,31 @@ void task_init_call(void)
     }
 }
 
+static void core_task_entry(void* parameter)
+{
+    task_init_call();
+}
+
+int core_task_init(void)
+{
+    struct task_struct *core;
+
+    core = task_create("core", core_task_entry, NULL, CORE_TASK_PRIO, 512, 10, NULL);
+    if (core == NULL) {
+        pr_fatal("creat core task err\n");
+        BUG_ON(true);
+        return -EINVAL;
+    }
+    task_ready(core);
+
+    return 0;
+}
+
 static void idel_task_entry(void* parameter)
 {
+    core_task_init();
     while (1) {
+        clean_close_task();
         cpu_set_lpm();
     }
 }

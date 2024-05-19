@@ -84,6 +84,7 @@ int task_resume(struct task_struct *task);
 int task_sleep(u32 tick);
 int task_set_prio(struct task_struct *task, uint8_t prio);
 u32 task_get_cpu_usage(struct task_struct *task);
+void clean_close_task(void);
 void dump_all_task(void);
 
 #define task_list_lock(lock_func, lock) \

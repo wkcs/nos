@@ -252,3 +252,4 @@ int stm_usbd_register(void)
     usb_device_init(&_stm_udc);
     return 0;
 }
+task_init(stm_usbd_register);
