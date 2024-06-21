@@ -7,4 +7,4 @@
 ##############################################
 
 obj-y += display_server.o
-obj-y += draw_demo.o
+obj-$(CONFIG_DISPLAY_SERVER_DEMO) += draw_demo.o

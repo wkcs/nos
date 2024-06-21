@@ -24,6 +24,7 @@
 #include <kernel/mutex.h>
 
 #include <display/led.h>
+#include <display/display.h>
 
 #define LED_VCC_EN PBout(0)
 
@@ -33,6 +34,9 @@
 
 #define LED_NUM 61
 #define LED_BUF_SZIE (LED_NUM * COLOR_MAX * LED_COLOR_BIT_WIDTH)
+
+#define LED_WIDTH 14
+#define LED_HEIGHT 5
 
 static uint8_t g_led_buf[LED_BUF_SZIE];
 
@@ -45,6 +49,14 @@ struct nk60_led {
     bool enable;
 };
 struct nk60_led *g_led;
+
+static unsigned int g_nk60_led_buf_index[LED_WIDTH * LED_HEIGHT] = {
+    0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13,
+    14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27,
+    28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 40,
+    41, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 52,
+    53, 54, 55, 56, 56, 56, 56, 56, 56, 56, 57, 58, 59, 60
+};
 
 static void nk60_v2_led_dma_start(void)
 {
@@ -100,16 +112,17 @@ static ssize_t nk60_v2_led_buf_write(struct device *dev, addr_t pos, const void 
 {
     struct nk60_led *led = dev->priv;
     const uint8_t *buf = buffer;
-    int i;
+    int i, index;
 
-    if (size != LED_NUM * COLOR_MAX) {
+    if (size != LED_WIDTH * LED_HEIGHT * DS_COLOR_DATA_MAX) {
         pr_err("data size error\r\n");
         return -EINVAL;
     }
 
     mutex_lock(&led->lock);
-    for (i = 0; i < (LED_NUM * COLOR_MAX); i += 3) {
-        nk60_v2_led_write_buf(buf[i + COLOR_R], buf[i + COLOR_G], buf[i + COLOR_B], i / 3);
+    for (i = 0; i < (LED_WIDTH * LED_HEIGHT * DS_COLOR_DATA_MAX); i += DS_COLOR_DATA_MAX) {
+        index = g_nk60_led_buf_index[i / DS_COLOR_DATA_MAX];
+        nk60_v2_led_write_buf(buf[i + DS_COLOR_R], buf[i + DS_COLOR_G], buf[i + DS_COLOR_B], index);
     }
     mutex_unlock(&led->lock);
 
@@ -126,6 +139,7 @@ static void nk60_v2_led_buf_init(struct nk60_led *led)
 static int nk60_v2_led_control(struct device *dev, int cmd, void *args)
 {
     struct nk60_led *led = dev->priv;
+    struct display_dev_info info = {.width = 14, .height = 5};
 
     switch (cmd) {
     case LED_CTRL_ENABLE:
@@ -144,6 +158,9 @@ static int nk60_v2_led_control(struct device *dev, int cmd, void *args)
         nk60_v2_led_dma_start();
         sem_get(&led->sem);
         mutex_unlock(&led->lock);
+        break;
+    case DS_CTRL_GET_DEV_INFO:
+        memcpy(args, &info, sizeof(struct display_dev_info));
         break;
     default:
         pr_err("unknown cmd: %d\r\n", cmd);
