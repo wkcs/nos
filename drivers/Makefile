@@ -11,3 +11,4 @@ obj-y += key
 obj-y += misc
 obj-y += spi
 obj-$(CONFIG_USB) += usb
+obj-y += display

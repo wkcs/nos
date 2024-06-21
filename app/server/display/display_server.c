@@ -19,51 +19,115 @@
 #include <kernel/mm.h>
 #include <lib/string.h>
 #include <kernel/sem.h>
+#include <kernel/list.h>
 
 #include <display/led.h>
 #include <display/display.h>
-
-#define LED_NUM          61
 
 struct display_server {
     struct task_struct *task;
     struct device *led_dev;
     struct device ds_dev;
+    struct display_dev_info dev_info;
     sem_t sem;
     struct mutex lock;
+    struct list_head draw_list;
 
     bool led_enable;
 
-    uint8_t buf[LED_NUM * COLOR_MAX];
-    uint8_t current_layer[LED_NUM];
+    uint8_t *buf;
 };
 
-static ssize_t display_server_write(struct device *dev, addr_t pos, const void *buffer, size_t size)
+int ds_set_draw_point_loc(struct display_server *ds, struct ds_draw_info *info, struct ds_draw_point *point, uint16_t x, uint16_t y)
 {
-    struct display_server *ds = dev->priv;
-    const uint8_t *buf = buffer;
-
-    if (size != DS_COLOR_DATA_MAX) {
-        pr_err("data size error\r\n");
+    if (info == NULL) {
+        pr_err("draw info is NULL\r\n");
         return -EINVAL;
     }
-    if (pos >= LED_NUM) {
-        pr_err("index error\r\n");
+    if (point == NULL) {
+        pr_err("point is NULL\r\n");
         return -EINVAL;
     }
 
-    if (buf[DS_COLOR_LAYER] > ds->current_layer[pos])
-        return 0;
+    if (x >= ds->dev_info.width) {
+        pr_err("x is out of range, x_max=%u\r\n", ds->dev_info.width);
+    }
+    if (y >= ds->dev_info.height) {
+        pr_err("y is out of range, y_max=%u\r\n", ds->dev_info.height);
+    }
 
-    ds->current_layer[pos] = buf[DS_COLOR_LAYER];
-    if ((buf[DS_COLOR_LAYER] == BACKGROUND_LAYER) && (current != ds->task))
-        return 0;
+    mutex_lock(&info->lock);
+    point->x = x;
+    point->y = y;
+    mutex_unlock(&info->lock);
 
-    ds->buf[pos * COLOR_MAX + COLOR_G] = buf[DS_COLOR_G];
-    ds->buf[pos * COLOR_MAX + COLOR_B] = buf[DS_COLOR_B];
-    ds->buf[pos * COLOR_MAX + COLOR_R] = buf[DS_COLOR_R];
+    return 0;
+}
 
-    return size;
+struct ds_draw_info *display_server_alloc_draw_point_info(struct display_server *ds, int point_num)
+{
+    struct ds_draw_info *info;
+    int i;
+
+    info = kalloc(sizeof(struct ds_draw_info) + sizeof(struct ds_draw_point) * point_num, GFP_KERNEL);
+    if (info == NULL) {
+        pr_err("alloc draw info failed\r\n");
+        return NULL;
+    }
+
+    info->point_num = point_num;
+    info->point = (struct ds_draw_point *)info->buf;
+    for (i = 0; i < point_num; i++) {
+        memset(&info->point[i], 0, sizeof(struct ds_draw_point));
+    }
+    mutex_init(&info->lock);
+    mutex_lock(&ds->lock);
+    list_add(&info->list, &ds->draw_list);
+    mutex_unlock(&ds->lock);
+
+    return info;
+}
+
+struct ds_draw_info *display_server_alloc_draw_area_info(struct display_server *ds,
+                                                         uint16_t x, uint16_t y,
+                                                         uint16_t width, uint16_t height)
+{
+    struct ds_draw_info *info;
+
+    info = kalloc(sizeof(struct ds_draw_info) + sizeof(struct ds_data) * width * height, GFP_KERNEL);
+    if (info == NULL) {
+        pr_err("alloc draw info failed\r\n");
+        return NULL;
+    }
+
+    if (x + width >= ds->dev_info.width) {
+        pr_err("x is out of range, x_max=%u\r\n", ds->dev_info.width);
+    }
+    if (y + height >= ds->dev_info.height) {
+        pr_err("y is out of range, y_max=%u\r\n", ds->dev_info.height);
+    }
+
+    info->point_num = 0;
+    info->area.x = x;
+    info->area.y = y;
+    info->area.width = width;
+    info->area.height = height;
+    info->area.data = (struct ds_data *)info->buf;
+    memset(info->buf, 0, sizeof(struct ds_data) * width * height);
+    mutex_init(&info->lock);
+    mutex_lock(&ds->lock);
+    list_add(&info->list, &ds->draw_list);
+    mutex_unlock(&ds->lock);
+
+    return info;
+}
+
+void display_server_free_draw_info(struct display_server *ds, struct ds_draw_info *info)
+{
+    mutex_lock(&ds->lock);
+    list_del(&info->list);
+    mutex_unlock(&ds->lock);
+    kfree(info);
 }
 
 static int display_server_control(struct device *dev, int cmd, void *args)
@@ -88,14 +152,6 @@ static int display_server_control(struct device *dev, int cmd, void *args)
     case DS_CTRL_UNLOCK:
         mutex_unlock(&ds->lock);
         break;
-    case DS_CTRL_CLEAR_LAYER:
-        uint8_t index = *((uint8_t *)args);
-        if (index >= LED_NUM) {
-            pr_err("index to max\r\n");
-            return -EINVAL;
-        }
-        ds->current_layer[index] = BACKGROUND_LAYER;
-        break;
     default:
         pr_err("unknown cmd: %d\r\n", cmd);
         return -EINVAL;
@@ -104,58 +160,53 @@ static int display_server_control(struct device *dev, int cmd, void *args)
     return 0;
 }
 
-static void display_server_draw_backgrounp_layer(struct display_server *ds)
+static void display_server_merge_point(struct display_server *ds, struct ds_draw_point *point)
 {
-    static int i = 0, n = 0;
-    int m;
-    uint8_t data_buf[DS_COLOR_DATA_MAX];
+    int index;
 
-    switch (i) {
-    case 0:
-        ds->ds_dev.ops.control(&ds->ds_dev, DS_CTRL_LOCK, NULL);
-        for (m = 0; m < LED_NUM; m++) {
-            data_buf[DS_COLOR_R] = 255 - n;
-            data_buf[DS_COLOR_G] = n;
-            data_buf[DS_COLOR_B] = 0;
-            data_buf[DS_COLOR_LAYER] = BACKGROUND_LAYER;
-            ds->ds_dev.ops.write(&ds->ds_dev, m, data_buf, DS_COLOR_DATA_MAX);
+    if (point->data.cmd == DS_DATA_CMD_TRANSPARENT)
+        return;
+
+    index = (point->y * ds->dev_info.width + point->x) * DS_COLOR_DATA_MAX;
+    memcpy(ds->buf + index, point->data.data, DS_COLOR_DATA_MAX);
+}
+
+static void display_server_merge_area(struct display_server *ds, struct ds_draw_area *area)
+{
+    int x, y;
+    int index;
+    int data_index;
+
+    for (y = area->y; y < area->y + area->height; y++) {
+        for (x = area->x; x < area->x + area->width; x++) {
+            data_index = (y - area->y) * area->width + (x - area->x);
+            if (area->data[data_index].cmd == DS_DATA_CMD_TRANSPARENT)
+                continue;
+            index = (y * ds->dev_info.width + x) * DS_COLOR_DATA_MAX;
+            memcpy(ds->buf + index, area->data[data_index].data, DS_COLOR_DATA_MAX);
         }
-        ds->ds_dev.ops.control(&ds->ds_dev, DS_CTRL_UNLOCK, NULL);
-        n += 1;
-        if (n == 255)
-            i++;
-        break;
-    case 1:
-        ds->ds_dev.ops.control(&ds->ds_dev, DS_CTRL_LOCK, NULL);
-        for (m = 0; m < LED_NUM; m++) {
-            data_buf[DS_COLOR_R] = 0;
-            data_buf[DS_COLOR_G] = n;
-            data_buf[DS_COLOR_B] = 255 - n;
-            data_buf[DS_COLOR_LAYER] = BACKGROUND_LAYER;
-            ds->ds_dev.ops.write(&ds->ds_dev, m, data_buf, DS_COLOR_DATA_MAX);
-        }
-        ds->ds_dev.ops.control(&ds->ds_dev, DS_CTRL_UNLOCK, NULL);
-        n -= 1;
-        if (n == 0)
-            i++;
-        break;
-    case 2:
-        ds->ds_dev.ops.control(&ds->ds_dev, DS_CTRL_LOCK, NULL);
-        for (m = 0; m < LED_NUM; m++) {
-            data_buf[DS_COLOR_R] = n;
-            data_buf[DS_COLOR_G] = 0;
-            data_buf[DS_COLOR_B] = 255 - n;
-            data_buf[DS_COLOR_LAYER] = BACKGROUND_LAYER;
-            ds->ds_dev.ops.write(&ds->ds_dev, m, data_buf, DS_COLOR_DATA_MAX);
-        }
-        ds->ds_dev.ops.control(&ds->ds_dev, DS_CTRL_UNLOCK, NULL);
-        n += 1;
-        if (n == 255) {
-            n = 0;
-            i = 0;
-        }
-        break;
     }
+}
+
+static void display_server_merge_buf(struct display_server *ds)
+{
+    struct ds_draw_info *di;
+    int i;
+
+    mutex_lock(&ds->lock);
+    memset(ds->buf, 0, ds->dev_info.width * ds->dev_info.height * DS_COLOR_DATA_MAX);
+    list_for_each_entry(di, &ds->draw_list, list) {
+        mutex_lock(&di->lock);
+        if (di->point_num) {
+            for (i = 0; i < di->point_num; i++) {
+                display_server_merge_point(ds, &di->point[i]);
+            }
+        } else {
+            display_server_merge_area(ds, &di->area);
+        }
+        mutex_unlock(&di->lock);
+    }
+    mutex_unlock(&ds->lock);
 }
 
 static void display_server_task_entry(void* parameter)
@@ -181,19 +232,26 @@ static void display_server_task_entry(void* parameter)
         return;
     }
 
-    memset(ds->buf, 0, LED_NUM * COLOR_MAX);
-    memset(ds->current_layer, BACKGROUND_LAYER, LED_NUM);
+    ds->led_dev->ops.control(ds->led_dev, DS_CTRL_GET_DEV_INFO, &ds->dev_info);
+    ds->buf = kalloc(ds->dev_info.width * ds->dev_info.height * DS_COLOR_DATA_MAX, GFP_KERNEL);
+    if (ds->buf == NULL) {
+        pr_err("alloc display buf error\r\n");
+        return;
+    }
+    memset(ds->buf, 0, ds->dev_info.width * ds->dev_info.height * DS_COLOR_DATA_MAX);
+    pr_info("display device:[%s] %u*%u\r\n", CONFIG_LED_DEV, ds->dev_info.width, ds->dev_info.height);
 
     ds->led_enable = true;
     ds->led_dev->ops.control(ds->led_dev, LED_CTRL_ENABLE, NULL);
 
     while (true) {
         if (ds->led_enable) {
-            display_server_draw_backgrounp_layer(ds);
+            display_server_merge_buf(ds);
             mutex_lock(&ds->lock);
-            ds->led_dev->ops.write(ds->led_dev, 0, ds->buf, LED_NUM * COLOR_MAX);
-            ds->led_dev->ops.control(ds->led_dev, LED_CTRL_REFRESH, NULL);
+            ds->led_dev->ops.write(ds->led_dev, 0, ds->buf,
+                ds->dev_info.width * ds->dev_info.height * DS_COLOR_DATA_MAX);
             mutex_unlock(&ds->lock);
+            ds->led_dev->ops.control(ds->led_dev, LED_CTRL_REFRESH, NULL);
             msleep(10);
         } else {
             sem_get(&ds->sem);
@@ -213,10 +271,10 @@ static int display_server_init(void)
 
     sem_init(&ds->sem, 0);
     mutex_init(&ds->lock);
+    INIT_LIST_HEAD(&ds->draw_list);
 
     device_init(&ds->ds_dev);
     ds->ds_dev.name = "display-server";
-    ds->ds_dev.ops.write = display_server_write;
     ds->ds_dev.ops.control = display_server_control;
     ds->ds_dev.priv = ds;
     device_register(&ds->ds_dev);

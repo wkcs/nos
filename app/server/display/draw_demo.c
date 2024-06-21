@@ -22,75 +22,107 @@
 
 #include <display/display.h>
 
-#define DEMO_LAYER 128
+#define LED_NUM 61
 #define DEMO_LEN 5
 
-static uint8_t index_map[61] = {
-    0,   1,  2,  3,   4, 5,  6,  7,  8,  9, 10, 11, 12, 13,
-    27, 26, 25, 24, 23, 22, 21, 20, 19, 18, 17, 16, 15, 14,
-    28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40,
-    52, 51, 50, 49, 48, 47, 46, 45, 44, 43, 42, 41,
-    53, 54, 55, 56, 57, 58, 59, 60
+enum {
+    INDEX_X,
+    INDEX_Y,
+    INDEX_MAX
 };
 
-struct draw_demo_data {
-    uint8_t index;
-    uint8_t data[DS_COLOR_DATA_MAX];
+static uint8_t index_map[INDEX_MAX][LED_NUM] = {
+    {
+        0,   1,  2,  3,  4,  5,  6,  7,  8,  9, 10, 11, 12, 13,
+        27, 26, 25, 24, 23, 22, 21, 20, 19, 18, 17, 16, 15, 14,
+        28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40,
+        55, 53, 52, 51, 50, 49, 48, 47, 46, 45, 44, 43,
+        56, 57, 58, 59, 66, 67, 68, 69
+    },
+    {
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+        2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2,
+        3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3,
+        4, 4, 4, 4, 4, 4, 4, 4
+    }
 };
 
 struct draw_demo {
     struct task_struct *task;
     struct device *ds_dev;
-    struct draw_demo_data data[DEMO_LEN];
+    struct display_server *ds;
+    struct ds_draw_info *draw_info;
+    int index;
 };
 
 static void draw_demo_data_init(struct draw_demo *dd)
 {
-    dd->data[0].index = 0;
-    dd->data[0].data[DS_COLOR_R] = 5;
-    dd->data[0].data[DS_COLOR_G] = 0;
-    dd->data[0].data[DS_COLOR_B] = 5;
-    dd->data[0].data[DS_COLOR_LAYER] = DEMO_LAYER;
+    struct ds_draw_point *point;
+    struct ds_data *data;
+    int i;
 
-    dd->data[1].index = 1;
-    dd->data[1].data[DS_COLOR_R] = 10;
-    dd->data[1].data[DS_COLOR_G] = 0;
-    dd->data[1].data[DS_COLOR_B] = 10;
-    dd->data[1].data[DS_COLOR_LAYER] = DEMO_LAYER;
+    dd->draw_info = display_server_alloc_draw_point_info(dd->ds, DEMO_LEN);
+    point = dd->draw_info->point;
+    dd->index = 0;
 
-    dd->data[2].index = 2;
-    dd->data[2].data[DS_COLOR_R] = 50;
-    dd->data[2].data[DS_COLOR_G] = 0;
-    dd->data[2].data[DS_COLOR_B] = 50;
-    dd->data[2].data[DS_COLOR_LAYER] = DEMO_LAYER;
-
-    dd->data[3].index = 3;
-    dd->data[3].data[DS_COLOR_R] = 150;
-    dd->data[3].data[DS_COLOR_G] = 0;
-    dd->data[3].data[DS_COLOR_B] = 150;
-    dd->data[3].data[DS_COLOR_LAYER] = DEMO_LAYER;
-
-    dd->data[4].index = 4;
-    dd->data[4].data[DS_COLOR_R] = 255;
-    dd->data[4].data[DS_COLOR_G] = 0;
-    dd->data[4].data[DS_COLOR_B] = 255;
-    dd->data[4].data[DS_COLOR_LAYER] = DEMO_LAYER;
+    mutex_lock(&dd->draw_info->lock);
+    for (i = 0; i < DEMO_LEN; i++) {
+        data = &point->data;
+        point->x = index_map[INDEX_X][i];
+        point->y = index_map[INDEX_Y][i];
+        switch(i) {
+            case 0:
+                data->data[DS_COLOR_R] = 5;
+                data->data[DS_COLOR_G] = 0;
+                data->data[DS_COLOR_B] = 5;
+                break;
+            case 1:
+                data->data[DS_COLOR_R] = 10;
+                data->data[DS_COLOR_G] = 0;
+                data->data[DS_COLOR_B] = 10;
+                break;
+            case 2:
+                data->data[DS_COLOR_R] = 50;
+                data->data[DS_COLOR_G] = 0;
+                data->data[DS_COLOR_B] = 50;
+                break;
+            case 3:
+                data->data[DS_COLOR_R] = 150;
+                data->data[DS_COLOR_G] = 0;
+                data->data[DS_COLOR_B] = 150;
+                break;
+            case 4:
+                data->data[DS_COLOR_R] = 255;
+                data->data[DS_COLOR_G] = 0;
+                data->data[DS_COLOR_B] = 255;
+                break;
+            default:
+                break;
+        }
+    }
+    mutex_unlock(&dd->draw_info->lock);
 }
 
 static void draw_demo_data_update(struct draw_demo *dd)
 {
-    static int i = 4;
-    int m, n;
+    struct ds_draw_point *point;
+    int index;
+    int i;
 
-    if (i > 60)
-        i = 0;
-    else
-        i++;
-
-    dd->ds_dev->ops.control(dd->ds_dev, DS_CTRL_CLEAR_LAYER, &dd->data[0].index);
-    for (m = 0; m < DEMO_LEN; m++) {
-        dd->data[m].index = index_map[(i + 61 + m - 4) % 61];
+    mutex_lock(&dd->draw_info->lock);
+    point = dd->draw_info->point;
+    for (i = 0; i < DEMO_LEN; i++) {
+        dd->index++;
+        if (dd->index >= LED_NUM)
+            dd->index = 0;
+        index = dd->index + i;
+        if (index >= LED_NUM)
+            index -= LED_NUM;
+        point->x = index_map[INDEX_X][index];
+        point->y = index_map[INDEX_Y][index];
     }
+    mutex_unlock(&dd->draw_info->lock);
 }
 
 static void draw_demo_task_entry(void* parameter)
@@ -116,15 +148,10 @@ static void draw_demo_task_entry(void* parameter)
         return;
     }
 
+    dd->ds = display_dev_to_server(dd->ds_dev);
     draw_demo_data_init(dd);
 
     while (true) {
-        dd->ds_dev->ops.control(dd->ds_dev, DS_CTRL_LOCK, NULL);
-        for (i = 0; i < DEMO_LEN; i++) {
-            dd->ds_dev->ops.write(dd->ds_dev, dd->data[i].index, dd->data[i].data, DS_COLOR_DATA_MAX);
-        }
-        dd->ds_dev->ops.control(dd->ds_dev, DS_CTRL_UNLOCK, NULL);
-
         msleep(30);
         draw_demo_data_update(dd);
     }
