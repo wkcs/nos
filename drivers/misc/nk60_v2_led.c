@@ -18,7 +18,7 @@
 #include <kernel/gpio.h>
 #include <kernel/spinlock.h>
 #include <kernel/mm.h>
-#include <lib/string.h>
+#include <string.h>
 #include <board/board.h>
 #include <kernel/sem.h>
 #include <kernel/mutex.h>
@@ -277,7 +277,7 @@ static int nk60_v2_led_init(void)
 {
     struct nk60_led *led;
 
-    led = kalloc(sizeof(struct nk60_led), GFP_KERNEL);
+    led = kmalloc(sizeof(struct nk60_led), GFP_KERNEL);
     if (led == NULL) {
         pr_err("alloc led buf error\r\n");
         return -ENOMEM;

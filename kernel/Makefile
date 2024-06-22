@@ -22,3 +22,4 @@ obj-y += timer.o
 obj-y += sem.o
 obj-y += mutex.o
 obj-y += msg_queue.o
+obj-y += sys.o

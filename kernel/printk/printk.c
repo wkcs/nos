@@ -11,7 +11,7 @@
 #include <kernel/kernel.h>
 #include <kernel/cpu.h>
 #include <lib/vsprintf.h>
-#include <lib/string.h>
+#include <string.h>
 
 #ifdef CONFIG_DEFAULT_LOG_LEVEL
 static enum log_level g_log_level = CONFIG_DEFAULT_LOG_LEVEL;

@@ -12,7 +12,7 @@
 #include <kernel/console.h>
 #include <kernel/spinlock.h>
 #include <lib/vsprintf.h>
-#include <lib/string.h>
+#include <string.h>
 #include <lib/kfifo.h>
 
 static struct kfifo g_log_fifo;

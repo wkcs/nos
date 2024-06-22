@@ -18,7 +18,7 @@
 #include <kernel/gpio.h>
 #include <kernel/spinlock.h>
 #include <kernel/mm.h>
-#include <lib/string.h>
+#include <string.h>
 #include <board/board.h>
 #include <kernel/sem.h>
 #include <kernel/mutex.h>
@@ -186,7 +186,7 @@ static int rgb_matrix_init(void)
 {
     struct rgb_matrix *led;
 
-    led = kalloc(sizeof(struct rgb_matrix), GFP_KERNEL);
+    led = kmalloc(sizeof(struct rgb_matrix), GFP_KERNEL);
     if (led == NULL) {
         pr_err("alloc rgb_matrix buf error\r\n");
         return -ENOMEM;

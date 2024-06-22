@@ -10,7 +10,7 @@
 
 #include <kernel/device.h>
 #include <kernel/printk.h>
-#include <lib/string.h>
+#include <string.h>
 
 static LIST_HEAD(g_sys_device_list);
 static SPINLOCK(g_sys_device_list_lock);

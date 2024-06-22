@@ -9,17 +9,19 @@
 #ifndef __NOS_TYPES_H__
 #define __NOS_TYPES_H__
 
+#include <stdint.h>
+#include <stdbool.h>
+
 #include <asm/types.h>
 
 #undef NULL
 #define NULL ((void *)0)
 
-enum {
-    false	= 0,
-    true	= 1
-};
-
-typedef u8 bool;
+#ifndef bool
+#define bool u8
+#define true 1
+#define false 0
+#endif
 
 typedef s8 __s8;
 typedef u8 __u8;
@@ -30,14 +32,38 @@ typedef u32 __u32;
 typedef s64 __s64;
 typedef u64 __u64;
 
+#if !defined(_INT8_T_DECLARED) && !defined(_GCC_STDINT_H)
 typedef s8 int8_t;
+#define _INT8_T_DECLARED
+#endif
+#if !defined(_UINT8_T_DECLARED) && !defined(_GCC_STDINT_H)
 typedef u8 uint8_t;
+#define _UINT8_T_DECLARED
+#endif
+#if !defined(_INT16_T_DECLARED) && !defined(_GCC_STDINT_H)
 typedef s16 int16_t;
+#define _INT16_T_DECLARED
+#endif
+#if !defined(_UINT16_T_DECLARED) && !defined(_GCC_STDINT_H)
 typedef u16 uint16_t;
+#define _UINT16_T_DECLARED
+#endif
+#if !defined(_INT32_T_DECLARED) && !defined(_GCC_STDINT_H)
 typedef s32 int32_t;
+#define _INT32_T_DECLARED
+#endif
+#if !defined(_UINT32_T_DECLARED) && !defined(_GCC_STDINT_H)
 typedef u32 uint32_t;
+#define _UINT32_T_DECLARED
+#endif
+#if !defined(_INT64_T_DECLARED) && !defined(_GCC_STDINT_H)
 typedef s64 int64_t;
+#define _INT64_T_DECLARED
+#endif
+#if !defined(_UINT64_T_DECLARED) && !defined(_GCC_STDINT_H)
 typedef u64 uint64_t;
+#define _UINT64_T_DECLARED
+#endif
 
 #undef offsetof
 #define offsetof(TYPE, MEMBER)	__builtin_offsetof(TYPE, MEMBER)

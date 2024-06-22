@@ -10,7 +10,7 @@
 
 #include <kernel/task.h>
 #include <kernel/sch.h>
-#include <lib/string.h>
+#include <string.h>
 #include <kernel/irq.h>
 #include <kernel/cpu.h>
 #include <kernel/mm.h>
@@ -61,7 +61,7 @@ static void *alloc_task_stack(uint32_t stack_size)
     char *buf;
     uint32_t i;
 
-    buf = kalloc(stack_size, GFP_KERNEL);
+    buf = kmalloc(stack_size, GFP_KERNEL);
     if (buf == NULL) {
         pr_err("alloc stack error\r\n");
         return NULL;
@@ -154,7 +154,7 @@ struct task_struct *task_create(const char *name,
     }
 #endif
 
-    task = kalloc(sizeof(struct task_struct), GFP_KERNEL);
+    task = kmalloc(sizeof(struct task_struct), GFP_KERNEL);
     if (task == NULL) {
         pr_err("%s: alloc task struct buf error\r\n", name);
         goto task_struct_err;
@@ -512,7 +512,7 @@ void dump_all_task(void)
     //pr_info("----------------------------------------------------------------------------------------\r\n");
     list_for_each_entry(task_temp, &g_task_list, tlist) {
         max_used = task_get_stack_max_used(task_temp);
-        pr_info("|%16s|%4u|%11u|%10u|%10lu|%14lu|%6d|%8s|%s\r\n", 
+        pr_info("|%16s|%4u|%11u|%10u|%10lu|%14u|%6d|%8s|%s\r\n", 
             task_temp->name, task_temp->current_priority, task_temp->pid, task_temp->stack_size, 
             task_temp->stack_size - ((addr_t)task_temp->stack - (addr_t)task_temp->sp),
             max_used, task_temp->flag, get_task_status_string(task_temp),

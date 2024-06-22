@@ -17,7 +17,7 @@
 #include <kernel/init.h>
 #include <kernel/gpio.h>
 #include <kernel/mm.h>
-#include <lib/string.h>
+#include <string.h>
 #include <board/board.h>
 
 #define W25Q80 	0XEF13
@@ -315,7 +315,7 @@ ssize_t w25qxx_write(struct device *dev, addr_t pos, const void *buffer, size_t 
         secremain = size; //不大于4096个字节
 
     /*
-    buf = kalloc(BLOACK_BUF_SIZE, GFP_KERNEL);
+    buf = kmalloc(BLOACK_BUF_SIZE, GFP_KERNEL);
     if (buf == NULL) {
         pr_err("alloc buf error\r\n");
         return -ENOMEM;
@@ -364,7 +364,7 @@ int spi_w25qxx_init(void)
     struct w25qxx_info *info;
     GPIO_InitTypeDef GPIO_InitStructure;
 
-    info = kalloc(sizeof(*info), GFP_KERNEL);
+    info = kmalloc(sizeof(*info), GFP_KERNEL);
     if (info == NULL) {
         pr_err("alloc w25qxx info buf err\r\n");
         return -ENOMEM;

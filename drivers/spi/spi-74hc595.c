@@ -13,7 +13,7 @@
 #include <kernel/irq.h>
 #include <kernel/device.h>
 #include <init/init.h>
-#include <lib/string.h>
+#include <string.h>
 #include <gpio.h>
 #include <board.h>
 #include "keyboard.h"

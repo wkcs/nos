@@ -2,7 +2,7 @@
 #include <wk/err.h>
 #include <wk/delay.h>
 #include <init/init.h>
-#include <lib/string.h>
+#include <string.h>
 #include <cmd/cmd.h>
 #include "keyboard.h"
 

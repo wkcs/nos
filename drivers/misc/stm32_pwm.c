@@ -14,7 +14,7 @@
 #include <kernel/device.h>
 #include <kernel/init.h>
 #include <kernel/gpio.h>
-#include <lib/string.h>
+#include <string.h>
 #include <board/board.h>
 
 void pwm_set_val(enum led_ch ch, uint8_t val)
