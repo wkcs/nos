@@ -98,16 +98,16 @@ $(LDSCRIPT_LD): $(out-dir)/%:%
 
 $(OPENOCD_CFG):
 	@echo "CP       $@"
-	$(Q)if [ -f "board/$(board)/$(OOCDCFG)" ]; then \
-		cp board/$(board)/$(OOCDCFG) $@; \
+	$(Q)if [ -f "$(OOCDCFG)" ]; then \
+		cp $(OOCDCFG) $@; \
 	else \
 		touch $@; \
 	fi
 
 $(BOARD_SVD):
 	@echo "CP       $@"
-	$(Q)if [ -f "board/$(board)/$(SVD_CFG)" ]; then \
-		cp board/$(board)/$(SVD_CFG) $@; \
+	$(Q)if [ -f "$(SVD_CFG)" ]; then \
+		cp $(SVD_CFG) $@; \
 	else \
 		touch $@; \
 	fi
@@ -153,7 +153,7 @@ debug: $(OPENOCD_CFG) $(BOARD_SVD)
 	$(Q)$(GDB) -iex 'target extended | $(OOCD) $(OOCDFLAGS) -c "gdb_port pipe"' \
 	-iex 'monitor reset halt' -ex 'load' -ex 'break nos_start' -ex 'c' $(TARGET_ELF)
 
-debug-server:
+debug-server: $(OPENOCD_CFG) $(BOARD_SVD)
 	@echo "GDB DEBUG $(TARGET_ELF)"
 	$(Q)$(OOCD) $(OOCDFLAGS) -c "gdb_port 1234"
 
@@ -168,7 +168,7 @@ qemu-run:
 		$(QEMU_DIR)/$(QEMU_CMD) -kernel $(TARGET_ELF); \
 	fi
 
-qemu-run-gdb:
+qemu-run-gdb: $(OPENOCD_CFG) $(BOARD_SVD)
 	$(Q)if [ ! "$(QEMU_CMD)" ]; then \
 		echo "$(board) does not support running on qemu"; \
 		exit 1; \
@@ -194,12 +194,6 @@ defconfig: $(obj-dir)
 		mkdir $(out-dir)/include; \
 	fi
 	$(Q)$(PYTHON) scripts/autocfg.py $(out-dir)/.config $(out-dir)/include/autocfg.h
-	$(Q)if [ $(OOCDCFG) ]; then \
-		cp $(OOCDCFG) $(out-dir)/; \
-	fi
-	$(Q)if [ $(SVD_CFG) ]; then \
-		cp $(SVD_CFG) $(out-dir)/board.svd; \
-	fi
 
 clean:
 	$(Q)-$(RM) $(out-dir)

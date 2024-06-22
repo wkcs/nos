@@ -33,8 +33,8 @@ static void lua_test_task_entry(void* parameter)
     lua_State *L;
 
     L = luaL_newstate();
-    // luaopen_base(L);
-    //luaL_dostring(L, LUA_SCRIPT_GLOBAL);
+    luaopen_base(L);
+    luaL_dostring(L, LUA_SCRIPT_GLOBAL);
 }
 
 static int lua_test_init(void)
