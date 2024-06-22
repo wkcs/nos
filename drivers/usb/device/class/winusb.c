@@ -301,7 +301,7 @@ ufunction_t usbd_function_winusb_create(udevice_t device)
     usbd_device_set_qualifier(device, &dev_qualifier);
 
     /* allocate memory for cdc vcom data */
-    winusb_device = kalloc(sizeof(*winusb_device), GFP_KERNEL);
+    winusb_device = kmalloc(sizeof(*winusb_device), GFP_KERNEL);
     winusb_dev = winusb_device;
     memset((void *)winusb_device, 0, sizeof(*winusb_device));
     func->user_data = (void*)winusb_device;

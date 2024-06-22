@@ -18,7 +18,7 @@
 #include <kernel/device.h>
 #include <kernel/init.h>
 #include <kernel/clk.h>
-#include <lib/string.h>
+#include <string.h>
 
 #include "com.h"
 
@@ -242,7 +242,7 @@ static int connect_server_init(void)
     struct com_data *com;
     int ret;
 
-    com = kalloc(sizeof(struct com_data), GFP_KERNEL);
+    com = kmalloc(sizeof(struct com_data), GFP_KERNEL);
     if (com == NULL) {
         pr_err("alloc com buf error\r\n");
         return -ENOMEM;

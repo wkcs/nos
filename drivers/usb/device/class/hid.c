@@ -513,7 +513,7 @@ static int _function_enable(ufunction_t func)
 //
     if(data->ep_out->buffer == NULL)
     {
-        data->ep_out->buffer        = kalloc(HID_RX_BUFSIZE, GFP_KERNEL);
+        data->ep_out->buffer        = kmalloc(HID_RX_BUFSIZE, GFP_KERNEL);
     }
     data->ep_out->request.buffer    = data->ep_out->buffer;
     data->ep_out->request.size      = EP_MAXPACKET(data->ep_out);
@@ -665,7 +665,7 @@ ufunction_t usbd_function_hid_create(udevice_t device)
     //usbd_device_set_qualifier(device, &_dev_qualifier);
 
     /* allocate memory for cdc vcom data */
-    data = (struct hid_s*)kalloc(sizeof(struct hid_s), GFP_KERNEL);
+    data = (struct hid_s*)kmalloc(sizeof(struct hid_s), GFP_KERNEL);
     memset(data, 0, sizeof(struct hid_s));
     func->user_data = (void*)data;
 

@@ -15,7 +15,7 @@
 #include <kernel/sch.h>
 #include <kernel/timer.h>
 #include <kernel/printk.h>
-#include <lib/string.h>
+#include <string.h>
 
 int mutex_init(struct mutex *lock)
 {

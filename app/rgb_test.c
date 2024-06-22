@@ -17,7 +17,7 @@
 #include <kernel/init.h>
 #include <kernel/spinlock.h>
 #include <kernel/mm.h>
-#include <lib/string.h>
+#include <string.h>
 #include <kernel/sem.h>
 
 #include <display/display.h>
@@ -99,7 +99,7 @@ static int rgb_test_init(void)
 {
     struct rgb_test *rt;
 
-    rt = kalloc(sizeof(struct rgb_test), GFP_KERNEL);
+    rt = kmalloc(sizeof(struct rgb_test), GFP_KERNEL);
     if (rt == NULL) {
         pr_err("alloc rgb_test buf error\r\n");
         return -ENOMEM;

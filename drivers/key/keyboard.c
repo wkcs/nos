@@ -10,7 +10,7 @@
 #include <kernel/err.h>
 #include <kernel/sleep.h>
 #include <init/init.h>
-#include <lib/string.h>
+#include <string.h>
 #include <gpio.h>
 #include <board.h>
 #include <cmd/cmd.h>

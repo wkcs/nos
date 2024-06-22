@@ -86,7 +86,7 @@ void usbd_os_proerty_descriptor_send(ufunction_t func, ureq_t setup,
         {
             header.dwLength += usb_os_proerty[index].dwSize;
         }
-        data = (uint8_t *)kalloc(header.dwLength, GFP_KERNEL);
+        data = (uint8_t *)kmalloc(header.dwLength, GFP_KERNEL);
         // WK_ERROR(data != NULL);
         pdata = data;
         memcpy((void *)pdata,(void *)&header,sizeof(struct usb_os_property_header));

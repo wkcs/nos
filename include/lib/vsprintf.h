@@ -10,7 +10,8 @@
 #define __VSPRINTF_H__
 
 #include <kernel/kernel.h>
-#include <lib/stdarg.h>
+#include <kernel/types.h>
+#include <stdarg.h>
 
 __printf(3, 0) uint32_t vsnprintf(char *buf, size_t size, const char *fmt, va_list args);
 __printf(3, 4) uint32_t snprintf(char *buf, size_t size, const char *fmt, ...);

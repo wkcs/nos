@@ -16,7 +16,7 @@
 #include <kernel/device.h>
 #include <kernel/init.h>
 #include <kernel/gpio.h>
-#include <lib/string.h>
+#include <string.h>
 #include <board/board.h>
 #include "keyboard.h"
 

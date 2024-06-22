@@ -91,7 +91,9 @@ addr_t alloc_pages(gfp_t flag, u32 order);
 addr_t alloc_page(gfp_t flag);
 int free_pages(addr_t addr, u32 order);
 int free_page(addr_t addr);
-void *kalloc(u32 size, gfp_t flag);
+void *kmalloc(u32 size, gfp_t flag);
+void *kzalloc(u32 size, gfp_t flag);
+void *krealloc(void *ptr, u32 size, gfp_t flag);
 void *kalloc_by_pid(u32 size, gfp_t flag, pid_t pid);
 int kfree(void *addr);
 int kfree_by_pid(pid_t pid);
@@ -101,6 +103,8 @@ u32 mm_get_free_page_num(void);
 u32 mm_get_total_page_num(void);
 void mm_node_dump(void);
 void mm_block_dump(void);
+struct memblock *find_block(void *addr);
+struct mem_base *find_base(struct memblock *block, void *addr);
 
 #define ALIGNED(addr, align) (((addr) + (align) - 1) & ~((align) - 1))
 #define ALIGNED_PAGE(addr) ALIGNED(addr, CONFIG_PAGE_SIZE)

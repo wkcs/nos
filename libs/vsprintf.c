@@ -7,15 +7,15 @@
  */
 
 #include <kernel/kernel.h>
-#include <lib/string.h>
-#include <lib/stdio.h>
+#include <string.h>
+#include <stdio.h>
 #include <lib/vsprintf.h>
 
 #define isdigit(c) ((unsigned)((c) - '0') < 10)
 
-inline int32_t divide(int32_t *n, int32_t base)
+inline int divide(int *n, int base)
 {
-    int32_t res;
+    int res;
 
     /* optimized for processor which does not support divide instructions. */
     if (base == 10) {

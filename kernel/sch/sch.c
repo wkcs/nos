@@ -16,7 +16,7 @@
 #include <kernel/spinlock.h>
 #include <kernel/init.h>
 #include <kernel/printk.h>
-#include <lib/string.h>
+#include <string.h>
 
 struct task_struct *g_current_task;
 

@@ -15,16 +15,59 @@
 #include <kernel/spinlock.h>
 #include <kernel/pid.h>
 #include <kernel/task.h>
+#include <kernel/minmax.h>
+#include <string.h>
 
 extern void *__kalloc(u32 size, gfp_t flag, pid_t pid);
 extern int __kfree(void *addr);
 extern int __kfree_by_pid(pid_t pid);
 
-void *kalloc(u32 size, gfp_t flag)
+void *kmalloc(u32 size, gfp_t flag)
 {
     void *buf;
     buf = __kalloc(size, flag, 0);
     //pr_info("region:0x%08lx - 0x%08lx\r\n", (addr_t)buf, (addr_t)buf + size);
+    return buf;
+}
+
+void *kzalloc(u32 size, gfp_t flag)
+{
+    void *buf;
+    buf = __kalloc(size, flag, 0);
+    if (buf == NULL)
+        return NULL;
+    memset(buf, 0, size);
+    return buf;
+}
+
+void *krealloc(void *ptr, u32 size, gfp_t flag)
+{
+    void *buf = NULL;
+    struct memblock *block;
+    struct mem_base *base;
+
+    if (size == 0)
+        goto out;
+
+    block = find_block(ptr);
+    if (block == NULL) {
+        pr_err("no memblock found for 0x%lx\r\n", (addr_t)ptr);
+        goto out;
+    }
+    base = find_base(block, ptr);
+    if (base == NULL) {
+        pr_err("no mem_base found for 0x%lx in memblock\r\n", (addr_t)ptr);
+        goto out;
+    }
+
+    buf = __kalloc(size, flag, 0);
+    if (buf == NULL) {
+        goto out;
+    }
+    memcpy(buf, ptr, min(size, base->size));
+
+out:
+    __kfree(ptr);
     return buf;
 }
 

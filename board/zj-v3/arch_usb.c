@@ -9,7 +9,7 @@
 #include <kernel/kernel.h>
 #include <kernel/init.h>
 #include <usb/usb_device.h>
-#include <lib/string.h>
+#include <string.h>
 #include "arch_usb.h"
 #include "board.h"
 static PCD_HandleTypeDef _stm_pcd;

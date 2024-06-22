@@ -9,7 +9,7 @@
 #include <lib/kfifo.h>
 #include <kernel/kernel.h>
 #include <kernel/mm.h>
-#include <lib/string.h>
+#include <string.h>
 
 /*
  * internal helper to calculate the unused elements in a fifo
@@ -40,7 +40,7 @@ int kfifo_alloc(struct kfifo *fifo, unsigned int size, size_t esize, gfp_t gfp_m
         return -EINVAL;
     }
 
-    fifo->data = kalloc(esize * size, gfp_mask);
+    fifo->data = kmalloc(esize * size, gfp_mask);
 
     if (!fifo->data) {
         fifo->mask = 0;

@@ -11,7 +11,7 @@
 #include <kernel/msg_queue.h>
 #include <kernel/mm.h>
 #include <kernel/printk.h>
-#include <lib/string.h>
+#include <string.h>
 
 static LIST_HEAD(g_msg_q_list);
 static SPINLOCK(g_msg_q_lock);
@@ -45,7 +45,7 @@ static msg_t *msg_alloc(int size, gfp_t flag)
 {
     msg_t *msg;
 
-    msg = kalloc(size + sizeof(msg_t), flag);
+    msg = kmalloc(size + sizeof(msg_t), flag);
     if (msg == NULL) {
         return NULL;
     }

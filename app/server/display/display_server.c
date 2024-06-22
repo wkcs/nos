@@ -17,7 +17,7 @@
 #include <kernel/init.h>
 #include <kernel/spinlock.h>
 #include <kernel/mm.h>
-#include <lib/string.h>
+#include <string.h>
 #include <kernel/sem.h>
 #include <kernel/list.h>
 
@@ -69,7 +69,7 @@ struct ds_draw_info *display_server_alloc_draw_point_info(struct display_server 
     struct ds_draw_info *info;
     int i;
 
-    info = kalloc(sizeof(struct ds_draw_info) + sizeof(struct ds_draw_point) * point_num, GFP_KERNEL);
+    info = kmalloc(sizeof(struct ds_draw_info) + sizeof(struct ds_draw_point) * point_num, GFP_KERNEL);
     if (info == NULL) {
         pr_err("alloc draw info failed\r\n");
         return NULL;
@@ -94,7 +94,7 @@ struct ds_draw_info *display_server_alloc_draw_area_info(struct display_server *
 {
     struct ds_draw_info *info;
 
-    info = kalloc(sizeof(struct ds_draw_info) + sizeof(struct ds_data) * width * height, GFP_KERNEL);
+    info = kmalloc(sizeof(struct ds_draw_info) + sizeof(struct ds_data) * width * height, GFP_KERNEL);
     if (info == NULL) {
         pr_err("alloc draw info failed\r\n");
         return NULL;
@@ -233,7 +233,7 @@ static void display_server_task_entry(void* parameter)
     }
 
     ds->led_dev->ops.control(ds->led_dev, DS_CTRL_GET_DEV_INFO, &ds->dev_info);
-    ds->buf = kalloc(ds->dev_info.width * ds->dev_info.height * DS_COLOR_DATA_MAX, GFP_KERNEL);
+    ds->buf = kmalloc(ds->dev_info.width * ds->dev_info.height * DS_COLOR_DATA_MAX, GFP_KERNEL);
     if (ds->buf == NULL) {
         pr_err("alloc display buf error\r\n");
         return;
@@ -263,7 +263,7 @@ static int display_server_init(void)
 {
     struct display_server *ds;
 
-    ds = kalloc(sizeof(struct display_server), GFP_KERNEL);
+    ds = kmalloc(sizeof(struct display_server), GFP_KERNEL);
     if (ds == NULL) {
         pr_err("alloc display_server buf error\r\n");
         return -ENOMEM;

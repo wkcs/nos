@@ -215,7 +215,7 @@ static int __kfree_base(struct memblock *block, struct mem_base *base)
     return 0;
 }
 
-static struct memblock *find_block(void *addr)
+struct memblock *find_block(void *addr)
 {
     struct memblock *block;
 
@@ -230,7 +230,7 @@ static struct memblock *find_block(void *addr)
     return NULL;
 }
 
-static struct mem_base *find_base(struct memblock *block, void *addr)
+struct mem_base *find_base(struct memblock *block, void *addr)
 {
     struct mem_base *base;
 
@@ -325,7 +325,7 @@ void __mm_block_dump(struct memblock *block)
     struct mem_base *base;
     int i = 0;
 
-    pr_info("mm_block: start=0x%lx, size=%lu, free=%u\r\n", block->start, block->size, block->max_alloc_cap);
+    pr_info("mm_block: start=0x%lx, size=%u, free=%u\r\n", block->start, block->size, block->max_alloc_cap);
     return;
     spin_lock_irq(&block->lock);
     list_for_each_entry (base, &block->base, list) {

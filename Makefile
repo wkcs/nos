@@ -90,7 +90,7 @@ $(TARGET_LIST): $(TARGET_ELF)
 	$(Q)$(OBJDUMP) -S $< > $@
 $(TARGET_ELF): $(obj-all) $(LDSCRIPT_S) $(LDSCRIPT_LD) $(BOARD_SVD)
 	@echo "LD       $(@:$(out-dir)/%=%)"
-	$(Q)$(CC) $(LDFLAGS) -o $@ $(obj-all)
+	$(Q)$(CC) $(LDFLAGS) -o $@ $(obj-all) $(LDFLAGS-LIB)
 
 $(LDSCRIPT_LD): $(out-dir)/%:%
 	@echo "CP       $(notdir $@)"

@@ -12,7 +12,7 @@
 #include <kernel/kernel.h>
 #include <kernel/mm.h>
 #include <kernel/device.h>
-#include <lib/string.h>
+#include <string.h>
 #include <usb/usb_common.h>
 
 /* Vendor ID */

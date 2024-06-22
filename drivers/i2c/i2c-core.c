@@ -2,7 +2,7 @@
 #include <wk/mm.h>
 #include <wk/list.h>
 #include <wk/err.h>
-#include <lib/string.h>
+#include <string.h>
 
 
 int i2c_bus_match(struct device *dev, struct device_driver *drv)

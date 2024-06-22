@@ -632,7 +632,7 @@ static int _vendor_request(udevice_t device, ureq_t setup)
                     usb_comp_id_desc_size = sizeof(struct usb_os_header_comp_id_descriptor) +
                     (sizeof(struct usb_os_function_comp_id_descriptor)-sizeof(struct list_head))*list_len(&device->os_comp_id_desc->func_desc);
 
-                    usb_comp_id_desc = (uint8_t *)kalloc(usb_comp_id_desc_size, GFP_KERNEL);
+                    usb_comp_id_desc = (uint8_t *)kmalloc(usb_comp_id_desc_size, GFP_KERNEL);
                     if (usb_comp_id_desc == NULL) {
                         pr_err("alloc usb_comp_id_desc buf error\r\n");
                         return 0;
@@ -892,7 +892,7 @@ udevice_t usbd_device_new(void)
     pr_info("usbd_device_new\r\n");
 
     /* allocate memory for the object */
-    udevice = kalloc(sizeof(struct udevice), GFP_KERNEL);
+    udevice = kmalloc(sizeof(struct udevice), GFP_KERNEL);
     if (udevice == NULL) {
         pr_err("alloc memery failed\r\n");
         return NULL;
@@ -1005,7 +1005,7 @@ uconfig_t usbd_config_new(void)
     pr_info("usbd_config_new\r\n");
 
     /* allocate memory for the object */
-    cfg = kalloc(sizeof(struct uconfig), GFP_KERNEL);
+    cfg = kmalloc(sizeof(struct uconfig), GFP_KERNEL);
     if (cfg == NULL) {
         pr_err("alloc memery failed\r\n");
         return NULL;
@@ -1043,7 +1043,7 @@ uintf_t usbd_interface_new(udevice_t device, uintf_handler_t handler)
     // WK_ERROR(device != NULL);
 
     /* allocate memory for the object */
-    intf = (uintf_t)kalloc(sizeof(struct uinterface), GFP_KERNEL);
+    intf = (uintf_t)kmalloc(sizeof(struct uinterface), GFP_KERNEL);
     if (intf == NULL) {
         pr_err("alloc memery failed\r\n");
         return NULL;
@@ -1077,14 +1077,14 @@ ualtsetting_t usbd_altsetting_new(size_t desc_size)
     // WK_ERROR(desc_size > 0);
 
     /* allocate memory for the object */
-    setting = (ualtsetting_t)kalloc(sizeof(struct ualtsetting), GFP_KERNEL);
+    setting = (ualtsetting_t)kmalloc(sizeof(struct ualtsetting), GFP_KERNEL);
     if(setting == NULL)
     {
         pr_err("alloc memery failed\r\n");
         return NULL;
     }
     /* allocate memory for the desc */
-    setting->desc = kalloc(desc_size, GFP_KERNEL);
+    setting->desc = kmalloc(desc_size, GFP_KERNEL);
     if (setting->desc == NULL)
     {
         pr_err("alloc desc memery failed\r\n");
@@ -1142,7 +1142,7 @@ ufunction_t usbd_function_new(udevice_t device, udev_desc_t dev_desc,
     // WK_ERROR(dev_desc != NULL);
 
     /* allocate memory for the object */
-    func = (ufunction_t)kalloc(sizeof(struct ufunction), GFP_KERNEL);
+    func = (ufunction_t)kmalloc(sizeof(struct ufunction), GFP_KERNEL);
     if(func == NULL)
     {
         pr_err("alloc memery failed\r\n");
@@ -1177,7 +1177,7 @@ uep_t usbd_endpoint_new(uep_desc_t ep_desc, udep_handler_t handler)
     // WK_ERROR(ep_desc != NULL);
 
     /* allocate memory for the object */
-    ep = (uep_t)kalloc(sizeof(struct uendpoint), GFP_KERNEL);
+    ep = (uep_t)kmalloc(sizeof(struct uendpoint), GFP_KERNEL);
     if(ep == NULL)
     {
         pr_err("alloc memery failed\r\n");

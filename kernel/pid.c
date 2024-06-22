@@ -65,7 +65,7 @@ int pid_free(pid_t pid)
         return 0 ;
     }
 
-    range = kalloc(sizeof(struct pid_range), GFP_KERNEL);
+    range = kmalloc(sizeof(struct pid_range), GFP_KERNEL);
     if (range == NULL) {
         pr_err("alloc pid range buf error\r\n");
         return -ENOMEM;
@@ -137,7 +137,7 @@ void pid_init(void)
     spin_lock_init(&g_map.lock);
     INIT_LIST_HEAD(&g_map.list);
 
-    range = kalloc(sizeof(struct pid_range), GFP_KERNEL);
+    range = kmalloc(sizeof(struct pid_range), GFP_KERNEL);
     BUG_ON(range == NULL);
     if (range == NULL) {
         pr_err("pid_init error\r\n");

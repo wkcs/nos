@@ -1,5 +1,5 @@
 ##############################################
-# Copyright (C) 2023-2023 胡启航<Nick Hu>
+# Copyright (C) 2023-2024 胡启航<Nick Hu>
 #
 # Author: 胡启航<Nick Hu>
 #
@@ -7,6 +7,7 @@
 ##############################################
 
 obj-y += server
+obj-$(CONFIG_LUA) += lua
 
 obj-$(CONFIG_TEST_APP) += test.o
 obj-$(CONFIG_KEYBOARD) += keyboard.o

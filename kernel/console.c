@@ -9,7 +9,7 @@
 #include <kernel/console.h>
 #include <kernel/kernel.h>
 #include <kernel/errno.h>
-#include <lib/string.h>
+#include <string.h>
 
 static struct console *g_console;
 

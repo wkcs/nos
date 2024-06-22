@@ -43,7 +43,7 @@ struct timer *timer_creat(const char *name, void (*timeout)(void *parameter),
     struct timer *timer;
     int rc;
 
-    timer = kalloc(sizeof(struct timer), GFP_KERNEL);
+    timer = kmalloc(sizeof(struct timer), GFP_KERNEL);
     if (timer == NULL) {
         pr_err("alloc %s timer buf error\r\n", name);
         return NULL;

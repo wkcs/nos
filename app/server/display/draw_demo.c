@@ -17,7 +17,7 @@
 #include <kernel/init.h>
 #include <kernel/spinlock.h>
 #include <kernel/mm.h>
-#include <lib/string.h>
+#include <string.h>
 #include <kernel/sem.h>
 
 #include <display/display.h>
@@ -161,7 +161,7 @@ static int draw_demo_init(void)
 {
     struct draw_demo *dd;
 
-    dd = kalloc(sizeof(struct draw_demo), GFP_KERNEL);
+    dd = kmalloc(sizeof(struct draw_demo), GFP_KERNEL);
     if (dd == NULL) {
         pr_err("alloc draw_demo buf error\r\n");
         return -ENOMEM;
