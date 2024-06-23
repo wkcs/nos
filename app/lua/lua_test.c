@@ -25,7 +25,7 @@
 #include "lib/lualib.h"
 
 const char LUA_SCRIPT_GLOBAL[] ="\
-print('hello world\n')\
+print('hello world')\
 ";
 
 static void lua_test_task_entry(void* parameter)
@@ -35,7 +35,7 @@ static void lua_test_task_entry(void* parameter)
     L = luaL_newstate();
     luaopen_base(L);
     luaL_dostring(L, LUA_SCRIPT_GLOBAL);
-    lua_close(L);
+    //lua_close(L);
 }
 
 static int lua_test_init(void)
