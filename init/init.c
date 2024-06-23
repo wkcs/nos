@@ -64,6 +64,7 @@ void task_init_call(void)
 
 static void core_task_entry(void* parameter)
 {
+    pr_info("init\r\n");
     task_init_call();
 }
 
@@ -71,7 +72,7 @@ int core_task_init(void)
 {
     struct task_struct *core;
 
-    core = task_create("core", core_task_entry, NULL, CORE_TASK_PRIO, 512, 10, NULL);
+    core = task_create("core", core_task_entry, NULL, CORE_TASK_PRIO, 4096, 10, NULL);
     if (core == NULL) {
         pr_fatal("creat core task err\n");
         BUG_ON(true);
@@ -95,7 +96,7 @@ int idel_task_init(void)
 {
     struct task_struct *idel;
 
-    idel = task_create("idel", idel_task_entry, NULL, IDEL_TASK_PRIO, 512, 10, NULL);
+    idel = task_create("idel", idel_task_entry, NULL, IDEL_TASK_PRIO, 1024, 10, NULL);
     if (idel == NULL) {
         pr_fatal("creat idle task err\n");
         BUG_ON(true);

@@ -115,16 +115,16 @@ do { \
 
 #define spin_unlock(lock) \
 do { \
-    raw_spin_unlock(&(lock)->rlock); \
     (lock)->func = NULL; \
     (lock)->line = 0; \
+    raw_spin_unlock(&(lock)->rlock); \
 } while (0)
 
 #define spin_unlock_irq(lock) \
 do { \
-    raw_spin_unlock_irq(lock); \
     (lock)->func = NULL; \
     (lock)->line = 0; \
+    raw_spin_unlock_irq(lock); \
 } while (0)
 #else
 static inline void spin_lock(spinlock_t *lock)
