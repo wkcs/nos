@@ -6,6 +6,8 @@
  * Email: huqihan@live.com
  */
 
+#define pr_fmt(fmt) "[MM_BLOCK]:%s[%d]:"fmt, __func__, __LINE__
+
 #include <kernel/mm.h>
 #include <kernel/kernel.h>
 #include <kernel/printk.h>
@@ -264,6 +266,11 @@ int __kfree(void *addr)
 {
     struct memblock *block;
     struct mem_base *base;
+
+    if (addr == NULL)
+    {
+        return 0;
+    }
 
     block = find_block(addr);
     if (block == NULL) {

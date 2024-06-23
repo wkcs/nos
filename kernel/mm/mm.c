@@ -48,6 +48,8 @@ void *krealloc(void *ptr, u32 size, gfp_t flag)
 
     if (size == 0)
         goto out;
+    if (ptr == NULL)
+        goto alloc;
 
     block = find_block(ptr);
     if (block == NULL) {
@@ -60,14 +62,17 @@ void *krealloc(void *ptr, u32 size, gfp_t flag)
         goto out;
     }
 
+alloc:
     buf = __kalloc(size, flag, 0);
     if (buf == NULL) {
         goto out;
     }
-    memcpy(buf, ptr, min(size, base->size));
+    if (ptr != NULL)
+        memcpy(buf, ptr, min(size, base->size));
 
 out:
-    __kfree(ptr);
+    if (ptr != NULL)
+        __kfree(ptr);
     return buf;
 }
 

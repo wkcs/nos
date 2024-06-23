@@ -102,7 +102,7 @@ inline static int fflush(FILE *stream)
 
 inline static size_t fwrite(const void *ptr, size_t size, size_t nmemb, FILE *stream)
 {
-    return 0;
+    return pr_info("%s", ptr);
 }
 
 inline static char *fgets(char *str, int n, FILE *stream)
