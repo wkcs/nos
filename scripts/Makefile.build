@@ -30,8 +30,12 @@ obj-all := $(foreach obj-tmp, $(obj-all), $(shell if [ ! -e $(dir)/$(obj-tmp:%.o
 obj-all := $(obj-all:%=$(dir-obj-now)/%)
 objs-all := $(objs-all:%=$(dir-obj-now)/%)
 
-obj-dir-t = $(dir-y:%=$(dir)/%)
-obj-dir := $(obj-dir-t:%=$(out-dir)/%)
+dir-obj-dir = $(dir-y:%=$(dir)/%)
+file-obj-dir-t = $(foreach dir-tmp, $(obj-y), $(shell dirname $(dir-tmp)))
+file-obj-dir = $(foreach dir-tmp, $(file-obj-dir-t), $(shell if [[ $(dir-tmp) != "." ]]; then echo $(dir)/$(dir-tmp); fi))
+obj-dir-t = $(dir-obj-dir:%=$(out-dir)/%)
+obj-dir-t += $(file-obj-dir:%=$(out-dir)/%)
+obj-dir = $(sort $(obj-dir-t))
 
 ifndef $(TARGET)
     TARGET := built-in.o
@@ -68,7 +72,7 @@ $(obj-all):$(out-dir)/%.o:%.c
 
 $(obj-dir):
 	$(Q)if [ ! -d $@ ]; then \
-		mkdir $@; \
+		mkdir -p $@; \
 	fi
 
 

@@ -23,6 +23,7 @@ int sem_init(sem_t *sem, uint8_t num);
 void sem_get(sem_t *sem);
 int sem_get_timeout(sem_t *sem, uint32_t tick);
 void sem_send(sem_t *sem, uint8_t num);
+void sem_send_all(sem_t *sem);
 
 #define sem_send_one(sem) sem_send(sem, 1)
 

@@ -8,6 +8,53 @@
 
 #include <string.h>
 #include <kernel/errno.h>
+#include <kernel/mm.h>
+
+char *strcat(char *dest, const char *src)
+{
+	char *tmp = dest;
+
+	while (*dest)
+		dest++;
+	while ((*dest++ = *src++) != '\0')
+		;
+	return tmp;
+}
+
+char *strncat(char *dest, const char *src, size_t count)
+{
+	char *tmp = dest;
+
+	if (count) {
+		while (*dest)
+			dest++;
+		while ((*dest++ = *src++) != 0) {
+			if (--count == 0) {
+				*dest = '\0';
+				break;
+			}
+		}
+	}
+	return tmp;
+}
+
+size_t strlcat(char *dest, const char *src, size_t count)
+{
+	size_t dsize = strlen(dest);
+	size_t len = strlen(src);
+	size_t res = dsize + len;
+
+	/* This would be a bug */
+	BUG_ON(dsize >= count);
+
+	dest += dsize;
+	count -= dsize;
+	if (len >= count)
+		len = count-1;
+	__builtin_memcpy(dest, src, len);
+	dest[len] = 0;
+	return res;
+}
 
 #ifndef __HAVE_ARCH_STRLEN
 size_t strlen(const char *s)
@@ -310,6 +357,21 @@ int strcoll (const char *a, const char *b)
 
 {
     return strcmp (a, b);
+}
+
+char *kstrdup(const char *s, gfp_t gfp)
+{
+	size_t len;
+	char *buf;
+
+	if (!s)
+		return NULL;
+
+	len = strlen(s) + 1;
+	buf = kmalloc(len, gfp);
+	if (buf)
+		memcpy(buf, s, len);
+	return buf;
 }
 
 char *strerror(int errnum)

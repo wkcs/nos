@@ -152,3 +152,27 @@ void sem_send(sem_t *sem, uint8_t num)
 
     switch_task();
 }
+
+void sem_send_all(sem_t *sem)
+{
+    struct task_struct *task, *tmp;
+    LIST_HEAD(tmp_list);
+
+    spin_lock_irq(&sem->lock);
+    if (!list_empty(&sem->wait_list)) {
+        list_for_each_entry_safe (task, tmp, &sem->wait_list, list) {
+            list_del(&task->list);
+            task->list_lock = NULL;
+            list_add(&task->list, &tmp_list);
+        }
+    }
+    spin_unlock_irq(&sem->lock);
+
+    if (!list_empty(&tmp_list)) {
+        list_for_each_entry_safe (task, tmp, &tmp_list, list) {
+            task_resume(task);
+        }
+    }
+
+    switch_task();
+}

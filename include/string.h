@@ -10,7 +10,11 @@
 #define __STRING_H__
 
 #include <kernel/kernel.h>
+#include <kernel/mm.h>
 
+char *strcat(char *dest, const char *src);
+char *strncat(char *dest, const char *src, size_t count);
+size_t strlcat(char *dest, const char *src, size_t count);
 void *memcpy(void *dest, const void *src, size_t count);
 size_t strlen(const char *s);
 void *memcpy(void *dest, const void *src, size_t count);
@@ -33,6 +37,7 @@ size_t strspn(const char *s, const char *accept);
 size_t strcspn(const char *s, const char *reject);
 size_t strnlen(const char *s, size_t count);
 int strcoll (const char *a, const char *b);
+char *kstrdup(const char *s, gfp_t gfp);
 char *strerror (int errnum);
 
 #endif
