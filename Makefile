@@ -65,7 +65,7 @@ OOCDFLAGS := -f $(OPENOCD_CFG)
 
 .PHONY: all flash debug clean %_config defconfig size stflash jflash
 
-all:$(TARGET_LIST) $(TARGET_BIN) $(TARGET_HEX) $(TARGET_ELF) $(TARGET_IMG) $(BOARD_SVD) size
+all:$(TARGET_LIST) $(TARGET_BIN) $(TARGET_HEX) $(TARGET_ELF) $(TARGET_IMG) size
 
 size: $(TARGET_ELF)
 	@echo "SIZE     $(<:$(out-dir)/%=%)"
@@ -88,7 +88,8 @@ $(TARGET_IMG): $(TARGET_BIN)
 $(TARGET_LIST): $(TARGET_ELF)
 	@echo "OBJDUMP  $(@:$(out-dir)/%=%)"
 	$(Q)$(OBJDUMP) -S $< > $@
-$(TARGET_ELF): $(obj-all) $(LDSCRIPT_S) $(LDSCRIPT_LD) $(BOARD_SVD)
+
+$(TARGET_ELF): $(obj-all) $(LDSCRIPT_S) $(LDSCRIPT_LD) $(BOARD_SVD) $(OPENOCD_CFG)
 	@echo "LD       $(@:$(out-dir)/%=%)"
 	$(Q)$(CC) $(LDFLAGS) -o $@ $(obj-all) $(LDFLAGS-LIB)
 
