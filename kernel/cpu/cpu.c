@@ -14,6 +14,9 @@
 #include <kernel/boot.h>
 #include <kernel/timer.h>
 #include <asm/cpu.h>
+#ifdef CONFIG_LVGL
+#include <lvgl.h>
+#endif
 
 static u64 run_ticks;
 
@@ -34,6 +37,9 @@ void system_heartbeat_process(void)
 
     sch_heartbeat();
     timer_check_handle();
+#ifdef CONFIG_LVGL
+    lv_tick_inc(CONFIG_SYS_TICK_MS);
+#endif
 }
 
 u64 cpu_run_ticks(void)

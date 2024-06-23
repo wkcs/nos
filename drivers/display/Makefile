@@ -7,3 +7,4 @@
 ##############################################
 
 obj-$(CONFIG_RGB_MATRIX) += rgb-matrix.o
+obj-$(CONFIG_ZJ_TFTLCD) += zj-tft-lcd.o

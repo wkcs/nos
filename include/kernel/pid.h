@@ -11,7 +11,10 @@
 
 #include <kernel/kernel.h>
 
+#ifndef _PID_T_DECLARED
 typedef u32 pid_t;
+#define _PID_T_DECLARED
+#endif
 
 pid_t pid_alloc(void);
 int pid_free(pid_t pid);
