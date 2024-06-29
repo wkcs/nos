@@ -136,6 +136,8 @@ u32 switch_interrupt_flag;
 extern uint32_t SystemCoreClock;
 
 static uint32_t nop_us_time_ns;
+static uint32_t sys_tick_num_by_us;
+static uint32_t sys_tick_num_by_heartbeat;
 __init void asm_cpu_init(void)
 {
 #ifndef CONFIG_QEMU
@@ -143,6 +145,8 @@ __init void asm_cpu_init(void)
 #endif
     SysTick_Config(SystemCoreClock * CONFIG_SYS_TICK_MS / 1000);
 
+    sys_tick_num_by_us = SystemCoreClock / 1000000;
+    sys_tick_num_by_heartbeat = SystemCoreClock * CONFIG_SYS_TICK_MS / 1000;
     nop_us_time_ns = (10000000000 / SystemCoreClock + 5) / 10;
 
     interrupt_from_task = 0;
@@ -193,7 +197,7 @@ void asm_cpu_delay_us(uint32_t us)
     register uint32_t tcnt = 0;
     register uint32_t reload = SysTick->LOAD;
 
-    ticks = us * SystemCoreClock / 1000000;
+    ticks = us * sys_tick_num_by_us;
     tcnt = 0;
 
     told = SysTick->VAL;
@@ -226,6 +230,5 @@ void asm_cpu_reboot(void)
 u64 asm_cpu_run_time_us(void)
 {
     u64 us = cpu_run_ticks() * CONFIG_SYS_TICK_MS * 1000;
-
-    return (us + CONFIG_SYS_TICK_MS * 1000 - ((SysTick->VAL * SystemCoreClock)  / 1000000));
+    return (us + (sys_tick_num_by_heartbeat - SysTick->VAL) / sys_tick_num_by_us);
 }
