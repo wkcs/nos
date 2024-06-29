@@ -40,18 +40,18 @@ SECTIONS
     *(.kernel_init)
     . = ALIGN(4);
     __task_data_start = .;
-    *(.task.data)
+    KEEP (*(.task.data))
     __task_data_end = .;
     . = ALIGN(4);
     __console_data_start = .;
-    *(.console.data)
+    KEEP (*(.console.data))
     __console_data_end = .;
     . = ALIGN(4);
     __init_data_start = .;
-    *(.core_init.data)
-    *(.early_init.data)
-    *(.normal_init.data)
-    *(.late_init.data)
+    KEEP (*(.core_init.data))
+    KEEP (*(.early_init.data))
+    KEEP (*(.normal_init.data))
+    KEEP (*(.late_init.data))
     __init_data_end = .;
     . = ALIGN(4);
     *(.glue_7)         /* glue arm to thumb code */
@@ -109,7 +109,7 @@ SECTIONS
     *(.data*)          /* .data* sections */
     . = ALIGN(4);
     __memory_node_data_start = .;
-    *(.memory_node.data)
+    KEEP (*(.memory_node.data))
     __memory_node_data_end = .;
     . = ALIGN(4);
     _edata = .;        /* define a global symbol at data end */

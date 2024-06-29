@@ -138,7 +138,7 @@ static void lvgl_test_task_entry(void* parameter)
 {
     lv_init();
     lv_port_disp_init();
-    lv_demos_create(demos, 1);
+    //lv_demos_create(demos, 1);
 }
 
 static int lvgl_test_init(void)
