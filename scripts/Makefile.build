@@ -32,7 +32,7 @@ objs-all := $(objs-all:%=$(dir-obj-now)/%)
 
 dir-obj-dir = $(dir-y:%=$(dir)/%)
 file-obj-dir-t = $(foreach dir-tmp, $(obj-y), $(shell dirname $(dir-tmp)))
-file-obj-dir = $(foreach dir-tmp, $(file-obj-dir-t), $(shell if [[ $(dir-tmp) != "." ]]; then echo $(dir)/$(dir-tmp); fi))
+file-obj-dir = $(foreach dir-tmp, $(file-obj-dir-t), $(shell if [ $(dir-tmp) != "." ]; then echo $(dir)/$(dir-tmp); fi))
 obj-dir-t = $(dir-obj-dir:%=$(out-dir)/%)
 obj-dir-t += $(file-obj-dir:%=$(out-dir)/%)
 obj-dir = $(sort $(obj-dir-t))
@@ -41,9 +41,9 @@ ifndef $(TARGET)
     TARGET := built-in.o
 endif
 
-.PHONY: built-in.o $(dir-y)
+.PHONY: $(dir-y) FORCE
 
-built-in.o:$(dir-y) $(obj-dir) $(objs-all) $(obj-all)
+built-in.o:$(dir-y) $(obj-dir) $(objs-all) $(obj-all) FORCE
 	$(Q)if [ -n "$(objs-all)" ] || [ -n "$(obj-all)" ] || \
 		[ -n "$(foreach dir-tmp,$(obj-dir), $(wildcard $(dir-tmp)/built-in.o))" ]; then \
 		echo "LD       $(TARGET)"; \

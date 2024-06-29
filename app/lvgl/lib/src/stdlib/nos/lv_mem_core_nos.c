@@ -62,12 +62,12 @@ void * lv_malloc_core(size_t size)
 
 void * lv_realloc_core(void * p, size_t new_size)
 {
-    return Krealloc(p, new_size, GFP_KERNEL);
+    return krealloc(p, new_size, GFP_KERNEL);
 }
 
 void lv_free_core(void * p)
 {
-    Kfree(p);
+    kfree(p);
 }
 
 void lv_mem_monitor_core(lv_mem_monitor_t * mon_p)

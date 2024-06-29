@@ -63,7 +63,7 @@ BOARD_SVD := $(out-dir)/board.svd
 OPENOCD_CFG := $(out-dir)/openocd.cfg
 OOCDFLAGS := -f $(OPENOCD_CFG)
 
-.PHONY: all flash debug clean %_config defconfig size stflash jflash
+.PHONY: all flash debug clean %_config defconfig size stflash jflash FORCE
 
 all:$(TARGET_LIST) $(TARGET_BIN) $(TARGET_HEX) $(TARGET_ELF) $(TARGET_IMG) size
 
@@ -118,7 +118,7 @@ $(LDSCRIPT_S): $(out-dir)/%:%.S
 	@echo "E        $(notdir $@)"
 	$(Q)$(CC) -E $(INC_DIR) $(DEFINES) -P -o $@ $<
 
-$(obj-all): $(obj-dir) $(out-dir)/.config $(out-dir)/include/autocfg.h
+$(obj-all): $(obj-dir) $(out-dir)/.config $(out-dir)/include/autocfg.h FORCE
 	$(Q)$(MAKE) $(N) -f scripts/Makefile.build dir=$(@:$(out-dir)/%/$(notdir $@)=%) \
 		out-dir=$(out-dir) Q=$(Q) N=$(N) ARCH=$(ARCH) \
 		TARGET=$(notdir $@) built-in.o
