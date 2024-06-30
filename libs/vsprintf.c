@@ -91,13 +91,13 @@ static char *print_number(char *buf, char *end, int num, int base, int s, int ty
         if ((sign) && (size > 0))
             size--;
         while (size-- > 0) {
-            if (buf <= end)
+            if ((buf <= end) && (end != NULL))
                 *buf = ' ';
             ++buf;
         }
     }
     if (sign) {
-        if (buf <= end) {
+        if ((buf <= end) && (end != NULL)) {
             *buf = sign;
             --size;
         }
@@ -107,7 +107,7 @@ static char *print_number(char *buf, char *end, int num, int base, int s, int ty
     /* no align to the left */
     if (!(type & LEFT)) {
         while (size-- > 0) {
-            if (buf <= end)
+            if ((buf <= end) && (end != NULL))
                 *buf = c;
             ++buf;
         }
@@ -115,13 +115,13 @@ static char *print_number(char *buf, char *end, int num, int base, int s, int ty
 
     /* put number in the temporary buffer */
     while (i-- > 0) {
-        if (buf <= end)
+        if ((buf <= end) && (end != NULL))
             *buf = tmp[i];
         ++buf;
     }
 
     while (size-- > 0) {
-        if (buf <= end)
+        if ((buf <= end) && (end != NULL))
             *buf = ' ';
         ++buf;
     }
@@ -178,13 +178,13 @@ static char *print_float(char *buf, char *end, double num, int s, int type)
         if ((sign) && (size > 0))
             size--;
         while (size-- > 0) {
-            if (buf <= end)
+            if ((buf <= end) && (end != NULL))
                 *buf = ' ';
             ++buf;
         }
     }
     if (sign) {
-        if (buf <= end) {
+        if ((buf <= end) && (end != NULL)) {
             *buf = sign;
             --size;
         }
@@ -194,7 +194,7 @@ static char *print_float(char *buf, char *end, double num, int s, int type)
     /* no align to the left */
     if (!(type & LEFT)) {
         while (size-- > 0) {
-            if (buf <= end)
+            if ((buf <= end) && (end != NULL))
                 *buf = c;
             ++buf;
         }
@@ -202,7 +202,7 @@ static char *print_float(char *buf, char *end, double num, int s, int type)
 
     /* put number in the temporary buffer */
     while (i-- > 0) {
-        if (buf <= end)
+        if ((buf <= end) && (end != NULL))
             *buf = tmp[i];
         ++buf;
     }
@@ -224,7 +224,10 @@ __printf(3, 0) uint32_t vsnprintf(char *buf, size_t size, const char *fmt, va_li
     int32_t field_width; /* width of output field */
 
     str = buf;
-    end = buf + size - 1;
+    if (buf == NULL)
+        end = NULL;
+    else
+        end = buf + size - 1;
 
     /* Make sure end is always >= buf */
     if (end < buf) {
@@ -234,7 +237,7 @@ __printf(3, 0) uint32_t vsnprintf(char *buf, size_t size, const char *fmt, va_li
 
     for (; *fmt; ++fmt) {
         if (*fmt != '%') {
-            if (str <= end)
+            if ((str <= end) && (buf != NULL))
                 *str = *fmt;
             ++str;
             continue;
@@ -287,7 +290,7 @@ __printf(3, 0) uint32_t vsnprintf(char *buf, size_t size, const char *fmt, va_li
         case 'c':
             if (!(flags & LEFT)) {
                 while (--field_width > 0) {
-                    if (str <= end)
+                    if ((str <= end) && (buf != NULL))
                         *str = ' ';
                     ++str;
                 }
@@ -295,13 +298,13 @@ __printf(3, 0) uint32_t vsnprintf(char *buf, size_t size, const char *fmt, va_li
 
             /* get character */
             c = (uint32_t)va_arg(args, int);
-            if (str <= end)
+            if ((str <= end) && (buf != NULL))
                 *str = c;
             ++str;
 
             /* put width */
             while (--field_width > 0) {
-                if (str <= end)
+                if ((str <= end) && (buf != NULL))
                     *str = ' ';
                 ++str;
             }
@@ -316,21 +319,21 @@ __printf(3, 0) uint32_t vsnprintf(char *buf, size_t size, const char *fmt, va_li
 
             if (!(flags & LEFT)) {
                 while (len < field_width--) {
-                    if (str <= end)
+                    if ((str <= end) && (buf != NULL))
                         *str = ' ';
                     ++str;
                 }
             }
 
             for (i = 0; i < len; ++i) {
-                if (str <= end)
+                if ((str <= end) && (buf != NULL))
                     *str = *s;
                 ++str;
                 ++s;
             }
 
             while (len < field_width--) {
-                if (str <= end)
+                if ((str <= end) && (buf != NULL))
                     *str = ' ';
                 ++str;
             }
@@ -347,7 +350,7 @@ __printf(3, 0) uint32_t vsnprintf(char *buf, size_t size, const char *fmt, va_li
             continue;
 
         case '%':
-            if (str <= end)
+            if ((str <= end) && (buf != NULL))
                 *str = '%';
             ++str;
             continue;
@@ -376,12 +379,12 @@ __printf(3, 0) uint32_t vsnprintf(char *buf, size_t size, const char *fmt, va_li
             break;
 
         default:
-            if (str <= end)
+            if ((str <= end) && (buf != NULL))
                 *str = '%';
             ++str;
 
             if (*fmt) {
-                if (str <= end)
+                if ((str <= end) && (buf != NULL))
                     *str = *fmt;
                 ++str;
             } else {
@@ -411,9 +414,9 @@ __printf(3, 0) uint32_t vsnprintf(char *buf, size_t size, const char *fmt, va_li
         }
     }
 
-    if (str <= end)
+    if ((str <= end) && (buf != NULL))
         *str = '\0';
-    else
+    else if (end != NULL)
         *end = '\0';
 
     /* the trailing null byte doesn't count towards the total

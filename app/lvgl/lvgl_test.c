@@ -138,14 +138,14 @@ static void lvgl_test_task_entry(void* parameter)
 {
     lv_init();
     lv_port_disp_init();
-    //lv_demos_create(demos, 1);
+    lv_demos_create(demos, 1);
 }
 
 static int lvgl_test_init(void)
 {
     struct task_struct *task;
 
-    task = task_create("lvgl_test", lvgl_test_task_entry, NULL, 2, 1024, 10, NULL);
+    task = task_create("lvgl_test", lvgl_test_task_entry, NULL, 2, 4096, 10, NULL);
     if (task == NULL) {
         pr_fatal("creat lvgl_test task err\r\n");
         return -EINVAL;
