@@ -42,10 +42,10 @@ static void mm_deamon_task_entry(void* parameter)
 
     while (1) {
         sleep(2);
-        usage = task_get_cpu_usage(current) / 100;
-        all_usage = get_cpu_usage() / 100;
-        pr_info("%s: usage:%u.%02u%%, total:%u.%02u%%\r\n", current->name,
-                usage / 100, usage % 100, all_usage / 100, all_usage % 100);
+        pr_info("memory: %u/%u, totle: %u, free: %u\r\n",
+                mm_get_total_page_num(), mm_get_free_page_num(),
+                mm_get_total_page_num() * CONFIG_PAGE_SIZE,
+                mm_get_free_page_num() * CONFIG_PAGE_SIZE + mm_block_free_size());
     }
 }
 
@@ -53,7 +53,7 @@ static int mm_deamon_task_init(void)
 {
     struct task_struct *mm_deamon;
 
-    mm_deamon = task_create("mm_deamon", mm_deamon_task_entry, NULL, MM_DEAMON_TASK_PRIO, 1024, 10, NULL);
+    mm_deamon = task_create("mm_deamon", mm_deamon_task_entry, NULL, MM_DEAMON_TASK_PRIO, 512, 10, NULL);
     if (mm_deamon == NULL) {
         pr_fatal("creat mm_deamon task err\n");
         BUG_ON(true);

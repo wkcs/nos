@@ -105,6 +105,7 @@ void mm_node_dump(void);
 void mm_block_dump(void);
 struct memblock *find_block(void *addr);
 struct mem_base *find_base(struct memblock *block, void *addr);
+size_t mm_block_free_size(void);
 
 #define ALIGNED(addr, align) (((addr) + (align) - 1) & ~((align) - 1))
 #define ALIGNED_PAGE(addr) ALIGNED(addr, CONFIG_PAGE_SIZE)

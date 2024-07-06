@@ -333,7 +333,6 @@ void __mm_block_dump(struct memblock *block)
     int i = 0;
 
     pr_info("mm_block: start=0x%lx, size=%u, free=%u\r\n", block->start, block->size, block->max_alloc_cap);
-    return;
     spin_lock_irq(&block->lock);
     list_for_each_entry (base, &block->base, list) {
         pr_info("mm_base[%d]: size=%u, used=%u\r\n", i, base->size, base->used);
@@ -351,4 +350,18 @@ void mm_block_dump(void)
         __mm_block_dump(block);
     }
     spin_unlock_irq(&g_memblock_lock);
+}
+
+size_t mm_block_free_size(void)
+{
+    struct memblock *block;
+    size_t size = 0;
+
+    spin_lock_irq(&g_memblock_lock);
+    list_for_each_entry (block, &g_memblock_list, list) {
+        size += block->max_alloc_cap;
+    }
+    spin_unlock_irq(&g_memblock_lock);
+
+    return size;
 }

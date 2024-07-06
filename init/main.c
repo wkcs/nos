@@ -22,7 +22,10 @@ void nos_print_kernel_info(void)
     pr_info("    board[%s]\r\n", CONFIG_BOARD);
     pr_info("    build-time[%s]\r\n", CONFIG_BUILD_INFO);
     pr_info("    cpu-type[%s]\r\n", CONFIG_CPU_TYPE);
-    pr_info("    version[0x%x]\r\n", CONFIG_VERSION_CODE);
+    pr_info("    version[%u.%u.%u]\r\n",
+            (CONFIG_VERSION_CODE >> 16) & 0xff,
+            (CONFIG_VERSION_CODE >> 8) & 0xff,
+            CONFIG_VERSION_CODE & 0xff);
     pr_info("    page-size[%d]\r\n", CONFIG_PAGE_SIZE);
 }
 
