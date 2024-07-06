@@ -22,10 +22,11 @@
 
 #include "lvgl.h"
 #include "lib/demos/lv_demos.h"
+#include "../../drivers/display/zj-tft-lcd.h"
 
 
-#define MY_DISP_HOR_RES    320
-#define MY_DISP_VER_RES    240
+#define MY_DISP_HOR_RES    480
+#define MY_DISP_VER_RES    800
 
 
 static void disp_init(void);
@@ -87,6 +88,7 @@ void lv_port_disp_init(void)
 static void disp_init(void)
 {
     /*You code here*/
+    LCD_Init();
 }
 
 volatile bool disp_flush_enabled = true;
@@ -120,7 +122,8 @@ static void disp_flush(lv_display_t * disp_drv, const lv_area_t * area, uint8_t 
             for(x = area->x1; x <= area->x2; x++) {
                 /*Put a pixel to the display. For example:*/
                 /*put_px(x, y, *px_map)*/
-                px_map++;
+                LCD_Fast_DrawPoint(x, y, *((uint16_t *)px_map));
+                px_map += 2;
             }
         }
     }
@@ -138,7 +141,18 @@ static void lvgl_test_task_entry(void* parameter)
 {
     lv_init();
     lv_port_disp_init();
-    lv_demos_create(demos, 1);
+    // lv_demos_create(demos, 1);
+
+    lv_obj_t *btn = lv_btn_create(lv_scr_act());
+    if (btn != NULL) {
+        lv_obj_set_size(btn, 100, 50);
+        lv_obj_set_pos(btn, 100, 100);
+    }
+
+    while(1) {
+        lv_timer_handler();
+        msleep(10);
+    }
 }
 
 static int lvgl_test_init(void)

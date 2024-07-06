@@ -49,8 +49,8 @@ extern u16  BACK_COLOR;     //背景颜色.默认为白色
 //LCD地址结构体
 typedef struct
 {
-    vu16 LCD_REG;
-    vu16 LCD_RAM;
+    volatile u16 LCD_REG;
+    volatile u16 LCD_RAM;
 } LCD_TypeDef;
 
 //使用NOR/SRAM的 Bank1.sector4,地址位HADDR[27,26]=11 A10作为数据命令区分线 

@@ -23,7 +23,10 @@
 #include <kernel/sem.h>
 #include <kernel/mutex.h>
 
+#include <display/display.h>
+
 #include "zj-tft-lcd.h"
+#include "font.h"
 
 //LCD的画笔颜色和背景色
 u16 POINT_COLOR=0x0000;         //画笔颜色
@@ -71,7 +74,7 @@ void LCD_WriteReg(u16 LCD_Reg,u16 LCD_RegValue)
 u16 LCD_ReadReg(u16 LCD_Reg)
 {
     LCD_WR_REG(LCD_Reg);        //写入要读的寄存器序号
-    delay_us(5);
+    usleep(5);
     return LCD_RD_DATA();       //返回读到的值
 }
 
@@ -2000,7 +2003,7 @@ void LCD_Init(void)
         LCD_WriteReg(0x3500, 0x00);
         LCD_WriteReg(0x3A00, 0x55); //16-bit/pixel
         LCD_WR_REG(0x1100);
-        delay_us(120);
+        usleep(120);
         LCD_WR_REG(0x2900);
     }
     else if (lcddev.id == 0X1963)
@@ -2009,7 +2012,7 @@ void LCD_Init(void)
         LCD_WR_DATA(0x1D);      //参数1
         LCD_WR_DATA(0x02);      //参数2 Divider M = 2, PLL = 300/(M+1) = 100MHz
         LCD_WR_DATA(0x04);      //参数3 Validate M and N values
-        delay_us(100);
+        usleep(100);
         LCD_WR_REG(0xE0);       // Start PLL command
         LCD_WR_DATA(0x01);      // enable PLL
         msleep(10);
@@ -2388,6 +2391,7 @@ void LCD_ShowString(u16 x, u16 y, u16 width, u16 height, u8 size, u8 *p)
 struct tft_lcd {
     struct mutex lock;
     struct device dev;
+    _lcd_dev *lcd;
 
     bool enable;
 };
@@ -2396,35 +2400,23 @@ static ssize_t tft_lcd_buf_write(struct device *dev, addr_t pos, const void *buf
 {
     struct tft_lcd *lcd = dev->priv;
 
-    if (size != LED_BUF_SZIE) {
-        pr_err("data size error\r\n");
-        return -EINVAL;
-    }
-
-    mutex_lock(&lcd->lock);
-    memcpy(lcd->buf, buffer, LED_BUF_SZIE);
-    mutex_unlock(&lcd->lock);
-
     return size;
 }
 
 static int tft_lcd_control(struct device *dev, int cmd, void *args)
 {
     struct tft_lcd *lcd = dev->priv;
-    struct display_dev_info info = {.width = LED_WIDTH, .height = LED_HEIGHT};
+    struct display_dev_info info = {.width = lcd->lcd->width, .height = lcd->lcd->height};
 
     switch (cmd) {
-    case LED_CTRL_ENABLE:
-        led->enable = true;
+    case DS_CTRL_ENABLE:
+        lcd->enable = true;
         break;
-    case LED_CTRL_DISABLE:
-        led->enable = false;
-        rgb_matrix_buf_init(led);
+    case DS_CTRL_DISABLE:
+        lcd->enable = false;
         break;
-    case LED_CTRL_GET_ENABLE_STATUS:
-        return led->enable;
-    case LED_CTRL_REFRESH:
-        break;
+    case DS_CTRL_GET_ENABLE_STATUS:
+        return lcd->enable;
     case DS_CTRL_GET_DEV_INFO:
         memcpy(args, &info, sizeof(struct display_dev_info));
         break;
@@ -2445,28 +2437,19 @@ static int zj_tft_lcd_init(void)
         pr_err("alloc tft_lcd buf error\r\n");
         return -ENOMEM;
     }
+    lcd->lcd = &lcddev;
 
-    rgb_matrix_gpio_init();
-    memset(led->buf, 0, LED_BUF_SZIE);
 
-    mutex_init(&led->lock);
-    led->enable = false;
+    mutex_init(&lcd->lock);
+    lcd->enable = false;
 
-    device_init(&led->dev);
-    led->dev.name = "zj-tft_lcd";
-    led->dev.ops.write = tft_lcd_buf_write;
-    led->dev.ops.control = tft_lcd_control;
-    led->dev.priv = led;
-    device_register(&led->dev);
-
-    led->task = task_create("rgb-matrix", rgb_matrix_task_entry, led, 10, 512, 10, NULL);
-    if (led->task == NULL) {
-        pr_fatal("creat rgb_matrix task err\r\n");
-        BUG_ON(true);
-        return -EINVAL;
-    }
-    task_ready(led->task);
+    device_init(&lcd->dev);
+    lcd->dev.name = "zj-tft_lcd";
+    lcd->dev.ops.write = tft_lcd_buf_write;
+    lcd->dev.ops.control = tft_lcd_control;
+    lcd->dev.priv = lcd;
+    device_register(&lcd->dev);
 
     return 0;
 }
-task_init(rgb_matrix_init);
+task_init(zj_tft_lcd_init);
