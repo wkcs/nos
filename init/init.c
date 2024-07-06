@@ -72,9 +72,14 @@ int core_task_init(void)
 {
     struct task_struct *core;
 
-    core = task_create("core", core_task_entry, NULL, CORE_TASK_PRIO, 4096, 10, NULL);
+#ifndef CONFIG_CORE_TASK_STACK_SIZE
+#define CONFIG_CORE_TASK_STACK_SIZE 4096
+#endif
+
+    core = task_create("core", core_task_entry, NULL, CORE_TASK_PRIO,
+                       CONFIG_CORE_TASK_STACK_SIZE, 10, NULL);
     if (core == NULL) {
-        pr_fatal("creat core task err\n");
+        pr_fatal("creat core task error\r\n");
         BUG_ON(true);
         return -EINVAL;
     }
@@ -96,7 +101,13 @@ int idel_task_init(void)
 {
     struct task_struct *idel;
 
-    idel = task_create("idel", idel_task_entry, NULL, IDEL_TASK_PRIO, 1024, 10, NULL);
+#ifndef CONFIG_IDEL_TASK_STACK_SIZE
+#define CONFIG_IDEL_TASK_STACK_SIZE 1024
+#endif
+
+
+    idel = task_create("idel", idel_task_entry, NULL, IDEL_TASK_PRIO,
+                       CONFIG_IDEL_TASK_STACK_SIZE, 10, NULL);
     if (idel == NULL) {
         pr_fatal("creat idle task err\n");
         BUG_ON(true);
