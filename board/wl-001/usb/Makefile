@@ -5,3 +5,14 @@
 #
 # Email: huqihan@live.com
 ##############################################
+
+CCFLAGS += -I$(dir)/../inside-include
+CCFLAGS += -I$(dir)/../drivers/inc
+
+obj-y = stm32f1xx_hal_pcd_ex.o
+obj-y += stm32f1xx_hal_pcd.o
+obj-y += stm32f1xx_ll_usb.o
+
+
+
+
