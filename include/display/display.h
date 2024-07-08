@@ -30,6 +30,7 @@ enum ds_ctrl_cmd {
     DS_CTRL_LOCK,
     DS_CTRL_UNLOCK,
     DS_CTRL_GET_DEV_INFO,
+    DS_CTRL_REFRESH,
 };
 
 enum ds_data_cmd {

@@ -13,3 +13,5 @@ obj-$(CONFIG_LVGL) += lvgl
 obj-$(CONFIG_TEST_APP) += test.o
 obj-$(CONFIG_KEYBOARD) += keyboard.o
 obj-$(CONFIG_RGB_TEST) += rgb_test.o
+obj-$(CONFIG_LCD_TEST) += lcd_test.o
+obj-$(CONFIG_OLED_TEST) += oled_test.o
