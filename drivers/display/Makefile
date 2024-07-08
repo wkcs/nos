@@ -8,3 +8,5 @@
 
 obj-$(CONFIG_RGB_MATRIX) += rgb-matrix.o
 obj-$(CONFIG_ZJ_TFTLCD) += zj-tft-lcd.o
+obj-$(CONFIG_ST7789_LCD) += st7789-lcd.o
+obj-$(CONFIG_SSD1106_OLED) += ssd1106-oled.o
