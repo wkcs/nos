@@ -31,6 +31,7 @@ dir-y += libs
 dir-y += modules
 dir-y += board
 dir-y += app
+dir-y += fs
 
 dir-run := $(dir-y:%=%-run)
 ifndef $(out-dir)

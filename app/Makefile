@@ -15,3 +15,5 @@ obj-$(CONFIG_KEYBOARD) += keyboard.o
 obj-$(CONFIG_RGB_TEST) += rgb_test.o
 obj-$(CONFIG_LCD_TEST) += lcd_test.o
 obj-$(CONFIG_OLED_TEST) += oled_test.o
+obj-$(CONFIG_SDCARD_TEST) += sdcard_test.o
+obj-$(CONFIG_FATFS_TEST) += fatfs_test.o
