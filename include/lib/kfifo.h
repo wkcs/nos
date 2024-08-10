@@ -20,6 +20,8 @@ struct kfifo {
     void *data;
 };
 
+unsigned int kfifo_unused(struct kfifo *fifo);
+unsigned int kfifo_used(struct kfifo *fifo);
 int kfifo_alloc(struct kfifo *fifo, unsigned int size, size_t esize, gfp_t gfp_mask);
 void kfifo_free(struct kfifo *fifo);
 int kfifo_init(struct kfifo *fifo, void *buffer, unsigned int size, size_t esize);

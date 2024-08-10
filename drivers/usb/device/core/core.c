@@ -2076,6 +2076,9 @@ int usb_class_register(void)
 #ifdef CONFIG_USB_WINUSB
     usbd_winusb_class_register();
 #endif
+#ifdef CONFIG_USB_CDC
+    usbd_vcom_class_register();
+#endif
 
     return 0;
 }
