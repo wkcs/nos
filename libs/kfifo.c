@@ -14,9 +14,14 @@
 /*
  * internal helper to calculate the unused elements in a fifo
  */
-static inline unsigned int kfifo_unused(struct kfifo *fifo)
+unsigned int kfifo_unused(struct kfifo *fifo)
 {
     return (fifo->mask + 1) - (fifo->in - fifo->out);
+}
+
+unsigned int kfifo_used(struct kfifo *fifo)
+{
+    return fifo->in - fifo->out;
 }
 
 int kfifo_alloc(struct kfifo *fifo, unsigned int size, size_t esize, gfp_t gfp_mask)

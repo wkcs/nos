@@ -138,7 +138,7 @@ static int nk60_display_server_init(void)
         nk60_display_server_task_entry, nk60_ds, 20, 1024, 10, NULL);
     if (nk60_ds->task == NULL) {
         pr_fatal("creat nk60_display_server task err\r\n");
-        
+
         return -EINVAL;
     }
     task_ready(nk60_ds->task);

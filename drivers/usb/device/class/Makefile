@@ -8,3 +8,4 @@
 
 obj-$(CONFIG_USB_HID) = hid.o
 obj-$(CONFIG_USB_WINUSB) += winusb.o
+obj-$(CONFIG_USB_CDC) += cdc.o
