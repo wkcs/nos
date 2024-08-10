@@ -244,6 +244,7 @@ static const struct udcd_ops _udc_ops =
 
 int stm_usbd_register(void)
 {
+    usb_class_register();
     memset((void *)&_stm_udc, 0, sizeof(struct udcd));
     _stm_udc.init = _init;
     _stm_udc.ops = &_udc_ops;

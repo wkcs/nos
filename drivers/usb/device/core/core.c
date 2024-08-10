@@ -2070,8 +2070,12 @@ int usbd_core_init(void)
 
 int usb_class_register(void)
 {
+#ifdef CONFIG_USB_HID
     usbd_hid_class_register();
+#endif
+#ifdef CONFIG_USB_WINUSB
     usbd_winusb_class_register();
+#endif
 
     return 0;
 }
