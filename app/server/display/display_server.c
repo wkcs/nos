@@ -94,17 +94,21 @@ struct ds_draw_info *display_server_alloc_draw_area_info(struct display_server *
 {
     struct ds_draw_info *info;
 
+    if (x + width > ds->dev_info.width) {
+        pr_err("x is out of range, x=%u, x_max=%u\r\n",
+               x + width, ds->dev_info.width);
+        return NULL;
+    }
+    if (y + height > ds->dev_info.height) {
+        pr_err("y is out of range, y=%u, y_max=%u\r\n",
+               y + height, ds->dev_info.height);
+        return NULL;
+    }
+
     info = kmalloc(sizeof(struct ds_draw_info) + sizeof(struct ds_data) * width * height, GFP_KERNEL);
     if (info == NULL) {
         pr_err("alloc draw info failed\r\n");
         return NULL;
-    }
-
-    if (x + width >= ds->dev_info.width) {
-        pr_err("x is out of range, x_max=%u\r\n", ds->dev_info.width);
-    }
-    if (y + height >= ds->dev_info.height) {
-        pr_err("y is out of range, y_max=%u\r\n", ds->dev_info.height);
     }
 
     info->point_num = 0;
@@ -151,6 +155,9 @@ static int display_server_control(struct device *dev, int cmd, void *args)
         break;
     case DS_CTRL_UNLOCK:
         mutex_unlock(&ds->lock);
+        break;
+    case DS_CTRL_GET_DEV_INFO:
+        memcpy(args, &ds->dev_info, sizeof(struct display_dev_info));
         break;
     default:
         pr_err("unknown cmd: %d\r\n", cmd);
@@ -244,6 +251,8 @@ static void display_server_task_entry(void* parameter)
     ds->led_enable = true;
     ds->led_dev->ops.control(ds->led_dev, LED_CTRL_ENABLE, NULL);
 
+    device_register(&ds->ds_dev);
+
     while (true) {
         if (ds->led_enable) {
             display_server_merge_buf(ds);
@@ -277,7 +286,6 @@ static int display_server_init(void)
     ds->ds_dev.name = "display-server";
     ds->ds_dev.ops.control = display_server_control;
     ds->ds_dev.priv = ds;
-    device_register(&ds->ds_dev);
 
     ds->task = task_create("display_server", display_server_task_entry, ds, 2, 1024, 10, NULL);
     if (ds->task == NULL) {

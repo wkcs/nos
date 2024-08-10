@@ -371,7 +371,7 @@ int spi_w25qxx_init(void)
     }
 
     device_init(&info->dev);
-    info->dev.name = "nk60-flash";
+    info->dev.name = "nk60_v2-flash";
     info->dev.ops.write = w25qxx_write;
     info->dev.ops.read = w25qxx_read;
     device_register(&info->dev);
