@@ -295,7 +295,7 @@ static int nk60_v2_led_init(void)
     led->enable = false;
 
     device_init(&led->dev);
-    led->dev.name = "nk60-led";
+    led->dev.name = "nk60_v2-led";
     led->dev.ops.write = nk60_v2_led_buf_write;
     led->dev.ops.control = nk60_v2_led_control;
     led->dev.priv = led;
