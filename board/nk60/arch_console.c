@@ -9,6 +9,8 @@
 #include <kernel/kernel.h>
 #include <kernel/console.h>
 #include <kernel/printk.h>
+#include <kernel/sem.h>
+#include <lib/kfifo.h>
 
 #include "board.h"
 
@@ -17,10 +19,22 @@ static char log_buf[UART_LOG_DMA_BUF_SIZE];
 static bool dma_transport;
 #endif
 
-extern uint8_t interrupt_nest;
+static struct kfifo g_console_fifo;
+static char g_console_fifo_buf[CONFIG_CONSOLE_FIFO_BUF_SIZE];
+sem_t g_rx_ready;
 
 int consol_init(void)
 {
+    int rc;
+
+    rc = kfifo_init(&g_console_fifo, g_console_fifo_buf, CONFIG_CONSOLE_FIFO_BUF_SIZE, 1);
+    if (rc < 0) {
+        pr_err("console fifo init failed\r\n");
+        BUG_ON(1);
+        return rc;
+    }
+    sem_init(&g_rx_ready, 0);
+
 #ifdef CONFIG_UART_DMA
     uart_log_dev.dma_config->init_type.DMA_Memory0BaseAddr = (uint32_t)log_buf;
 #endif
@@ -45,36 +59,13 @@ void DMA2_Stream7_IRQHandler(void)
 #endif
 }
 
-static char cmd_buf[256];
-static uint8_t cmd_num;
 void USART1_IRQHandler(void)
 {
     char res;
     if (USART_GetITStatus(USART1, USART_IT_RXNE) != RESET) {
         res = USART_ReceiveData(USART1);
-        if (res == '\r') {
-            cmd_buf[cmd_num + 1] = 0;
-            cmd_num = 0;
-            usart_send("\r\n", 2);
-        } else if (res != 0x09 && res != 0x1b) {
-            if (res == '\b') {
-                if (cmd_num > 0) {
-                    cmd_num--;
-                    cmd_buf[cmd_num] = 0;
-                    usart_send(&res, 1);
-                    usart_send(" ", 1);
-                    usart_send(&res, 1);
-                }
-            } else {
-                cmd_buf[cmd_num] = res;
-                cmd_num++;
-                usart_send(&res, 1);
-            }
-        }
-        if (cmd_num == 255) {
-            cmd_num = 0;
-            usart_send("\r\n", 2);
-        }
+        kfifo_in(&g_console_fifo, &res, 1);
+        sem_send_one(&g_rx_ready);
     }
 }
 
@@ -103,9 +94,25 @@ static void arch_console_send_log(void)
 #endif
 }
 
+static char arch_console_getc(void)
+{
+    char c = 0;
+
+    sem_get(&g_rx_ready);
+    kfifo_out(&g_console_fifo, &c, 1);
+    return c;
+}
+
+static int arch_console_putc(char c)
+{
+    return usart_send(&c, 1);
+}
+
 static struct console_ops keyboard_v2_console_ops = {
     .init = consol_init,
     .write = console_send_data,
     .send_log = arch_console_send_log,
+    .getc = arch_console_getc,
+    .putc = arch_console_putc,
 };
 console_register(tty0, &keyboard_v2_console_ops);

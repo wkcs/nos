@@ -6,6 +6,9 @@
  * Email: huqihan@live.com
  */
 
+#include <sys/types.h>
+#define pr_fmt(fmt) "[WINUSB]:%s[%d]:"fmt, __func__, __LINE__
+
 #include <kernel/task.h>
 #include <kernel/task.h>
 #include <kernel/sem.h>
@@ -23,9 +26,11 @@ struct winusb_device {
     struct device dev;
     void (*cmd_handler)(uint8_t *buffer, size_t size);
     struct ufunction *func;
-    uint8_t cmd_buff[256];
+    uint8_t cmd_buff[1024];
     uep_t ep_out;
     uep_t ep_in;
+    sem_t read_sem;
+    sem_t write_sem;
 };
 
 struct winusb_device *winusb_dev;
@@ -137,26 +142,20 @@ struct usb_os_function_comp_id_descriptor winusb_func_comp_id_desc =
     .reserved2          = {0x00, 0x00, 0x00, 0x00, 0x00, 0x00}
 };
 
-static int _ep_out_handler(__maybe_unused ufunction_t func, __maybe_unused size_t size)
+static int _ep_out_handler(ufunction_t func, size_t size)
 {
     struct winusb_device *winusb_device = (struct winusb_device *)func->user_data;
-    struct device *dev;
 
-    dev = &winusb_device->dev;
-    if (dev->ops.read_complete != NULL)
-        dev->ops.read_complete(dev, size);
+    sem_send_one(&winusb_device->read_sem);
 
     return 0;
 }
 
-static int _ep_in_handler(__maybe_unused ufunction_t func, __maybe_unused size_t size)
+static int _ep_in_handler(ufunction_t func, size_t size)
 {
     struct winusb_device *winusb_device = (struct winusb_device *)func->user_data;
-    struct device *dev;
 
-    dev = &winusb_device->dev;
-    if (dev->ops.write_complete != NULL)
-        dev->ops.write_complete(dev, winusb_device->ep_in->buffer);
+    sem_send_one(&winusb_device->write_sem);
 
     return 0;
 }
@@ -227,7 +226,8 @@ static int _winusb_descriptor_config(winusb_desc_t winusb, uint8_t cintf_nr, uin
     return 0;
 }
 
-static ssize_t win_usb_read(struct device *dev, __maybe_unused addr_t pos, void *buffer, size_t size)
+static ssize_t winusb_read(struct device *dev, addr_t pos,
+    void *buffer, size_t size)
 {
     size_t read_size;
     struct winusb_device *win_dev = container_of(dev, struct winusb_device, dev);
@@ -239,11 +239,16 @@ static ssize_t win_usb_read(struct device *dev, __maybe_unused addr_t pos, void 
     win_dev->ep_out->request.buffer = buffer;
     win_dev->ep_out->request.size = size;
     win_dev->ep_out->request.req_type = UIO_REQUEST_READ_FULL;
-    read_size = usbd_io_request(win_dev->func->device, win_dev->ep_out, &win_dev->ep_out->request);
+    read_size = usbd_io_request(win_dev->func->device, win_dev->ep_out,
+        &win_dev->ep_out->request);
+
+    sem_get(&win_dev->read_sem);
+
     return read_size;
 }
 
-static ssize_t win_usb_write(struct device *dev, __maybe_unused addr_t pos, const void *buffer, size_t size)
+static ssize_t winusb_write(struct device *dev, addr_t pos,
+    const void *buffer, size_t size)
 {
     size_t write_size;
     struct winusb_device *win_dev = container_of(dev, struct winusb_device, dev);
@@ -255,14 +260,72 @@ static ssize_t win_usb_write(struct device *dev, __maybe_unused addr_t pos, cons
     win_dev->ep_in->request.buffer = win_dev->ep_in->buffer;
     win_dev->ep_in->request.size = size;
     win_dev->ep_in->request.req_type = UIO_REQUEST_WRITE;
-    write_size = usbd_io_request(win_dev->func->device, win_dev->ep_in, &win_dev->ep_in->request);
+    write_size = usbd_io_request(win_dev->func->device, win_dev->ep_in,
+        &win_dev->ep_in->request);
+
+    sem_get(&win_dev->write_sem);
+
     return write_size;
 }
 
-static int  win_usb_control(struct device *dev, int cmd, void *args)
+static ssize_t winusb_read_timeout(struct device *dev, addr_t pos,
+    void *buffer, size_t size, uint32_t tick)
+{
+    size_t read_size;
+    struct winusb_device *win_dev =
+        container_of(dev, struct winusb_device, dev);
+    int rc;
+
+    if (win_dev->func->device->state != USB_STATE_CONFIGURED)
+        return 0;
+
+    win_dev->ep_out->buffer = buffer;
+    win_dev->ep_out->request.buffer = buffer;
+    win_dev->ep_out->request.size = size;
+    win_dev->ep_out->request.req_type = UIO_REQUEST_READ_FULL;
+    read_size = usbd_io_request(win_dev->func->device, win_dev->ep_out,
+        &win_dev->ep_out->request);
+
+    rc = sem_get_timeout(&win_dev->read_sem, tick);
+    if (rc < 0) {
+        pr_err("read timeout\r\n");
+        return rc;
+    }
+
+    return read_size;
+}
+
+static ssize_t winusb_write_timeout(struct device *dev, addr_t pos,
+    const void *buffer, size_t size, uint32_t tick)
+{
+    size_t write_size;
+    struct winusb_device *win_dev =
+        container_of(dev, struct winusb_device, dev);
+    int rc;
+
+    if (win_dev->func->device->state != USB_STATE_CONFIGURED)
+        return 0;
+
+    win_dev->ep_in->buffer = (void *)buffer;
+    win_dev->ep_in->request.buffer = win_dev->ep_in->buffer;
+    win_dev->ep_in->request.size = size;
+    win_dev->ep_in->request.req_type = UIO_REQUEST_WRITE;
+    write_size = usbd_io_request(win_dev->func->device, win_dev->ep_in,
+        &win_dev->ep_in->request);
+
+    rc = sem_get_timeout(&win_dev->write_sem, tick);
+    if (rc < 0) {
+        pr_err("write timeout\r\n");
+        return rc;
+    }
+
+    return write_size;
+}
+
+static int  winusb_control(struct device *dev, int cmd, void *args)
 {
     struct winusb_device *win_dev = container_of(dev, struct winusb_device, dev);
-    if(cmd == 0x03 && win_dev->cmd_handler != NULL)
+    if (cmd == 0x03 && win_dev->cmd_handler == NULL)
         win_dev->cmd_handler = (void(*)(uint8_t*, size_t))args;
 
     return 0;
@@ -276,9 +339,11 @@ static int usb_winusb_init(ufunction_t func)
 
     device_init(&winusb_device->dev);
     winusb_device->dev.name = "winusb";
-    winusb_device->dev.ops.read = win_usb_read;
-    winusb_device->dev.ops.write = win_usb_write;
-    winusb_device->dev.ops.control = win_usb_control;
+    winusb_device->dev.ops.read = winusb_read;
+    winusb_device->dev.ops.write = winusb_write;
+    winusb_device->dev.ops.read_timeout = winusb_read_timeout;
+    winusb_device->dev.ops.write_timeout = winusb_write_timeout;
+    winusb_device->dev.ops.control = winusb_control;
     device_register(&winusb_device->dev);
 
     return 0;
@@ -304,6 +369,8 @@ ufunction_t usbd_function_winusb_create(udevice_t device)
     winusb_device = kmalloc(sizeof(*winusb_device), GFP_KERNEL);
     winusb_dev = winusb_device;
     memset((void *)winusb_device, 0, sizeof(*winusb_device));
+    sem_init(&winusb_device->read_sem, 0);
+    sem_init(&winusb_device->write_sem, 0);
     func->user_data = (void*)winusb_device;
     /* create an interface object */
     winusb_intf = usbd_interface_new(device, _interface_handler);

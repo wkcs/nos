@@ -6,6 +6,8 @@
  * Email: huqihan@live.com
  */
 
+#define pr_fmt(fmt) "[USB_DEVICE]:%s[%d]:"fmt, __func__, __LINE__
+
 #include <kernel/printk.h>
 #include <usb/usb_common.h>
 #include <usb/usb_device.h>

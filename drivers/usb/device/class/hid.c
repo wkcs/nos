@@ -6,6 +6,8 @@
  * Email: huqihan@live.com
  */
 
+#define pr_fmt(fmt) "[USB_HID]:%s[%d]:"fmt, __func__, __LINE__
+
 #include <kernel/kernel.h>
 #include <kernel/task.h>
 #include <kernel/msg_queue.h>

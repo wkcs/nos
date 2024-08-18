@@ -50,7 +50,7 @@
 struct w25qxx_info {
     struct device dev;
     uint16_t id;
-    uint8_t buf[BLOACK_BUF_SIZE];
+    //uint8_t buf[BLOACK_BUF_SIZE];
 };
 
 uint8_t spi1_read_write_byte(uint8_t tx_data)
@@ -306,6 +306,7 @@ ssize_t w25qxx_write(struct device *dev, addr_t pos, const void *buffer, size_t 
     uint16_t secremain;
     uint16_t i;
     size_t index = 0;
+    uint8_t *buf;
     struct w25qxx_info *chip_info = container_of(dev, struct w25qxx_info, dev);
 
     secpos = pos / BLOACK_BUF_SIZE; //扇区地址
@@ -314,20 +315,18 @@ ssize_t w25qxx_write(struct device *dev, addr_t pos, const void *buffer, size_t 
     if (size <= secremain)
         secremain = size; //不大于4096个字节
 
-    /*
     buf = kmalloc(BLOACK_BUF_SIZE, GFP_KERNEL);
     if (buf == NULL) {
         pr_err("alloc buf error\r\n");
         return -ENOMEM;
     }
-    */
 
     while (1)
     {
-        w25qxx_read(dev, secpos * BLOACK_BUF_SIZE, (void *)chip_info->buf, BLOACK_BUF_SIZE); //读出整个扇区的内容
+        w25qxx_read(dev, secpos * BLOACK_BUF_SIZE, (void *)buf, BLOACK_BUF_SIZE); //读出整个扇区的内容
         for (i = 0; i < secremain; i++)               //校验数据
         {
-            if (chip_info->buf[secoff + i] != 0XFF)
+            if (buf[secoff + i] != 0XFF)
                 break; //需要擦除
         }
         if (i < secremain) //需要擦除
@@ -335,9 +334,9 @@ ssize_t w25qxx_write(struct device *dev, addr_t pos, const void *buffer, size_t 
             w25qxx_erase_sector(secpos);    //擦除这个扇区
             for (i = 0; i < secremain; i++) //复制
             {
-                chip_info->buf[i + secoff] = ((uint8_t *)buffer)[i + index];
+                buf[i + secoff] = ((uint8_t *)buffer)[i + index];
             }
-            w25qxx_write_no_check(chip_info->buf, secpos * BLOACK_BUF_SIZE, BLOACK_BUF_SIZE); //写入整个扇区
+            w25qxx_write_no_check(buf, secpos * BLOACK_BUF_SIZE, BLOACK_BUF_SIZE); //写入整个扇区
         }
         else
             w25qxx_write_no_check((uint8_t *)buffer + index, pos, secremain); //写已经擦除了的,直接写入扇区剩余区间.
@@ -356,6 +355,8 @@ ssize_t w25qxx_write(struct device *dev, addr_t pos, const void *buffer, size_t 
                 secremain = size; //下一个扇区可以写完了
         }
     }
+    kfree(buf);
+
     return size;
 }
 

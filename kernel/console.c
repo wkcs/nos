@@ -108,3 +108,19 @@ void console_send_log(void)
     }
     return g_console->ops->send_log();
 }
+
+char console_getc(void)
+{
+    if (g_console == NULL) {
+        return 0;
+    }
+    return g_console->ops->getc();
+}
+
+int console_putc(char c)
+{
+    if (g_console == NULL) {
+        return -ENODEV;
+    }
+    return g_console->ops->putc(c);
+}

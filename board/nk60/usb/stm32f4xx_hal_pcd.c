@@ -557,9 +557,14 @@ void HAL_PCD_IRQHandler(PCD_HandleTypeDef *hpcd)
       {
         if((temp & USB_OTG_GRXSTSP_BCNT) != 0U)
         {
-          USB_ReadPacket(USBx, ep->xfer_buff, (temp & USB_OTG_GRXSTSP_BCNT) >> 4U);
-          ep->xfer_buff += (temp & USB_OTG_GRXSTSP_BCNT) >> 4U;
-          ep->xfer_count += (temp & USB_OTG_GRXSTSP_BCNT) >> 4U;
+          uint16_t size = (temp & USB_OTG_GRXSTSP_BCNT) >> 4U;
+          if (size > ep->xfer_len) {
+            pr_err("data too long, size=%u, max=%u\r\n", size, ep->xfer_len);
+            size = ep->xfer_len;
+          }
+          USB_ReadPacket(USBx, ep->xfer_buff, size);
+          ep->xfer_buff += size;
+          ep->xfer_count += size;
           //pr_info("ep %u, xfer_buff=0x%08lx\r\n", ep->num, (addr_t)ep->xfer_buff);
         }
       }

@@ -19,6 +19,7 @@
 #include <kernel/mm.h>
 #include <string.h>
 #include <kernel/sem.h>
+#include <kernel/console.h>
 
 #include <display/display.h>
 

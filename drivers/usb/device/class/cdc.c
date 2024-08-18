@@ -139,11 +139,7 @@ const static struct ucdc_comm_descriptor _comm_desc =
         USB_CDC_CLASS_COMM,
         USB_CDC_SUBCLASS_ACM,
         USB_CDC_PROTOCOL_V25TER,
-#ifdef CONFIG_USB_DEVICE_COMPOSITE
-        VCOM_INTF_STR_INDEX,
-#else
         0,
-#endif
     },
     /* Header Functional Descriptor */
     {
@@ -695,7 +691,7 @@ static void usb_vcom_init(struct ufunction *func)
     sem_init(&data->wait, 0);
     sem_init(&data->tx_ready, 0);
 
-    data->cdc_task = task_create("vcom", vcom_tx_task_entry, (void *)data, 5, 1024, 5, NULL);
+    data->cdc_task = task_create("vcom", vcom_tx_task_entry, (void *)func, 5, 1024, 5, NULL);
     if (data->cdc_task == NULL) {
         pr_err("cdc task creat err\r\n");
         return;
