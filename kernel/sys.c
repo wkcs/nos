@@ -61,9 +61,6 @@ int _gettimeofday (void * tp, void * tzp)
     return 0;
 }
 
-void _fini(void)
-{}
-
 void *malloc(size_t size)
 {
     return kmalloc(size, GFP_KERNEL);

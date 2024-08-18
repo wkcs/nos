@@ -17,7 +17,7 @@
 #include "arch_uart.h"
 #include "arch_usb.h"
 
-#define UART_LOG_DMA_BUF_SIZE 1024
+#define UART_LOG_DMA_BUF_SIZE ((CONFIG_LOG_FIFO_BUF_SIZE > 1024) ? 1024 : CONFIG_LOG_FIFO_BUF_SIZE)
 
 extern struct uart_config_t uart_log_dev;
 

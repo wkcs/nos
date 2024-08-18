@@ -16,14 +16,14 @@
 #include <usb/usb_common.h>
 
 /* Vendor ID */
-#ifdef USB_VENDOR_ID
-#define _VENDOR_ID                  USB_VENDOR_ID
+#ifdef CONFIG_USB_VENDOR_ID
+#define _VENDOR_ID                  CONFIG_USB_VENDOR_ID
 #else
 #define _VENDOR_ID                  0x0EFF
 #endif
 /* Product ID */
-#ifdef USB_PRODUCT_ID
-#define _PRODUCT_ID                 USB_PRODUCT_ID
+#ifdef CONFIG_USB_PRODUCT_ID
+#define _PRODUCT_ID                 CONFIG_USB_PRODUCT_ID
 #else
 #define _PRODUCT_ID                 0x0001
 #endif

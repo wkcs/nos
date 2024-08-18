@@ -19,11 +19,15 @@ struct device_ops {
     int (*init)(struct device *dev);
     int (*open)(struct device *dev, uint16_t oflag);
     int (*close)(struct device *dev);
-    ssize_t (*read)(struct device *dev, addr_t pos, void *buffer, size_t size);
-    ssize_t (*write)(struct device *dev, addr_t pos, const void *buffer, size_t size);
+    ssize_t (*read)(struct device *dev, addr_t pos,
+        void *buffer, size_t size);
+    ssize_t (*write)(struct device *dev, addr_t pos,
+        const void *buffer, size_t size);
+    ssize_t (*read_timeout)(struct device *dev, addr_t pos,
+        void *buffer, size_t size, uint32_t tick);
+    ssize_t (*write_timeout)(struct device *dev, addr_t pos,
+        const void *buffer, size_t size, uint32_t tick);
     int (*control)(struct device *dev, int cmd, void *args);
-    void (*read_complete)(struct device *dev, size_t size);
-    void (*write_complete)(struct device *dev, const void *buffer);
 };
 
 struct device {

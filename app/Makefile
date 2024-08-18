@@ -10,6 +10,7 @@ obj-y += server
 obj-$(CONFIG_LUA) += lua
 obj-$(CONFIG_LVGL) += lvgl
 obj-$(CONFIG_DISPLAY_SERVER) += display
+obj-$(CONFIG_SHELL) += shell
 
 obj-$(CONFIG_TEST_APP) += test.o
 obj-$(CONFIG_KEYBOARD) += keyboard.o

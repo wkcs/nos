@@ -15,6 +15,8 @@
 struct console_ops {
     int (* init)(void);
     int (* write)(const char buf[], int len);
+    char (* getc)(void);
+    int (* putc)(char c);
     void (* send_log)(void);
 };
 
@@ -32,5 +34,7 @@ __console struct console console_##__name = { \
 int console_init(void);
 int console_write(const char buf[], int len);
 void console_send_log(void);
+char console_getc(void);
+int console_putc(char c);
 
 #endif /* __NOS_CONSOLE_H__ */

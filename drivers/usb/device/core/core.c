@@ -6,6 +6,8 @@
  * Email: huqihan@live.com
  */
 
+#define pr_fmt(fmt) "[USB_CORE]:%s[%d]:"fmt, __func__, __LINE__
+
 #include <kernel/task.h>
 #include <kernel/msg_queue.h>
 #include <kernel/mutex.h>
@@ -2034,13 +2036,20 @@ static void usbd_task_entry(__maybe_unused void* parameter)
  */
 int usbd_event_signal(struct udev_msg *msg)
 {
+    int rc;
+
     if (msg == NULL) {
         pr_err("msg is NULL\r\n");
         return -EINVAL;
     }
 
     /* send message to usb message queue */
-    return msg_q_send(&usb_mq, (char *)msg, sizeof(struct udev_msg));
+    rc = msg_q_send(&usb_mq, (char *)msg, sizeof(struct udev_msg));
+    if (rc < 0) {
+        pr_err("usb message send failed, rc=%d\r\n", rc);
+    }
+
+    return rc;
 }
 
 
