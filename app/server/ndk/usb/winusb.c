@@ -21,6 +21,8 @@
 
 struct ndk_usb *g_ndk_usb;
 
+#define USB_TIMEDOUT_MS 1000
+
 static void ndk_winusb_ctrl_callback(uint8_t *buf, size_t size)
 {
     int i;
@@ -93,5 +95,31 @@ ssize_t ndk_usb_write(struct ndk_usb *usb, uint8_t *buf, size_t size)
     }
 
     rc = usb->dev->ops.write(usb->dev, 0, buf, size);
+    return rc;
+}
+
+ssize_t ndk_usb_read_timeout(struct ndk_usb *usb, uint8_t *buf, size_t size)
+{
+    int rc;
+
+    if (buf == NULL) {
+        pr_err("buf is null\r\n");
+        return -EINVAL;
+    }
+
+    rc = usb->dev->ops.read_timeout(usb->dev, 0, buf, size, msec_to_tick(USB_TIMEDOUT_MS));
+    return rc;
+}
+
+ssize_t ndk_usb_write_timeout(struct ndk_usb *usb, uint8_t *buf, size_t size)
+{
+    int rc;
+
+    if (buf == NULL) {
+        pr_err("buf is null\r\n");
+        return -EINVAL;
+    }
+
+    rc = usb->dev->ops.write_timeout(usb->dev, 0, buf, size, msec_to_tick(USB_TIMEDOUT_MS));
     return rc;
 }

@@ -24,5 +24,7 @@ struct ndk_usb *ndk_usb_alloc(void);
 void ndk_usb_free(struct ndk_usb *usb);
 ssize_t ndk_usb_read(struct ndk_usb *usb, uint8_t *buf, size_t size);
 ssize_t ndk_usb_write(struct ndk_usb *usb, uint8_t *buf, size_t size);
+ssize_t ndk_usb_read_timeout(struct ndk_usb *usb, uint8_t *buf, size_t size);
+ssize_t ndk_usb_write_timeout(struct ndk_usb *usb, uint8_t *buf, size_t size);
 
 #endif /* __NDK_WINUSB_H__ */

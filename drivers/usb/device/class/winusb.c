@@ -289,7 +289,7 @@ static ssize_t winusb_read_timeout(struct device *dev, addr_t pos,
     rc = sem_get_timeout(&win_dev->read_sem, tick);
     if (rc < 0) {
         pr_err("read timeout\r\n");
-        return rc;
+        return -ETIMEDOUT;
     }
 
     return read_size;
@@ -316,7 +316,7 @@ static ssize_t winusb_write_timeout(struct device *dev, addr_t pos,
     rc = sem_get_timeout(&win_dev->write_sem, tick);
     if (rc < 0) {
         pr_err("write timeout\r\n");
-        return rc;
+        return -ETIMEDOUT;
     }
 
     return write_size;

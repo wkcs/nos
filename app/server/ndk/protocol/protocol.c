@@ -19,6 +19,9 @@
 
 #include "include/protocol.h"
 
+#define PROTOCOL_DATA_RETRY_MAX 10
+#define PROTOCOL_ACK_RETRY_MAX 10
+
 struct ndk_protocol *ndk_protocol_alloc(void)
 {
     struct ndk_usb *usb;
@@ -83,13 +86,21 @@ int ndk_protocol_read_data_msg(struct ndk_protocol *protocol,
     struct ndk_data_msg *data_msg, uint16_t size)
 {
     int rc;
+    int retry = PROTOCOL_DATA_RETRY_MAX;
 
     if (data_msg == NULL) {
         pr_err("data_msg is null\r\n");
         return -EINVAL;
     }
 
+retry:
     rc = ndk_usb_read(protocol->usb, (uint8_t *)data_msg, size);
+    if (rc == -ETIMEDOUT) {
+        retry--;
+        if (retry > 0) {
+            goto retry;
+        }
+    }
     if (rc < 0) {
         pr_err("read data msg failed, rc=%d\r\n", rc);
         return rc;
@@ -98,7 +109,7 @@ int ndk_protocol_read_data_msg(struct ndk_protocol *protocol,
     if (data_msg->head.type != NDK_DATA_MSG) {
         pr_err("msg type is not NDK_DATA_MSG, type=%u\r\n",
             data_msg->head.type);
-        return -EFAULT;
+        goto retry;
     }
 
     return rc;
@@ -108,14 +119,22 @@ int ndk_protocol_send_data_msg(struct ndk_protocol *protocol,
     struct ndk_data_msg *data_msg)
 {
     int rc;
+    int retry = PROTOCOL_DATA_RETRY_MAX;
 
     if (data_msg == NULL) {
         pr_err("data_msg is null\r\n");
         return -EINVAL;
     }
 
-    rc = ndk_usb_write(protocol->usb, (uint8_t *)data_msg,
+retry:
+    rc = ndk_usb_write_timeout(protocol->usb, (uint8_t *)data_msg,
         data_msg->size + sizeof(struct ndk_data_msg));
+    if (rc == -ETIMEDOUT) {
+        retry--;
+        if (retry > 0) {
+            goto retry;
+        }
+    }
     if (rc < 0) {
         pr_err("write data msg failed, rc=%d\r\n", rc);
         return rc;
@@ -129,6 +148,7 @@ int ndk_protocol_reply_ack(struct ndk_protocol *protocol,
 {
     struct ndk_ack_msg ack_msg;
     int rc;
+    int retry = PROTOCOL_ACK_RETRY_MAX;
 
     ack_msg.head.type = NDK_ACK_MSG;
     ack_msg.head.id = protocol->id;
@@ -139,8 +159,15 @@ int ndk_protocol_reply_ack(struct ndk_protocol *protocol,
     ack_msg.send_data_msg_size = send_data_msg_size;
     ack_msg.reserve = 0;
 
-    rc = ndk_usb_write(protocol->usb, (uint8_t *)&ack_msg,
+retry:
+    rc = ndk_usb_write_timeout(protocol->usb, (uint8_t *)&ack_msg,
         sizeof(struct ndk_ack_msg));
+    if (rc == -ETIMEDOUT) {
+        retry--;
+        if (retry > 0) {
+            goto retry;
+        }
+    }
     if (rc < 0) {
         pr_err("write ack msg failed, rc=%d\r\n", rc);
         return rc;

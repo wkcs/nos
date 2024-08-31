@@ -763,7 +763,8 @@ static int _data_notify(udevice_t device, struct ep_msg* ep_msg)
         else if (ep->request.remain_size == 0)
             EP_HANDLER(ep, func, ep->request.size);
         else
-            dcd_ep_read_prepare(device->dcd, EP_ADDRESS(ep), ep->request.buffer, ep->request.remain_size > EP_MAXPACKET(ep) ? EP_MAXPACKET(ep) : ep->request.remain_size);
+            dcd_ep_read_prepare(device->dcd, EP_ADDRESS(ep), ep->request.buffer,
+                min(ep->request.remain_size, EP_MAXPACKET(ep)));
     }
 
     return 0;
