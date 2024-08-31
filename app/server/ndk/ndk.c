@@ -88,7 +88,7 @@ static int ndk_server_init(void)
     }
 
     ndk->task = task_create("ndk_server", ndk_server_task_entry, ndk,
-        15, 1024, 10, NULL);
+        25, 1024, 10, NULL);
     if (ndk->task == NULL) {
         pr_fatal("creat ndk_server task err\r\n");
         BUG_ON(true);

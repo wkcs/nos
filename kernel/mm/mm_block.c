@@ -125,7 +125,7 @@ recheck_memblock:
         if (base->magic != MEM_BASE_MAGIC) {
             spin_unlock_irq(&block->lock);
             BUG_ON(true);
-            pr_err("mem_base magic error\r\n");
+            pr_err("mem_base magic error, addr=0x%p\r\n", base);
             return NULL;
         }
 #endif /* CONFIG_MM_DEBUG */

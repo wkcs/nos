@@ -10,6 +10,7 @@
 
 #include <kernel/types.h>
 #include <kernel/device.h>
+#include <kernel/sleep.h>
 
 #include "include/ndk.h"
 #include "include/protocol.h"
@@ -30,6 +31,31 @@ struct fw_update_info {
     uint32_t index;
     uint32_t size;
 } __attribute__ ((packed));
+
+static int write_img_to_flash(struct device *flash_dev, uint8_t img_index,
+    uint32_t addr_index, uint8_t *buf, uint32_t size)
+{
+    addr_t addr;
+
+    switch (img_index) {
+        case BOOTLOADER_INDEX:
+            addr = BOOTLOADER_INDEX;
+            break;
+        case KERNEL_A_INDEX:
+            addr = KERNEL_A_ADDR;
+            break;
+        case KERNEL_B_INDEX:
+            addr = KERNEL_B_ADDR;
+            break;
+        default:
+            pr_err("Wrong partition number(%d)\r\n", img_index);
+            return -EINVAL;
+    }
+    addr += addr_index;
+    //flash_dev->ops.write(flash_dev, addr, (void *)buf, size);
+
+    return 0;
+}
 
 int cmd_fw_update(struct ndk_protocol *protocol,
     uint16_t send_data_msg_num, uint32_t send_data_msg_size,
@@ -64,6 +90,7 @@ int cmd_fw_update(struct ndk_protocol *protocol,
         return -ENOMEM;
     }
 
+    uint32_t addr_index = 0;
     for (i = 0; i < send_data_msg_num; i++) {
         uint32_t read_size;
 
@@ -76,23 +103,43 @@ int cmd_fw_update(struct ndk_protocol *protocol,
             }
         }
 
-        rc = ndk_protocol_read_data_msg(protocol, msg, send_data_msg_size);
+        if (i != 0) {
+            msleep(10);
+        }
+
+        rc = ndk_protocol_read_data_msg(protocol, msg, read_size);
         if (rc < 0) {
             pr_err("[%d]: read data msg failed\r\n", i);
             err = rc;
-            continue;
-        }
-        if (msg->index != i) {
-            pr_err("[%d]: data msg index error, index=%d\r\n",
-                i, msg->index);
-            err = -EFAULT;
-            continue;
+            goto done;
         }
         pr_info("[%d]:id=%u, index=%u, size=%u\r\n", i,
                 msg->head.id, msg->index, msg->size);
+        if (msg->index != i) {
+            if (msg->index < i) {
+                i--;
+                continue;
+            }
+            pr_err("[%d]: data msg index error, index=%d\r\n",
+                i, msg->index);
+            err = -EFAULT;
+            goto done;
+        }
+        if (err < 0) {
+            goto done;
+        }
+
+        rc = write_img_to_flash(flash_dev, info->index,
+            addr_index, msg->data, msg->size);
+        if (rc < 0) {
+            pr_err("[%d]: write img to flash failed, rc=%d\r\n", i, rc);
+            err = rc;
+            goto done;
+        }
+        addr_index += msg->size;
     }
 
+done:
     kfree(msg);
-
     return err;
 }
