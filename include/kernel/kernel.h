@@ -21,9 +21,12 @@ extern addr_t kernel_running;
 
 #define ARRAY_SIZE(arr) (sizeof(arr) / sizeof((arr)[0]) + __must_be_array(arr))
 
+void panic(const char *fmt, ...);
+void dump_stack(void);
+
 #define BUG_ON(ex) ({ \
     if (unlikely(ex)) { \
-        pr_log(false, LOG_FATAL, "BUG_ON: %s:%d\r\n", __FILE__, __LINE__); \
+        panic("BUG_ON: %s:%d", __FILE__, __LINE__); \
     } \
 })
 

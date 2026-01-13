@@ -44,7 +44,7 @@ static void test1_task_entry(void* parameter)
 struct task_struct *test1;
 static int test1_task_init(void)
 {
-    test1 = task_create("test1", test1_task_entry, NULL, 5, 256, 10, NULL);
+    test1 = task_create("test1", test1_task_entry, NULL, 5, 4096, 10, NULL);
     if (test1 == NULL) {
         pr_fatal("creat test1 task err\r\n");
         BUG_ON(true);
@@ -68,7 +68,7 @@ static void test2_task_entry(void* parameter)
         all_usage = get_cpu_usage() / 100;
         // pr_info("%s: usage:%u.%02u%%, total:%u.%02u%%\r\n", current->name,
         //        usage / 100, usage % 100, all_usage / 100, all_usage % 100);
-        size = msg_q_recv(&msg_q, buf, sizeof(buf));
+        size = msg_q_recv(&msg_q, buf, sizeof(buf) - 1);
         if (size > 0) {
             buf[size] = 0;
             i++;

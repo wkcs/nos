@@ -30,5 +30,6 @@ void cpu_delay_us(u32 us);
 int __ffs(int value);
 #endif
 void cpu_set_lpm(void);
+void arch_dump_stack(void);
 
 #endif /* __NOS_CPU_H__ */

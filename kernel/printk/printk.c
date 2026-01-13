@@ -74,3 +74,14 @@ void set_log_level(enum log_level level)
 {
     g_log_level = level;
 }
+
+int vprintk(const char *fmt, va_list args)
+{
+    char *buf = log_buf;
+    int len = 0;
+
+    len += vsprintf(buf, fmt, args);
+    len = kernel_log_write(buf, len);
+
+    return len;
+}

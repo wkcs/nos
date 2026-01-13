@@ -10,6 +10,7 @@
 #define __NOS_PRINTK_H__
 
 #include <kernel/kernel.h>
+#include <stdarg.h>
 
 enum log_level {
     LOG_ALL = 0,
@@ -23,6 +24,7 @@ enum log_level {
 
 __printf(3,4) int pr_log(bool no_tag, enum log_level level, const char *fmt, ...);
 void set_log_level(enum log_level level);
+int vprintk(const char *fmt, va_list args);
 void kernel_log_init(void);
 unsigned int kernel_log_write(const void *buf, unsigned int len);
 unsigned int kernel_log_read(void *buf, unsigned int len);
