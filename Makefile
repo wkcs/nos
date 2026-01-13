@@ -91,8 +91,19 @@ $(TARGET_LIST): $(TARGET_ELF)
 	$(Q)$(OBJDUMP) -S $< > $@
 
 $(TARGET_ELF): $(obj-all) $(LDSCRIPT_S) $(LDSCRIPT_LD) $(BOARD_SVD) $(OPENOCD_CFG)
-	@echo "LD       $(@:$(out-dir)/%=%)"
-	$(Q)$(CC) $(LDFLAGS) -o $@ $(obj-all) $(LDFLAGS-LIB)
+	@echo "GEN      empty kallsyms"
+	$(Q)echo '#include <kernel/kallsyms.h>' > $(out-dir)/kallsyms_table.c
+	$(Q)echo 'const struct kallsym_entry kallsyms_table[] = { {0, (const char *)0} };' >> $(out-dir)/kallsyms_table.c
+	$(Q)echo 'const unsigned int kallsyms_num = 0;' >> $(out-dir)/kallsyms_table.c
+	$(Q)$(CC) $(CCFLAGS) -o $(out-dir)/kallsyms_table.o $(out-dir)/kallsyms_table.c
+	@echo "LD       $(@:$(out-dir)/%=%) (pass 1)"
+	$(Q)$(CC) $(LDFLAGS) -o $@ $(obj-all) $(out-dir)/kallsyms_table.o $(LDFLAGS-LIB)
+	@echo "GEN      real kallsyms"
+	$(Q)$(OBJDUMP) -t $@ | $(PYTHON) scripts/mkkallsyms.py /dev/stdin $(out-dir)/kallsyms_table.c
+	@echo "CC       kallsyms_table.o"
+	$(Q)$(CC) $(CCFLAGS) -o $(out-dir)/kallsyms_table.o $(out-dir)/kallsyms_table.c
+	@echo "LD       $(@:$(out-dir)/%=%) (relink)"
+	$(Q)$(CC) $(LDFLAGS) -o $@ $(obj-all) $(out-dir)/kallsyms_table.o $(LDFLAGS-LIB)
 
 $(LDSCRIPT_LD): $(out-dir)/%:%
 	@echo "CP       $(notdir $@)"
