@@ -6,4 +6,6 @@
 # Email: huqihan@live.com
 ##############################################
 
+obj-y += vfs.o
+obj-y += ramfs.o
 obj-$(CONFIG_FATFS) += fatfs
