@@ -9,3 +9,4 @@
 obj-y += diskio.o
 obj-y += ff.o
 obj-y += option/cc936.o
+obj-y += fatfs_vfs.o

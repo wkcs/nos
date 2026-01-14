@@ -35,6 +35,15 @@ int vfs_init(void) {
     return ret;
   }
 
+#ifdef CONFIG_FATFS
+  extern int init_fatfs(void);
+  ret = init_fatfs();
+  if (ret) {
+    pr_err("VFS: Failed to register fatfs\r\n");
+    return ret;
+  }
+#endif
+
   return 0;
 }
 
@@ -98,7 +107,7 @@ struct file_system_type **find_filesystem(const char *name, unsigned len) {
 struct inode *nos_vfs_alloc_inode(struct super_block *sb) {
   struct inode *inode;
 
-  if (sb->s_op->alloc_inode)
+  if (sb->s_op && sb->s_op->alloc_inode)
     inode = sb->s_op->alloc_inode(sb);
   else {
     inode = (struct inode *)kmalloc(sizeof(struct inode), GFP_KERNEL);

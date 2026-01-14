@@ -20,21 +20,11 @@ static bool dma_transport;
 #endif
 
 #define CONFIG_CONSOLE_FIFO_BUF_SIZE 256
-static struct kfifo g_console_fifo;
-static char g_console_fifo_buf[CONFIG_CONSOLE_FIFO_BUF_SIZE];
-sem_t g_rx_ready;
+static volatile char g_console_buf[CONFIG_CONSOLE_FIFO_BUF_SIZE];
+static volatile int g_console_head = 0;
+static volatile int g_console_tail = 0;
 
 int consol_init(void) {
-  int rc;
-
-  rc = kfifo_init(&g_console_fifo, g_console_fifo_buf,
-                  CONFIG_CONSOLE_FIFO_BUF_SIZE, 1);
-  if (rc < 0) {
-    pr_err("console fifo init failed\r\n");
-    return rc;
-  }
-  sem_init(&g_rx_ready, 0);
-
 #ifdef CONFIG_UART_DMA
   uart_log_dev.dma_config->init_type.DMA_Memory0BaseAddr = (uint32_t)log_buf;
 #endif
@@ -46,8 +36,13 @@ void USART1_IRQHandler(void) {
   char res;
   if (USART_GetITStatus(USART1, USART_IT_RXNE) != RESET) {
     res = USART_ReceiveData(USART1);
-    kfifo_in(&g_console_fifo, &res, 1);
-    sem_send_one(&g_rx_ready);
+    
+    int next = (g_console_head + 1) % CONFIG_CONSOLE_FIFO_BUF_SIZE;
+    if (next != g_console_tail) {
+        g_console_buf[g_console_head] = res;
+        g_console_head = next;
+    }
+    // Echo removed: Shell handles echo
   }
 }
 
@@ -56,13 +51,12 @@ int console_send_data(const char *buf, int len) { return usart_send(buf, len); }
 int arch_console_putc(char c) { return usart_send(&c, 1); }
 
 char arch_console_getc(void) {
-  char c = 0;
-  
-  sem_get(&g_rx_ready); // Blocking unsafe if sem_send is broken
-  if (kfifo_out(&g_console_fifo, &c, 1) > 0) {
-      return c;
+  if (g_console_head == g_console_tail) {
+      return 0;
   }
-  return 0;
+  char c = g_console_buf[g_console_tail];
+  g_console_tail = (g_console_tail + 1) % CONFIG_CONSOLE_FIFO_BUF_SIZE;
+  return c;
 }
 
 void DMA1_Channel4_IRQHandler(void) {
