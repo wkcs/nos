@@ -197,5 +197,7 @@ void nos_vfs_destroy_inode(struct inode *inode);
 int register_filesystem(struct file_system_type *fs);
 int unregister_filesystem(struct file_system_type *fs);
 int vfs_init(void);
+struct dentry *vfs_get_root(void);
+struct dentry *vfs_lookup(struct dentry *parent, struct qstr *name);
 
 #endif /* __NOS_FS_VFS_H__ */

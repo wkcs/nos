@@ -9,15 +9,26 @@
 #include <fs/fs.h>
 #include <fs/vfs.h>
 #include <kernel/kernel.h>
+#include <kernel/list.h>
 #include <kernel/mm.h>
 #include <string.h>
 
 struct ramfs_node {
-  void *data;
+  union {
+    void *data;               /* For file: raw data */
+    struct list_head dirents; /* For dir: list of ramfs_dirent */
+  };
   size_t size;
 };
 
+struct ramfs_dirent {
+  struct list_head list;
+  char *name;
+  struct inode *inode;
+};
+
 static const struct file_operations ramfs_file_ops;
+static const struct file_operations ramfs_dir_ops;
 static const struct inode_operations ramfs_dir_inode_ops;
 static const struct inode_operations ramfs_file_inode_ops;
 
@@ -29,13 +40,20 @@ static struct inode *ramfs_get_inode(struct super_block *sb, int mode,
     inode->i_size = 0;
     inode->i_atime = inode->i_mtime = inode->i_ctime = (struct timespec){0, 0};
 
+    struct ramfs_node *node = kzalloc(sizeof(struct ramfs_node), GFP_KERNEL);
+    if (!node) {
+      // kfree inode
+      return NULL;
+    }
+    inode->i_private = node;
+
     if (mode & S_IFDIR) {
       inode->i_op = &ramfs_dir_inode_ops;
-      inode->i_fop = &ramfs_file_ops; // Directory ops if needed
+      inode->i_fop = &ramfs_dir_ops;
+      INIT_LIST_HEAD(&node->dirents);
     } else if (mode & S_IFREG) {
       inode->i_op = &ramfs_file_inode_ops;
       inode->i_fop = &ramfs_file_ops;
-      inode->i_private = kzalloc(sizeof(struct ramfs_node), GFP_KERNEL);
     }
   }
   return inode;
@@ -90,36 +108,98 @@ static ssize_t ramfs_write(struct file *file, const char *buf, size_t count,
   return count;
 }
 
+static int ramfs_readdir(struct file *file, void *dirent, filldir_t filldir) {
+  struct inode *inode = file->f_inode;
+  struct ramfs_node *node = inode->i_private;
+  struct ramfs_dirent *de;
+  int i = 0;
+
+  if (!node || !(inode->i_mode & S_IFDIR))
+    return -ENOTDIR;
+
+  // We don't support seeking in readdir properly here without offset logic,
+  // but essential for ls
+
+  // Skip based on f_pos? Simple linked list iteration for now.
+  // Assuming f_pos matches index.
+
+  list_for_each_entry(de, &node->dirents, list) {
+    if (i >= file->f_pos) {
+      if (filldir(dirent, de->name, strlen(de->name), i, de->inode->i_ino, 0))
+        break;
+      file->f_pos++;
+    }
+    i++;
+  }
+  return 0;
+}
+
 static const struct file_operations ramfs_file_ops = {
     .read = ramfs_read,
     .write = ramfs_write,
 };
 
+static const struct file_operations ramfs_dir_ops = {
+    .readdir = ramfs_readdir,
+};
+
 /*
  * Inode Operations
  */
-static int ramfs_create(struct inode *dir, struct dentry *dentry, int mode) {
-  struct inode *inode = ramfs_get_inode(dir->i_sb, mode | S_IFREG, 0);
+static int ramfs_add_entry(struct inode *dir, struct dentry *dentry, int mode) {
+  struct inode *inode = ramfs_get_inode(dir->i_sb, mode, 0);
   if (!inode)
     return -ENOMEM;
+
+  struct ramfs_node *node = dir->i_private;
+  struct ramfs_dirent *de = kzalloc(sizeof(struct ramfs_dirent), GFP_KERNEL);
+  if (!de) {
+    // free inode
+    return -ENOMEM;
+  }
+
+  // Duplicate name
+  de->name = kzalloc(strlen(dentry->d_name.name) + 1, GFP_KERNEL);
+  strcpy(de->name, dentry->d_name.name);
+  de->inode = inode;
+
+  list_add_tail(&de->list, &node->dirents);
 
   dentry->d_inode = inode;
   return 0;
 }
 
-static int ramfs_mkdir(struct inode *dir, struct dentry *dentry, int mode) {
-  struct inode *inode = ramfs_get_inode(dir->i_sb, mode | S_IFDIR, 0);
-  if (!inode)
-    return -ENOMEM;
+static int ramfs_create(struct inode *dir, struct dentry *dentry, int mode) {
+  return ramfs_add_entry(dir, dentry, mode | S_IFREG);
+}
 
-  dentry->d_inode = inode;
-  // Increase link count for parent?
-  return 0;
+static int ramfs_mkdir(struct inode *dir, struct dentry *dentry, int mode) {
+  return ramfs_add_entry(dir, dentry, mode | S_IFDIR);
+}
+
+static struct dentry *ramfs_lookup(struct inode *dir, struct dentry *dentry) {
+  struct ramfs_node *node = dir->i_private;
+  struct ramfs_dirent *de;
+
+  if (dir->i_mode & S_IFDIR) {
+    list_for_each_entry(de, &node->dirents, list) {
+      if (strcmp(de->name, dentry->d_name.name) == 0) {
+        // Found
+        dentry->d_inode = de->inode;
+        // atomic_inc(&de->inode->i_count);
+        return NULL; // success (in Linux lookup returns NULL on success)
+      }
+    }
+  }
+  return NULL; // Not found (ENOENT in a way? but here returning NULL usually
+               // means dentry is negative/cached)
+  // Actually if not found, we return NULL and dentry->d_inode remains NULL
+  // (negative dentry).
 }
 
 static const struct inode_operations ramfs_dir_inode_ops = {
     .create = ramfs_create,
-    // .lookup = simple_lookup,
+    .lookup = ramfs_lookup,
     .mkdir = ramfs_mkdir,
 };
 
@@ -143,13 +223,14 @@ static int ramfs_fill_super(struct super_block *sb, void *data, int silent) {
     return -ENOMEM;
 
   root = (struct dentry *)kzalloc(sizeof(struct dentry), GFP_KERNEL);
-  if (!root) {
-    // destroy inode
-    return -ENOMEM;
-  }
+  if (!root)
+    return -ENOMEM; // destroy inode
+
   root->d_inode = inode;
   root->d_sb = sb;
   sb->s_root = root;
+
+  // Initialize root list (already done in get_inode if DIR)
 
   return 0;
 }
@@ -171,7 +252,7 @@ static struct dentry *ramfs_mount(struct file_system_type *fs_type, int flags,
 static struct file_system_type ramfs_fs_type = {
     .name = "ramfs",
     .mount = ramfs_mount,
-    .kill_sb = NULL, // should implement kill_sb to free memory
+    .kill_sb = NULL,
 };
 
 int init_ramfs(void) { return register_filesystem(&ramfs_fs_type); }

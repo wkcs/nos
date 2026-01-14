@@ -6,9 +6,11 @@
  * Email: huqihan@live.com
  */
 
-#include <kernel/kernel.h>
 #include <kernel/console.h>
+#include <kernel/kernel.h>
 #include <kernel/printk.h>
+#include <kernel/sem.h>
+#include <lib/kfifo.h>
 
 #include "board.h"
 
@@ -17,93 +19,92 @@ static char log_buf[UART_LOG_DMA_BUF_SIZE];
 static bool dma_transport;
 #endif
 
-int consol_init(void)
-{
+#define CONFIG_CONSOLE_FIFO_BUF_SIZE 256
+static struct kfifo g_console_fifo;
+static char g_console_fifo_buf[CONFIG_CONSOLE_FIFO_BUF_SIZE];
+sem_t g_rx_ready;
+
+int consol_init(void) {
+  int rc;
+
+  rc = kfifo_init(&g_console_fifo, g_console_fifo_buf,
+                  CONFIG_CONSOLE_FIFO_BUF_SIZE, 1);
+  if (rc < 0) {
+    pr_err("console fifo init failed\r\n");
+    return rc;
+  }
+  sem_init(&g_rx_ready, 0);
+
 #ifdef CONFIG_UART_DMA
-    uart_log_dev.dma_config->init_type.DMA_MemoryBaseAddr = (uint32_t)log_buf;
+  uart_log_dev.dma_config->init_type.DMA_Memory0BaseAddr = (uint32_t)log_buf;
 #endif
 
-    return uart_config(&uart_log_dev);
+  return uart_config(&uart_log_dev);
 }
 
-static char cmd_buf[256];
-static uint8_t cmd_num;
-void USART1_IRQHandler(void)
-{
-    char res;
-    if (USART_GetITStatus(USART1, USART_IT_RXNE) != RESET) {
-        res = USART_ReceiveData(USART1);
-        if (res == '\r') {
-            cmd_buf[cmd_num + 1] = 0;
-            cmd_num = 0;
-            usart_send("\r\n", 2);
-        } else if (res != 0x09 && res != 0x1b) {
-            if (res == '\b') {
-                if (cmd_num > 0) {
-                    cmd_num--;
-                    cmd_buf[cmd_num] = 0;
-                    usart_send(&res, 1);
-                    usart_send(" ", 1);
-                    usart_send(&res, 1);
-                }
-            } else {
-                cmd_buf[cmd_num] = res;
-                cmd_num++;
-                usart_send(&res, 1);
-            }
-        }
-        if (cmd_num == 255) {
-            cmd_num = 0;
-            usart_send("\r\n", 2);
-        }
-    }
+void USART1_IRQHandler(void) {
+  char res;
+  if (USART_GetITStatus(USART1, USART_IT_RXNE) != RESET) {
+    res = USART_ReceiveData(USART1);
+    kfifo_in(&g_console_fifo, &res, 1);
+    sem_send_one(&g_rx_ready);
+  }
 }
 
-int console_send_data(const char *buf, int len)
-{
-    return usart_send(buf, len);
+int console_send_data(const char *buf, int len) { return usart_send(buf, len); }
+
+int arch_console_putc(char c) { return usart_send(&c, 1); }
+
+char arch_console_getc(void) {
+  char c = 0;
+  
+  sem_get(&g_rx_ready); // Blocking unsafe if sem_send is broken
+  if (kfifo_out(&g_console_fifo, &c, 1) > 0) {
+      return c;
+  }
+  return 0;
 }
 
-void DMA1_Channel4_IRQHandler(void)
-{
+void DMA1_Channel4_IRQHandler(void) {
 #ifdef CONFIG_UART_DMA
-    unsigned int len;
+  unsigned int len;
 
-    DMA_ClearITPendingBit(DMA1_IT_TC4);
-    len = kernel_log_read(log_buf, UART_LOG_DMA_BUF_SIZE);
-    if (len == 0) {
-        dma_transport = false;
-        return;
-    }
-    DMA_Cmd(uart_log_dev.dma_config->ch, DISABLE );
-    DMA_SetCurrDataCounter(uart_log_dev.dma_config->ch, len);
-    DMA_Cmd(uart_log_dev.dma_config->ch, ENABLE);
+  DMA_ClearITPendingBit(DMA1_IT_TC4);
+  len = kernel_log_read(log_buf, UART_LOG_DMA_BUF_SIZE);
+  if (len == 0) {
+    dma_transport = false;
+    return;
+  }
+  DMA_Cmd(uart_log_dev.dma_config->ch, DISABLE);
+  DMA_SetCurrDataCounter(uart_log_dev.dma_config->ch, len);
+  DMA_Cmd(uart_log_dev.dma_config->ch, ENABLE);
 #endif
 }
 
-static void arch_console_send_log(void)
-{
+static void arch_console_send_log(void) {
 #ifdef CONFIG_UART_DMA
-    unsigned int len;
+  unsigned int len;
 
-    if (dma_transport) {
-        return;
-    }
+  if (dma_transport) {
+    return;
+  }
 
-    len = kernel_log_read(log_buf, UART_LOG_DMA_BUF_SIZE);
-    if (len == 0) {
-        return;
-    }
-    dma_transport = true;
-    DMA_Cmd(uart_log_dev.dma_config->ch, DISABLE );
-    DMA_SetCurrDataCounter(uart_log_dev.dma_config->ch, len);
-    DMA_Cmd(uart_log_dev.dma_config->ch, ENABLE);
+  len = kernel_log_read(log_buf, UART_LOG_DMA_BUF_SIZE);
+  if (len == 0) {
+    return;
+  }
+  dma_transport = true;
+  DMA_Cmd(uart_log_dev.dma_config->ch, DISABLE);
+  DMA_SetCurrDataCounter(uart_log_dev.dma_config->ch, len);
+  DMA_Cmd(uart_log_dev.dma_config->ch, ENABLE);
 #endif
 }
 
 static struct console_ops zj_console_ops = {
     .init = consol_init,
     .write = console_send_data,
+    .getc = arch_console_getc,
+    .putc = arch_console_putc,
     .send_log = arch_console_send_log,
 };
 console_register(tty0, &zj_console_ops);

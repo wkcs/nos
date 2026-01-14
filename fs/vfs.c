@@ -19,8 +19,10 @@ SPINLOCK(file_systems_lock);
 /* Forward declaration */
 struct file_system_type **find_filesystem(const char *name, unsigned len);
 
-static struct dentry *root_dentry;
+static struct dentry *root_dentry = NULL;
 static struct super_block *root_sb;
+
+struct dentry *vfs_get_root(void) { return root_dentry; }
 
 extern int init_ramfs(void);
 
@@ -176,7 +178,37 @@ int nos_close(int fd) { return -EBADF; }
  * Simple path lookup stub
  */
 struct dentry *vfs_lookup(struct dentry *parent, struct qstr *name) {
-  // Stub
+  struct inode *dir = parent->d_inode;
+  struct dentry *dentry;
+
+  if (!dir || !dir->i_op || !dir->i_op->lookup)
+    return NULL;
+
+  // Allocate dentry
+  dentry = kzalloc(sizeof(struct dentry), GFP_KERNEL);
+  if (!dentry)
+    return NULL;
+
+  dentry->d_parent = parent;
+  dentry->d_sb = parent->d_sb;
+  dentry->d_name.name = name->name; // Shallow copy? Should strdup?
+  // Copy name logic roughly
+  strncpy(dentry->d_iname, name->name, FS_NAME_LEN);
+  dentry->d_iname[FS_NAME_LEN - 1] = 0;
+  dentry->d_name.name = dentry->d_iname;
+  dentry->d_name.len = name->len;
+
+  // Call lookup
+  if (dir->i_op->lookup(dir, dentry) == NULL) {
+    // If d_inode is NULL, it's a negative dentry (not found)
+    if (!dentry->d_inode) {
+      kfree(dentry);
+      return NULL;
+    }
+    return dentry;
+  }
+
+  kfree(dentry);
   return NULL;
 }
 

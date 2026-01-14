@@ -1,5 +1,9 @@
 #include <autocfg.h>
 
+#ifndef CONFIG_PAGE_SIZE
+#define CONFIG_PAGE_SIZE 4096
+#endif
+
 /* Entry Point */
 ENTRY(reset_handler)
 
