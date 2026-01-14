@@ -6,16 +6,22 @@
 /*-----------------------------------------------------------------------*/
 #include <string.h>
 #include "diskio.h"
+#ifdef CONFIG_QEMU
+#include "../../drivers/spi/qemu_sd.h"
+#else
 #include "../../drivers/spi/spi-sdcard.h"
+#endif
 
 /* 为每个设备定义一个物理编号 */
 #define ATA			           0     // SD卡
 #define SPI_FLASH		       1     // 预留外部SPI Flash使用
 
 //固定只支持blocksize大小为512的卡，兼容大于512的卡时，该卡容量会变小
-#define SD_BLOCKSIZE     512//SDCardInfo.CardBlockSize 
+#define SD_BLOCKSIZE     512//SDCardInfo.CardBlockSize
 
-
+/*-----------------------------------------------------------------------*/
+/* 获取设备状态                                                          */
+/*-----------------------------------------------------------------------*/
 /*-----------------------------------------------------------------------*/
 /* 获取设备状态                                                          */
 /*-----------------------------------------------------------------------*/
@@ -27,7 +33,12 @@ DSTATUS disk_status (
 	
 	switch (pdrv) {
 		case ATA:	/* SD CARD */
+#ifdef CONFIG_QEMU
+            // QEMU semihosting logic handles this
+            status = QEMU_SD_Status(pdrv);
+#else
 			status &= ~STA_NOINIT;
+#endif
 			break;
     
 		case SPI_FLASH:        /* SPI Flash */   
@@ -49,6 +60,9 @@ DSTATUS disk_initialize (
 	DSTATUS status = STA_NOINIT;	
 	switch (pdrv) {
 		case ATA:	         /* SD CARD */
+#ifdef CONFIG_QEMU
+            status = QEMU_SD_Init(pdrv);
+#else
 			if(SD_Init()==SD_RESPONSE_NO_ERROR)
 			{				
 				status &= ~STA_NOINIT;
@@ -57,7 +71,7 @@ DSTATUS disk_initialize (
 			{
 				status = STA_NOINIT;
 			}
-		
+#endif
 			break;
     
 		case SPI_FLASH:    /* SPI Flash */ 
@@ -81,17 +95,22 @@ DRESULT disk_read (
 )
 {
 	DRESULT status = RES_PARERR;
-	SD_Error SD_state = SD_RESPONSE_NO_ERROR;
 	
 	switch (pdrv) {
 		case ATA:	/* SD CARD */						
-			
-			SD_state=SD_ReadMultiBlocks(buff,(uint64_t)sector*SD_BLOCKSIZE,SD_BLOCKSIZE,count);
+#ifdef CONFIG_QEMU
+            status = QEMU_SD_Read(pdrv, buff, sector, count);
+#else
+            {
+                SD_Error SD_state = SD_RESPONSE_NO_ERROR;
+			    SD_state=SD_ReadMultiBlocks(buff,(uint64_t)sector*SD_BLOCKSIZE,SD_BLOCKSIZE,count);
 
-			if(SD_state!=SD_RESPONSE_NO_ERROR)
-				status = RES_PARERR;
-		  else
-			  status = RES_OK;	
+			    if(SD_state!=SD_RESPONSE_NO_ERROR)
+				    status = RES_PARERR;
+		        else
+			        status = RES_OK;	
+            }
+#endif
 			break;   
 			
 		case SPI_FLASH:
@@ -117,7 +136,6 @@ DRESULT disk_write (
 )
 {
 	DRESULT status = RES_PARERR;
-	SD_Error SD_state = SD_RESPONSE_NO_ERROR;
 	
 	if (!count) {
 		return RES_PARERR;		/* Check parameter */
@@ -125,13 +143,19 @@ DRESULT disk_write (
 
 	switch (pdrv) {
 		case ATA:	/* SD CARD */  
-		
-			SD_state=SD_WriteMultiBlocks((uint8_t *)buff,(uint64_t)sector*SD_BLOCKSIZE,SD_BLOCKSIZE,count);
+#ifdef CONFIG_QEMU
+            status = QEMU_SD_Write(pdrv, buff, sector, count);
+#else
+            {
+                SD_Error SD_state = SD_RESPONSE_NO_ERROR;
+			    SD_state=SD_WriteMultiBlocks((uint8_t *)buff,(uint64_t)sector*SD_BLOCKSIZE,SD_BLOCKSIZE,count);
 
-			if(SD_state!=SD_RESPONSE_NO_ERROR)
-				status = RES_PARERR;
-		  else
-			  status = RES_OK;	
+			    if(SD_state!=SD_RESPONSE_NO_ERROR)
+				    status = RES_PARERR;
+		        else
+			        status = RES_OK;	
+            }
+#endif
 		break;
 
 		case SPI_FLASH:
@@ -159,6 +183,9 @@ DRESULT disk_ioctl (
 	DRESULT status = RES_PARERR;
 	switch (pdrv) {
 		case ATA:	/* SD CARD */
+#ifdef CONFIG_QEMU
+            status = QEMU_SD_Ioctl(pdrv, cmd, buff);
+#else
 			switch (cmd) 
 			{
 				// Get R/W sector size (WORD) 
@@ -177,6 +204,7 @@ DRESULT disk_ioctl (
 				break;
 			}
 			status = RES_OK;
+#endif
 			break;
     
 		case SPI_FLASH:		      

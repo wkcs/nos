@@ -19,7 +19,7 @@ static enum log_level g_log_level = CONFIG_DEFAULT_LOG_LEVEL;
 static enum log_level g_log_level = LOG_INFO;
 #endif
 static char log_buf[4096];
-static bool g_log_enabled = false;
+static bool g_log_enabled = true;
 
 void set_log_enabled(bool enable) { g_log_enabled = enable; }
 

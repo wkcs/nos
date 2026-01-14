@@ -243,7 +243,8 @@ static int cmd_cd(int argc, char *argv[]) {
 
 static int cmd_mkdir(int argc, char *argv[]) {
   struct dentry *dentry;
-  struct inode *dir = shell_cwd ? shell_cwd->d_inode : vfs_get_root()->d_inode;
+  struct dentry *parent_dentry = shell_cwd ? shell_cwd : vfs_get_root();
+  struct inode *dir = parent_dentry->d_inode;
   struct dentry *new_dentry;
 
   if (argc < 2) {
@@ -258,6 +259,10 @@ static int cmd_mkdir(int argc, char *argv[]) {
     shell_printf("mkdir: out of memory\r\n");
     return -ENOMEM;
   }
+  
+  new_dentry->d_parent = parent_dentry;
+  new_dentry->d_sb = parent_dentry->d_sb;
+
   // set name
   strncpy(new_dentry->d_iname, argv[1], FS_NAME_LEN);
   new_dentry->d_iname[FS_NAME_LEN - 1] = '\0'; // Ensure null termination
@@ -298,6 +303,8 @@ static int cmd_cat(int argc, char *argv[]) {
   f->f_inode = dentry->d_inode;
   f->f_op = dentry->d_inode->i_fop;
   f->f_pos = 0;
+  f->f_path.dentry = dentry;
+  f->f_path.mnt = NULL;
 
   if (!f->f_op || !f->f_op->read) {
     shell_printf("cat: %s: no read operation\r\n", argv[1]);
@@ -305,11 +312,25 @@ static int cmd_cat(int argc, char *argv[]) {
     return -1;
   }
 
+  if (f->f_op->open) {
+      ret = f->f_op->open(dentry->d_inode, f);
+      if (ret != 0) {
+          shell_printf("cat: open failed %d\r\n", ret);
+          kfree(f);
+          return ret;
+      }
+  }
+
   while ((ret = f->f_op->read(f, buf, sizeof(buf) - 1, &f->f_pos)) > 0) {
     buf[ret] = 0;
     shell_printf("%s", buf);
   }
   shell_printf("\r\n");
+
+  if (f->f_op->release) {
+      f->f_op->release(dentry->d_inode, f);
+  }
+
   kfree(f);
   return 0;
 }
@@ -383,10 +404,23 @@ static int cmd_ls(int argc, char *argv[]) {
 
   file->f_inode = inode;
   file->f_op = inode->i_fop;
+  file->f_path.dentry = target;
+  file->f_path.mnt = NULL; // Assuming single mount or ignored for now
   file->f_pos = 0;
 
-  if (file->f_op->readdir) {
+  int res = 0;
+  if (file->f_op->open) {
+      res = file->f_op->open(inode, file);
+  }
+
+  if (res == 0 && file->f_op->readdir) {
     file->f_op->readdir(file, NULL, shell_filldir);
+  } else if (res != 0) {
+      shell_printf("ls: open failed %d\r\n", res);
+  }
+
+  if (file->f_op->release) {
+      file->f_op->release(inode, file);
   }
 
   kfree(file);

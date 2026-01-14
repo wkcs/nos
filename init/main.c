@@ -45,15 +45,18 @@ int nos_start(void) {
   if (vfs_init()) {
     pr_err("VFS: init failed\r\n");
   } else {
-    /* Mount Root FS (RamFS for now) */
-    struct dentry *root = vfs_mount("ramfs", 0, NULL, NULL);
+    /* Mount Root FS */
+    struct dentry *root = vfs_mount("fatfs", 0, NULL, NULL);
     if (root) {
-      pr_info("VFS: RootFS mounted successfully\r\n");
-      // Optional: Run verification test here instead of manual call
-      // extern void vfs_test(void);
-      // vfs_test();
+        pr_info("VFS: RootFS (FatFs) mounted successfully\r\n");
     } else {
-      pr_err("VFS: Failed to mount RootFS\r\n");
+        pr_info("VFS: Failed to mount FatFs, falling back to RamFS\r\n");
+        root = vfs_mount("ramfs", 0, NULL, NULL);
+        if (root) {
+             pr_info("VFS: RootFS (RamFS) mounted successfully\r\n");
+        } else {
+             pr_err("VFS: Failed to mount RootFS\r\n");
+        }
     }
   }
 
