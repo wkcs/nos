@@ -23,5 +23,6 @@ obj-y += sem.o
 obj-y += mutex.o
 obj-y += msg_queue.o
 obj-y += sys.o
+obj-y += shell.o
 obj-y += panic.o
 obj-y += kallsyms.o

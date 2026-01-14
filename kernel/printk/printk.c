@@ -6,10 +6,10 @@
  * Email: huqihan@live.com
  */
 
-#include <kernel/printk.h>
 #include <kernel/console.h>
-#include <kernel/kernel.h>
 #include <kernel/cpu.h>
+#include <kernel/kernel.h>
+#include <kernel/printk.h>
 #include <lib/vsprintf.h>
 #include <string.h>
 
@@ -19,69 +19,72 @@ static enum log_level g_log_level = CONFIG_DEFAULT_LOG_LEVEL;
 static enum log_level g_log_level = LOG_INFO;
 #endif
 static char log_buf[4096];
+static bool g_log_enabled = false;
 
-__printf(3,4) int pr_log(bool no_tag, enum log_level level, const char *fmt, ...)
-{
-    va_list args;
-    char *buf = log_buf;
-    uint32_t time_sec, time_usec;
-    int len = 0;
+void set_log_enabled(bool enable) { g_log_enabled = enable; }
 
-    if (level > g_log_level) {
-        if (!no_tag) {
-            time_sec = (uint32_t)(cpu_run_time_us() / 1000000);
-            time_usec = (uint32_t)(cpu_run_time_us() % 1000000);
+__printf(3, 4) int pr_log(bool no_tag, enum log_level level, const char *fmt,
+                          ...) {
+  if (!g_log_enabled && level < LOG_ERROR) {
+    return 0;
+  }
 
-            switch(level) {
-                case LOG_FATAL:
-                    sprintf(buf, "%06d.%06d[FATAL]",  time_sec, time_usec);
-                    len = 20;
-                    break;
-                case LOG_ERROR:
-                    sprintf(buf, "%06d.%06d[ERROR]",  time_sec, time_usec);
-                    len = 20;
-                    break;
-                case LOG_WARNING:
-                    sprintf(buf, "%06d.%06d[WARNING]",  time_sec, time_usec);
-                    len = 22;
-                    break;
-                case LOG_INFO:
-                    sprintf(buf, "%06d.%06d[INFO]",  time_sec, time_usec);
-                    len = 19;
-                    break;
-                case LOG_DEBUG:
-                    sprintf(buf, "%06d.%06d[DEBUG]",  time_sec, time_usec);
-                    len = 20;
-                    break;
-                default:
-                    return 0;
-            }
-        }
+  va_list args;
+  char *buf = log_buf;
+  uint32_t time_sec, time_usec;
+  int len = 0;
 
-        va_start(args, fmt);
-        len += vsprintf(buf + len, fmt, args);
-        va_end(args);
+  if (level > g_log_level) {
+    if (!no_tag) {
+      time_sec = (uint32_t)(cpu_run_time_us() / 1000000);
+      time_usec = (uint32_t)(cpu_run_time_us() % 1000000);
 
-        len = kernel_log_write(buf, len);
-
-        return len;
+      switch (level) {
+      case LOG_FATAL:
+        sprintf(buf, "%06d.%06d[FATAL]", time_sec, time_usec);
+        len = 20;
+        break;
+      case LOG_ERROR:
+        sprintf(buf, "%06d.%06d[ERROR]", time_sec, time_usec);
+        len = 20;
+        break;
+      case LOG_WARNING:
+        sprintf(buf, "%06d.%06d[WARNING]", time_sec, time_usec);
+        len = 22;
+        break;
+      case LOG_INFO:
+        sprintf(buf, "%06d.%06d[INFO]", time_sec, time_usec);
+        len = 19;
+        break;
+      case LOG_DEBUG:
+        sprintf(buf, "%06d.%06d[DEBUG]", time_sec, time_usec);
+        len = 20;
+        break;
+      default:
+        return 0;
+      }
     }
 
-    return 0;
-}
+    va_start(args, fmt);
+    len += vsprintf(buf + len, fmt, args);
+    va_end(args);
 
-void set_log_level(enum log_level level)
-{
-    g_log_level = level;
-}
-
-int vprintk(const char *fmt, va_list args)
-{
-    char *buf = log_buf;
-    int len = 0;
-
-    len += vsprintf(buf, fmt, args);
     len = kernel_log_write(buf, len);
 
     return len;
+  }
+
+  return 0;
+}
+
+void set_log_level(enum log_level level) { g_log_level = level; }
+
+int vprintk(const char *fmt, va_list args) {
+  char *buf = log_buf;
+  int len = 0;
+
+  len += vsprintf(buf, fmt, args);
+  len = kernel_log_write(buf, len);
+
+  return len;
 }
