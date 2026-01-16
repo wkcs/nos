@@ -99,5 +99,12 @@ ssize_t nos_write(int fd, const void *buf, size_t count);
 loff_t nos_lseek(int fd, loff_t offset, int whence);
 int nos_mkdir(const char *pathname, mode_t mode);
 int nos_rmdir(const char *pathname);
+int vfs_bind_mount(struct dentry *target, struct dentry *mnt_root); // Add declaration
+
+/* Filesystem Initialization */
+int init_ramfs(void);
+int init_fatfs(void);
+int init_procfs(void);
+int init_sysfs(void);
 
 #endif /* __NOS_FS_H__ */
