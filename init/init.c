@@ -10,7 +10,6 @@
 #include <kernel/init.h>
 #include <kernel/kernel.h>
 #include <kernel/printk.h>
-#include <kernel/shell.h>
 #include <kernel/sleep.h>
 #include <kernel/task.h>
 #include <kernel/timer.h>
@@ -86,7 +85,6 @@ int core_task_init(void) {
 
 static void idel_task_entry(void *parameter) {
   core_task_init();
-  shell_init();
   while (1) {
     clean_close_task();
     cpu_set_lpm();

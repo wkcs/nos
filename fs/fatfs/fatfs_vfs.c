@@ -190,7 +190,9 @@ static struct inode *fatfs_make_inode(struct super_block *sb, int mode) {
 static struct dentry *fatfs_lookup(struct inode *dir, struct dentry *dentry) {
     // We need to verify existence.
     // Construct path for child.
-    char path[256];
+    // We need to verify existence.
+    // Construct path for child.
+    char path[260] __attribute__((aligned(4)));
     FRESULT res;
     FILINFO fno;
 
@@ -202,11 +204,16 @@ static struct dentry *fatfs_lookup(struct inode *dir, struct dentry *dentry) {
     
     
     if (get_fatfs_path(dentry, path, sizeof(path)) != 0) return NULL;
+    
+    // pr_info("FatFs: lookup path %s\r\n", path);
 
     res = f_stat(path, &fno);
     if (res == FR_OK) {
+        // pr_info("FatFs: stat success. attrib=%x\r\n", fno.fattrib);
         // Found. Create inode.
         int mode = (fno.fattrib & AM_DIR) ? (S_IFDIR | 0755) : (S_IFREG | 0644);
+        
+        // pr_info("FatFs: calling make_inode\r\n");
         struct inode *inode = fatfs_make_inode(dir->i_sb, mode);
         if (inode) {
             inode->i_size = fno.fsize;
@@ -214,7 +221,7 @@ static struct dentry *fatfs_lookup(struct inode *dir, struct dentry *dentry) {
             return NULL; // Success
         }
     } else {
-        // pr_err("FatFs: stat %s failed: %d\r\n", path, res); // Optional: hush noisy stat fails on lookup
+         // pr_info("FatFs: stat failed %d\r\n", res);
     }
     
     return NULL; // Not found
@@ -278,7 +285,7 @@ static int fatfs_dir_release(struct inode *inode, struct file *file) {
 
 static int fatfs_dir_open(struct inode *inode, struct file *file) {
     DIR *dp;
-    char path[256];
+    char path[260] __attribute__((aligned(4)));
     FRESULT res;
 
     // Resolve path using dentry
@@ -318,7 +325,7 @@ static struct inode_operations fatfs_file_inode_ops = {
 
 static int fatfs_file_open(struct inode *inode, struct file *file) {
     FIL *fp;
-    char path[256];
+    char path[260] __attribute__((aligned(4)));
     FRESULT res;
 
     // Resolve path using dentry

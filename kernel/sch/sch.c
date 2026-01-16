@@ -105,8 +105,7 @@ static struct task_struct *get_next_task(void)
 
     if (list_empty(&ready_task_list[highest_ready_priority])) {
         spin_unlock_irq(&ready_list_lock);
-        BUG_ON(true);
-        pr_err("prio %u not ready task\r\n", highest_ready_priority);
+        panic("Scheduler error: highest priority (%u) ready list is empty!\r\n", highest_ready_priority);
         return NULL;
     }
 

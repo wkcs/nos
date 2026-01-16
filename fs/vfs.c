@@ -44,9 +44,24 @@ int vfs_init(void) {
   }
 #endif
 
+  ret = init_procfs();
+  if (ret) {
+    pr_err("VFS: Failed to register procfs\r\n");
+    return ret;
+  }
+
+  ret = init_sysfs();
+  if (ret) {
+    pr_err("VFS: Failed to register sysfs\r\n");
+    return ret;
+  }
+
   return 0;
 }
 
+/*
+ * File System Registration
+ */
 /*
  * File System Registration
  */
@@ -55,6 +70,8 @@ int register_filesystem(struct file_system_type *fs) {
 
   if (!fs)
     return -EINVAL;
+    
+  pr_info("VFS: Registering %s at %p\r\n", fs->name, fs);
 
   if (fs->next)
     return -EBUSY;
@@ -75,23 +92,7 @@ int register_filesystem(struct file_system_type *fs) {
   return 0;
 }
 
-int unregister_filesystem(struct file_system_type *fs) {
-  struct file_system_type **tmp;
-
-  spin_lock(&file_systems_lock);
-  tmp = &file_systems;
-  while (*tmp) {
-    if (fs == *tmp) {
-      *tmp = fs->next;
-      fs->next = NULL;
-      spin_unlock(&file_systems_lock);
-      return 0;
-    }
-    tmp = &(*tmp)->next;
-  }
-  spin_unlock(&file_systems_lock);
-  return -EINVAL;
-}
+// ...
 
 struct file_system_type **find_filesystem(const char *name, unsigned len) {
   struct file_system_type **p;
@@ -144,12 +145,18 @@ struct dentry *vfs_mount(const char *fs_name, int flags, const char *dev_name,
   struct file_system_type *type;
   struct dentry *mnt_root;
 
+  pr_info("VFS: vfs_mount lookup %s\r\n", fs_name);
+  
   // Simple lookup for now
   struct file_system_type **p = find_filesystem(fs_name, strlen(fs_name));
   type = *p;
 
-  if (!type)
-    return NULL;
+  if (!type) {
+      pr_info("VFS: vfs_mount fs type not found\r\n");
+      return NULL;
+  }
+  
+  pr_info("VFS: found type %s at %p, calling mount %p\r\n", type->name, type, type->mount);
 
   mnt_root = type->mount(type, flags, dev_name, data);
   if (!mnt_root)
@@ -184,12 +191,40 @@ ssize_t nos_write(int fd, const void *buf, size_t count) { return -EBADF; }
 int nos_close(int fd) { return -EBADF; }
 
 /*
+ * Simple Mount Point Table
+ */
+struct mount_point {
+    struct inode *parent;
+    char *name;
+    struct dentry *root;
+};
+
+static struct mount_point mount_points[8];
+static int mount_count = 0;
+
+int vfs_bind_mount(struct dentry *target, struct dentry *mnt_root) {
+    pr_info("vfs_bind: target=%s root=%p count=%d\r\n", target->d_name.name, mnt_root, mount_count);
+    if (mount_count >= 8) {
+        return -1; // Max mounts reached
+    }
+    
+    // Store necessary info to intercept lookup
+    mount_points[mount_count].parent = target->d_parent->d_inode;
+    mount_points[mount_count].name = kstrdup(target->d_name.name, GFP_KERNEL); 
+    mount_points[mount_count].root = mnt_root;
+    
+    mount_count++;
+    return 0;
+}
+
+/*
  * Simple path lookup stub
  */
 struct dentry *vfs_lookup(struct dentry *parent, struct qstr *name) {
   struct inode *dir = parent->d_inode;
   struct dentry *dentry;
-
+  int i;
+  
   if (!dir || !dir->i_op || !dir->i_op->lookup)
     return NULL;
 
@@ -197,7 +232,7 @@ struct dentry *vfs_lookup(struct dentry *parent, struct qstr *name) {
   dentry = kzalloc(sizeof(struct dentry), GFP_KERNEL);
   if (!dentry)
     return NULL;
-
+    
   dentry->d_parent = parent;
   dentry->d_sb = parent->d_sb;
   dentry->d_name.name = name->name; // Shallow copy? Should strdup?
@@ -214,6 +249,22 @@ struct dentry *vfs_lookup(struct dentry *parent, struct qstr *name) {
       kfree(dentry);
       return NULL;
     }
+    
+    // Check for mount points
+    for (i = 0; i < mount_count; i++) {
+        if (mount_points[i].parent == dir) {
+             if (strcmp(dentry->d_name.name, mount_points[i].name) == 0) {
+            
+                // Intercept! Replace inode with mount root inode
+                dentry->d_inode = mount_points[i].root->d_inode;
+                dentry->d_sb = mount_points[i].root->d_sb;
+                // Also might need to update d_op if FS relies on it?
+                // For now only inode matters for file ops.
+                break;
+             }
+        }
+    }
+    
     return dentry;
   }
 
