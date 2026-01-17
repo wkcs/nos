@@ -1,0 +1,137 @@
+#
+# 驱动程序配置
+#
+
+menu "Device Drivers"
+
+# USB 驱动
+menu "USB Support"
+
+config USB
+	bool "USB support"
+	default n
+	help
+	  启用 USB 支持。
+
+if USB
+
+config USB_DEVICE
+	bool "USB device mode"
+	default y
+	help
+	  启用 USB 设备模式。
+
+config USB_HID
+	bool "USB HID support"
+	default n
+	depends on USB_DEVICE
+	help
+	  启用 USB HID（人机接口设备）支持。
+
+config USB_DEVICE_HID_KEYBOARD
+	bool "USB HID keyboard"
+	default n
+	depends on USB_HID
+	help
+	  启用 USB HID 键盘设备。
+
+config USB_CDC
+	bool "USB CDC (Communications Device Class)"
+	default n
+	depends on USB_DEVICE
+	help
+	  启用 USB CDC 支持（虚拟串口）。
+
+config USB_WINUSB
+	bool "USB WinUSB support"
+	default n
+	depends on USB_DEVICE
+	help
+	  启用 WinUSB 支持。
+
+config USB_DEVICE_COMPOSITE
+	bool "USB composite device"
+	default n
+	depends on USB_DEVICE
+	help
+	  启用 USB 复合设备支持。
+
+endif # USB
+
+endmenu
+
+# UART 驱动
+menu "UART Support"
+
+config UART_DMA
+	bool "UART DMA support"
+	default n
+	help
+	  启用 UART DMA 传输支持。
+
+endmenu
+
+# 键盘驱动
+config KEYBOARD
+	bool "Keyboard support"
+	default n
+	help
+	  启用键盘驱动支持。
+
+# 显示驱动
+menu "Display Support"
+
+config DISPLAY_SERVER
+	bool "Display server"
+	default n
+	help
+	  启用显示服务器。
+
+config NK60_DISPLAY_SERVER
+	bool "NK60 display server"
+	default n
+	depends on DISPLAY_SERVER
+	help
+	  启用 NK60 板级显示服务器。
+
+endmenu
+
+# 板级特定驱动
+menu "Board-specific Drivers"
+
+config NK60_V2_KEY
+	bool "NK60 V2 keyboard driver"
+	default n
+	depends on KEYBOARD
+	help
+	  NK60 V2 板级键盘驱动。
+
+config NK60_V2_LED
+	bool "NK60 V2 LED driver"
+	default n
+	help
+	  NK60 V2 板级 LED 驱动。
+
+config NK60_V2_W25QXX
+	bool "NK60 V2 W25Qxx flash driver"
+	default n
+	help
+	  NK60 V2 板级 W25Qxx Flash 驱动。
+
+config LED_DEV
+	string "LED device name"
+	default "nk60_v2-led"
+	depends on NK60_V2_LED
+	help
+	  LED 设备名称。
+
+config FLASH_DEV
+	string "Flash device name"
+	default "nk60_v2-flash"
+	depends on NK60_V2_W25QXX
+	help
+	  Flash 设备名称。
+
+endmenu
+
+endmenu

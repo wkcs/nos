@@ -1,0 +1,66 @@
+#
+# 板级配置
+#
+
+choice
+	prompt "Target Board"
+	default BOARD_NK60
+	help
+	  选择目标板。
+
+config BOARD_NK60
+	bool "NK60 V2"
+	depends on ARCH_ARM
+	help
+	  NK60 V2 键盘板。
+
+config BOARD_QEMU_STM32
+	bool "QEMU STM32"
+	depends on ARCH_ARM
+	help
+	  QEMU STM32 仿真板。
+
+config BOARD_WL_001
+	bool "WL-001"
+	depends on ARCH_ARM
+	help
+	  WL-001 板。
+
+config BOARD_ZJ_V3
+	bool "ZJ V3"
+	depends on ARCH_ARM
+	help
+	  ZJ V3 板。
+
+config BOARD_QEMU_VIRT
+	bool "QEMU Virt"
+	depends on ARCH_ARM || ARCH_ARM64
+	help
+	  QEMU Virt 通用仿真板。
+
+endchoice
+
+config BOARD
+	string
+	default "nk60" if BOARD_NK60
+	default "qemu-stm32" if BOARD_QEMU_STM32
+	default "wl-001" if BOARD_WL_001
+	default "zj-v3" if BOARD_ZJ_V3
+	default "qemu-virt" if BOARD_QEMU_VIRT
+
+# 服务器配置
+menu "Server Configuration"
+
+config CONNECT_SERVER
+	bool "Connect server"
+	default n
+	help
+	  启用连接服务器。
+
+config NDK_SERVER
+	bool "NDK server"
+	default n
+	help
+	  启用 NDK 服务器。
+
+endmenu

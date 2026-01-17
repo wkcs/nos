@@ -1,0 +1,63 @@
+#
+# ARM64 架构配置
+#
+
+if ARCH_ARM64
+
+choice
+	prompt "ARM64 CPU Type"
+	default ARM64_CORTEX_A53
+	help
+	  选择 ARM64 CPU 类型。
+
+config ARM64_CORTEX_A53
+	bool "Cortex-A53"
+	help
+	  ARM Cortex-A53 处理器支持。
+
+config ARM64_CORTEX_A72
+	bool "Cortex-A72"
+	help
+	  ARM Cortex-A72 处理器支持。
+
+config ARM64_GENERIC
+	bool "Generic ARMv8-A"
+	help
+	  通用 ARMv8-A 架构支持。
+
+endchoice
+
+config CPU_TYPE
+	string
+	default "cortex-a53" if ARM64_CORTEX_A53
+	default "cortex-a72" if ARM64_CORTEX_A72
+	default "generic" if ARM64_GENERIC
+
+config ARM64_4K_PAGES
+	bool "4KB page size"
+	default y
+	help
+	  使用 4KB 页面大小。
+
+config ARM64_64K_PAGES
+	bool "64KB page size"
+	depends on !ARM64_4K_PAGES
+	help
+	  使用 64KB 页面大小。
+
+config ARM64_VA_BITS
+	int "Virtual address space size"
+	default 39
+	range 36 48
+	help
+	  虚拟地址空间位数。
+	  39 位支持 512GB 虚拟地址空间。
+
+config ARM64_PA_BITS
+	int "Physical address space size"
+	default 40
+	range 36 48
+	help
+	  物理地址空间位数。
+
+endif # ARCH_ARM64
