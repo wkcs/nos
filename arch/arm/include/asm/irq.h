@@ -1,17 +1,62 @@
 /**
- * Copyright (C) 2023-2023 胡启航<Nick Hu>
+ * Copyright (C) 2023-2024 胡启航<Nick Hu>
  *
  * Author: 胡启航<Nick Hu>
  *
  * Email: huqihan@live.com
  */
 
-#ifndef __ARM_ASM_IRQ_H__
-#define __ARM_ASM_IRQ_H__
+#ifndef __ASM_ARM_IRQ_H__
+#define __ASM_ARM_IRQ_H__
 
-#include <kernel/kernel.h>
+#include <kernel/types.h>
 
-addr_t asm_disable_irq_save();
-void asm_enable_irq_save(addr_t level);
+/* ARM 架构中断管理接口 */
 
-#endif /* __ARM_ASM_IRQ_H__ */
+/**
+ * 初始化架构特定的中断控制器
+ */
+void arch_irq_init(void);
+
+/**
+ * 启用指定中断
+ * @irq: 中断号
+ */
+void arch_irq_enable(unsigned int irq);
+
+/**
+ * 禁用指定中断
+ * @irq: 中断号
+ */
+void arch_irq_disable(unsigned int irq);
+
+/**
+ * 设置中断优先级
+ * @irq: 中断号
+ * @priority: 优先级 (0 = 最高优先级)
+ */
+void arch_irq_set_priority(unsigned int irq, unsigned int priority);
+
+/**
+ * 全局禁用中断并返回之前的状态
+ * @return: 之前的中断状态
+ */
+unsigned long arch_irq_save(void);
+
+/**
+ * 恢复中断状态
+ * @flags: 之前保存的中断状态
+ */
+void arch_irq_restore(unsigned long flags);
+
+/**
+ * 全局启用中断
+ */
+void arch_irq_enable_global(void);
+
+/**
+ * 全局禁用中断
+ */
+void arch_irq_disable_global(void);
+
+#endif /* __ASM_ARM_IRQ_H__ */

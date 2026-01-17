@@ -1,34 +1,14 @@
-##############################################
-# Copyright (C) 2023-2023 胡启航<Nick Hu>
 #
-# Author: 胡启航<Nick Hu>
+# QEMU STM32 板级 Makefile
 #
-# Email: huqihan@live.com
-##############################################
 
-CCFLAGS += -I$(dir)/inside-include
-CCFLAGS += -I$(dir)/drivers/inc
-CCFLAGS += -I$(dir)/usb
-
-obj-y = drivers
-obj-$(CONFIG_USB) += usb
-
-obj-y += arch_dma.o
-obj-y += arch_uart.o
-obj-y += arch_clk.o
-obj-y += arch_irq.o
-obj-y += arch_gpio.o
-obj-y += board_config.o
-obj-y += arch_console.o
-obj-$(CONFIG_USB) += arch_usb.o
-obj-y += system_stm32f10x.o
+# 板级初始化
+obj-y += board.o
 obj-y += init.o
+
+# 板级配置
+obj-y += board_config.o
 obj-y += board_mm.o
-obj-y += arch_boot.o
 
-obj-y += start.o
-
-
-
-
-
+# 链接脚本
+LDSCRIPT += board/qemu-stm32/nos_kernel.ld.S

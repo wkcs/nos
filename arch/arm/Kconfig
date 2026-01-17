@@ -1,0 +1,66 @@
+#
+# ARM 架构配置
+#
+
+if ARCH_ARM
+
+choice
+	prompt "ARM CPU Type"
+	default ARM_CORTEX_M4
+	help
+	  选择 ARM CPU 类型。
+
+config ARM_CORTEX_M3
+	bool "Cortex-M3"
+	help
+	  ARM Cortex-M3 处理器支持。
+
+config ARM_CORTEX_M4
+	bool "Cortex-M4"
+	help
+	  ARM Cortex-M4 处理器支持（带 FPU）。
+
+config ARM_CORTEX_A7
+	bool "Cortex-A7"
+	select ARCH_HAS_MMU
+	help
+	  ARM Cortex-A7 处理器支持。
+
+endchoice
+
+config CPU_TYPE
+	string
+	default "cortex-m3" if ARM_CORTEX_M3
+	default "cortex-m4" if ARM_CORTEX_M4
+	default "cortex-a7" if ARM_CORTEX_A7
+
+config ARM_CORTEX_CPU
+	bool
+	default y
+	help
+	  ARM Cortex 系列 CPU。
+
+config THUMB2_KERNEL
+	bool "Use Thumb-2 instruction set"
+	default y
+	depends on ARM_CORTEX_M3 || ARM_CORTEX_M4
+	help
+	  使用 Thumb-2 指令集编译内核。
+	  Cortex-M 系列处理器推荐启用。
+
+config KERNEL_USE_BOOTLOADER
+	bool "Kernel uses bootloader"
+	default y
+	help
+	  内核通过 bootloader 加载。
+	  如果启用，内核地址需要与 bootloader 配置匹配。
+
+config KERNEL_ADDR
+	hex "Kernel load address"
+	default 0x08000000
+	depends on KERNEL_USE_BOOTLOADER
+	help
+	  内核加载地址（十六进制）。
+	  通常为 Flash 起始地址。
+
+endif # ARCH_ARM

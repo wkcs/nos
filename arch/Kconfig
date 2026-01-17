@@ -1,0 +1,44 @@
+#
+# 架构配置
+#
+
+choice
+	prompt "Target Architecture"
+	default ARCH_ARM
+	help
+	  选择目标架构。
+
+config ARCH_ARM
+	bool "ARM (32-bit)"
+	select ARCH_HAS_IRQ
+	help
+	  ARM 32 位架构支持（ARMv7-M, ARMv7-A 等）。
+
+config ARCH_ARM64
+	bool "ARM64 (64-bit)"
+	select ARCH_HAS_IRQ
+	select ARCH_HAS_MMU
+	help
+	  ARM 64 位架构支持（ARMv8-A, AArch64）。
+
+endchoice
+
+config ARCH
+	string
+	default "arm" if ARCH_ARM
+	default "arm64" if ARCH_ARM64
+
+# 架构能力标志
+config ARCH_HAS_MMU
+	bool
+	help
+	  架构支持 MMU（内存管理单元）。
+
+config ARCH_HAS_IRQ
+	bool
+	help
+	  架构支持中断控制器。
+
+# 包含架构特定配置
+source "arch/arm/Kconfig" if ARCH_ARM
+source "arch/arm64/Kconfig" if ARCH_ARM64

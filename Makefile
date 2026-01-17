@@ -23,6 +23,16 @@ ifndef $(ARCH)
     ARCH := arm
 endif
 
+# 设置工具链前缀
+ifndef $(PREFIX)
+    ifeq ($(ARCH),arm)
+        PREFIX := arm-none-eabi-
+    endif
+    ifeq ($(ARCH),arm64)
+        PREFIX := aarch64-none-elf-
+    endif
+endif
+
 dir-y := init
 dir-y += arch
 dir-y += drivers
@@ -64,9 +74,14 @@ BOARD_SVD := $(out-dir)/board.svd
 OPENOCD_CFG := $(out-dir)/openocd.cfg
 OOCDFLAGS := -f $(OPENOCD_CFG)
 
-.PHONY: all flash debug clean %_config defconfig size stflash jflash FORCE
+# 设备树相关
+DTC := dtc
+BOARD_DTS := board/$(board)/board.dts
+BOARD_DTB := $(out-dir)/board.dtb
 
-all:$(TARGET_LIST) $(TARGET_BIN) $(TARGET_HEX) $(TARGET_ELF) $(TARGET_IMG) size
+.PHONY: all flash debug clean %_config defconfig menuconfig savedefconfig size stflash jflash check-compiler dtbs FORCE
+
+all:$(TARGET_LIST) $(TARGET_BIN) $(TARGET_HEX) $(TARGET_ELF) $(TARGET_IMG) dtbs size
 
 size: $(TARGET_ELF)
 	@echo "SIZE     $(<:$(out-dir)/%=%)"
@@ -85,6 +100,18 @@ $(TARGET_IMG): $(TARGET_BIN)
 	@echo "CREATE   $(@:$(out-dir)/%=%)"
 	$(Q)-$(RM) $@
 	$(Q)$(PYTHON) scripts/create_img.py $< $(VERSION) $(PATCHLEVEL) $(SUBLEVEL) 1 $@
+
+# 设备树编译规则
+dtbs: $(BOARD_DTB)
+
+$(BOARD_DTB): $(BOARD_DTS) | $(out-dir)
+	@echo "DTC      $(@:$(out-dir)/%=%)"
+	$(Q)if [ -f $(BOARD_DTS) ]; then \
+		$(DTC) -I dts -O dtb -o $@ $(BOARD_DTS); \
+	else \
+		echo "Warning: Device tree source $(BOARD_DTS) not found"; \
+		touch $@; \
+	fi
 
 $(TARGET_LIST): $(TARGET_ELF)
 	@echo "OBJDUMP  $(@:$(out-dir)/%=%)"
@@ -193,21 +220,52 @@ qemu-run-gdb: $(OPENOCD_CFG) $(BOARD_SVD)
 	fi
 
 %_config: $(obj-dir)
-	@echo "write to .config"
-	$(Q)$(PYTHON) scripts/config.py $(VERSION) $(PATCHLEVEL) $(SUBLEVEL) $(ARCH) arch/$(ARCH)/config/$@ $(out-dir)/.config
-	$(Q)if [ ! -d $(out-dir)/include ]; then \
-		mkdir $(out-dir)/include; \
+	@echo "Generating configuration from $@"
+	$(Q)if [ -f arch/$(ARCH)/configs/$@ ]; then \
+		$(PYTHON) scripts/kconfig_improved.py . arch/$(ARCH)/configs/$@ $(out-dir); \
+	elif [ -f arch/$(ARCH)/config/$@ ]; then \
+		$(PYTHON) scripts/config.py $(VERSION) $(PATCHLEVEL) $(SUBLEVEL) $(ARCH) arch/$(ARCH)/config/$@ $(out-dir)/.config; \
+		if [ ! -d $(out-dir)/include ]; then mkdir $(out-dir)/include; fi; \
+		$(PYTHON) scripts/autocfg.py $(out-dir)/.config $(out-dir)/include/autocfg.h; \
+	else \
+		echo "Error: Configuration file not found"; \
+		exit 1; \
 	fi
-	$(Q)$(PYTHON) scripts/autocfg.py $(out-dir)/.config $(out-dir)/include/autocfg.h
 
 defconfig: $(obj-dir)
-	@echo "write to .config"
-	$(Q)$(PYTHON) scripts/config.py $(VERSION) $(PATCHLEVEL) $(SUBLEVEL) $(ARCH) arch/$(ARCH)/config/$@ $(out-dir)/.config
-	$(Q)if [ ! -d $(out-dir)/include ]; then \
-		mkdir $(out-dir)/include; \
+	@echo "Generating default configuration"
+	$(Q)if [ -f arch/$(ARCH)/configs/defconfig ]; then \
+		$(PYTHON) scripts/kconfig_improved.py . arch/$(ARCH)/configs/defconfig $(out-dir); \
+	else \
+		echo "Error: Default configuration not found"; \
+		exit 1; \
 	fi
-	$(Q)$(PYTHON) scripts/autocfg.py $(out-dir)/.config $(out-dir)/include/autocfg.h
+
+menuconfig: $(obj-dir)
+	@echo "Starting interactive configuration"
+	$(Q)if [ ! -f $(out-dir)/.config ]; then \
+		echo "No existing configuration found, using defaults"; \
+		$(MAKE) defconfig; \
+	fi
+	$(Q)$(PYTHON) scripts/menuconfig_improved.py . $(out-dir)/.config
+
+savedefconfig:
+	@echo "Saving minimal configuration"
+	$(Q)if [ ! -f $(out-dir)/.config ]; then \
+		echo "Error: No configuration found. Run 'make defconfig' first."; \
+		exit 1; \
+	fi
+	$(Q)$(PYTHON) scripts/savedefconfig.py . $(out-dir)/.config arch/$(ARCH)/configs/defconfig
 
 clean:
 	$(Q)-$(RM) $(out-dir)
 	@echo "clean done"
+
+# 编译器检查目标
+check-compiler: $(out-dir)/.config
+	@echo "检查编译器配置..."
+	$(Q)if [ "$(CONFIG_CC_IS_CLANG)" = "y" ]; then \
+		$(PYTHON) scripts/check_compiler.py clang $(ARCH) $(PREFIX); \
+	else \
+		$(PYTHON) scripts/check_compiler.py gcc $(ARCH) $(PREFIX); \
+	fi

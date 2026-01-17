@@ -1,0 +1,44 @@
+#
+# 文件系统配置
+#
+
+menu "File Systems"
+
+config VFS
+	bool "Virtual File System (VFS)"
+	default y
+	help
+	  启用虚拟文件系统层。
+	  提供统一的文件操作接口。
+
+config RAMFS
+	bool "RAM file system"
+	default y
+	depends on VFS
+	help
+	  启用内存文件系统。
+
+config PROCFS
+	bool "Proc file system"
+	default y
+	depends on VFS
+	help
+	  启用 /proc 文件系统。
+	  导出进程和系统信息。
+
+config SYSFS
+	bool "Sys file system"
+	default y
+	depends on VFS
+	help
+	  启用 /sys 文件系统。
+	  导出设备和驱动信息。
+
+config FATFS
+	bool "FAT file system"
+	default n
+	depends on VFS
+	help
+	  启用 FAT 文件系统支持（FAT12/FAT16/FAT32）。
+
+endmenu

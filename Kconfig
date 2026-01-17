@@ -1,0 +1,242 @@
+#
+# NOS 内核配置系统
+# Copyright (C) 2023-2024 Nick Hu
+#
+
+mainmenu "NOS Kernel Configuration"
+
+config VERSION_CODE
+	int
+	default 65536
+	help
+	  内核版本代码，格式为 (VERSION << 16) | (PATCHLEVEL << 8) | SUBLEVEL
+
+config BUILD_INFO
+	string
+	default ""
+	help
+	  构建时间信息
+
+# 架构选择
+source "arch/Kconfig"
+
+# 编译器选择
+menu "Compiler Configuration"
+
+choice
+	prompt "Compiler Selection"
+	default CC_IS_GCC
+	help
+	  选择用于编译内核的编译器。
+
+config CC_IS_GCC
+	bool "GCC (GNU Compiler Collection)"
+	help
+	  使用 GCC 编译器。这是默认选项，
+	  支持所有架构和功能。
+
+config CC_IS_CLANG
+	bool "Clang (LLVM Compiler)"
+	help
+	  使用 Clang/LLVM 编译器。
+	  提供更好的诊断信息和优化。
+
+endchoice
+
+config CC_VERSION_TEXT
+	string
+	default "gcc" if CC_IS_GCC
+	default "clang" if CC_IS_CLANG
+	help
+	  编译器版本文本标识。
+
+config CC_HAS_ASM_GOTO
+	bool
+	default y if CC_IS_GCC
+	default y if CC_IS_CLANG
+	help
+	  编译器支持 asm goto 语句。
+
+config CC_HAS_WARN_MAYBE_UNINITIALIZED
+	bool
+	default y if CC_IS_GCC
+	default n if CC_IS_CLANG
+	help
+	  编译器支持 -Wmaybe-uninitialized 警告。
+
+endmenu
+
+# 内核核心配置
+menu "Kernel Configuration"
+
+config PAGE_SIZE
+	int "Page size"
+	default 4096
+	help
+	  系统页面大小（字节）。
+	  通常为 4096 字节。
+
+config SYS_TICK_MS
+	int "System tick period (ms)"
+	default 1
+	range 1 1000
+	help
+	  系统时钟滴答周期（毫秒）。
+	  较小的值提供更好的响应性，但增加开销。
+
+config MAX_PRIORITY
+	int "Maximum task priority levels"
+	default 32
+	range 8 256
+	help
+	  任务优先级级别数量。
+	  更多级别提供更细粒度的调度控制。
+
+config STACK_GROWSUP
+	bool "Stack grows upward"
+	default n
+	help
+	  如果启用，栈向上增长（从低地址到高地址）。
+	  大多数架构栈向下增长。
+
+config IDEL_TASK_STACK_SIZE
+	int "Idle task stack size"
+	default 1024
+	range 512 8192
+	help
+	  空闲任务的栈大小（字节）。
+
+config CORE_TASK_STACK_SIZE
+	int "Core task stack size"
+	default 4096
+	range 1024 16384
+	help
+	  核心任务的栈大小（字节）。
+
+endmenu
+
+# 内存管理配置
+menu "Memory Management"
+
+config MMU
+	bool "Enable MMU support"
+	default n
+	depends on ARCH_HAS_MMU
+	help
+	  启用内存管理单元（MMU）支持。
+	  提供虚拟内存、内存保护等功能。
+
+config MM_DEBUG
+	bool "Memory management debugging"
+	default n
+	help
+	  启用内存管理调试功能。
+	  包括内存泄漏检测、边界检查等。
+
+config MAX_ORDER
+	int "Maximum buddy allocator order"
+	default 9
+	range 5 15
+	help
+	  Buddy 分配器的最大阶数。
+	  最大可分配块大小为 PAGE_SIZE * (2^MAX_ORDER)。
+
+endmenu
+
+# 同步原语配置
+menu "Synchronization"
+
+config SPINLOCK_DEBUG
+	bool "Spinlock debugging"
+	default n
+	help
+	  启用自旋锁调试功能。
+	  检测死锁、长时间持锁等问题。
+
+endmenu
+
+# 日志和控制台配置
+menu "Logging and Console"
+
+config DEFAULT_CONSOLE
+	string "Default console device"
+	default "tty0"
+	help
+	  默认控制台设备名称。
+
+config LOG_FIFO_BUF_SIZE
+	int "Log FIFO buffer size"
+	default 512
+	range 128 4096
+	help
+	  日志 FIFO 缓冲区大小（字节）。
+
+config CONSOLE_FIFO_BUF_SIZE
+	int "Console FIFO buffer size"
+	default 512
+	range 128 4096
+	help
+	  控制台 FIFO 缓冲区大小（字节）。
+
+config DEFAULT_LOG_LEVEL
+	int "Default log level"
+	default 0
+	range 0 7
+	help
+	  默认日志级别：
+	  0 = EMERG, 1 = ALERT, 2 = CRIT, 3 = ERR,
+	  4 = WARNING, 5 = NOTICE, 6 = INFO, 7 = DEBUG
+
+endmenu
+
+# Shell 配置
+menu "Shell"
+
+config SHELL
+	bool "Enable shell"
+	default n
+	help
+	  启用交互式 Shell 命令行界面。
+
+endmenu
+
+# 测试配置
+menu "Kernel Testing"
+
+config KERNEL_TESTS
+	bool "Enable kernel tests"
+	default n
+	help
+	  启用内核测试框架。
+	  包括属性测试和单元测试。
+
+config PROPERTY_TESTS
+	bool "Enable property-based tests"
+	default y
+	depends on KERNEL_TESTS
+	help
+	  启用基于属性的测试。
+	  验证系统的通用正确性属性。
+
+endmenu
+
+# 设备树支持
+menu "Device Tree"
+
+config DEVICE_TREE
+	bool "Enable device tree support"
+	default n
+	help
+	  启用设备树（Device Tree）支持。
+	  允许通过设备树描述硬件配置。
+
+endmenu
+
+# 驱动程序配置
+source "drivers/Kconfig"
+
+# 文件系统配置
+source "fs/Kconfig"
+
+# 板级配置
+source "board/Kconfig"

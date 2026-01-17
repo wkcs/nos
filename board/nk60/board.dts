@@ -1,0 +1,205 @@
+/*
+ * Copyright (C) 2023-2024 胡启航<Nick Hu>
+ *
+ * Author: 胡启航<Nick Hu>
+ *
+ * Email: huqihan@live.com
+ */
+
+/dts-v1/;
+
+/ {
+    compatible = "nk60,stm32f401";
+    model = "NK60 STM32F401 Board";
+    #address-cells = <1>;
+    #size-cells = <1>;
+
+    chosen {
+        bootargs = "";
+    };
+
+    memory@20000000 {
+        device_type = "memory";
+        reg = <0x20000000 0x18000>;  /* 96KB SRAM */
+    };
+
+    flash@08000000 {
+        device_type = "flash";
+        reg = <0x08000000 0x80000>;  /* 512KB Flash */
+    };
+
+    cpus {
+        #address-cells = <1>;
+        #size-cells = <0>;
+
+        cpu@0 {
+            compatible = "arm,cortex-m4";
+            device_type = "cpu";
+            reg = <0>;
+            clock-frequency = <84000000>;  /* 84MHz */
+        };
+    };
+
+    clocks {
+        hse: hse-clock {
+            compatible = "fixed-clock";
+            #clock-cells = <0>;
+            clock-frequency = <25000000>;  /* 25MHz HSE */
+        };
+
+        hsi: hsi-clock {
+            compatible = "fixed-clock";
+            #clock-cells = <0>;
+            clock-frequency = <16000000>;  /* 16MHz HSI */
+        };
+    };
+
+    soc {
+        #address-cells = <1>;
+        #size-cells = <1>;
+        compatible = "simple-bus";
+        ranges;
+
+        rcc: rcc@40023800 {
+            compatible = "st,stm32f4-rcc";
+            reg = <0x40023800 0x400>;
+            clocks = <&hse>, <&hsi>;
+            clock-names = "hse", "hsi";
+        };
+
+        uart1: serial@40011000 {
+            compatible = "st,stm32-uart";
+            reg = <0x40011000 0x400>;
+            interrupts = <37>;
+            clocks = <&rcc>;
+            status = "okay";
+        };
+
+        uart2: serial@40004400 {
+            compatible = "st,stm32-uart";
+            reg = <0x40004400 0x400>;
+            interrupts = <38>;
+            clocks = <&rcc>;
+            status = "okay";
+        };
+
+        i2c1: i2c@40005400 {
+            compatible = "st,stm32f4-i2c";
+            reg = <0x40005400 0x400>;
+            interrupts = <31>, <32>;
+            clocks = <&rcc>;
+            #address-cells = <1>;
+            #size-cells = <0>;
+            status = "okay";
+        };
+
+        spi1: spi@40013000 {
+            compatible = "st,stm32f4-spi";
+            reg = <0x40013000 0x400>;
+            interrupts = <35>;
+            clocks = <&rcc>;
+            #address-cells = <1>;
+            #size-cells = <0>;
+            status = "okay";
+        };
+
+        gpioa: gpio@40020000 {
+            compatible = "st,stm32f4-gpio";
+            reg = <0x40020000 0x400>;
+            gpio-controller;
+            #gpio-cells = <2>;
+        };
+
+        gpiob: gpio@40020400 {
+            compatible = "st,stm32f4-gpio";
+            reg = <0x40020400 0x400>;
+            gpio-controller;
+            #gpio-cells = <2>;
+        };
+
+        gpioc: gpio@40020800 {
+            compatible = "st,stm32f4-gpio";
+            reg = <0x40020800 0x400>;
+            gpio-controller;
+            #gpio-cells = <2>;
+        };
+
+        gpiod: gpio@40020C00 {
+            compatible = "st,stm32f4-gpio";
+            reg = <0x40020C00 0x400>;
+            gpio-controller;
+            #gpio-cells = <2>;
+        };
+
+        gpioe: gpio@40021000 {
+            compatible = "st,stm32f4-gpio";
+            reg = <0x40021000 0x400>;
+            gpio-controller;
+            #gpio-cells = <2>;
+        };
+
+        gpioh: gpio@40021C00 {
+            compatible = "st,stm32f4-gpio";
+            reg = <0x40021C00 0x400>;
+            gpio-controller;
+            #gpio-cells = <2>;
+        };
+
+        usb_otg_fs: usb@50000000 {
+            compatible = "st,stm32f4-usb-otg";
+            reg = <0x50000000 0x40000>;
+            interrupts = <67>;
+            clocks = <&rcc>;
+            status = "okay";
+        };
+
+        tim2: timer@40000000 {
+            compatible = "st,stm32-timer";
+            reg = <0x40000000 0x400>;
+            interrupts = <28>;
+            clocks = <&rcc>;
+        };
+
+        tim3: timer@40000400 {
+            compatible = "st,stm32-timer";
+            reg = <0x40000400 0x400>;
+            interrupts = <29>;
+            clocks = <&rcc>;
+        };
+
+        tim4: timer@40000800 {
+            compatible = "st,stm32-timer";
+            reg = <0x40000800 0x400>;
+            interrupts = <30>;
+            clocks = <&rcc>;
+        };
+
+        adc1: adc@40012000 {
+            compatible = "st,stm32f4-adc";
+            reg = <0x40012000 0x400>;
+            interrupts = <18>;
+            clocks = <&rcc>;
+            #io-channel-cells = <1>;
+        };
+    };
+
+    leds {
+        compatible = "gpio-leds";
+
+        led0 {
+            label = "nk60:green:user";
+            gpios = <&gpioc 13 0>;
+            default-state = "off";
+        };
+    };
+
+    keys {
+        compatible = "gpio-keys";
+
+        key0 {
+            label = "User Key";
+            gpios = <&gpioa 0 1>;
+            linux,code = <28>; /* KEY_ENTER */
+        };
+    };
+};
