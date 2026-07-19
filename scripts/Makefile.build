@@ -8,6 +8,17 @@
 
 scripts-dir := scripts
 
+# Sub-makes do not inherit PREFIX from the top Makefile unless passed;
+# set a default so CC becomes arm-none-eabi-gcc (not host gcc/clang).
+ifndef PREFIX
+    ifeq ($(ARCH),arm)
+        PREFIX := arm-none-eabi-
+    endif
+    ifeq ($(ARCH),arm64)
+        PREFIX := aarch64-none-elf-
+    endif
+endif
+
 #宏定义
 DEFINES :=
 INC_DIR :=
@@ -55,7 +66,7 @@ built-in.o:$(dir-y) $(obj-dir) $(objs-all) $(obj-all) FORCE
 
 $(dir-y): $(obj-dir)
 	$(Q)$(MAKE) $(N) -f scripts/Makefile.build dir=$(dir)/$@ \
-		out-dir=$(out-dir) Q=$(Q) N=$(N) ARCH=$(ARCH) BOARD=$(BOARD) \
+		out-dir=$(out-dir) Q=$(Q) N=$(N) ARCH=$(ARCH) PREFIX=$(PREFIX) BOARD=$(BOARD) \
 		TARGET=built-in.o built-in.o;
 
 defs-all := $(objs-all:%.o=%.d)
