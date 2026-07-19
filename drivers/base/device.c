@@ -97,3 +97,13 @@ struct device *device_find_by_name(const char *name)
 
     return NULL;
 }
+
+struct device *device_get_binding(const char *name)
+{
+    return device_find_by_name(name);
+}
+
+int device_is_ready(const struct device *dev)
+{
+    return dev != NULL && dev->ready && dev->init_res == 0;
+}
