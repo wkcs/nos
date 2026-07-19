@@ -10,7 +10,7 @@
 #include <kernel/printk.h>
 #include <asm/irq.h>
 #include <asm/mmu.h>
-#include "stm32f10x.h"
+#include <soc/stm32f1xx.h>
 #include "board.h"
 
 /**
