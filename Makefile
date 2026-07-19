@@ -19,12 +19,12 @@ ifneq ($(MV), 1)
 	N := --no-print-directory
 endif
 
-ifndef $(ARCH)
+ifndef ARCH
     ARCH := arm
 endif
 
 # 设置工具链前缀
-ifndef $(PREFIX)
+ifndef PREFIX
     ifeq ($(ARCH),arm)
         PREFIX := arm-none-eabi-
     endif
@@ -44,7 +44,7 @@ dir-y += app
 dir-y += fs
 
 dir-run := $(dir-y:%=%-run)
-ifndef $(out-dir)
+ifndef out-dir
     out-dir := out
 endif
 obj-dir := $(dir-y:%=$(out-dir)/%)
@@ -159,7 +159,7 @@ $(LDSCRIPT_S): $(out-dir)/%:%.S
 
 $(obj-all): $(obj-dir) $(out-dir)/.config $(out-dir)/include/autocfg.h FORCE
 	$(Q)$(MAKE) $(N) -f scripts/Makefile.build dir=$(@:$(out-dir)/%/$(notdir $@)=%) \
-		out-dir=$(out-dir) Q=$(Q) N=$(N) ARCH=$(ARCH) \
+		out-dir=$(out-dir) Q=$(Q) N=$(N) ARCH=$(ARCH) PREFIX=$(PREFIX) \
 		TARGET=$(notdir $@) built-in.o
 
 $(obj-dir):$(out-dir)
