@@ -153,4 +153,8 @@ static int ramdisk_smoke(void)
     return 0;
 }
 
-SYS_INIT(ramdisk_smoke, INIT_LEVEL_APPLICATION);
+/*
+ * Run before VFS mounts FatFs.  The smoke test writes sector zero, which the
+ * mount path formats on an empty ramdisk immediately afterwards.
+ */
+SYS_INIT(ramdisk_smoke, INIT_LEVEL_POST_KERNEL);

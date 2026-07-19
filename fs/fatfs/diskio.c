@@ -1,223 +1,139 @@
 /*-----------------------------------------------------------------------*/
 /* Low level disk I/O module skeleton for FatFs     (C)ChaN, 2007        */
 /*-----------------------------------------------------------------------*/
-/* This is a stub disk I/O module that acts as front end of the existing */
-/* disk I/O modules and attach it to FatFs module with common interface. */
+/* This is a block device front end that attaches FatFs to the common API. */
 /*-----------------------------------------------------------------------*/
-#include <string.h>
+#include <drivers/block.h>
 #include "diskio.h"
-#ifdef CONFIG_QEMU
-#include "../../drivers/spi/qemu_sd.h"
-#else
-#include "../../drivers/spi/spi-sdcard.h"
-#endif
 
-/* 为每个设备定义一个物理编号 */
-#define ATA			           0     // SD卡
-#define SPI_FLASH		       1     // 预留外部SPI Flash使用
+#define FATFS_DRIVE             0
+#define FATFS_DEFAULT_DEVICE    "ramdisk0"
 
-//固定只支持blocksize大小为512的卡，兼容大于512的卡时，该卡容量会变小
-#define SD_BLOCKSIZE     512//SDCardInfo.CardBlockSize
+static const struct device *fatfs_block_dev;
 
-/*-----------------------------------------------------------------------*/
-/* 获取设备状态                                                          */
-/*-----------------------------------------------------------------------*/
-/*-----------------------------------------------------------------------*/
-/* 获取设备状态                                                          */
-/*-----------------------------------------------------------------------*/
-DSTATUS disk_status (
-	BYTE pdrv		/* 物理编号 */
-)
+void fatfs_set_block_device(const struct device *dev)
 {
-	DSTATUS status = STA_NOINIT;
-	
-	switch (pdrv) {
-		case ATA:	/* SD CARD */
-#ifdef CONFIG_QEMU
-            // QEMU semihosting logic handles this
-            status = QEMU_SD_Status(pdrv);
-#else
-			status &= ~STA_NOINIT;
-#endif
-			break;
-    
-		case SPI_FLASH:        /* SPI Flash */   
-			break;
-
-		default:
-			status = STA_NOINIT;
-	}
-	return status;
+    fatfs_block_dev = dev;
 }
 
-/*-----------------------------------------------------------------------*/
-/* 设备初始化                                                            */
-/*-----------------------------------------------------------------------*/
-DSTATUS disk_initialize (
-	BYTE pdrv				/* 物理编号 */
-)
+static const struct device *fatfs_get_block_device(void)
 {
-	DSTATUS status = STA_NOINIT;	
-	switch (pdrv) {
-		case ATA:	         /* SD CARD */
-#ifdef CONFIG_QEMU
-            status = QEMU_SD_Init(pdrv);
-#else
-			if(SD_Init()==SD_RESPONSE_NO_ERROR)
-			{				
-				status &= ~STA_NOINIT;
-			}
-			else 
-			{
-				status = STA_NOINIT;
-			}
-#endif
-			break;
-    
-		case SPI_FLASH:    /* SPI Flash */ 
-			break;
-      
-		default:
-			status = STA_NOINIT;
-	}
-	return status;
+    if (fatfs_block_dev == NULL) {
+        fatfs_block_dev = device_get_binding(FATFS_DEFAULT_DEVICE);
+    }
+
+    return fatfs_block_dev;
 }
 
-
-/*-----------------------------------------------------------------------*/
-/* 读扇区：读取扇区内容到指定存储区                                              */
-/*-----------------------------------------------------------------------*/
-DRESULT disk_read (
-	BYTE pdrv,		/* 设备物理编号(0..) */
-	BYTE *buff,		/* 数据缓存区 */
-	DWORD sector,	/* 扇区首地址 */
-	UINT count		/* 扇区个数(1..128) */
+DSTATUS disk_status(
+    BYTE pdrv
 )
 {
-	DRESULT status = RES_PARERR;
-	
-	switch (pdrv) {
-		case ATA:	/* SD CARD */						
-#ifdef CONFIG_QEMU
-            status = QEMU_SD_Read(pdrv, buff, sector, count);
-#else
-            {
-                SD_Error SD_state = SD_RESPONSE_NO_ERROR;
-			    SD_state=SD_ReadMultiBlocks(buff,(uint64_t)sector*SD_BLOCKSIZE,SD_BLOCKSIZE,count);
+    const struct device *dev;
 
-			    if(SD_state!=SD_RESPONSE_NO_ERROR)
-				    status = RES_PARERR;
-		        else
-			        status = RES_OK;	
-            }
-#endif
-			break;   
-			
-		case SPI_FLASH:
-		break;
-    
-		default:
-			status = RES_PARERR;
-	}
-	return status;
+    if (pdrv != FATFS_DRIVE) {
+        return STA_NOINIT;
+    }
+
+    dev = fatfs_get_block_device();
+    return device_is_ready(dev) ? 0 : STA_NOINIT;
 }
 
+DSTATUS disk_initialize(
+    BYTE pdrv
+)
+{
+    return disk_status(pdrv);
+}
 
+DRESULT disk_read(
+    BYTE pdrv,
+    BYTE *buff,
+    DWORD sector,
+    UINT count
+)
+{
+    const struct device *dev;
 
-/*-----------------------------------------------------------------------*/
-/* 写扇区：见数据写入指定扇区空间上                                      */
-/*-----------------------------------------------------------------------*/
+    if (pdrv != FATFS_DRIVE || buff == NULL || count == 0) {
+        return RES_PARERR;
+    }
+
+    dev = fatfs_get_block_device();
+    if (!device_is_ready(dev)) {
+        return RES_NOTRDY;
+    }
+
+    return block_read(dev, sector, buff, count) == 0 ? RES_OK : RES_ERROR;
+}
+
 #if _USE_WRITE
-DRESULT disk_write (
-	BYTE pdrv,			  /* 设备物理编号(0..) */
-	const BYTE *buff,	/* 欲写入数据的缓存区 */
-	DWORD sector,		  /* 扇区首地址 */
-	UINT count			  /* 扇区个数(1..128) */
+DRESULT disk_write(
+    BYTE pdrv,
+    const BYTE *buff,
+    DWORD sector,
+    UINT count
 )
 {
-	DRESULT status = RES_PARERR;
-	
-	if (!count) {
-		return RES_PARERR;		/* Check parameter */
-	}
+    const struct device *dev;
 
-	switch (pdrv) {
-		case ATA:	/* SD CARD */  
-#ifdef CONFIG_QEMU
-            status = QEMU_SD_Write(pdrv, buff, sector, count);
-#else
-            {
-                SD_Error SD_state = SD_RESPONSE_NO_ERROR;
-			    SD_state=SD_WriteMultiBlocks((uint8_t *)buff,(uint64_t)sector*SD_BLOCKSIZE,SD_BLOCKSIZE,count);
+    if (pdrv != FATFS_DRIVE || buff == NULL || count == 0) {
+        return RES_PARERR;
+    }
 
-			    if(SD_state!=SD_RESPONSE_NO_ERROR)
-				    status = RES_PARERR;
-		        else
-			        status = RES_OK;	
-            }
-#endif
-		break;
+    dev = fatfs_get_block_device();
+    if (!device_is_ready(dev)) {
+        return RES_NOTRDY;
+    }
 
-		case SPI_FLASH:
-		break;
-    
-		default:
-			status = RES_PARERR;
-	}
-	return status;
+    return block_write(dev, sector, buff, count) == 0 ? RES_OK : RES_ERROR;
 }
 #endif
-
-
-/*-----------------------------------------------------------------------*/
-/* 其他控制                                                              */
-/*-----------------------------------------------------------------------*/
 
 #if _USE_IOCTL
-DRESULT disk_ioctl (
-	BYTE pdrv,		/* 物理编号 */
-	BYTE cmd,		  /* 控制指令 */
-	void *buff		/* 写入或者读取数据地址指针 */
+DRESULT disk_ioctl(
+    BYTE pdrv,
+    BYTE cmd,
+    void *buff
 )
 {
-	DRESULT status = RES_PARERR;
-	switch (pdrv) {
-		case ATA:	/* SD CARD */
-#ifdef CONFIG_QEMU
-            status = QEMU_SD_Ioctl(pdrv, cmd, buff);
-#else
-			switch (cmd) 
-			{
-				// Get R/W sector size (WORD) 
-				case GET_SECTOR_SIZE :    
-					*(WORD * )buff = SD_BLOCKSIZE;
-				break;
-				// Get erase block size in unit of sector (DWORD)
-				case GET_BLOCK_SIZE :      
-					*(DWORD * )buff = 1;
-				break;
+    const struct device *dev;
+    uint32_t sector_size;
+    uint32_t sector_count;
 
-				case GET_SECTOR_COUNT:
-					*(DWORD * )buff = SDCardInfo.CardCapacity/SDCardInfo.CardBlockSize;
-					break;
-				case CTRL_SYNC :
-				break;
-			}
-			status = RES_OK;
-#endif
-			break;
-    
-		case SPI_FLASH:		      
-		break;
-    
-		default:
-			status = RES_PARERR;
-	}
-	return status;
+    if (pdrv != FATFS_DRIVE) {
+        return RES_PARERR;
+    }
+
+    dev = fatfs_get_block_device();
+    if (!device_is_ready(dev)) {
+        return RES_NOTRDY;
+    }
+
+    switch (cmd) {
+    case CTRL_SYNC:
+        return RES_OK;
+    case GET_SECTOR_COUNT:
+    case GET_SECTOR_SIZE:
+    case GET_BLOCK_SIZE:
+        if (buff == NULL ||
+            block_get_info(dev, &sector_size, &sector_count) != 0) {
+            return RES_ERROR;
+        }
+        if (cmd == GET_SECTOR_COUNT) {
+            *(DWORD *)buff = sector_count;
+        } else if (cmd == GET_SECTOR_SIZE) {
+            *(WORD *)buff = (WORD)sector_size;
+        } else {
+            *(DWORD *)buff = 1;
+        }
+        return RES_OK;
+    default:
+        return RES_PARERR;
+    }
 }
 #endif
 
-							 
 __weak DWORD get_fattime(void) {
 	/* 返回当前时间戳 */
 	return	  ((DWORD)(2015 - 1980) << 25)	/* Year 2015 */

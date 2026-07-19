@@ -14,6 +14,8 @@ extern "C" {
 
 #include "integer.h"
 
+struct device;
+
 
 /* Status of Disk Functions */
 typedef BYTE	DSTATUS;
@@ -37,6 +39,7 @@ DSTATUS disk_status (BYTE pdrv);
 DRESULT disk_read (BYTE pdrv, BYTE* buff, DWORD sector, UINT count);
 DRESULT disk_write (BYTE pdrv, const BYTE* buff, DWORD sector, UINT count);
 DRESULT disk_ioctl (BYTE pdrv, BYTE cmd, void* buff);
+void fatfs_set_block_device(const struct device *dev);
 
 
 /* Disk Status Bits (DSTATUS) */
