@@ -23,10 +23,27 @@ typedef enum IRQn {
 } IRQn_Type;
 
 #if defined(__ARM_ARCH_7M__)
+#ifndef __NVIC_PRIO_BITS
+#define __NVIC_PRIO_BITS 4U
+#endif
 #include <core_cm3.h>
 #elif defined(__ARM_ARCH_7EM__)
+#ifndef __CM4_REV
+#define __CM4_REV 0x0001U
+#endif
+#ifndef __MPU_PRESENT
+#define __MPU_PRESENT 1U
+#endif
+#ifndef __NVIC_PRIO_BITS
+#define __NVIC_PRIO_BITS 4U
+#endif
+#ifndef __Vendor_SysTickConfig
+#define __Vendor_SysTickConfig 0U
+#endif
 #if defined(__VFP_FP__) && !defined(__SOFTFP__)
+#ifndef __FPU_PRESENT
 #define __FPU_PRESENT 1U
+#endif
 #endif
 #include <core_cm4.h>
 #else

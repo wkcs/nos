@@ -7,3 +7,4 @@
 ##############################################
 
 obj-$(CONFIG_SOC_STM32F1) += stm32f1
+obj-$(CONFIG_SOC_STM32F4) += stm32f4
