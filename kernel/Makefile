@@ -18,6 +18,7 @@ obj-y += irq.o
 obj-y += spinlock.o
 obj-y += pid.o
 obj-y += boot.o
+obj-y += init_levels.o
 obj-y += timer.o
 obj-y += sem.o
 obj-y += mutex.o
