@@ -10,8 +10,8 @@
 #include <kernel/cpu.h>
 #include <kernel/printk.h>
 #include <kernel/task.h>
-#include <board/board.h>
 #include <asm/irq.h>
+#include <asm/platform.h>
 
 #if (defined ( __GNUC__ ) && defined ( __VFP_FP__ ) && !defined(__SOFTFP__))
 #define USE_FPU   1
@@ -160,8 +160,6 @@ void DebugMon_Handler(void)
 
 addr_t interrupt_from_task, interrupt_to_task;
 u32 switch_interrupt_flag;
-
-extern uint32_t SystemCoreClock;
 
 static uint32_t nop_us_time_ns;
 static uint32_t sys_tick_num_by_us;
