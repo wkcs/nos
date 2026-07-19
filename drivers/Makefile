@@ -12,6 +12,7 @@ obj-y += base
 # obj-y += block
 obj-y += key
 obj-y += misc
+obj-y += serial
 obj-y += spi
 obj-y += i2c
 obj-$(CONFIG_USB) += usb
