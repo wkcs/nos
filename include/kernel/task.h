@@ -65,8 +65,8 @@ struct task_struct {
     u32 save_sys_cycle;
 };
 
-extern struct task_struct *g_current_task;
-#define current g_current_task
+struct task_struct *task_current(void);
+#define current task_current()
 
 struct task_struct *task_create(const char *name,
                                 void (*entry)(void *parameter),

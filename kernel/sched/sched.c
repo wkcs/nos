@@ -18,7 +18,12 @@
 #include <kernel/printk.h>
 #include <string.h>
 
-struct task_struct *g_current_task;
+static struct task_struct *g_current_task;
+
+struct task_struct *task_current(void)
+{
+    return g_current_task;
+}
 
 static struct list_head ready_task_list[CONFIG_MAX_PRIORITY];
 SPINLOCK(ready_list_lock);
