@@ -54,7 +54,7 @@ endif
 
 .PHONY: $(dir-y) FORCE
 
-built-in.o:$(dir-y) $(obj-dir) $(objs-all) $(obj-all) FORCE
+built-in.o:$(dir-y) $(obj-dir) $(dir-obj-now) $(objs-all) $(obj-all) FORCE
 	$(Q)if [ -n "$(objs-all)" ] || [ -n "$(obj-all)" ] || \
 		[ -n "$(foreach dir-tmp,$(obj-dir), $(wildcard $(dir-tmp)/built-in.o))" ]; then \
 		echo "LD       $(TARGET)"; \
@@ -81,7 +81,7 @@ $(obj-all):$(out-dir)/%.o:%.c
 	@echo "CC       $(@:$(dir-obj-now)/%=%)"
 	$(Q)$(CC) $(CCFLAGS) -o $@ $<
 
-$(obj-dir):
+$(obj-dir) $(dir-obj-now):
 	$(Q)if [ ! -d $@ ]; then \
 		mkdir -p $@; \
 	fi

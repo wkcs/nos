@@ -28,14 +28,15 @@ ifeq ($(CONFIG_ARM64_64K_PAGES),y)
 endif
 
 # 虚拟地址空间配置
+ifneq ($(CONFIG_ARM64_VA_BITS),)
 ARCH_CFLAGS += -DCONFIG_ARM64_VA_BITS=$(CONFIG_ARM64_VA_BITS)
+endif
+ifneq ($(CONFIG_ARM64_PA_BITS),)
 ARCH_CFLAGS += -DCONFIG_ARM64_PA_BITS=$(CONFIG_ARM64_PA_BITS)
+endif
 
 # 导出架构特定的编译选项
 export ARCH_CFLAGS
 
-# 子目录
-obj-y += boot/
-obj-y += kernel/
-obj-y += mm/
-obj-y += lib/
+# Contract stubs only — boot/kernel/mm arrive with a real board
+obj-y += init.o
