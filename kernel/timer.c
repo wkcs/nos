@@ -10,7 +10,7 @@
 
 #include <kernel/timer.h>
 #include <kernel/task.h>
-#include <kernel/sch.h>
+#include <kernel/sched.h>
 #include <kernel/mm.h>
 #include <kernel/cpu.h>
 #include <kernel/printk.h>

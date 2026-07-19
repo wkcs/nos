@@ -12,7 +12,7 @@
 #include <kernel/kernel.h>
 #include <kernel/mm.h>
 #include <kernel/task.h>
-#include <kernel/sch.h>
+#include <kernel/sched.h>
 #include <kernel/timer.h>
 #include <kernel/printk.h>
 #include <string.h>

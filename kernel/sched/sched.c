@@ -8,7 +8,7 @@
 
 #define pr_fmt(fmt) "[SCH]:%s[%d]:"fmt, __func__, __LINE__
 
-#include <kernel/sch.h>
+#include <kernel/sched.h>
 #include <kernel/kernel.h>
 #include <kernel/task.h>
 #include <kernel/list.h>

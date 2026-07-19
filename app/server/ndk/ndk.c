@@ -9,7 +9,7 @@
 #define pr_fmt(fmt) "[NDK]:%s[%d]:"fmt, __func__, __LINE__
 
 #include <kernel/task.h>
-#include <kernel/sch.h>
+#include <kernel/sched.h>
 #include <kernel/cpu.h>
 #include <kernel/sleep.h>
 #include <kernel/errno.h>

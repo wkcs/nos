@@ -9,7 +9,7 @@
 #define pr_fmt(fmt) "[TASK]:%s[%d]:"fmt, __func__, __LINE__
 
 #include <kernel/task.h>
-#include <kernel/sch.h>
+#include <kernel/sched.h>
 #include <string.h>
 #include <kernel/irq.h>
 #include <kernel/cpu.h>
