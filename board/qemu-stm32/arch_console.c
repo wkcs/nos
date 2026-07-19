@@ -7,96 +7,55 @@
  */
 
 #include <kernel/console.h>
-#include <kernel/kernel.h>
-#include <kernel/printk.h>
-#include <kernel/sem.h>
-#include <lib/kfifo.h>
+#include <drivers/serial.h>
+#include <kernel/device.h>
+#include <kernel/errno.h>
 
-#include "board.h"
+static struct device *console_uart;
 
-#ifdef CONFIG_UART_DMA
-static char log_buf[UART_LOG_DMA_BUF_SIZE];
-static bool dma_transport;
-#endif
+int consol_init(void)
+{
+    console_uart = device_get_binding("UART1");
 
-#define CONFIG_CONSOLE_FIFO_BUF_SIZE 256
-static struct kfifo g_console_fifo;
-static char g_console_fifo_buf[CONFIG_CONSOLE_FIFO_BUF_SIZE];
-sem_t g_rx_ready;
+    return device_is_ready(console_uart) ? 0 : -ENODEV;
+}
 
-int consol_init(void) {
-    int rc;
+int console_send_data(const char *buf, int len)
+{
+    int i;
+    int ret;
 
-    rc = kfifo_init(&g_console_fifo, g_console_fifo_buf,
-                    CONFIG_CONSOLE_FIFO_BUF_SIZE, 1);
-    if (rc < 0) {
-        pr_err("console fifo init failed\r\n");
-        BUG_ON(1);
-        return rc;
+    if (buf == NULL || len < 0) {
+        return -EINVAL;
     }
-    sem_init(&g_rx_ready, 0);
 
-#ifdef CONFIG_UART_DMA
-    uart_log_dev.dma_config->init_type.DMA_Memory0BaseAddr = (uint32_t)log_buf;
-#endif
-
-    return uart_config(&uart_log_dev);
-}
-
-void USART1_IRQHandler(void) {
-    char res;
-    if (USART_GetITStatus(USART1, USART_IT_RXNE) != RESET) {
-      res = USART_ReceiveData(USART1);
-      kfifo_in(&g_console_fifo, &res, 1);
-      sem_send_one(&g_rx_ready);
+    for (i = 0; i < len; i++) {
+        ret = uart_poll_out(console_uart, (unsigned char)buf[i]);
+        if (ret < 0) {
+            return ret;
+        }
     }
+
+    return len;
 }
 
-int console_send_data(const char *buf, int len) { return usart_send(buf, len); }
-
-int arch_console_putc(char c) { return usart_send(&c, 1); }
-
-static char arch_console_getc(void) {
-    char c = 0;
-
-    sem_get(&g_rx_ready);
-    kfifo_out(&g_console_fifo, &c, 1);
-    return c;
+int arch_console_putc(char c)
+{
+    return uart_poll_out(console_uart, (unsigned char)c);
 }
 
-void DMA1_Channel4_IRQHandler(void) {
-#ifdef CONFIG_UART_DMA
-  unsigned int len;
+static char arch_console_getc(void)
+{
+    unsigned char c;
 
-  DMA_ClearITPendingBit(DMA1_IT_TC4);
-  len = kernel_log_read(log_buf, UART_LOG_DMA_BUF_SIZE);
-  if (len == 0) {
-    dma_transport = false;
-    return;
-  }
-  DMA_Cmd(uart_log_dev.dma_config->ch, DISABLE);
-  DMA_SetCurrDataCounter(uart_log_dev.dma_config->ch, len);
-  DMA_Cmd(uart_log_dev.dma_config->ch, ENABLE);
-#endif
+    while (uart_poll_in(console_uart, &c) == -EAGAIN) {
+    }
+
+    return (char)c;
 }
 
-static void arch_console_send_log(void) {
-#ifdef CONFIG_UART_DMA
-  unsigned int len;
-
-  if (dma_transport) {
-    return;
-  }
-
-  len = kernel_log_read(log_buf, UART_LOG_DMA_BUF_SIZE);
-  if (len == 0) {
-    return;
-  }
-  dma_transport = true;
-  DMA_Cmd(uart_log_dev.dma_config->ch, DISABLE);
-  DMA_SetCurrDataCounter(uart_log_dev.dma_config->ch, len);
-  DMA_Cmd(uart_log_dev.dma_config->ch, ENABLE);
-#endif
+static void arch_console_send_log(void)
+{
 }
 
 static struct console_ops zj_console_ops = {

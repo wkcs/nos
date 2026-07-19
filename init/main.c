@@ -37,6 +37,13 @@ int nos_start(void) {
   cpu_init();
   arch_init();
   board_init();
+
+  /*
+   * The console binds UART1, whose DEVICE_DEFINE initializer runs at
+   * PRE_KERNEL_1.  Run that level before console_init() so the first printk
+   * emitted after console setup never needs a board-specific early path.
+   */
+  sys_init_run(INIT_LEVEL_PRE_KERNEL_1);
   console_init();
   kernel_log_init();
   nos_print_kernel_info();
@@ -46,7 +53,6 @@ int nos_start(void) {
   pid_init();
   sch_init();
 
-  sys_init_run(INIT_LEVEL_PRE_KERNEL_1);
   sys_init_run(INIT_LEVEL_PRE_KERNEL_2);
   sys_init_run(INIT_LEVEL_POST_KERNEL);
 
