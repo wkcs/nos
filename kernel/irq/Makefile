@@ -6,6 +6,4 @@
 # Email: huqihan@live.com
 ##############################################
 
-obj-y += sch.o
-obj-y += task.o
-
+obj-y += irq.o

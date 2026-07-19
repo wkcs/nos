@@ -10,7 +10,7 @@
 #include <kernel/kernel.h>
 #include <kernel/cpu.h>
 #include <kernel/task.h>
-#include <kernel/sch.h>
+#include <kernel/sched.h>
 
 void nsleep(u32 nsec)
 {

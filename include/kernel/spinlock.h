@@ -10,7 +10,7 @@
 #define __NOS_SPINLOCK_H__
 
 #include <kernel/kernel.h>
-#include <kernel/sch.h>
+#include <kernel/sched.h>
 #include <kernel/irq.h>
 #include <asm/spinlock.h>
 

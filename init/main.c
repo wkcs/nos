@@ -13,7 +13,7 @@
 #include <kernel/kernel.h>
 #include <kernel/mm.h>
 #include <kernel/printk.h>
-#include <kernel/sch.h>
+#include <kernel/sched.h>
 #include <kernel/sleep.h>
 #include <asm/init.h>
 

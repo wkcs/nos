@@ -9,7 +9,7 @@
 #include <kernel/cpu.h>
 #include <kernel/kernel.h>
 #include <kernel/task.h>
-#include <kernel/sch.h>
+#include <kernel/sched.h>
 #include <kernel/printk.h>
 #include <kernel/boot.h>
 #include <kernel/timer.h>
