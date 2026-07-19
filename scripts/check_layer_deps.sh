@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# scripts/check_layer_deps.sh — gate: kernel/arch CPU must not pull board/SoC headers
+# scripts/check_layer_deps.sh — gate: portable layers must not pull board headers
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -40,5 +40,17 @@ if search '#include\s*[<"]board/board\.h[>"]' \
   echo "ERROR: arch CPU code must not include board/board.h"
   fail=1
 fi
+
+# Golden-board layer rule: portable subsystems may use soc/*, never board/board.h.
+for dir in drivers/serial drivers/block kernel fs; do
+  if [[ ! -d "$ROOT/$dir" ]]; then
+    continue
+  fi
+  if search '#include\s*[<"]board/board\.h[>"]' \
+    "$ROOT/$dir" --glob '*.c' --glob '*.h' ; then
+    echo "ERROR: $dir/ must not include board/board.h (use soc/ APIs instead)"
+    fail=1
+  fi
+done
 
 exit "$fail"
