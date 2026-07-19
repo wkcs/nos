@@ -22,6 +22,11 @@ struct file_system_type **find_filesystem(const char *name, unsigned len);
 static struct dentry *root_dentry = NULL;
 static struct super_block *root_sb;
 
+/* Keep the initial public descriptor table deliberately small and static. */
+#define VFS_MAX_OPEN_FILES 16
+
+static struct file *open_files[VFS_MAX_OPEN_FILES];
+
 struct dentry *vfs_get_root(void) { return root_dentry; }
 
 extern int init_ramfs(void);
@@ -174,21 +179,168 @@ struct dentry *vfs_mount(const char *fs_name, int flags, const char *dev_name,
 /*
  * Public API Wrappers
  */
-int nos_open(const char *path, int flags, ...) {
-  // Simplified: Just returning -1 for now as we don't have path lookup yet
-  // Real implementation would parse path, walk dentry, call i_op->create or
-  // open and return a fd index.
-  return -EACCES;
+static struct dentry *vfs_create_dentry(struct dentry *parent,
+                                        const char *name, unsigned int len)
+{
+  struct dentry *dentry;
+
+  dentry = kzalloc(sizeof(*dentry), GFP_KERNEL);
+  if (!dentry)
+    return NULL;
+
+  dentry->d_parent = parent;
+  dentry->d_sb = parent->d_sb;
+  dentry->d_name.name = dentry->d_iname;
+  dentry->d_name.len = len;
+  memcpy(dentry->d_iname, name, len);
+  dentry->d_iname[len] = '\0';
+  return dentry;
 }
 
-ssize_t nos_read(int fd, void *buf, size_t count) {
-  // Need to look up 'struct file' from fd table
-  return -EBADF;
+static struct dentry *vfs_resolve_path(const char *path, int create)
+{
+  struct dentry *dentry;
+  const char *name;
+
+  if (!path || path[0] != '/' || !root_dentry)
+    return NULL;
+
+  dentry = root_dentry;
+  name = path;
+  while (*name == '/')
+    name++;
+
+  while (*name) {
+    struct dentry *parent;
+    struct qstr qstr;
+    const char *next = name;
+    unsigned int len;
+    int last;
+
+    while (*next && *next != '/')
+      next++;
+    len = next - name;
+    if (len == 0 || len >= FS_NAME_LEN)
+      return NULL;
+
+    while (*next == '/')
+      next++;
+    last = *next == '\0';
+
+    qstr.name = (const unsigned char *)name;
+    qstr.len = len;
+    qstr.hash = 0;
+    parent = dentry;
+    dentry = vfs_lookup(parent, &qstr);
+    if (!dentry && create && last) {
+      dentry = vfs_create_dentry(parent, name, len);
+      if (!dentry || !dentry->d_parent->d_inode->i_op ||
+          !dentry->d_parent->d_inode->i_op->create ||
+          dentry->d_parent->d_inode->i_op->create(
+              dentry->d_parent->d_inode, dentry, S_IFREG | 0644) != 0) {
+        if (dentry)
+          kfree(dentry);
+        return NULL;
+      }
+    }
+    if (!dentry || (!last && (!dentry->d_inode ||
+                              !S_ISDIR(dentry->d_inode->i_mode))))
+      return NULL;
+
+    name = next;
+  }
+
+  return dentry;
 }
 
-ssize_t nos_write(int fd, const void *buf, size_t count) { return -EBADF; }
+int nos_open(const char *path, int flags, ...)
+{
+  struct dentry *dentry;
+  struct file *file;
+  int fd;
+  int ret;
 
-int nos_close(int fd) { return -EBADF; }
+  dentry = vfs_resolve_path(path, flags & O_CREAT);
+  if (!dentry)
+    return -ENOENT;
+
+  if (!dentry->d_inode || !dentry->d_inode->i_fop)
+    return -EACCES;
+
+  file = kzalloc(sizeof(*file), GFP_KERNEL);
+  if (!file)
+    return -ENOMEM;
+
+  file->f_path.dentry = dentry;
+  file->f_path.mnt = NULL;
+  file->f_inode = dentry->d_inode;
+  file->f_op = dentry->d_inode->i_fop;
+  file->f_flags = flags;
+
+  if (file->f_op->open) {
+    ret = file->f_op->open(file->f_inode, file);
+    if (ret) {
+      kfree(file);
+      return ret;
+    }
+  }
+
+  for (fd = 0; fd < VFS_MAX_OPEN_FILES; fd++) {
+    if (!open_files[fd]) {
+      open_files[fd] = file;
+      return fd;
+    }
+  }
+
+  if (file->f_op->release)
+    file->f_op->release(file->f_inode, file);
+  kfree(file);
+  return -EMFILE;
+}
+
+ssize_t nos_read(int fd, void *buf, size_t count)
+{
+  struct file *file;
+
+  if (fd < 0 || fd >= VFS_MAX_OPEN_FILES || !buf)
+    return -EBADF;
+
+  file = open_files[fd];
+  if (!file || !file->f_op || !file->f_op->read)
+    return -EBADF;
+
+  return file->f_op->read(file, buf, count, &file->f_pos);
+}
+
+ssize_t nos_write(int fd, const void *buf, size_t count)
+{
+  struct file *file;
+
+  if (fd < 0 || fd >= VFS_MAX_OPEN_FILES || !buf)
+    return -EBADF;
+
+  file = open_files[fd];
+  if (!file || !file->f_op || !file->f_op->write)
+    return -EBADF;
+
+  return file->f_op->write(file, buf, count, &file->f_pos);
+}
+
+int nos_close(int fd)
+{
+  struct file *file;
+  int ret = 0;
+
+  if (fd < 0 || fd >= VFS_MAX_OPEN_FILES || !open_files[fd])
+    return -EBADF;
+
+  file = open_files[fd];
+  open_files[fd] = NULL;
+  if (file->f_op && file->f_op->release)
+    ret = file->f_op->release(file->f_inode, file);
+  kfree(file);
+  return ret;
+}
 
 /*
  * Simple Mount Point Table

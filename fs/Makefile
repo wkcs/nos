@@ -11,3 +11,4 @@ obj-y += ramfs.o
 obj-y += procfs.o
 obj-y += sysfs.o
 obj-$(CONFIG_FATFS) += fatfs
+obj-$(CONFIG_FATFS) += vfs_smoke.o
