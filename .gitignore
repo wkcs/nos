@@ -13,3 +13,4 @@ out
 *.ipch
 .config
 .patch
+.worktrees/
