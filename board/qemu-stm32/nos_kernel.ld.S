@@ -47,6 +47,10 @@ SECTIONS
     KEEP (*(.task.data))
     __task_data_end = .;
     . = ALIGN(4);
+    __sys_init_start = .;
+    KEEP (*(.sys_init.data))
+    __sys_init_end = .;
+    . = ALIGN(4);
     __console_data_start = .;
     KEEP (*(.console.data))
     __console_data_end = .;

@@ -12,6 +12,7 @@
 #define __init __attribute__((section(".kernel_init")))
 #define __console __attribute__((section(".console.data"), used))
 #define __task __attribute__((section(".task.data"), used))
+#define __sys_init __attribute__((section(".sys_init.data"), used))
 #define __mem __attribute__((section(".memory_node.data"), used))
 
 #define __core_init __attribute__((section(".core_init.data"), used))

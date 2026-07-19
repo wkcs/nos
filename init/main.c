@@ -46,6 +46,10 @@ int nos_start(void) {
   pid_init();
   sch_init();
 
+  sys_init_run(INIT_LEVEL_PRE_KERNEL_1);
+  sys_init_run(INIT_LEVEL_PRE_KERNEL_2);
+  sys_init_run(INIT_LEVEL_POST_KERNEL);
+
   if (vfs_init()) {
     pr_err("VFS: init failed\r\n");
   } else {
@@ -65,6 +69,11 @@ int nos_start(void) {
   }
 
   board_late_init();
+  /*
+   * APPLICATION init callbacks run synchronously before scheduling so they
+   * can rely on the mounted root filesystem without racing task execution.
+   */
+  sys_init_run(INIT_LEVEL_APPLICATION);
   sch_start();
 
   return 0;
