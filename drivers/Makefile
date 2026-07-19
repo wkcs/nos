@@ -15,6 +15,8 @@ obj-y += misc
 obj-y += serial
 obj-y += spi
 obj-y += i2c
+# USB off on slim qemu-stm32 golden; subdir objects already config-gated
 obj-$(CONFIG_USB) += usb
+# display/*.o already gated by LCD/OLED/RGB configs (none on golden)
 obj-y += display
 obj-$(CONFIG_STM32F4XX) += stm32f4xx
