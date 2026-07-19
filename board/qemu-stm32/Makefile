@@ -3,7 +3,6 @@
 #
 
 # 板级初始化
-obj-y += board.o
 obj-y += init.o
 
 # 板级配置
