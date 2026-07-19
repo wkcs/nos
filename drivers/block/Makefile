@@ -4,4 +4,4 @@
 # Author: Nick Hu
 ##############################################
 
-obj-y += ramdisk.o
+obj-$(CONFIG_RAMDISK) += ramdisk.o

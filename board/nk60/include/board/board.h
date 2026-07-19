@@ -6,9 +6,9 @@
  * Email: huqihan@live.com
  */
 
-#ifndef __BOARD_INIT_H__
-#define __BOARD_INIT_H__
+#ifndef __BOARD_BOARD_H__
+#define __BOARD_BOARD_H__
 
-void board_init(void);
+#include <soc/stm32f4xx.h>
 
-#endif /* __BOARD_INIT_H__ */
+#endif /* __BOARD_BOARD_H__ */

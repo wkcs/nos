@@ -6,8 +6,8 @@
 # Email: huqihan@live.com
 ##############################################
 
-CCFLAGS += -I$(dir)/../inc
-CCFLAGS += -I$(dir)/../../inside-include
+CCFLAGS += -Isoc/stm32f4/drivers/inc
+CCFLAGS += -Isoc/stm32f4/inside-include
 
 obj-y = misc.o
 #obj-y += stm32f4xx_adc.o

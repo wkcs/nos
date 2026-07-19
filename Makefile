@@ -232,6 +232,11 @@ qemu-run-gdb: $(OPENOCD_CFG) $(BOARD_SVD)
 		echo "Error: Configuration file not found"; \
 		exit 1; \
 	fi
+	@# Drop stale objects after config switch (e.g. stm32f1 soc leftover vs nk60).
+	@# Keep directory tree so linker-script / SVD paths still resolve.
+	$(Q)find $(out-dir) \( -name '*.o' -o -name '*.elf' -o -name '*.bin' \
+		-o -name '*.hex' -o -name '*.img' -o -name '*.list' -o -name '*.map' \
+		-o -name '*.ld' \) -delete 2>/dev/null || true
 
 defconfig: $(obj-dir)
 	@echo "Generating default configuration"
