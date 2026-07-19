@@ -11,6 +11,7 @@
 
 #include <kernel/kernel.h>
 
+void arch_early_init(void);
 void arch_init(void);
 
 void asm_cpu_init(void);

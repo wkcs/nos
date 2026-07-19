@@ -6,7 +6,11 @@
  * Email: huqihan@live.com
  */
 
-#include <kernel/kernel.h>
+#include <asm/init.h>
+
+__init void arch_early_init(void)
+{
+}
 
 __init void arch_init(void)
 {
