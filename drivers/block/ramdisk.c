@@ -136,8 +136,8 @@ static int ramdisk_smoke(void)
 
     if (block_get_info(dev, &sector_size, &sector_count) ||
         sector_size != RAMDISK_SECTOR_SIZE || sector_count == 0 ||
-        block_write(dev, 0, write_buf, 1) ||
-        block_read(dev, 0, read_buf, 1)) {
+        block_write(dev, 1, write_buf, 1) ||
+        block_read(dev, 1, read_buf, 1)) {
         pr_err("ramdisk smoke: I/O failed\r\n");
         return -EIO;
     }
@@ -153,8 +153,5 @@ static int ramdisk_smoke(void)
     return 0;
 }
 
-/*
- * Run before VFS mounts FatFs.  The smoke test writes sector zero, which the
- * mount path formats on an empty ramdisk immediately afterwards.
- */
-SYS_INIT(ramdisk_smoke, INIT_LEVEL_POST_KERNEL);
+/* APPLICATION: after DEVICE_DEFINE registration; use LBA 1 to avoid FatFs boot sector. */
+SYS_INIT(ramdisk_smoke, INIT_LEVEL_APPLICATION);
