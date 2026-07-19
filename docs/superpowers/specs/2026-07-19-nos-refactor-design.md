@@ -8,18 +8,30 @@
 
 ## 1. 背景与问题
 
-NOS 是面向 STM32 Cortex-M 的单体 RTOS。当前可用能力包括优先级调度、任务、buddy/kmalloc、mutex/sem/msgq、简易设备表与 FatFs；主战场为 ARM Cortex-M3/M4 + STM32F1/F4。
+NOS 是面向 STM32 Cortex-M 的单体 RTOS。当前可用能力包括优先级调度、任务、buddy/kmalloc、mutex/sem/msgq、简易设备表与文件系统相关代码；主战场为 ARM Cortex-M3/M4 + STM32F1/F4。
 
-主要结构性问题：
+### 1.1 当前基线（`master`，2026-07-19）
 
-- **Arch 抽象过薄**：工具链、启动向量、板级 SoC 头、驱动 GPIO/SPI 全面 STM32/Thumb 化；`arch/arm64` 与 `board/qemu-virt` 几乎为空壳。
-- **板级即 SoC**：`board.h` 直接暴露 `stm32*.h`；F1 多板大量复制 ST 标准外设库。
-- **双驱动模型**：可用的 `kernel/device` 与未落地的 `wk`/bus（i2c）并存；大量驱动 `#include <board/board.h>`。
-- **无真正 VFS**：`fs/vfs` 等为空；FatFs `diskio` 硬绑 SPI-SD。
-- **目录未收敛**：`sch` vs `sched`、空 `ipc/`/`task/`、空 `servers/`/`microkernel/` 造成认知负担。
-- **构建锁死 AArch32**：`arm-none-eabi-`、`-mthumb` 等硬编码在公共 Makefile。
+对话早期曾在 detached HEAD（约 `f5c6b40`）上勘察，该快照**落后于** `master`。设计以 **`master` 为基线**，并承认下列已存在能力，重构是演进而非从零新建：
 
-后期需要接入 ARM64 等架构，并具备可扩展的文件系统能力。本设计定义**第一阶段**重构目标与边界；ARM64 可启动、完整 Device Tree、微内核服务化等列为后续子项目。
+| 区域 | `master` 现状 |
+|------|----------------|
+| VFS | 已有 `fs/vfs.c`、`include/fs/{fs,vfs}.h`，含 mount/lookup/dentry 等；FatFs 已有接入提交 |
+| 其它 FS | 已有 `ramfs` / `procfs` / `sysfs` 源文件与注册路径 |
+| 构建 | 已有部分 `Kconfig`；`scripts/Makefile.config` 已区分 arm / aarch64 工具链前缀 |
+| arm64 | 目录与 `Makefile.config` 较完整，但可启动端口仍未作为金标 |
+| 驱动 | 仍以 `drivers/base/device.c` 设备表为主；Zephyr 风格静态 `DEVICE_DEFINE` / init level 未统一 |
+| 内核目录 | 已出现 `sched/`/`task/`/`ipc/` 等目录，但与 `sch/`、根目录 IPC 文件等**并存未收敛** |
+
+### 1.2 仍待解决的结构性问题
+
+- **Arch / 板级 / SoC 边界不清**：驱动与内核路径仍易泄漏 STM32 头；`soc/` 层未建立；多板复制仍重。
+- **设备模型未统一为 Zephyr 风格**：缺少统一 `DEVICE_DEFINE` + init level；`wk`/bus 残留与主路径并存风险仍在。
+- **VFS 与 block 分层不完整**：虽有 VFS/FatFs/ramfs，块设备抽象与“应用只打 VFS、diskio 只打 block”的纪律未钉死；金标可重复验证路径需重整。
+- **目录与依赖纪律未完成**：`sch` vs `sched`、空壳 `servers/`/`microkernel/`、legacy 隔离策略缺失。
+- **多架构金标缺失**：ARM64 构建钩子有苗头，但无 `qemu-virt`（或等价）可启动验收；本阶段金标仍定为 `qemu-stm32`。
+
+后期需要接入 ARM64 等架构，并强化可扩展文件系统能力。本设计定义**第一阶段**重构目标与边界；ARM64 可启动、完整 Device Tree、微内核服务化等列为后续子项目。
 
 ---
 
@@ -41,10 +53,10 @@ NOS 是面向 STM32 Cortex-M 的单体 RTOS。当前可用能力包括优先级�
 
 1. 固化 `arch` / `board` / `soc` 分层与依赖方向，内核不再依赖 STM32 头。
 2. 收敛为**一套**偏 Zephyr 的静态设备模型与 init level。
-3. 落地最小 VFS + block 抽象，FatFs 作为 FS 后端；金标用 ramdisk 验证读写。
+3. **在现有 VFS/FatFs/ramfs 基础上**重整分层：补齐/统一 block 抽象，FatFs 仅作 FS 后端；金标用 ramdisk（或现有 ramfs+块设备路径）稳定验证读写。
 4. 收敛内核目录（sched/task/ipc/mm/irq/timer）；用 `legacy/` 隔离未迁移代码。
 5. `qemu-stm32` 金标：可编、可跑到调度 + console，并通过 VFS 文件用例。
-6. 为 ARM64 预留契约头与构建钩子（不要求本阶段可启动）。
+6. 对齐并补强 ARM64 契约头与构建钩子（不要求本阶段可启动）。
 
 ### 2.3 非目标（本阶段明确不做）
 
@@ -52,7 +64,8 @@ NOS 是面向 STM32 Cortex-M 的单体 RTOS。当前可用能力包括优先级�
 - 微内核 / `servers/*` 用户态服务拆分
 - ARM64 `qemu-virt` 可启动镜像、SMP、完整 MMU
 - USB / LVGL / 键盘等产品驱动完整迁移
-- 完整 procfs/sysfs、页缓存、多分区复杂策略
+- 把 procfs/sysfs 做到 Linux 级完备（现有实现可保留并纳入 VFS 注册，但不作为本阶段扩 scope 的理由）
+- 页缓存、多分区复杂策略
 - 全板（zj-v3 / nk60 / wl-001 等）同步可运行
 
 ---
@@ -195,54 +208,56 @@ SPI/I2C/USB/display：本阶段只定目录与 api 头占位；实体驱动可�
 
 ## 6. VFS / block / FatFs
 
+> **演进说明：** `master` 已具备 VFS 与 FatFs/ramfs/procfs/sysfs。本阶段不是推倒重写 VFS，而是**对齐分层纪律、补齐 block、把金标验证路径做稳**，并与新设备模型/init level 衔接。
+
 ### 6.1 分层
 
 ```
 app / shell 测试
-    ↓  open/read/write/mount …
-fs/vfs  （路径、挂载点、file/inode 操作表）
+    ↓  open/read/write/mount …（仅 VFS 公开 API）
+fs/vfs  （现有路径/挂载/dentry/inode；整理 API 边界）
     ↓
-fs 驱动（fatfs 适配层）
+fs 驱动（fatfs / ramfs / procfs / sysfs）
     ↓
-block device API
+block device API（面向需块设备的 FS，如 fatfs）
     ↓
-ramdisk（金标默认） / spi-sd（可选）
+ramdisk（金标默认块后端） / spi-sd（可选）
 ```
 
-### 6.2 VFS 最小表面
+### 6.2 VFS 表面（在现有实现上收敛）
 
 | 能力 | 说明 |
 |------|------|
-| 挂载表 | `mount(fs_type, mnt_point, device_name, flags)` |
+| 挂载 | 保留并整理现有 `vfs_mount` / bind-mount 路径；对外提供稳定封装 |
 | 文件 API | `open/close/read/write/lseek/unlink/stat`（POSIX 子集） |
-| 目录 API | `opendir/readdir/closedir`（FatFs 能支撑的先做） |
-| 注册 | `FS_DEFINE("fatfs", &fatfs_ops)` 静态注册文件系统类型 |
+| 目录 API | `opendir/readdir/closedir`（按各 FS 能力） |
+| 注册 | 文件系统类型静态/显式注册（与 init level 对齐；可演进为 `FS_DEFINE`） |
 
-不追求 Linux VFS 全量；结构上预留 `file_ops` / `fs_ops` 函数表。
+不追求 Linux VFS 全量；现有偏 Linux 的 dentry/inode 结构若可用则保留，避免无收益的大规模改名。
 
 ### 6.3 Block 层
 
-- `block_driver_api`：`read_blocks` / `write_blocks` / `get_sector_size` / `get_block_count`。
-- 金标默认：`ramdisk`；启动时按配置 `mkfs`（可选）后 `mount("fatfs", "/", "ramdisk0")`。
-- SPI-SD：另一 block 驱动；`fs/fatfs/diskio.c` **只**调用 block API。
+- 新增/统一 `block_driver_api`：`read_blocks` / `write_blocks` / `get_sector_size` / `get_block_count`。
+- 金标默认：`ramdisk` 块设备 + FatFs（或“ramfs 根 + FatFs 挂子树”，以能稳定演示 VFS+block+FatFs 为准，实现时二选一写死一种金标路径）。
+- SPI-SD：另一 block 驱动；FatFs `diskio` **只**调用 block API，禁止直连 SD 驱动头。
 
 ### 6.4 FatFs 适配
 
-- 保留 ChaN FatFs（可继续 R0.11；升级版本后续）。
-- 薄适配：`disk_*` → NOS block；同步钩子 → NOS mutex。
-- 应用侧：新代码禁止直接调 `f_open`；旧 `fatfs_test` 改为 VFS 或移入 `legacy`。
+- 保留 ChaN FatFs（版本升级后续）；在现有接入代码上改为经 block API。
+- 同步钩子 → NOS mutex。
+- 应用侧：新代码禁止直接调 `f_open`；旧直调测试改为 VFS 或移入 `legacy`。
 
 ### 6.5 启动衔接
 
-- `POST_KERNEL`：block + fatfs 适配 init。
+- `POST_KERNEL`：block + FS 后端 init（含现有 fatfs/ramfs 注册点迁移）。
 - `APPLICATION`：按 config 自动 mount，或由测试任务显式 mount。
 - mount 失败不阻止调度与 console。
 
 ### 6.6 金标验证标准
 
-1. 无 SD：ramdisk + FatFs + VFS 完成创建/读写/关闭文件。
+1. 无 SD：经 VFS 完成文件创建/读写/关闭（路径覆盖 FatFs+block/ramdisk；ramfs 可作为根或对照）。
 2. 可选：SPI-SD 启用时同一套 VFS 用例通过。
-3. FatFs 头不泄漏给 app；公开头在 `include` / `fs/vfs` 下稳定。
+3. FatFs 头不泄漏给 app；公开头稳定在 `include/fs/`。
 
 ---
 
@@ -275,7 +290,7 @@ ramdisk（金标默认） / spi-sd（可选）
 |--------|------|----------|
 | **M1** Arch/构建/启动 | arch 契约、工具链按 ARCH、启动链、`qemu-stm32` 进 idle/main | 金标能编能跑到调度心跳 + printk |
 | **M2** 设备框架 | `DEVICE_DEFINE` + init level；UART console 迁入 | kernel 无 `board.h` 泄漏；console 经 device |
-| **M3** Block + VFS + FatFs | ramdisk、VFS API、FatFs 适配、金标读写文件 | VFS 用例通过；diskio 无 SD 硬绑 |
+| **M3** Block + VFS + FatFs | 统一 block；重整现有 VFS/FatFs 接入；ramdisk 金标路径 | VFS 用例通过；diskio 无 SD 硬绑 |
 | **M4** 内核目录收敛 + legacy 隔离 | sched/task/ipc 归位；legacy 不污染金标 | 目录与依赖规则落地；本设计已入库 |
 | **后续**（另开 spec） | ARM64 `qemu-virt` 启动、真 DT、更多驱动、procfs 等 | — |
 
@@ -314,5 +329,5 @@ ramdisk（金标默认） / spi-sd（可选）
 
 ## 12. 参考
 
-- 现有代码结构勘察（2026-07-19）：单体 Cortex-M、设备表、FatFs R0.11、arm64 空壳。
-- 形态参考：Zephyr（device/init level、arch 分层）；VFS/block 接口保持嵌入式可实现的最小子集，不照搬 Linux。
+- 基线：`master` @ 设计写入时（含 VFS/FatFs/ramfs/procfs/sysfs 与部分 Kconfig/arm64 构建钩子）；早期 detached HEAD 勘察仅作历史问题对照，不以之为准。
+- 形态参考：Zephyr（device/init level、arch 分层）；VFS 在现有实现上收敛，block 接口保持嵌入式可实现的最小子集。
