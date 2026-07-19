@@ -35,6 +35,7 @@ endif
 
 dir-y := init
 dir-y += arch
+dir-y += soc
 dir-y += drivers
 dir-y += kernel
 dir-y += libs
@@ -106,10 +107,10 @@ dtbs: $(BOARD_DTB)
 
 $(BOARD_DTB): $(BOARD_DTS) | $(out-dir)
 	@echo "DTC      $(@:$(out-dir)/%=%)"
-	$(Q)if [ -f $(BOARD_DTS) ]; then \
+	$(Q)if [ -f $(BOARD_DTS) ] && command -v $(DTC) >/dev/null 2>&1; then \
 		$(DTC) -I dts -O dtb -o $@ $(BOARD_DTS); \
 	else \
-		echo "Warning: Device tree source $(BOARD_DTS) not found"; \
+		echo "Warning: skip dtb (missing $(DTC) or $(BOARD_DTS)); touch $@"; \
 		touch $@; \
 	fi
 

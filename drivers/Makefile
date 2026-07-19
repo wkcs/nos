@@ -7,8 +7,9 @@
 ##############################################
 
 obj-y += base
-obj-y += char
-obj-y += block
+# char/block 目录在重组后暂缺；去掉以免把缺失子目录当目标文件编译
+# obj-y += char
+# obj-y += block
 obj-y += key
 obj-y += misc
 obj-y += spi

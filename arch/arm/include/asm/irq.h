@@ -59,4 +59,8 @@ void arch_irq_enable_global(void);
  */
 void arch_irq_disable_global(void);
 
+/* CPU 汇编实现见 arch/arm/cpu/<cpu>/cpu_s.S */
+addr_t asm_disable_irq_save(void);
+void asm_enable_irq_save(addr_t level);
+
 #endif /* __ASM_ARM_IRQ_H__ */
