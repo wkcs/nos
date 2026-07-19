@@ -7,6 +7,7 @@
  */
 
 #include <kernel/console.h>
+#include <kernel/board.h>
 #include <kernel/cpu.h>
 #include <kernel/init.h>
 #include <kernel/kernel.h>
@@ -14,6 +15,7 @@
 #include <kernel/printk.h>
 #include <kernel/sch.h>
 #include <kernel/sleep.h>
+#include <asm/init.h>
 
 void nos_print_kernel_info(void) {
   pr_info("Welcome to NOS:\r\n");
@@ -30,6 +32,8 @@ void nos_print_kernel_info(void) {
 #include <fs/vfs.h>
 
 int nos_start(void) {
+  arch_early_init();
+  board_early_init();
   cpu_init();
   arch_init();
   board_init();
@@ -60,6 +64,7 @@ int nos_start(void) {
     }
   }
 
+  board_late_init();
   sch_start();
 
   return 0;

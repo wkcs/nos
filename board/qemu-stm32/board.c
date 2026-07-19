@@ -7,30 +7,7 @@
  */
 
 #include <kernel/kernel.h>
-#include <kernel/printk.h>
-#include <asm/irq.h>
-#include <asm/mmu.h>
-
 /* QEMU STM32 板级配置 */
-
-/**
- * 板级初始化
- */
-void board_init(void)
-{
-    pr_info("QEMU STM32 board initializing...\n");
-    
-    /* 初始化架构特定的中断控制器 */
-    arch_irq_init();
-    
-    /* 初始化 MMU (如果支持) */
-    arch_mmu_init();
-    
-    /* 板级特定的初始化 */
-    /* TODO: 添加板级外设初始化 */
-    
-    pr_info("QEMU STM32 board initialized\n");
-}
 
 /**
  * 板级早期初始化 (在架构初始化之前)
