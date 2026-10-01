@@ -1,5 +1,7 @@
 # NOS 单体内核重构 Implementation Plan
 
+> **2026-10-01 状态说明：** 本文件为历史实施计划，已有 M1–M4 相关代码提交；下方未勾选框不能解释为所有任务尚未实施，也不能据提交存在就判断验收通过。当前设计与后续工作包见 [收口设计第 10–11 节](../specs/2026-10-01-nos-refactor-design.md#10-后续实施工作包与回退)。原代码片段仅作历史背景，尤其不要继续沿用调度前执行 APPLICATION、挂载时自动格式化、未确认后端的 smoke 或 `fs_open` 示例。后续补丁级计划应基于 R0–R4 重新展开。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 在 `master` 上按绞杀式演进完成第一阶段重构：arch/soc/board 分层、Zephyr 风格静态设备模型、统一 block + 重整 VFS/FatFs，金标板 `qemu-stm32` 可编可跑并通过 VFS 文件用例。
