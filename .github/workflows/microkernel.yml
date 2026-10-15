@@ -1,0 +1,33 @@
+name: Microkernel QEMU capabilities
+on:
+  push:
+  pull_request:
+jobs:
+  qemu:
+    runs-on: ubuntu-latest
+    container: debian:trixie
+    timeout-minutes: 60
+    steps:
+      - name: Install host prerequisites
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends build-essential python3 git ca-certificates
+      - uses: actions/checkout@v4
+      - name: Prepare verified toolchains and static musl ports
+        run: bash scripts/setup_microkernel_env.sh
+      - name: Run phase 0-5 software acceptance on real QEMU guests
+        run: |
+          . /workspace/.nos-env/activate.sh
+          python3 tests/acceptance.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: qemu-capability-results
+          path: |
+            out/microkernel/results.json
+            out/microkernel/results-partial.json
+            out/microkernel/reports/
+            out/microkernel/acceptance/
+            out/microkernel/persistence/
+            out/microkernel/normal-validation/
+            out/microkernel/build-configuration/**/incremental-results.json

@@ -1,0 +1,94 @@
+# NOS 微内核架构
+
+<!-- Copyright (C) 2026 NOS contributors -->
+
+默认构建使用跨架构微内核。旧 RTOS 源码与板级实现保留在原目录，经 `make legacy` 调用；旧平台不属于微内核验证结果。实现与验收的执行清单见 [EXECUTION_PLAN.md](EXECUTION_PLAN.md)，命令见 [QEMU_VALIDATION.md](QEMU_VALIDATION.md)。
+
+## 特权边界
+
+```mermaid
+flowchart LR
+    APP[独立 ELF / Lua / LVGL] --> LIBC[Newlib / musl / NOS 用户运行库]
+    LIBC -->|SVC / ECALL| K[微内核：任务、调度、地址空间、对象、IPC、同步、IRQ]
+    K -->|带身份与 token 的 RPC| V[用户态 VFS]
+    V --> RAM[RamFS / DevFS / ProcFS]
+    V --> FS[双 bank 持久化 / FatFs]
+    FS --> DRV[用户态 virtio-blk]
+    DRV -->|受能力控制的 MMIO / DMA / IRQ| K
+    K --> ARCH[异常、定时器、页表、MPU、GIC / PLIC、次级 CPU]
+```
+
+文件业务、节点、文件内容、文件描述符、FatFs 与 virtio 请求队列位于用户态服务中。内核检查用户范围和能力，复制消息并覆盖 sender/process/token 身份。消息有效载荷上限 64 字节，大块 I/O 由用户运行库分块。调试串口输出保留特权传输入口，普通文件与标准 FD 通过 VFS。
+
+设备能力表示受信任的 I/O 域。当前没有 IOMMU；不能把 MMIO/DMA 能力授予任意不可信程序后，仍声称它无法利用设备访问其他物理内存。地址查询只接受本地址空间的有效可写缓冲区；服务退出必须先关闭中断、同步停止 DMA，再释放映射与物理页。
+
+## 内核模块
+
+| 模块 | 实现与契约 |
+|---|---|
+| `core.c` | 版本化 syscall 分派、用户复制、启动模式、受权执行与服务重启；测试结束入口仅在自测配置启用 |
+| `task.c` | 代际 PID、独立进程与共享地址空间线程、wait/退出、孤儿回收、clear_tid、futex、异核取消 |
+| `scheduler.c` | 32 个优先级、同优先级轮转、抢占、睡眠、每 CPU current 与固定空闲任务；CPU 0 维护全局 100 Hz 时钟 |
+| `mutex.c` | 阻塞互斥锁、能力引用、代际句柄、所有者检查、多锁及传递优先级继承、循环等待检测 |
+| `ipc.c` | 多端点授权/撤销、同步 call/recv/reply、IPC 优先级传播、超时/取消、请求 token 与生命周期通知 |
+| `irq.c` | 同地址空间授权的 IRQ 对象、绑定、计数、单等待者、超时、屏蔽/确认和退出撤销 |
+| `memory.c` | 清零物理页分配、地址空间引用计数、安全用户复制、映射事务回滚、VMA 范围变更、权限与配额 |
+| `elf.c` | 有界静态 ELF/PIE 装载、段与入口校验、参数/环境/auxv/TLS、失败清理 |
+| `arch/*/micro/` | 启动/异常上下文、MMU/MPU、UART/GIC/PLIC、缓存和 TLB 同步、SMP 引导 |
+
+内核进入采用粗粒度全局锁，各 CPU 的用户任务能够并发执行。运行中的任务不能同时被另一 CPU 调度；异核取消延迟到目标 CPU 的安全入口处理。当前没有每 CPU 运行队列或负载均衡策略，不宣称具备大型 SMP 系统的扩展性。
+
+## 对象与 ABI
+
+`include/nos/abi.h` 固定 syscall 编号与 ABI 版本；`ABI_QUERY` 返回版本、字宽、消息大小和页大小。消息和指针使用本地字宽，32 位应用不能直接运行在 64 位 ABI 上。
+
+PID、锁、IRQ 和端点带代际信息；对象类型有独立句柄范围，达到代际上限时退休，避免陈旧句柄重新变为有效。硬件功能查询与权限查询分别提供；旧 CAPS 接口保留兼容。锁和端点能力继承、授权、撤销均由内核检查。非 MMU 共享域的锁生命周期与 MMU 独立地址空间不同，不能把共享 SRAM 中的软件权限称为硬件隔离。
+
+端点 0 是初始 VFS 服务入口，其他端点可由授权任务创建和委托。回复必须匹配当前请求 token；超时、取消或对端退出后，旧回复不能完成新请求。服务重启使用新的任务 generation，等待中的客户端收到错误；RAM 文件与原有 FD 不自动恢复，持久化数据须重新挂载。
+
+## 架构、内存与上下文
+
+| 目标 | 地址转换 / 模式 | 用户上下文 |
+|---|---|---|
+| ARM Cortex-A15 `virt` | ARMv7 短描述符、用户/特权模式 | ARM 通用寄存器，soft-float ABI |
+| ARM64 Cortex-A53 `virt` | EL1/EL0、三级页表 | 通用寄存器、完整 SIMD/FP、FPCR/FPSR、TPIDR_EL0 |
+| RV64GC `virt` | M 引导、S 内核、U 用户、Sv39 | 通用寄存器、完整浮点/FCSR、TP |
+| RV32GC `virt` | Sv32 或显式非 MMU 配置 | 32 位通用寄存器、64 位浮点寄存器/FCSR、TP |
+| STM32F405 `netduinoplus2` | Cortex-M4 非特权线程、PSP；可选 MPU | 软件保存寄存器与异常帧，soft-float ABI |
+
+MMU 进程使用独立数据/堆/栈，线程共享引用计数地址空间。地址空间可以比创建它的任务活得更久。用户代码 RX、数据 RW/NX；内核身份映射的代码/只读数据与可写数据分离，栈设有保护页。`munmap/mprotect` 支持范围拆分和 `PROT_NONE`；映射失败回滚已安装页表项后才释放物理页。不同 CPU 的权限变更需要同步 TLB，不能仅刷新发起 CPU。
+
+编译器可在 freestanding 代码中生成 memcpy/memset 调用。`scripts/kernel_libgcc.py` 为内核生成单独命名空间的 libgcc，并把编译器内存调用重定向到内核运行库；用户 ELF 链接自己的辅助函数。独立 ELF 不依赖映射内建用户代码才能执行内核。`scripts/check_kernel_boundaries.py` 检查静态可解析的直接分支边界；间接调用仍需运行时验证。
+
+非 MMU 模式使用实际物理地址和共享数据模型；RV32 RAM 的高位物理指针不能按“有符号返回值小于零”误判为 errno，指针错误仅保留最高 4095 个值。STM32 开启 MPU 后可检查内核区域、任务栈/映射的权限与执行禁止，内建用户全局数据仍共享。这不是 MMU 进程级的完整隔离。
+
+## 有界资源配置
+
+| 资源 | 当前默认值 |
+|---|---|
+| 任务 | MMU/RV32 为 12；STM32 为 6，包含服务、init 与每 CPU 空闲任务 |
+| CPU | SMP 配置 1–4；STM32 固定 1 |
+| 内核互斥锁 / 端点 / IRQ 对象 | 32 / 8 / 8 |
+| VMA | MMU 16 段；非 MMU 4 段；范围拆分也消耗条目 |
+| 分配上限 | MMU 单次映射 512 KiB，匿名虚拟区有界；非 MMU 单次 64 KiB |
+| MMU 基础进程区 | 64 KiB：静态数据 24 KiB、基础堆 24 KiB、4 KiB guard、12 KiB 栈；可另映射线程栈/堆 |
+| 物理页池 | MMU 默认 4 MiB；RV32 非 MMU 1 MiB；STM32 80 KiB；以配置头和链接断言为准 |
+| VFS | 16 个节点、每文件 512 字节、每地址空间 11 个 FD（含 0–2）、2 条 256 字节管道 |
+
+这些上限是显式资源预算。达到上限返回错误，不能以固定测试数据能运行推断为无限容量文件系统或通用桌面内核。改变 MCU 内存预算必须同时检查 ELF 段、内核栈、MPU 区域和链接布局。
+
+## 应用、运行库与设备
+
+`BUILD_MODE=selftest` 启动能力验证并返回测试退出状态；`BUILD_MODE=normal` 启动持续运行的 init 和串口 shell。独立应用从嵌入式 initramfs 装载，具备 argc/argv/envp/auxv、初始化数据、BSS 和 TLS。ARM/ARM64/RISC-V MMU 使用静态 ELF；STM32/RV32 非 MMU 使用经过校验的 PIE 相对重定位。当前没有运行时动态链接器或共享库装载。
+
+Newlib 使用校验过的 4.5.0 源码构建动态重入与 retargetable locking 端口；线程通过内核 TLS 值取得自己的 `_reent`，不依赖跨 CPU 改写全局 `_impure_ptr`。库存 Newlib 只保留显式诊断回退，不能作为跨核重入安全证据。musl 1.2.5 的真实静态库通过 syscall 适配层调用 NOS，线程启动、futex 与退出必须覆盖其架构汇编中直接使用 Linux ABI 的路径。支持范围与未支持操作见 [POSIX_SUPPORT.md](POSIX_SUPPORT.md)。
+
+用户态 VFS 支持目录与路径规范化、独立 open description、dup、unlink-open 生命周期、管道与挂载。virtio-blk 提供 legacy/modern MMIO、DMA、FLUSH 与 IRQ 完成通知；双 bank 后端使用 CRC 和代际提交，FatFs 使用仓库实现的用户态适配。详见 [设备与存储](../servers/drivers/README.md)。没有 IOMMU、热插拔或设备故障的透明事务恢复保证。
+
+Lua 5.4 与 LVGL 9 复用仓库旧库，作为独立用户 ELF 运行；LVGL 验证真实软件渲染和像素变化。软件帧缓冲通过不等于 LCD、USB、GPIO 或真实开发板验证。旧专用 USB、显示、键盘板级代码仍需对应控制器/板卡的服务适配与硬件回归，不参与无模型平台的通过结论。
+
+## 实现边界
+
+当前是有界的静态链接微内核系统，支持多个独立 ELF 和并发线程；不提供完整 Linux 二进制 ABI、完整 POSIX、glibc、fork、动态链接、通用信号、网络协议栈、文件映射、按需分页或交换。它们是按应用需求安排的后续兼容目标。C 库通过真实标准程序验证所声明子集，不支持操作应明确返回错误。
+
+真实硬件与远端 CI 状态必须在验证报告中单列。QEMU 证明所选模型中的行为，不能代替板卡时钟、引脚、DMA 一致性、缓存和外设电气行为测试。

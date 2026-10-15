@@ -1,0 +1,332 @@
+/* Copyright (C) 2026 NOS contributors */
+#include "kernel.h"
+#include "elf.h"
+static struct spinlock kernel_lock;
+static intptr_t dispatch(uintptr_t nr, uintptr_t a, uintptr_t b, uintptr_t c)
+{
+    switch (nr) {
+    case NOS_SYS_WRITE: {
+        char buffer[128];
+        if (b > 1024) return -NOS_EINVAL;
+        if (!user_access(current_task, a, b, 0)) return -NOS_EFAULT;
+        size_t left = b;
+        while (left) {
+            size_t n = left > sizeof(buffer) ? sizeof(buffer) : left;
+            if (user_copy_in(buffer, a, n)) return -NOS_EFAULT;
+            for (size_t i = 0; i < n; i++) arch_putc(buffer[i]);
+            a += n; left -= n;
+        }
+        return (intptr_t)b;
+    }
+    case NOS_SYS_GETPID: return current_task->id;
+    case NOS_SYS_YIELD: reschedule = 1; return 0;
+    case NOS_SYS_EXIT:
+        if (b && c) (void)vm_unmap(current_task, b, c);
+        task_finish(current_task, (intptr_t)a); return 0;
+    case NOS_SYS_SLEEP:
+        if (a > 10000) return -NOS_EINVAL;
+        current_task->wake_tick = kernel_ticks + (a ? a : 1);
+        current_task->state = TASK_SLEEP; reschedule = 1; return 0;
+    case NOS_SYS_TICKS: return (intptr_t)kernel_ticks;
+    case NOS_SYS_TICKS64: return user_copy_out(a, &kernel_ticks, sizeof(kernel_ticks));
+    case NOS_SYS_CAPS:
+#if defined(NOS_SELFTEST) && defined(NOS_KERNEL_FAULT_INJECT) && NOS_KERNEL_FAULT_INJECT
+        arch_fault_probe();
+        kernel_fail("fault injection returned");
+#endif
+        return current_task->caps;
+    case NOS_SYS_FEATURES: return current_task->caps & NOS_FEATURE_MASK;
+    case NOS_SYS_PERMISSIONS: return current_task->caps & NOS_PERMISSION_MASK;
+    case NOS_SYS_PRIORITY:
+        if (a > 1) return -NOS_EINVAL;
+        return a ? current_task->base_priority : current_task->priority;
+    case NOS_SYS_SPAWN: return task_spawn(a, b, c);
+    case NOS_SYS_WAIT: return task_wait(a, b);
+    case NOS_SYS_CALL: return ipc_call(a, b, c, 0);
+    case NOS_SYS_RECV: return ipc_recv(a, b);
+    case NOS_SYS_REPLY: return ipc_reply(a, b);
+    case NOS_SYS_MMAP: return a > UINT32_MAX ? -NOS_EINVAL : vm_map(current_task, (unsigned)a, b);
+    case NOS_SYS_MUNMAP: return vm_unmap(current_task, a, b);
+    case NOS_SYS_MPROTECT: return b > UINT32_MAX ? -NOS_EINVAL : vm_protect(current_task, a, (unsigned)b, c);
+    case NOS_SYS_BRK:
+        return vm_brk(current_task, a);
+    case NOS_SYS_MUTEX_CREATE: case NOS_SYS_MUTEX_LOCK:
+    case NOS_SYS_MUTEX_UNLOCK: case NOS_SYS_MUTEX_DESTROY:
+        return mutex_operation((unsigned)nr, a);
+    case NOS_SYS_TLS_GET: return (intptr_t)current_task->tls_value;
+    case NOS_SYS_TLS_STORAGE:
+#ifdef NOS_MMU
+        return -NOS_ENOTSUP;
+#else
+        return (intptr_t)current_task->tls_memory;
+#endif
+    case NOS_SYS_TLS_BIND:
+        if ((a & (sizeof(uintptr_t) - 1)) || !user_access(current_task, a, sizeof(uintptr_t), 1) ||
+            !user_access(current_task, b, 1, 0)) return -NOS_EFAULT;
+        current_task->tls_slot = a; current_task->tls_value = b;
+        return user_copy_out(a, &b, sizeof(b));
+    case NOS_SYS_USER_CHECK:
+        if (c != NOS_PROT_READ && c != NOS_PROT_WRITE) return -NOS_EINVAL;
+        return user_access(current_task, a, b, c == NOS_PROT_WRITE) ? 0 : -NOS_EFAULT;
+    case NOS_SYS_USER_COPY: {
+        if (!user_access(current_task, a, c, 1) || !user_access(current_task, b, c, 0)) return -NOS_EFAULT;
+        unsigned char buffer[128];
+        /* memmove order is needed for overlapping buffers. */
+        if (a > b && a - b < c) {
+            while (c) { size_t n = c < sizeof(buffer) ? c : sizeof(buffer); c -= n;
+                if (user_copy_in(buffer, b + c, n) || user_copy_out(a + c, buffer, n)) return -NOS_EFAULT; }
+        } else {
+            while (c) { size_t n = c < sizeof(buffer) ? c : sizeof(buffer);
+                if (user_copy_in(buffer, b, n) || user_copy_out(a, buffer, n)) return -NOS_EFAULT;
+                a += n; b += n; c -= n; }
+        }
+        return 0;
+    }
+    case NOS_SYS_ABI_QUERY: {
+        struct nos_abi_info info = { NOS_ABI_VERSION, sizeof(uintptr_t) * 8, sizeof(struct nos_message), NOS_PAGE_SIZE };
+        return user_copy_out(a, &info, sizeof(info));
+    }
+    case NOS_SYS_ENDPOINT_CREATE: return endpoint_create();
+    case NOS_SYS_ENDPOINT_CLOSE: return endpoint_close(a);
+    case NOS_SYS_ENDPOINT_GRANT: return endpoint_grant(a, b, c, 0);
+    case NOS_SYS_ENDPOINT_REVOKE: return endpoint_grant(a, b, c, 1);
+    case NOS_SYS_CALL_EX: {
+        struct nos_call_args args;
+        if (user_copy_in(&args, a, sizeof(args))) return -NOS_EFAULT;
+        return ipc_call(args.endpoint, args.request, args.reply, args.timeout_ticks);
+    }
+    case NOS_SYS_IPC_CANCEL: return ipc_cancel(a);
+    case NOS_SYS_THREAD_CREATE: return thread_create(a, b);
+    case NOS_SYS_SET_TID_ADDRESS:
+        if (a && ((a & 3) || !user_access(current_task, a, sizeof(unsigned), 1))) return -NOS_EFAULT;
+        current_task->clear_tid = a; return current_task->id;
+    case NOS_SYS_FUTEX_WAIT: return futex_wait(a, b, c);
+    case NOS_SYS_FUTEX_WAKE: return futex_wake(a, b);
+    case NOS_SYS_FUTEX_REQUEUE: return futex_requeue(a);
+    case NOS_SYS_TASK_CANCEL: {
+        struct task *peer = find_task(a);
+        if (!peer || peer->state == TASK_DEAD) return -NOS_ESRCH;
+        if (!(current_task->caps & NOS_CAP_SPAWN) && peer->parent != current_task->id) return -NOS_EACCES;
+        if (peer == current_task || peer->id % NOS_TASKS >= NOS_IDLE_FIRST) return -NOS_EINVAL;
+        if (peer->run_cpu != UINT32_MAX && peer->run_cpu != arch_cpu_id()) {
+            peer->cancel_pending = 1; return 0;
+        }
+        task_finish(peer, -NOS_EINTR); return 0;
+    }
+    case NOS_SYS_SERVICE_RESTART:
+        if (!(current_task->caps & NOS_CAP_SPAWN) || a) return -NOS_EACCES;
+        if (tasks[0].state != TASK_DEAD && tasks[0].state != TASK_UNUSED) return -NOS_EBUSY;
+        for (unsigned i = 2; i < NOS_IDLE_FIRST; i++) {
+            struct task *peer = &tasks[i];
+            if (peer->space_owner == tasks[0].space_owner && peer->state != TASK_UNUSED &&
+                peer->state != TASK_DEAD && peer->state != TASK_RETIRED) return -NOS_EBUSY;
+        }
+        if (tasks[0].state == TASK_DEAD) task_reap(&tasks[0]);
+        if (create_task(0, (uintptr_t)nos_vfs_server, 0, 4,
+            ((current_task->caps | NOS_CAP_DEVICE) & ~(NOS_CAP_SPAWN | NOS_CAP_IPC)), UINT32_MAX) < 0) return -NOS_ENOMEM;
+        ipc_init(); reschedule = 1; return tasks[0].id;
+    case NOS_SYS_OBJECT_STATS: {
+        struct nos_object_stats stats = { 0, mutex_count(), endpoint_count(), page_available() };
+        for (unsigned i = 0; i < NOS_TASKS; i++) stats.tasks += tasks[i].state != TASK_UNUSED && tasks[i].state != TASK_RETIRED;
+        return user_copy_out(a, &stats, sizeof(stats));
+    }
+    case NOS_SYS_GROUP_ID: return current_task->space_owner;
+    case NOS_SYS_EXIT_GROUP: {
+        unsigned group = current_task->space_owner;
+        for (unsigned i = 0; i < NOS_TASKS; i++) {
+            struct task *peer = &tasks[i];
+            if (peer == current_task || peer->state == TASK_UNUSED || peer->state == TASK_DEAD ||
+                peer->state == TASK_RETIRED || peer->space_owner != group) continue;
+            if (peer->run_cpu != UINT32_MAX && peer->run_cpu != arch_cpu_id()) peer->cancel_pending = 1;
+            else task_finish(peer, (intptr_t)a);
+        }
+        task_finish(current_task, (intptr_t)a); return 0;
+    }
+    case NOS_SYS_TASK_AUTHORIZE: {
+        struct task *peer = find_task(a);
+        if (!peer) return -NOS_ESRCH;
+        if (!(current_task->caps & NOS_CAP_SPAWN) || b & ~(uintptr_t)(NOS_CAP_SPAWN | NOS_CAP_IPC)) return -NOS_EACCES;
+        peer->caps |= (unsigned)b; return 0;
+    }
+    case NOS_SYS_CPU_QUERY:
+        return a == 0 ? (intptr_t)arch_cpu_id() : a == 1 ? (intptr_t)arch_cpu_count() : -NOS_EINVAL;
+    case NOS_SYS_OBJECT_GRANT: case NOS_SYS_OBJECT_REVOKE:
+        return (b >= NOS_ENDPOINT_BASE || (b == 0 && c != NOS_RIGHT_MUTEX)) ? endpoint_grant(a, b, c, nr == NOS_SYS_OBJECT_REVOKE) :
+            mutex_grant(a, b, c, nr == NOS_SYS_OBJECT_REVOKE);
+    case NOS_SYS_IRQ_BIND: case NOS_SYS_IRQ_WAIT: case NOS_SYS_IRQ_ACK: case NOS_SYS_IRQ_RELEASE:
+        return irq_operation((unsigned)nr, a, b);
+    case NOS_SYS_DEVICE:
+        if (!(current_task->caps & NOS_CAP_DEVICE)) return -NOS_EACCES;
+        return arch_device_operation(current_task, a, b, c);
+    case NOS_SYS_EXEC_SPAWN: {
+        if (!(current_task->caps & NOS_CAP_SPAWN)) return -NOS_EACCES;
+        struct nos_exec_request request; struct nos_exec_args args;
+        if (user_copy_in(&request, a, sizeof(request))) return -NOS_EFAULT;
+        if (request.priority > 30) return -NOS_EINVAL;
+        int rc = nos_exec_copy_args(&request, &args); if (rc) return rc;
+        size_t bytes; const void *image = nos_initramfs_find(args.path, &bytes);
+        if (!image) return -NOS_ENOENT;
+        for (unsigned i = 2; i < NOS_IDLE_FIRST; i++) {
+            if (tasks[i].state != TASK_UNUSED) continue;
+            struct task *t = &tasks[i];
+            unsigned generation = t->generation; k_memset(t, 0, sizeof(*t));
+            t->id = generation * NOS_TASKS + i; t->generation = generation;
+            t->space_id = i; t->space_owner = t->id; t->run_cpu = t->pin_cpu = UINT32_MAX;
+            t->priority = t->base_priority = request.priority;
+            t->parent = current_task->id; t->caps = current_task->caps & ~NOS_CAP_SPAWN;
+            if (space_create_empty(t)) { space_destroy(t); return -NOS_ENOMEM; }
+            struct nos_elf_result result;
+            rc = nos_elf_load(t, image, bytes, &args, &result);
+            if (rc) { space_destroy(t); return rc; }
+            arch_frame_init(&t->frame, result.entry, result.stack, result.argc, result.argv);
+#if defined(NOS_ARM64)
+            t->frame.tls = result.tls;
+#elif defined(NOS_RISCV)
+            t->frame.x[4] = result.tls;
+#endif
+            ipc_task_inherit(t, current_task); t->state = TASK_READY;
+            reschedule = 1; return t->id;
+        }
+        return -NOS_EAGAIN;
+    }
+#ifdef NOS_SELFTEST
+    case NOS_SYS_FINISH:
+        if (current_task->id != 1) return -NOS_EACCES;
+        if (!timer_switches) kernel_fail("no hardware timer context switch observed");
+        kernel_print("PASS timer_preemption\n");
+        kernel_print(a ? "NOS TEST FAIL\n" : "NOS TEST PASS\n");
+        arch_shutdown((int)a);
+#endif
+    default: return -NOS_ENOSYS;
+    }
+}
+struct arch_frame *kernel_trap(struct arch_frame *frame, unsigned event)
+{
+    if (!current_task) kernel_fail("trap before task initialization");
+#if defined(NOS_ARM64)
+    if (frame->status & 15) kernel_fail("privileged_exception");
+#elif defined(NOS_RISCV)
+    if (frame->status & (1u << 8)) kernel_fail("privileged_exception");
+#elif defined(NOS_ARM)
+    if ((frame->status & 31) != 0x10) kernel_fail("privileged_exception");
+#endif
+    uintptr_t irq = spin_lock_irqsave(&kernel_lock);
+#ifdef NOS_ARM_M
+    k_memcpy(&current_task->frame, frame, offsetof(struct arch_frame, sp));
+    current_task->frame.sp = (uintptr_t)frame + offsetof(struct arch_frame, sp);
+#else
+    k_memcpy(&current_task->frame, frame, sizeof(*frame));
+#endif
+    reschedule = 0;
+    unsigned hardware_irq = (event == ARCH_TIMER || event == ARCH_IRQ) ? arch_irq_claim() : 0;
+    if (hardware_irq) {
+        arch_irq_mask(hardware_irq, 1); arch_irq_complete(hardware_irq);
+        kernel_irq_notify(hardware_irq);
+    }
+    if (current_task->cancel_pending) {
+        current_task->cancel_pending = 0;
+        if (event == ARCH_TIMER && !hardware_irq) { arch_timer_ack(); scheduler_tick(); }
+        task_finish(current_task, -NOS_EINTR);
+    } else if (event == ARCH_TIMER || event == ARCH_IRQ) {
+        if (event == ARCH_TIMER && !hardware_irq) { arch_timer_ack(); scheduler_tick(); }
+        reschedule = 1;
+    } else if (event == ARCH_FAULT) {
+        if (current_task->id % NOS_TASKS == 1) kernel_fail("init task faulted");
+        task_finish(current_task, -NOS_EFAULT);
+    } else {
+        uintptr_t nr, a, b, c;
+#if defined(NOS_ARM64)
+        nr = frame->x[8]; a = frame->x[0]; b = frame->x[1]; c = frame->x[2];
+#elif defined(NOS_RISCV)
+        nr = frame->x[17]; a = frame->x[10]; b = frame->x[11]; c = frame->x[12];
+        current_task->frame.pc += 4;
+#elif defined(NOS_ARM_M)
+        nr = frame->ip; a = frame->r[0]; b = frame->r[1]; c = frame->r[2];
+#else
+        nr = frame->r[7]; a = frame->r[0]; b = frame->r[1]; c = frame->r[2];
+#endif
+        FRAME_RESULT(&current_task->frame) = (uintptr_t)dispatch(nr, a, b, c);
+    }
+    struct task *previous = current_task;
+    previous->run_cpu = UINT32_MAX;
+    struct task *next = current_task;
+    if (reschedule || next->state != TASK_READY) next = select_task();
+    if (event == ARCH_TIMER && !hardware_irq && next != current_task) timer_switches++;
+    while (!next) {
+        spin_unlock_irqrestore(&kernel_lock, irq);
+        irq = spin_lock_irqsave(&kernel_lock); next = select_task();
+    }
+    current_task = next; next->run_cpu = arch_cpu_id();
+    arch_space_switch(next->space_id);
+    if (next->tls_slot && task_copy_out(next, next->tls_slot, &next->tls_value, sizeof(uintptr_t)))
+        kernel_fail("invalid TLS binding");
+    struct arch_frame *result = arch_return_frame(&next->frame);
+    spin_unlock_irqrestore(&kernel_lock, irq); return result;
+}
+void kernel_start(void)
+{
+    arch_platform_init();
+    kernel_print("NOS microkernel " ARCH_NAME "\n");
+    page_init();
+#if defined(NOS_SELFTEST) && defined(NOS_CLOCK_TEST_EPOCH)
+    kernel_ticks = (uint64_t)NOS_CLOCK_TEST_EPOCH;
+#endif
+    unsigned free = page_available();
+    uintptr_t page = page_alloc(2);
+    if (!page || page_free(page, 1) != -NOS_EINVAL || page_free(page, 2) ||
+        page_free(page, 2) != -NOS_EINVAL || page_available() != free) kernel_fail("page allocator");
+    page = page_alloc(PAGE_POOL_PAGES);
+    if (!page || page_alloc(1) || page_free(page, PAGE_POOL_PAGES) || page_available() != free)
+        kernel_fail("physical allocation exhaustion");
+    kernel_print("PASS page_allocator\n");
+    unsigned caps = NOS_CAP_USER | NOS_CAP_PREEMPT | NOS_CAP_IPC;
+#ifdef NOS_MMU
+    caps |= NOS_CAP_MMU;
+#endif
+#ifdef NOS_MPU
+    caps |= NOS_CAP_MPU;
+#endif
+#if NOS_SMP > 1
+    caps |= NOS_CAP_SMP;
+#endif
+    if (create_task(0, (uintptr_t)nos_vfs_server, 0, 4, (caps & ~NOS_CAP_IPC) | NOS_CAP_DEVICE, UINT32_MAX) < 0 ||
+        create_task(1,
+#ifdef NOS_NORMAL_BOOT
+        (uintptr_t)nos_init,
+#else
+        (uintptr_t)nos_validation,
+#endif
+        0, 8, caps | NOS_CAP_SPAWN, UINT32_MAX) < 0)
+        kernel_fail("initial address spaces");
+    extern void nos_idle(uintptr_t unused);
+    for (unsigned cpu = 0; cpu < NOS_SMP; cpu++) {
+        unsigned slot = NOS_IDLE_FIRST + cpu;
+        if (create_task(slot, (uintptr_t)nos_idle, 0, 31, 0, UINT32_MAX) < 0) kernel_fail("idle address space");
+        tasks[slot].pin_cpu = cpu;
+    }
+    ipc_init();
+#ifdef NOS_SELFTEST
+    if (!memory_transaction_selftest()) kernel_fail("memory mapping transaction rollback");
+    kernel_print("PASS mapping_transaction_rollback\n");
+#endif
+    current_task = select_task(); current_task->run_cpu = arch_cpu_id();
+    arch_space_switch(current_task->space_id);
+    arch_start_secondary();
+    arch_timer_init();
+    arch_enter_user(arch_return_frame(&current_task->frame));
+}
+
+void kernel_secondary_start(void)
+{
+    arch_secondary_init();
+    uintptr_t irq = spin_lock_irqsave(&kernel_lock);
+    struct task *next = select_task();
+    while (!next) {
+        spin_unlock_irqrestore(&kernel_lock, irq);
+        irq = spin_lock_irqsave(&kernel_lock); next = select_task();
+    }
+    current_task = next; next->run_cpu = arch_cpu_id();
+    arch_space_switch(next->space_id); arch_timer_init();
+    struct arch_frame *frame = arch_return_frame(&next->frame);
+    spin_unlock_irqrestore(&kernel_lock, irq); arch_enter_user(frame);
+}

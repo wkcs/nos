@@ -13,3 +13,5 @@ out
 *.ipch
 .config
 .patch
+__pycache__/
+*.pyc

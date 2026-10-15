@@ -1,0 +1,197 @@
+# Copyright (C) 2026 NOS contributors
+PYTHON ?= python3
+BUILD_MODE ?= selftest
+MPU ?= 0
+SMP ?= 1
+PERSISTENCE_TEST ?= 0
+EXTRA_APPS ?= 0
+ifeq ($(filter $(BUILD_MODE),selftest normal),)
+$(error BUILD_MODE must be selftest or normal)
+endif
+ARM_PREFIX ?= arm-none-eabi-
+ARM64_PREFIX ?= aarch64-linux-gnu-
+RISCV_PREFIX ?= riscv64-linux-gnu-
+RISCV32_PREFIX ?= riscv64-unknown-elf-
+ifeq ($(PLATFORM),arm_virt)
+CROSS := $(ARM_PREFIX)
+ARCH_DIR := arch/arm/micro
+CPUFLAGS := -mcpu=cortex-a15 -marm -mfloat-abi=soft
+DEFS := -DNOS_ARM -DNOS_MMU
+LINKER := $(ARCH_DIR)/virt.ld
+else ifeq ($(PLATFORM),stm32)
+CROSS := $(ARM_PREFIX)
+ARCH_DIR := arch/arm/micro
+CPUFLAGS := -mcpu=cortex-m4 -mthumb -mfloat-abi=soft
+DEFS := -DNOS_ARM_M
+LINKER := $(ARCH_DIR)/stm32.ld
+else ifeq ($(PLATFORM),arm64_virt)
+CROSS := $(ARM64_PREFIX)
+ARCH_DIR := arch/arm64/micro
+CPUFLAGS := -mcpu=cortex-a53 -mno-outline-atomics
+KERNELFLAGS := -mgeneral-regs-only
+DEFS := -DNOS_ARM64 -DNOS_MMU
+LINKER := $(ARCH_DIR)/virt.ld
+else ifeq ($(PLATFORM),riscv_virt)
+CROSS := $(RISCV_PREFIX)
+ARCH_DIR := arch/riscv/micro
+CPUFLAGS := -march=rv64gc -mabi=lp64d -mcmodel=medany -mno-relax -msmall-data-limit=0
+DEFS := -DNOS_RISCV -DNOS_MMU
+LINKER := $(ARCH_DIR)/virt.ld
+else ifeq ($(PLATFORM),riscv32_virt)
+CROSS := $(RISCV32_PREFIX)
+ARCH_DIR := arch/riscv32/micro
+CPUFLAGS := -march=rv32gc -mabi=ilp32d -mcmodel=medany -mno-relax -msmall-data-limit=0
+DEFS := -DNOS_RISCV -DNOS_RISCV32 -DNOS_MMU
+LINKER := $(ARCH_DIR)/virt.ld
+else ifeq ($(PLATFORM),riscv32_nommu)
+CROSS := $(RISCV32_PREFIX)
+ARCH_DIR := arch/riscv32/micro
+CPUFLAGS := -march=rv32gc -mabi=ilp32d -mcmodel=medany -mno-relax -msmall-data-limit=0
+DEFS := -DNOS_RISCV -DNOS_RISCV32
+LINKER := $(ARCH_DIR)/virt_nommu.ld
+else
+$(error Unsupported PLATFORM=$(PLATFORM))
+endif
+CC := $(CROSS)gcc
+OBJCOPY := $(CROSS)objcopy
+ifeq ($(MPU),1)
+DEFS += -DNOS_MPU
+endif
+DEFS += -DNOS_SMP=$(SMP) -DNOS_PERSISTENCE_TEST=$(PERSISTENCE_TEST)
+DEFS += -DNOS_EXTRA_APPS=$(EXTRA_APPS)
+COMMONFLAGS := $(CPUFLAGS) -ffreestanding -fno-builtin -fno-stack-protector -fno-pie -fno-pic -fno-common -ffunction-sections -fdata-sections -fno-tree-loop-distribute-patterns -Wall -Wextra -Werror -std=gnu11 -O2 -g -Iinclude/nos -MMD -MP $(DEFS)
+COMMONFLAGS += $(if $(filter selftest,$(BUILD_MODE)),-DNOS_SELFTEST,-DNOS_NORMAL_BOOT)
+COMMONFLAGS += $(EXTRA_CFLAGS)
+KERNEL_SRC := kernel/micro/core.c kernel/micro/task.c kernel/micro/ipc.c kernel/micro/irq.c kernel/micro/mutex.c kernel/micro/scheduler.c kernel/micro/memory.c kernel/micro/runtime.c kernel/micro/elf.c $(ARCH_DIR)/platform.c
+USER_SRC := user/runtime.c user/thread.c user/init.c servers/vfs/server.c servers/drivers/virtio_blk.c servers/drivers/uart.c
+USER_SRC += servers/fatfs/adapter.c
+ifneq ($(PLATFORM),stm32)
+USER_SRC += servers/fatfs/ff.c
+endif
+ifeq ($(BUILD_MODE),selftest)
+USER_SRC += user/validation.c user/libc_regression.c user/kernel_regression.c user/arch_regression.c user/elf_regression.c servers/vfs/regression.c
+endif
+ifeq ($(PLATFORM),stm32)
+ASM_SRC := arch/arm/micro/cortex_m.S
+else
+ASM_SRC := $(ARCH_DIR)/entry.S
+endif
+ifeq ($(LIBC),newlib)
+ifneq ($(filter $(PLATFORM),arm_virt stm32),$(PLATFORM))
+$(error Newlib integration currently requires an ARM target)
+endif
+USER_SRC += libc/port/newlib.c
+USER_SRC += libc/port/newlib_pthread.c
+COMMONFLAGS += -DNOS_NEWLIB -D_POSIX_THREADS=1 -D_UNIX98_THREAD_MUTEX_ATTRIBUTES=1 -D_POSIX_TIMERS=1 -D_POSIX_MONOTONIC_CLOCK=1
+NEWLIB_MODE ?= dynamic
+ifeq ($(NEWLIB_MODE),dynamic)
+NEWLIB_ROOT ?= out/microkernel/newlib/$(PLATFORM)/install
+ifeq ($(wildcard $(NEWLIB_ROOT)/lib/libc.a),)
+$(error Build dynamic Newlib with scripts/build_newlib.py --platform $(PLATFORM) before using LIBC=newlib)
+endif
+COMMONFLAGS += -DNOS_NEWLIB_DYNAMIC -D__DYNAMIC_REENT__ -isystem $(NEWLIB_ROOT)/include
+USER_LIBS := $(NEWLIB_ROOT)/lib/libc.a
+LIBC_ARCHIVE := $(NEWLIB_ROOT)/lib/libc.a
+else ifeq ($(NEWLIB_MODE),stock)
+USER_LIBS := -lc
+LIBC_ARCHIVE := $(shell $(CC) $(CPUFLAGS) -print-file-name=libc.a)
+else
+$(error NEWLIB_MODE must be dynamic or stock)
+endif
+else ifeq ($(LIBC),musl)
+ifneq ($(filter $(PLATFORM),arm64_virt riscv_virt),$(PLATFORM))
+$(error The musl port currently requires ARM64 or RISC-V)
+endif
+MUSL_ROOT ?= out/microkernel/musl/$(PLATFORM)/install
+ifeq ($(wildcard $(MUSL_ROOT)/lib/libc.a),)
+$(error Build the musl port with scripts/build_musl.py before using LIBC=musl)
+endif
+USER_SRC += libc/port/musl.c
+COMMONFLAGS += -DNOS_MUSL -isystem $(MUSL_ROOT)/include
+USER_LIBS := $(MUSL_ROOT)/lib/libc.a
+LIBC_ARCHIVE := $(MUSL_ROOT)/lib/libc.a
+else ifneq ($(LIBC),minimal)
+$(error LIBC must be minimal, newlib or musl)
+endif
+ASM_SRC += user/$(if $(filter riscv32_virt riscv32_nommu,$(PLATFORM)),rv32_context_probe,context_probe).S
+OBJECTS := $(addprefix $(O)/,$(KERNEL_SRC:.c=.o) $(USER_SRC:.c=.o) $(ASM_SRC:.S=.o))
+OBJECTS += $(O)/initramfs.o
+LIBGCC_ARCHIVE := $(shell $(CC) $(CPUFLAGS) -print-libgcc-file-name)
+KERNEL_LIBGCC := $(O)/kernel-libgcc.a
+KERNEL_LIBGCC_SYMBOLS := $(O)/kernel-libgcc.syms
+BUILD_SIGNATURE := $(O)/build-config.json
+LINKFLAGS ?= -nostdlib -static -no-pie -Wl,--build-id=none,--gc-sections
+make_quote = '$(subst ','"'"',$(1))'
+.PHONY: all clean test qemu-test qemu-run FORCE
+all: $(O)/nos.elf
+$(BUILD_SIGNATURE): FORCE
+	@$(PYTHON) scripts/build_signature.py --output $(call make_quote,$@) --compiler $(call make_quote,$(CC)) --value $(call make_quote,platform=$(PLATFORM)) --value $(call make_quote,libc=$(LIBC)) --value $(call make_quote,mode=$(BUILD_MODE)) --value $(call make_quote,cflags=$(COMMONFLAGS)) --value $(call make_quote,kernel_flags=$(KERNELFLAGS)) --value $(call make_quote,asm_flags=$(CPUFLAGS) $(DEFS)) --value $(call make_quote,linkflags=$(LINKFLAGS)) --value $(call make_quote,libraries=$(USER_LIBS)) --rule Makefile --rule scripts/Makefile.microkernel --rule scripts/build_signature.py --rule out/microkernel/config.mk
+$(KERNEL_LIBGCC) $(KERNEL_LIBGCC_SYMBOLS) &: $(LIBGCC_ARCHIVE) scripts/kernel_libgcc.py $(BUILD_SIGNATURE)
+	$(PYTHON) scripts/kernel_libgcc.py --compiler $(CC) $(foreach flag,$(CPUFLAGS),--cpu-flag=$(flag)) --output $(O)
+$(O)/nos.elf: $(OBJECTS) $(LINKER) $(LIBC_ARCHIVE) $(LIBGCC_ARCHIVE) $(KERNEL_LIBGCC) $(BUILD_SIGNATURE)
+	$(CC) $(CPUFLAGS) $(LINKFLAGS) -Wl,-Map,$(O)/nos.map -T$(LINKER) $(OBJECTS) $(KERNEL_LIBGCC) $(USER_LIBS) -lgcc -o $@
+	$(CROSS)size $@
+$(O)/%.o: %.c $(BUILD_SIGNATURE)
+	@mkdir -p $(dir $@)
+	$(CC) $(COMMONFLAGS) $(if $(filter kernel/% arch/%,$<),$(KERNELFLAGS),) -c $< -o $@
+	$(if $(filter kernel/% arch/%,$<),$(OBJCOPY) --redefine-syms $(KERNEL_LIBGCC_SYMBOLS) $@,@:)
+$(O)/%.o: %.S $(BUILD_SIGNATURE)
+	@mkdir -p $(dir $@)
+	$(CC) $(CPUFLAGS) -fno-pic -fno-pie $(DEFS) -Iinclude/nos -MMD -MP -g -c $< -o $@
+	$(if $(filter arch/%,$<),$(OBJCOPY) --redefine-syms $(KERNEL_LIBGCC_SYMBOLS) $@,@:)
+$(addprefix $(O)/,$(KERNEL_SRC:.c=.o) $(filter arch/%,$(ASM_SRC:.S=.o))): $(KERNEL_LIBGCC_SYMBOLS)
+APP_LINKER := apps/$(if $(filter stm32 riscv32_nommu,$(PLATFORM)),$(PLATFORM),app).ld
+APP_PICFLAGS := $(if $(filter stm32 riscv32_nommu,$(PLATFORM)),-fpie,-fno-pie -fno-pic)
+M4_APP_LINKFLAGS := -Wl,-pie,--no-dynamic-linker
+APP_LINKFLAGS := $(if $(filter stm32 riscv32_nommu,$(PLATFORM)),$(M4_APP_LINKFLAGS),-static -no-pie)
+$(O)/apps/hello.elf: apps/start.c apps/hello.c $(APP_LINKER) $(BUILD_SIGNATURE)
+	@mkdir -p $(dir $@)
+ifeq ($(PLATFORM),riscv32_nommu)
+	$(CC) $(CPUFLAGS) $(DEFS) -fpie -ffreestanding -fno-builtin -fno-stack-protector -Iinclude/nos -c apps/start.c -o $(O)/apps/hello_start.o
+	$(CC) $(CPUFLAGS) $(DEFS) -fpie -ffreestanding -fno-builtin -fno-stack-protector -Iinclude/nos -c apps/hello.c -o $(O)/apps/hello_main.o
+	$(RISCV_PREFIX)ld -m elf32lriscv -pie --no-dynamic-linker --build-id=none -T$(APP_LINKER) $(O)/apps/hello_start.o $(O)/apps/hello_main.o $(LIBGCC_ARCHIVE) -o $@
+else
+	$(CC) $(CPUFLAGS) $(DEFS) $(APP_PICFLAGS) -ffreestanding -fno-builtin -fno-stack-protector -nostdlib $(APP_LINKFLAGS) -Iinclude/nos -Wl,--build-id=none,-T,$(APP_LINKER) apps/start.c apps/hello.c -lgcc -o $@
+endif
+INITRAMFS_FILES := --file /bin/hello=$(O)/apps/hello.elf
+INITRAMFS_IMAGES := $(O)/apps/hello.elf
+APP_LIBC_SOURCES := apps/start.c apps/libc_start.c user/runtime.c user/thread.c libc/port/$(LIBC).c
+APP_LIBC_FLAGS := $(COMMONFLAGS) -nostdlib -static -no-pie -Wl,--gc-sections,--build-id=none,-z,max-page-size=4096 -T apps/app.ld
+ifneq ($(LIBC),minimal)
+ifneq ($(PLATFORM),stm32)
+$(O)/apps/libc_check.elf: $(APP_LIBC_SOURCES) apps/libc_check.c $(LIBC_ARCHIVE) apps/app.ld $(BUILD_SIGNATURE)
+	@mkdir -p $(dir $@)
+	$(CC) $(APP_LIBC_FLAGS) $(APP_LIBC_SOURCES) apps/libc_check.c $(USER_LIBS) -lgcc -o $@
+INITRAMFS_FILES += --file /bin/libc_check=$(O)/apps/libc_check.elf
+INITRAMFS_IMAGES += $(O)/apps/libc_check.elf
+endif
+endif
+ifeq ($(EXTRA_APPS),1)
+ifneq ($(LIBC),musl)
+$(error EXTRA_APPS=1 requires LIBC=musl)
+endif
+USERLIB_ROOT := out/microkernel/userlibs/$(PLATFORM)
+$(O)/apps/lua.elf: $(APP_LIBC_SOURCES) apps/lua/main.c $(USERLIB_ROOT)/lua/liblua.a $(LIBC_ARCHIVE) apps/app.ld $(BUILD_SIGNATURE)
+	@mkdir -p $(dir $@)
+	$(CC) $(APP_LIBC_FLAGS) -Iapp/lua/lib $(APP_LIBC_SOURCES) apps/lua/main.c $(USERLIB_ROOT)/lua/liblua.a $(USER_LIBS) -lgcc -o $@
+$(O)/apps/lvgl.elf: $(APP_LIBC_SOURCES) apps/lvgl/main.c apps/lvgl/lv_conf.h $(USERLIB_ROOT)/lvgl/liblvgl.a $(LIBC_ARCHIVE) apps/app.ld $(BUILD_SIGNATURE)
+	@mkdir -p $(dir $@)
+	$(CC) $(APP_LIBC_FLAGS) -DLV_CONF_INCLUDE_SIMPLE -Iapps/lvgl -Iapp/lvgl/lib $(APP_LIBC_SOURCES) apps/lvgl/main.c $(USERLIB_ROOT)/lvgl/liblvgl.a $(USER_LIBS) -lgcc -o $@
+INITRAMFS_FILES += --file /bin/lua=$(O)/apps/lua.elf --file /bin/lvgl=$(O)/apps/lvgl.elf
+INITRAMFS_IMAGES += $(O)/apps/lua.elf $(O)/apps/lvgl.elf
+endif
+$(O)/initramfs.c: $(INITRAMFS_IMAGES) scripts/embed_initramfs.py
+	$(PYTHON) scripts/embed_initramfs.py --output $@ $(INITRAMFS_FILES) $(if $(filter selftest,$(BUILD_MODE)),--negative-fixtures,)
+$(O)/initramfs.o: $(O)/initramfs.c $(BUILD_SIGNATURE)
+	$(CC) $(COMMONFLAGS) $(KERNELFLAGS) -c $< -o $@
+%_defconfig:
+	@test -f configs/$@ || { echo "Unknown configuration: $@"; exit 1; }
+	@mkdir -p out/microkernel
+	cp configs/$@ out/microkernel/config.mk
+test qemu-test:
+	$(PYTHON) tests/qemu_matrix.py
+qemu-run: $(O)/nos.elf
+	$(PYTHON) scripts/run_qemu.py --platform $(PLATFORM) --image $(O)/nos.elf
+clean:
+	rm -rf $(O)
+-include $(OBJECTS:.o=.d)

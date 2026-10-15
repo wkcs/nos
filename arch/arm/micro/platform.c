@@ -1,0 +1,328 @@
+/* Copyright (C) 2026 NOS contributors */
+#include "kernel.h"
+static volatile uint32_t *reg(uintptr_t p) { return (volatile uint32_t *)p; }
+#ifdef NOS_ARM_M
+void arch_platform_init(void)
+{
+    *reg(0x4001100c) = (1u << 13) | (1u << 3) | (1u << 2);
+#ifdef NOS_MPU
+    /* Enable MemManage rather than allowing all MPU violations to escalate. */
+    *reg(0xe000ed24) |= 1u << 16;
+    if (!(*reg(0xe000ed90) & 0xff00)) kernel_fail("CPU has no MPU");
+#endif
+}
+void arch_putc(char c) { *reg(0x40011004) = (unsigned char)c; }
+uintptr_t arch_irq_save(void)
+{
+    uintptr_t v; __asm__ volatile("mrs %0, primask; cpsid i" : "=r"(v) :: "memory"); return v;
+}
+void arch_irq_restore(uintptr_t v) { __asm__ volatile("msr primask, %0" :: "r"(v) : "memory"); }
+void arch_timer_init(void)
+{
+    *reg(0xe000e014) = 1680000 - 1;
+    *reg(0xe000e018) = 0;
+    *reg(0xe000e010) = 7;
+}
+void arch_timer_ack(void) { (void)*reg(0xe000e010); }
+void arch_space_init(unsigned id) { (void)id; }
+#ifdef NOS_MPU
+extern unsigned task_mpu_regions(struct task *, uintptr_t *, size_t *, unsigned *);
+static int mpu_layout(uintptr_t base, size_t size, uintptr_t *region_base, unsigned *rasr)
+{
+    if (!size || base > UINTPTR_MAX - size) return 0;
+    for (unsigned exponent = 8; exponent < 32; exponent++) {
+        uintptr_t span = (uintptr_t)1 << exponent, start = base & ~(span - 1);
+        uintptr_t granule = span / 8;
+        if (base + size - start > span || (base & (granule - 1)) || (size & (granule - 1))) continue;
+        unsigned first = (unsigned)((base - start) / granule), count = (unsigned)(size / granule);
+        unsigned mask = (unsigned)(((1u << count) - 1u) << first);
+        *region_base = start; *rasr = 1 | ((exponent - 1) << 1) | ((255u ^ mask) << 8);
+        return 1;
+    }
+    return 0;
+}
+int arch_mpu_valid_range(uintptr_t base, size_t size)
+{ uintptr_t region_base; unsigned rasr; return mpu_layout(base, size, &region_base, &rasr); }
+static void mpu_region(unsigned index, uintptr_t base, size_t size, unsigned prot)
+{
+    uintptr_t region_base; unsigned rasr;
+    if (!mpu_layout(base, size, &region_base, &rasr)) kernel_fail("invalid MPU mapping committed");
+    *reg(0xe000ed98) = index;
+    *reg(0xe000ed9c) = (uint32_t)region_base;
+    *reg(0xe000eda0) = rasr | (1u << 17) | (1u << 16) |
+        ((prot & NOS_PROT_WRITE ? 3u : 6u) << 24) | (prot & NOS_PROT_EXEC ? 0u : 1u << 28);
+}
+#endif
+void arch_space_switch(unsigned id)
+{
+    (void)id;
+#ifdef NOS_MPU
+    uintptr_t bases[7]; size_t sizes[7]; unsigned flags[7];
+    unsigned n = task_mpu_regions(current_task, bases, sizes, flags);
+    *reg(0xe000ed94) = 0;
+    mpu_region(0, 0x08000000u, 1024 * 1024, 5);
+    for (unsigned i = 0; i < n; i++) mpu_region(i + 1, bases[i], sizes[i], flags[i]);
+    for (unsigned i = n + 1; i < 8; i++) { *reg(0xe000ed98) = i; *reg(0xe000eda0) = 0; }
+    *reg(0xe000ed94) = 5; /* enable, privileged background mapping */
+    __asm__ volatile("dsb; isb" ::: "memory");
+#endif
+}
+void arch_tlb_sync(void) { __asm__ volatile("dsb; isb" ::: "memory"); }
+void arch_cache_sync(void) { __asm__ volatile("dsb; isb" ::: "memory"); }
+unsigned arch_cpu_id(void) { return 0; }
+unsigned arch_cpu_count(void) { return 1; }
+void arch_start_secondary(void) { }
+void arch_secondary_init(void) { arch_timer_init(); }
+int arch_map(unsigned id, uintptr_t va, uintptr_t pa, unsigned flags)
+{ (void)id; (void)va; (void)pa; (void)flags; return 0; }
+void arch_unmap(unsigned id, uintptr_t va) { (void)id; (void)va; }
+void arch_frame_init(struct arch_frame *f, uintptr_t pc, uintptr_t sp, uintptr_t arg, uintptr_t second)
+{
+    k_memset(f, 0, sizeof(*f)); f->pc = pc & ~1u; f->status = 1u << 24; f->sp = sp; f->r[0] = arg; f->r[1] = second;
+}
+struct arch_frame *arch_return_frame(struct arch_frame *f)
+{
+    struct arch_frame *stack = (void *)(f->sp - offsetof(struct arch_frame, sp));
+    k_memcpy(stack, f, offsetof(struct arch_frame, sp));
+    return stack;
+}
+#else
+struct tables { uint32_t root[4096]; uint32_t text[256], data[256], heap[2][256], device[256]; } __attribute__((aligned(16384)));
+/* The stride must retain the 16 KiB TTBR alignment for every task. */
+static struct tables spaces[NOS_TASKS] __attribute__((aligned(16384)));
+static int enabled[NOS_CPUS];
+static unsigned kernel_tables_ready;
+static uint32_t kernel_pages[16][256] __attribute__((aligned(1024)));
+extern char __kernel_start[], __kernel_ro_end[], kernel_stack_guard[];
+static unsigned period, claimed[NOS_CPUS];
+void arch_platform_init(void) { }
+void arch_putc(char c)
+{ while (*reg(0x09000018) & 0x20) { } *reg(0x09000000) = (unsigned char)c; }
+uintptr_t arch_irq_save(void)
+{
+    uintptr_t v; __asm__ volatile("mrs %0, cpsr; cpsid i" : "=r"(v) :: "memory"); return v;
+}
+void arch_irq_restore(uintptr_t v) { if (!(v & 0x80)) __asm__ volatile("cpsie i" ::: "memory"); }
+static void rearm(void)
+{
+    unsigned ctl = 1;
+    __asm__ volatile("mcr p15, 0, %0, c14, c3, 0; mcr p15, 0, %1, c14, c3, 1; isb" :: "r"(period), "r"(ctl));
+}
+void arch_timer_init(void)
+{
+    unsigned freq;
+    __asm__ volatile("mrc p15, 0, %0, c14, c0, 0" : "=r"(freq));
+    period = freq / 100;
+    *reg(0x08000000) = 1;
+    *reg(0x08000100) = 1u << 27;
+    *reg(0x08000418) = 0x80808080;
+    *reg(0x08010004) = 0xff;
+    *reg(0x08010000) = 1;
+    rearm();
+}
+void arch_timer_ack(void)
+{ rearm(); *reg(0x08010010) = claimed[arch_cpu_id()]; }
+void arch_space_init(unsigned id)
+{
+    struct tables *t = &spaces[id]; k_memset(t, 0, sizeof(*t));
+    for (unsigned i = 0x400; i < 0x480; i++) t->root[i] = (i << 20) | 2 | (1u << 10) | (1u << 4) | (1u << 12) | (1u << 16);
+    for (unsigned block = 0; block < 16; block++) {
+        t->root[0x400 + block] = (uintptr_t)kernel_pages[block] | 1;
+        if (!kernel_tables_ready) for (unsigned page = 0; page < 256; page++) {
+            uintptr_t pa = 0x40000000u + block * 0x100000 + page * 4096;
+            unsigned bits = 2 | (1u << 4) | (1u << 6) | (1u << 10);
+            if (pa >= (uintptr_t)__kernel_start && pa < (uintptr_t)__kernel_ro_end) bits |= 1u << 9;
+            else bits |= 1;
+            kernel_pages[block][page] = (pa >= (uintptr_t)kernel_stack_guard && pa - (uintptr_t)kernel_stack_guard < NOS_SMP * 32768u &&
+                ((pa - (uintptr_t)kernel_stack_guard) & 32767) < 4096) ? 0 : pa | bits;
+        }
+    }
+    kernel_tables_ready = 1;
+    t->root[0x80] = 0x08000000 | 2 | (1u << 10) | (1u << 4);
+    t->root[0xa0] = 0x0a000000 | 2 | (1u << 10) | (1u << 4);
+    t->root[0x90] = 0x09000000 | 2 | (1u << 10) | (1u << 4);
+    t->root[4] = (uintptr_t)t->text | 1;
+    t->root[16] = (uintptr_t)t->data | 1;
+    t->root[32] = (uintptr_t)t->heap[0] | 1;
+    t->root[33] = (uintptr_t)t->heap[1] | 1;
+    t->root[48] = (uintptr_t)t->device | 1;
+}
+int arch_map(unsigned id, uintptr_t va, uintptr_t pa, unsigned flags)
+{
+    struct tables *t = &spaces[id];
+    uint32_t *p = va >> 20 == 4 ? t->text : va >> 20 == 16 ? t->data : (va >> 20 >= 32 && va >> 20 < 34) ? t->heap[(va >> 20) - 32] : va >> 20 == 48 ? t->device : NULL;
+    if (!p || (va & 4095) || (pa & 4095)) return -NOS_EINVAL;
+    unsigned bits = 2 | (1u << 6) | (1u << 10);
+    bits |= (flags & ARCH_MAP_PRIVILEGED) ? ((flags & NOS_PROT_WRITE) ? 0x10 : 0x210) :
+        ((flags & NOS_PROT_WRITE) ? 0x30 : 0x220);
+    if (!(flags & NOS_PROT_EXEC)) bits |= 1;
+    p[(va >> 12) & 255] = flags ? pa | bits : 0;
+    return 0;
+}
+void arch_unmap(unsigned id, uintptr_t va) { (void)arch_map(id, va, 0, 0); }
+void arch_tlb_sync(void)
+{ unsigned zero = 0; __asm__ volatile("dsb ishst; mcr p15, 0, %0, c8, c3, 0; dsb ish; isb" :: "r"(zero) : "memory"); }
+void arch_cache_sync(void)
+{ unsigned zero = 0; __asm__ volatile("dsb ish; mcr p15, 0, %0, c7, c1, 0; dsb ish; isb" :: "r"(zero) : "memory"); }
+unsigned arch_cpu_id(void)
+{ unsigned id; __asm__ volatile("mrc p15, 0, %0, c0, c0, 5" : "=r"(id)); return id & 255; }
+unsigned arch_cpu_count(void) { return NOS_SMP; }
+extern void secondary_start(void);
+void arch_start_secondary(void)
+{
+    for (unsigned cpu = 1; cpu < NOS_SMP; cpu++) {
+        register uintptr_t r0 __asm__("r0") = 0x84000003u;
+        register uintptr_t r1 __asm__("r1") = cpu;
+        register uintptr_t r2 __asm__("r2") = (uintptr_t)secondary_start;
+        register uintptr_t r3 __asm__("r3") = 0;
+        __asm__ volatile("hvc #0" : "+r"(r0) : "r"(r1), "r"(r2), "r"(r3) : "memory", "cc");
+        if ((intptr_t)r0) kernel_fail("PSCI CPU_ON failed");
+    }
+}
+void arch_secondary_init(void) { }
+void arch_space_switch(unsigned id)
+{
+    uintptr_t ttbr = (uintptr_t)spaces[id].root;
+    unsigned zero = 0, domain = 1;
+    __asm__ volatile("dsb sy; mcr p15, 0, %0, c2, c0, 0; mcr p15, 0, %1, c8, c7, 0; dsb sy; isb" :: "r"(ttbr), "r"(zero) : "memory");
+    if (!enabled[arch_cpu_id()]) {
+        unsigned ctl;
+        __asm__ volatile("mcr p15, 0, %0, c2, c0, 2; mcr p15, 0, %1, c3, c0, 0" :: "r"(zero), "r"(domain));
+        __asm__ volatile("mrc p15, 0, %0, c1, c0, 0" : "=r"(ctl));
+        ctl = (ctl | 1 | (1u << 23)) & ~(1u << 29);
+        __asm__ volatile("mcr p15, 0, %0, c1, c0, 0; isb" :: "r"(ctl) : "memory");
+        enabled[arch_cpu_id()] = 1;
+    }
+}
+void arch_frame_init(struct arch_frame *f, uintptr_t pc, uintptr_t sp, uintptr_t arg, uintptr_t second)
+{ k_memset(f, 0, sizeof(*f)); f->pc = pc; f->sp = sp; f->status = 0x10; f->r[0] = arg; f->r[1] = second; }
+struct arch_frame *arch_return_frame(struct arch_frame *f) { return f; }
+#endif
+void arch_shutdown(int failed)
+{
+    uintptr_t args[2] = { 0x20026, (uintptr_t)failed };
+    register uintptr_t r0 __asm__("r0") = 0x20;
+    register uintptr_t r1 __asm__("r1") = (uintptr_t)args;
+#ifdef NOS_ARM_M
+    __asm__ volatile("bkpt #0xab" : "+r"(r0) : "r"(r1) : "memory");
+#else
+    __asm__ volatile("svc #0x123456" : "+r"(r0) : "r"(r1) : "memory");
+#endif
+    for (;;) __asm__ volatile("wfi");
+}
+
+intptr_t arch_device_operation(struct task *task, uintptr_t op, uintptr_t b, uintptr_t c)
+{
+#ifdef NOS_ARM_M
+    (void)task; (void)b; (void)c;
+    if (op == 4) { if (b) *reg(0x4001100c) |= 1u << 5; else *reg(0x4001100c) &= ~(1u << 5); return 0; }
+    if (!op) return (*reg(0x40011000) & (1u << 5)) ? (intptr_t)(*reg(0x40011004) & 255) : -NOS_EAGAIN;
+    return -NOS_ENOTSUP;
+#else
+    if (op == 4) { *reg(0x09000038) = b ? ((1u << 4) | (1u << 6)) : 0; return 0; }
+    if (!op) {
+        if (*reg(0x09000018) & 0x10) { *reg(0x09000044) = 1u << 6; return -NOS_EAGAIN; }
+        return (intptr_t)(*reg(0x09000000) & 255);
+    }
+    if (op == 1) return b < 32 ? (intptr_t)(0x0a000000u + b * 0x200u) : -NOS_EINVAL;
+    if (op == 2) {
+        if (b < 0x0a000000u || b >= 0x0a004000u || (b & 4095) ||
+            c < 0x03000000u || c >= 0x03100000u || (c & 4095)) return -NOS_EINVAL;
+        spaces[task->space_id].device[(c >> 12) & 255] = b | 2 | 0x30 | 1;
+        arch_tlb_sync(); return (intptr_t)c;
+    }
+    if (op == 3) { uintptr_t pa = task_user_phys(task, b); return pa ? (intptr_t)pa : -NOS_EFAULT; }
+    return -NOS_ENOTSUP;
+#endif
+}
+
+void arch_device_revoke(struct task *task)
+{
+    if (!(task->caps & NOS_CAP_DEVICE)) return;
+#ifdef NOS_ARM_M
+    *reg(0x4001100c) &= ~(1u << 5); arch_irq_mask(37, 1); return;
+#else
+    *reg(0x09000038) = 0; arch_irq_mask(33, 1);
+    unsigned count =
+#ifdef NOS_RISCV
+        8;
+    uintptr_t base = 0x10001000u, stride = 0x1000u;
+#else
+        32;
+    uintptr_t base = 0x0a000000u, stride = 0x200u;
+#endif
+    for (unsigned i = 0; i < count; i++) {
+        volatile uint32_t *mmio = (void *)(base + i * stride);
+        if (mmio[0] != 0x74726976 || mmio[2] != 2) continue;
+        mmio[0x70 / 4] = 0;
+#ifdef NOS_RISCV
+        __asm__ volatile("fence iorw, iorw" ::: "memory");
+#else
+        __asm__ volatile("dsb sy" ::: "memory");
+#endif
+        unsigned remaining = 100000;
+        while (mmio[0x70 / 4] && remaining) remaining--;
+        if (!remaining) kernel_fail("device reset did not quiesce DMA");
+    }
+#endif
+}
+
+unsigned arch_irq_claim(void)
+{
+#ifdef NOS_ARM_M
+    uintptr_t ipsr; __asm__ volatile("mrs %0, ipsr" : "=r"(ipsr));
+    return ipsr == 15 ? 0 : (unsigned)ipsr - 16;
+#else
+    unsigned irq = *reg(0x0801000c); claimed[arch_cpu_id()] = irq;
+    return (irq & 1023) == 27 ? 0 : irq & 1023;
+#endif
+}
+void arch_irq_complete(unsigned irq)
+{
+#ifdef NOS_ARM_M
+    (void)irq;
+#else
+    (void)irq; *reg(0x08010010) = claimed[arch_cpu_id()];
+#endif
+}
+void arch_irq_mask(unsigned irq, int masked)
+{
+#ifdef NOS_ARM_M
+    if (irq >= 82) return;
+    *reg(0xe000e100u + (masked ? 0x80u : 0u) + (irq / 32) * 4) = 1u << (irq % 32);
+#else
+    if (irq >= 1020) return;
+    *reg(0x08000000u + (masked ? 0x180u : 0x100u) + (irq / 32) * 4) = 1u << (irq % 32);
+#endif
+    __asm__ volatile("dsb sy" ::: "memory");
+}
+int arch_irq_bind(unsigned device_index)
+{
+#ifdef NOS_ARM_M
+    if (device_index && device_index != 0x100) return -NOS_EINVAL;
+    *reg(0x4001100c) |= 1u << 5; /* USART1 RXNE interrupt */
+    arch_irq_mask(37, 0); return 37;
+#else
+    if (device_index >= 32 && device_index != 0x100) return -NOS_EINVAL;
+    unsigned irq = device_index == 0x100 ? 33 : 48 + device_index;
+    *(volatile unsigned char *)(uintptr_t)(0x08000800u + irq) = 1;
+    *(volatile unsigned char *)(uintptr_t)(0x08000400u + irq) = 0x80;
+    arch_irq_mask(irq, 0); return (int)irq;
+#endif
+}
+
+unsigned arch_mapping_flags(unsigned id, uintptr_t va)
+{
+#ifdef NOS_ARM_M
+    (void)id; (void)va; return 0;
+#else
+    struct tables *t = &spaces[id];
+    uint32_t *p = va >> 20 == 4 ? t->text : va >> 20 == 16 ? t->data :
+        (va >> 20 >= 32 && va >> 20 < 34) ? t->heap[(va >> 20) - 32] : NULL;
+    if (!p || !p[(va >> 12) & 255]) return 0;
+    uint32_t entry = p[(va >> 12) & 255];
+    return 1 | ((entry & 0x30) == 0x30 ? 2 : 0) | (!(entry & 1) ? 4 : 0);
+#endif
+}
+void arch_fault_probe(void)
+{ __asm__ volatile("udf #0" ::: "memory"); }
