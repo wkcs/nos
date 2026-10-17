@@ -10,6 +10,19 @@ nos_fp_get:
     fmov x0, d8
     ret
 #endif
+#ifdef NOS_ARM
+.syntax unified
+.arm
+.fpu neon-vfpv4
+.global nos_fp_set
+nos_fp_set:
+    vmov d8, r0, r1
+    bx lr
+.global nos_fp_get
+nos_fp_get:
+    vmov r0, r1, d8
+    bx lr
+#endif
 #ifdef NOS_RISCV
 .global nos_fp_set
 nos_fp_set:

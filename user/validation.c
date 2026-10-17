@@ -1,5 +1,10 @@
 /* Copyright (C) 2026 NOS contributors */
 #include "abi.h"
+#ifdef NOS_LINUX_COMPAT
+#define MAPPING_TEST_LIMIT 256u
+#else
+#define MAPPING_TEST_LIMIT 64u
+#endif
 #if defined(NOS_NEWLIB) || defined(NOS_MUSL)
 #include <stdio.h>
 #include <stdlib.h>
@@ -22,6 +27,11 @@ void nos_libc_regression(void);
 void nos_kernel_regression(void);
 void nos_arch_regression(void);
 void nos_elf_regression(void);
+#ifdef NOS_POSIX_SUITE
+void nos_posix_suite(void);
+#elif defined(NOS_LINUX_COMPAT)
+void nos_linux_regression(void);
+#endif
 void nos_persistence_regression(unsigned mode);
 void nos_check(int condition, const char *name)
 {
@@ -53,7 +63,7 @@ static void cleanup_worker(uintptr_t unused)
     int fd = nos_open("/tmp/exiting-client", NOS_O_CREAT | NOS_O_RDWR);
     exit_task(fd >= 3 ? 11 : 1);
 }
-#if defined(NOS_ARM64) || defined(NOS_RISCV)
+#if defined(NOS_ARM) || defined(NOS_ARM64) || defined(NOS_RISCV)
 extern void nos_fp_set(uint64_t pattern);
 extern uint64_t nos_fp_get(void);
 static void fp_worker(uintptr_t unused)
@@ -199,6 +209,9 @@ void nos_validation(uintptr_t unused)
     for (;;) { }
 #endif
 #if NOS_PERSISTENCE_TEST > 0
+#if defined(NOS_LINUX_COMPAT) && (NOS_PERSISTENCE_TEST == 8 || NOS_PERSISTENCE_TEST == 9)
+    nos_kernel_regression();
+#endif
     nos_persistence_regression(NOS_PERSISTENCE_TEST);
     nos_syscall(NOS_SYS_SLEEP, 2, 0, 0);
     nos_syscall(NOS_SYS_FINISH, failures, 0, 0);
@@ -273,9 +286,9 @@ void nos_validation(uintptr_t unused)
         ok &= bytes[NOS_PAGE_SIZE + 3] == 12 && !nos_syscall(NOS_SYS_MUNMAP, (uintptr_t)p, 0, 0);
     }
     nos_check(ok, "multi_page_mapping");
-    intptr_t blocks[64], allocation_error = 0;
+    intptr_t blocks[MAPPING_TEST_LIMIT], allocation_error = 0;
     unsigned allocated = 0;
-    for (; allocated < 64; allocated++) {
+    for (; allocated < MAPPING_TEST_LIMIT; allocated++) {
         blocks[allocated] = nos_syscall(NOS_SYS_MMAP, 3, NOS_PAGE_SIZE, 0);
         if (!mapping_valid(blocks[allocated])) { allocation_error = blocks[allocated]; break; }
     }
@@ -310,7 +323,7 @@ void nos_validation(uintptr_t unused)
     nos_check(wait_status(worker, 23), "scheduler_sleep_wait");
     intptr_t invalid_status;
     nos_check(nos_syscall(NOS_SYS_WAIT, (uintptr_t)worker, (uintptr_t)&invalid_status, 0) == -NOS_ESRCH, "process_stale_handle");
-#if defined(NOS_ARM64) || defined(NOS_RISCV)
+#if defined(NOS_ARM) || defined(NOS_ARM64) || defined(NOS_RISCV)
     nos_fp_set(0x3ff4000000000000ull);
     worker = spawn(fp_worker, 0, 8);
     nos_syscall(NOS_SYS_SLEEP, 4, 0, 0);
@@ -387,6 +400,11 @@ void nos_validation(uintptr_t unused)
     nos_elf_regression();
     resource_regression();
     nos_kernel_regression();
+#ifdef NOS_POSIX_SUITE
+    nos_posix_suite();
+#elif defined(NOS_LINUX_COMPAT)
+    nos_linux_regression();
+#endif
     nos_syscall(NOS_SYS_FINISH, failures, 0, 0);
     for (;;) { }
 }

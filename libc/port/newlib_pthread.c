@@ -24,7 +24,8 @@ static struct condition_record conditions[POSIX_OBJECTS];
 static struct key_record keys[POSIX_KEYS];
 static struct { int tid, cancel_state; void *values[POSIX_KEYS];
     struct _pthread_cleanup_context *cleanup; } locals[NOS_TASKS];
-static int error(int result) { return result < 0 ? -result : result; }
+extern int nos_newlib_errno(int code);
+static int error(int result) { return result < 0 ? nos_newlib_errno(-result) : result; }
 static unsigned tid(void) { return (unsigned)nos_syscall(NOS_SYS_GETPID, 0, 0, 0); }
 static unsigned local_index(void)
 {

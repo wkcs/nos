@@ -9,7 +9,7 @@ SECTIONS {
  __user_text_load = LOADADDR(.user_text);
  .data : { __data_start = .; */kernel/micro/*.o(.data* .sdata*) */arch/*/micro/*.o(.data* .sdata*) *kernel-libgcc.a:*(.data* .sdata*) __data_end = .; } > RAM AT> FLASH
  __data_load = LOADADDR(.data);
- .bss (NOLOAD) : { __bss_start = .; */kernel/micro/*.o(.bss* .sbss* COMMON) */arch/*/micro/*.o(.bss* .sbss* COMMON) *kernel-libgcc.a:*(.bss* .sbss* COMMON) __bss_end = .; } > RAM
+ .bss (NOLOAD) : { __bss_start = .; */arch/*/micro/*.o(.bss* .sbss* COMMON) *kernel-libgcc.a:*(.bss* .sbss* COMMON) */kernel/micro/*.o(.bss* .sbss* COMMON) __bss_end = .; } > RAM
  .user_data ALIGN(16384) : { __user_data_start = .; *(.got .got.*) */user/*.o(.data* .sdata*) */servers/*.o(.data* .sdata*) */libc/port/*.o(.data* .sdata*) *libc.a:*(.data* .sdata*) *libgcc.a:*(.data* .sdata*) __user_data_end = .; } > RAM AT> FLASH
  __user_data_load = LOADADDR(.user_data);
  .user_bss __user_data_end (NOLOAD) : { __user_bss_start = .; */user/*.o(.bss* .sbss* COMMON) */servers/*.o(.bss* .sbss* COMMON) */libc/port/*.o(.bss* .sbss* COMMON) *libc.a:*(.bss* .sbss* COMMON) *libgcc.a:*(.bss* .sbss* COMMON) __user_bss_end = .; } > RAM

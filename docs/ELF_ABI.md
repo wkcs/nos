@@ -37,7 +37,7 @@ ARM、ARM64、RISC-V RV64/Sv39 与 RV32/Sv32 接受本架构、小端、原生�
 
 代码与只读段合计最大 512 KiB；初始化数据与 BSS 最大 24 KiB。更多堆空间由匿名映射提供，
 受页池和 VMA 配额限制。`apps/app.ld` 将 ELF 文件头及程序头映射进 RX 段，使
-libc 能读取实际 `AT_PHDR`。当前不支持解释器、动态链接器或共享库装载。
+libc 能读取实际 `AT_PHDR`。此原生静态装载契约拒绝解释器和共享库；Linux personality 使用下面的独立接口。
 
 加载器在分配执行资源前检查头部、程序头范围、架构、长度溢出、对齐、入口指令位于文件内容支持的可执行段、
 段页范围不重叠和 W^X。单独的 R-only LOAD 保持 R/NX；回归会实际执行其中的返回指令并要求 EFAULT，不能只根据页表标志宣称 NX。失败时调用方回收创建的地址空间；回归测试检查页池与任务配额恢复。
@@ -71,3 +71,32 @@ RAM 文件系统内容随服务重启丢弃；需要保留的数据应先同步�
 
 自测构建可以传入 `embed_initramfs.py --negative-fixtures` 加入损坏 ELF 归档条目。
 这些测试镜像不会进入正常启动归档。实际执行证据应以本次 QEMU 日志为准。
+
+## Linux 动态程序
+
+`LINUX_COMPAT=1` 为 ARM、AArch64 和 RV64 的 MMU 构建增加独立 Linux personality。
+原生 `EXEC_SPAWN` 仍使用上面的静态契约；`EXEC_LINUX` 显式选择 Linux 系统调用 ABI，
+并要求调用方提供来自真实随机设备的 16 字节熵。VFS 的随机读取允许短读，调用方必须累积完整长度。
+
+内核接受本架构的 `ET_EXEC` 或 `ET_DYN` 主程序，将 PIE 主程序偏移到 `0x06000000`，
+将 `PT_INTERP` 指定的归档解释器偏移到 `0x06800000`。解释器必须是本架构的 `ET_DYN`。
+每个 LOAD 的文件范围、溢出、对齐、可执行文件内容中的入口和权限都经过检查；共享页权限合并后也拒绝 W+X。
+初始用户栈为 `0x077c0000..0x07800000`，RW/NX，栈指针对齐 16 字节，布局为
+`argc, argv[], NULL, envp[], NULL, auxv[]`。auxv 提供实际主程序 PHDR/PHNUM/PHENT/ENTRY、
+解释器 BASE、页大小、身份、时钟频率、EXECFN 和真实 RANDOM；程序计数器从解释器入口开始。
+
+Linux profile 的执行参数预算为 131072 字节，计入 argv/envp 字符串的 NUL、所有参数和环境指针及
+两张指针表的终止 NULL，匹配此 profile 的 glibc `sysconf(_SC_ARG_MAX)`。
+参数存储为受内核锁保护的有界 packed staging，字符串使用 32 位偏移；构造新栈时流式写入指针，
+不会按参数数量扩大内核栈。超过预算返回 E2BIG，非法用户地址返回 EFAULT；失败保留原进程镜像。
+用户字符串按最多 64 字节且不跨源页的块读取；紧邻保护页之前的 NUL 仍可终止字符串，缺少 NUL 而跨入保护页则返回 EFAULT。
+执行文件路径最多 255 字节（另加 NUL）；VFS 路径协议的上限仍需按其独立接口确认，不能从 exec 上限推断。
+
+Debian 的原始 `ld.so` 在用户态查找 `DT_NEEDED`、映射共享库并执行重定位、构造函数及 TLS 初始化。
+内核不执行 Linux 动态重定位。用户态只读 gateway 位于 `0x01800000`，每线程私有 gateway 栈由内核分配；
+文件系统调用经 gateway 转给用户态 VFS。该映射不能由普通应用的固定地址映射覆盖。
+
+此 profile 的正常 shell 另有 `runlinux /bin/program [args]`。例如
+`runlinux /bin/glibc_check qemu` 使用归档内实际 glibc 的 CRT 和动态链接器启动程序。
+`NOS_LINUX_FOCUSED_APP` 仅用于开发时聚焦单个应用；默认回归执行完整应用列表，严格验收不接受聚焦模式替代。
+完整 POSIX.1-2017 符合性须依据接口清单和测试结果单独评估，动态启动成功不代表符合性认证。

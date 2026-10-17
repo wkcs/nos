@@ -5,12 +5,23 @@
 #include <stddef.h>
 #define NOS_PAGE_SIZE 4096u
 #define NOS_MSG_DATA 64u
+#ifdef NOS_LINUX_COMPAT
+#define NOS_PATH_MAX 256u
+#else
+#define NOS_PATH_MAX 64u
+#endif
+#define NOS_IPC_BULK_MAX 512u
 #if defined(NOS_MMU) || defined(NOS_RISCV32)
 #define NOS_TASKS 12u
 #else
 #define NOS_TASKS 6u
 #endif
 #define NOS_ABI_VERSION 1u
+#ifdef NOS_LINUX_COMPAT
+#define NOS_FD_LIMIT 32u
+#else
+#define NOS_FD_LIMIT 11u
+#endif
 #define NOS_MUTEXES 32u
 #define NOS_ENDPOINTS 8u
 #define NOS_CPUS 4u
@@ -19,12 +30,19 @@
 #endif
 #define NOS_IDLE_FIRST (NOS_TASKS - NOS_SMP)
 #ifdef NOS_MMU
+#ifdef NOS_LINUX_COMPAT
+#define NOS_VM_REGIONS 128u
+#else
 #define NOS_VM_REGIONS 16u
+#endif
 #else
 #define NOS_VM_REGIONS 4u
 #endif
 static inline int nos_pointer_is_error(intptr_t value) { return (uintptr_t)value >= (uintptr_t)-4095; }
 #define NOS_ENDPOINT_BASE 0x40000000u
+#define NOS_ENDPOINT_LIMIT 0x60000000u
+#define NOS_SHARED_BASE 0x60000000u
+#define NOS_SHARED_LIMIT 0x80000000u
 #define NOS_MUTEX_HANDLE_MAX 0x1fffffffu
 #define NOS_RIGHT_CALL 1u
 #define NOS_RIGHT_RECV 2u
@@ -37,7 +55,9 @@ static inline int nos_pointer_is_error(intptr_t value) { return (uintptr_t)value
 #define NOS_ENOENT 2
 #define NOS_ESRCH 3
 #define NOS_EIO 5
+#define NOS_E2BIG 7
 #define NOS_EBADF 9
+#define NOS_ECHILD 10
 #define NOS_EAGAIN 11
 #define NOS_ENOMEM 12
 #define NOS_EACCES 13
@@ -48,8 +68,10 @@ static inline int nos_pointer_is_error(intptr_t value) { return (uintptr_t)value
 #define NOS_EISDIR 21
 #define NOS_EINVAL 22
 #define NOS_EMFILE 24
+#define NOS_EFBIG 27
 #define NOS_ENOSPC 28
 #define NOS_EPIPE 32
+#define NOS_ERANGE 34
 #define NOS_EDEADLK 35
 #define NOS_ENAMETOOLONG 36
 #define NOS_ENOSYS 38
@@ -62,10 +84,17 @@ static inline int nos_pointer_is_error(intptr_t value) { return (uintptr_t)value
 #define NOS_O_WRONLY 1u
 #define NOS_O_RDWR 2u
 #define NOS_O_CREAT 0x40u
+#define NOS_O_EXCL 0x80u
 #define NOS_O_TRUNC 0x200u
 #define NOS_O_APPEND 0x400u
 #define NOS_O_NONBLOCK 0x800u
+#define NOS_O_DIRECTORY 0x10000u
+#define NOS_O_NOFOLLOW 0x20000u
+#define NOS_O_CLOEXEC 0x80000u
+#define NOS_FD_CLOEXEC 1u
 #define NOS_IO_DONTWAIT 1u
+#define NOS_WAIT_NONBLOCK 1u
+#define NOS_CANCEL_GROUP 1u
 #define NOS_CAP_MMU 1u
 #define NOS_CAP_USER 2u
 #define NOS_CAP_PREEMPT 4u
@@ -74,10 +103,13 @@ static inline int nos_pointer_is_error(intptr_t value) { return (uintptr_t)value
 #define NOS_CAP_DEVICE 32u
 #define NOS_CAP_MPU 64u
 #define NOS_CAP_SMP 128u
+#define NOS_CAP_SHARED_BROKER 256u
 #define NOS_FEATURE_MASK (NOS_CAP_MMU | NOS_CAP_USER | NOS_CAP_PREEMPT | NOS_CAP_MPU | NOS_CAP_SMP)
-#define NOS_PERMISSION_MASK (NOS_CAP_IPC | NOS_CAP_SPAWN | NOS_CAP_DEVICE)
+#define NOS_PERMISSION_MASK (NOS_CAP_IPC | NOS_CAP_SPAWN | NOS_CAP_DEVICE | NOS_CAP_SHARED_BROKER)
 #define NOS_IPC_PEER_EXIT (-1)
 #define NOS_IPC_PEER_CANCEL (-2)
+#define NOS_IPC_PROCESS_FORK (-3)
+#define NOS_IPC_PROCESS_EXEC (-4)
 enum nos_syscall {
     NOS_SYS_WRITE = 0,
     NOS_SYS_GETPID = 1,
@@ -136,13 +168,30 @@ enum nos_syscall {
     NOS_SYS_ENDPOINT_CLOSE = 54,
     NOS_SYS_FUTEX_REQUEUE = 55,
     NOS_SYS_TICKS64 = 56,
+    NOS_SYS_BOOTFILE = 57,
+    NOS_SYS_EXEC_LINUX = 58,
+    NOS_SYS_LINUX_RETURN = 59,
+    NOS_SYS_LINUX_MAP = 60,
+    NOS_SYS_LINUX_EXEC = 61,
+    NOS_SYS_LINUX_WAITCONTROL = 62,
+    NOS_SYS_SHARED = 63,
+    NOS_SYS_CLOCK_GET64 = 64,
+    NOS_SYS_IPC_XFER = 65,
 };
 enum nos_vfs_op {
     NOS_VFS_OPEN = 1, NOS_VFS_CLOSE, NOS_VFS_READ, NOS_VFS_WRITE,
     NOS_VFS_SEEK, NOS_VFS_STAT, NOS_VFS_MKDIR, NOS_VFS_UNLINK,
     NOS_VFS_RMDIR = 9, NOS_VFS_RENAME = 10, NOS_VFS_READDIR = 11,
     NOS_VFS_DUP = 12, NOS_VFS_PIPE = 13, NOS_VFS_MOUNT = 14, NOS_VFS_SYNC = 15,
-    NOS_VFS_DEVICE_STATS = 16, NOS_VFS_GETFLAGS = 17, NOS_VFS_SETFLAGS = 18
+    NOS_VFS_DEVICE_STATS = 16, NOS_VFS_GETFLAGS = 17, NOS_VFS_SETFLAGS = 18,
+    NOS_VFS_PREAD = 19, NOS_VFS_PWRITE = 20, NOS_VFS_OPENAT = 21,
+    NOS_VFS_STATAT = 22, NOS_VFS_GETDENTS = 23, NOS_VFS_GETCWD = 24,
+    NOS_VFS_CHDIR = 25, NOS_VFS_READLINK = 26, NOS_VFS_FCHDIR = 27, NOS_VFS_STAT64 = 28, NOS_VFS_GETRANDOM = 29, NOS_VFS_GETFD = 30, NOS_VFS_SETFD = 31, NOS_VFS_POLL = 32,
+    NOS_VFS_FTRUNCATE = 33, NOS_VFS_UMASK = 34, NOS_VFS_FCHMOD = 35,
+    NOS_VFS_CHMOD = 36, NOS_VFS_SYMLINK = 37, NOS_VFS_LINK = 38,
+    NOS_VFS_OPENAT_MODE = 39, NOS_VFS_MKDIRAT = 40, NOS_VFS_TRUNCATE = 41,
+    NOS_VFS_UNLINKAT = 42, NOS_VFS_RENAMEAT = 43, NOS_VFS_SHARED_FILE = 44,
+    NOS_VFS_RESOLVE_PATH = 45
 };
 struct nos_message {
     intptr_t sender, op, value, arg;
@@ -156,15 +205,40 @@ struct nos_message {
 #if UINTPTR_MAX == UINT32_MAX
     uint32_t reserved_tail;
 #endif
+#ifdef NOS_LINUX_COMPAT
+    uintptr_t bulk_in;
+    size_t bulk_in_len;
+    uintptr_t bulk_out;
+    size_t bulk_out_len;
+#endif
 };
 /* ABI uses native pointers; ABI_QUERY exposes version and word width. */
 struct nos_abi_info { uint32_t version, word_bits, message_bytes, page_bytes; };
 struct nos_call_args { uintptr_t endpoint, request, reply; uint64_t timeout_ticks; };
+#define NOS_IPC_FETCH 0u
+#define NOS_IPC_STORE 1u
+struct nos_ipc_xfer { intptr_t sender; uint64_t token; size_t offset; uintptr_t buffer; size_t count; unsigned direction; };
 struct nos_futex_requeue { uintptr_t source, target; uint32_t wake_count, requeue_count, compare, flags; };
 struct nos_thread_args { uintptr_t entry, arg, stack, stack_size, tls, clear_tid, parent_tid; };
 struct nos_object_stats { uint32_t tasks, mutexes, endpoints, free_pages; };
 struct nos_exec_request { const char *path; const char *const *argv; const char *const *envp; unsigned priority; };
 struct nos_stat { size_t size; unsigned mode; };
+struct nos_stat64 {
+    uint64_t ino, size, blocks;
+    int64_t atime_sec, mtime_sec, ctime_sec;
+    uint32_t mode, nlink, uid, gid;
+};
+struct nos_bootfile_io { uint32_t index, flags; uint64_t offset; uintptr_t buffer; size_t count; };
+#define NOS_BOOTFILE_LOOKUP 0u
+#define NOS_BOOTFILE_STAT 1u
+#define NOS_BOOTFILE_READ 2u
+#define NOS_BOOTFILE_ENUM 3u
+#define NOS_SHARED_CREATE 0u
+#define NOS_SHARED_GRANT 1u
+#define NOS_SHARED_MAP 2u
+#define NOS_SHARED_RELEASE 3u
+struct nos_shared_request { uintptr_t handle, address, length, offset, prot, flags, target; };
+struct nos_clock_value { int64_t seconds, nanoseconds; };
 intptr_t nos_syscall(uintptr_t number, uintptr_t a, uintptr_t b, uintptr_t c);
 void nos_vfs_server(uintptr_t unused);
 void nos_validation(uintptr_t unused);

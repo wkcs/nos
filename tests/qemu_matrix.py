@@ -165,7 +165,7 @@ def main():
             required = COMMON | (MMU if platform not in ('stm32', 'riscv32_nommu') else {'nommu_explicit_contract', 'nommu_user_privilege'}) | (NEWLIB if libc == 'newlib' else MUSL if libc == 'musl' else set())
             if platform in ('stm32', 'riscv32_nommu'):
                 required |= {'elf_pie_relocations_validated'}
-            if platform in ('arm64_virt', 'riscv_virt', 'riscv32_virt', 'riscv32_nommu'):
+            if platform in ('arm_virt', 'arm64_virt', 'riscv_virt', 'riscv32_virt', 'riscv32_nommu'):
                 required |= {'fpu_context_switch'}
             if platform.startswith('riscv'):
                 required |= {'riscv_halfword_thread_entry'}
@@ -178,6 +178,14 @@ def main():
             if libc in ('musl', 'newlib'):
                 required |= {libc + '_float_format', libc + ('_thread_reent' if platform == 'stm32' else '_process_tls')}
                 required |= {'libc_monotonic_sleep', 'libc_monotonic_absolute_sleep'}
+                if platform == 'stm32':
+                    required |= {'libc_realtime_unsupported'}
+                else:
+                    required |= {'libc_realtime_clock_gettimeofday', 'libc_realtime_absolute_sleep'}
+                required |= {'posix_openat_positioned_io_stat', 'posix_cwd_relative_paths',
+                             'posix_directory_iteration_seek', 'posix_directory_long_record',
+                             'posix_poll_select_readiness', 'posix_poll_timeout_eof_invalid',
+                             'posix_metadata_modes_truncate', 'posix_metadata_links_symlinks'}
                 if args.cpus > 1:
                     required |= {libc + '_pthread_cross_cpu_execution'}
             if libc == 'minimal':

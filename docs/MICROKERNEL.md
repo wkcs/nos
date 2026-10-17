@@ -46,11 +46,13 @@ PID、锁、IRQ 和端点带代际信息；对象类型有独立句柄范围，�
 
 端点 0 是初始 VFS 服务入口，其他端点可由授权任务创建和委托。回复必须匹配当前请求 token；超时、取消或对端退出后，旧回复不能完成新请求。服务重启使用新的任务 generation，等待中的客户端收到错误；RAM 文件与原有 FD 不自动恢复，持久化数据须重新挂载。
 
+Linux 兼容配置的 native 消息另带有界输入/输出 span，消息的 inline data 仍为 64 字节。IPC_XFER 只允许当前接收服务在调用仍等待回复时，以匹配 sender generation、token 和端点权限复制至多 512 字节；每次重新检查两端映射和权限。取消、超时、撤权、服务重启和旧 token 均不能留下可继续使用的跨地址空间读写权限。默认消息布局不变；兼容配置内的所有 native 客户端、服务与 gateway 必须使用相同构建配置，ABI_QUERY 暴露实际 message_bytes。
+
 ## 架构、内存与上下文
 
 | 目标 | 地址转换 / 模式 | 用户上下文 |
 |---|---|---|
-| ARM Cortex-A15 `virt` | ARMv7 短描述符、用户/特权模式 | ARM 通用寄存器，soft-float ABI |
+| ARM Cortex-A15 `virt` | ARMv7 短描述符、用户/特权模式 | ARM 通用寄存器、VFP d0–d31/FPSCR、TLS；GNU soft-float ABI |
 | ARM64 Cortex-A53 `virt` | EL1/EL0、三级页表 | 通用寄存器、完整 SIMD/FP、FPCR/FPSR、TPIDR_EL0 |
 | RV64GC `virt` | M 引导、S 内核、U 用户、Sv39 | 通用寄存器、完整浮点/FCSR、TP |
 | RV32GC `virt` | Sv32 或显式非 MMU 配置 | 32 位通用寄存器、64 位浮点寄存器/FCSR、TP |
@@ -77,9 +79,11 @@ MMU 进程使用独立数据/堆/栈，线程共享引用计数地址空间。�
 
 这些上限是显式资源预算。达到上限返回错误，不能以固定测试数据能运行推断为无限容量文件系统或通用桌面内核。改变 MCU 内存预算必须同时检查 ELF 段、内核栈、MPU 区域和链接布局。
 
+`LINUX_COMPAT=1` 是独立的 MMU 兼容配置：32 MiB 物理页池、每地址空间 128 个 VMA、256 KiB 基础进程区与 128 KiB 用户模板上限、32 个 FD，RAM 文件可按需使用 8192 字节共享后端。默认 MCU/原生配置的内存与模板限制不因该配置而放宽。执行参数的实际字符串、NUL 和向量指针总预算为 128 KiB；内核使用静态 staging 和流式新栈构造，不将巨大参数表放到内核栈上。
+
 ## 应用、运行库与设备
 
-`BUILD_MODE=selftest` 启动能力验证并返回测试退出状态；`BUILD_MODE=normal` 启动持续运行的 init 和串口 shell。独立应用从嵌入式 initramfs 装载，具备 argc/argv/envp/auxv、初始化数据、BSS 和 TLS。ARM/ARM64/RISC-V MMU 使用静态 ELF；STM32/RV32 非 MMU 使用经过校验的 PIE 相对重定位。当前没有运行时动态链接器或共享库装载。
+`BUILD_MODE=selftest` 启动能力验证并返回测试退出状态；`BUILD_MODE=normal` 启动持续运行的 init 和串口 shell。独立应用从嵌入式 initramfs 装载，具备 argc/argv/envp/auxv、初始化数据、BSS 和 TLS。native ARM/ARM64/RISC-V MMU 使用静态 ELF；STM32/RV32 非 MMU 使用经过校验的 PIE 相对重定位。Linux 兼容配置另提供真实动态解释器和共享库装载。
 
 Newlib 使用校验过的 4.5.0 源码构建动态重入与 retargetable locking 端口；线程通过内核 TLS 值取得自己的 `_reent`，不依赖跨 CPU 改写全局 `_impure_ptr`。库存 Newlib 只保留显式诊断回退，不能作为跨核重入安全证据。musl 1.2.5 的真实静态库通过 syscall 适配层调用 NOS，线程启动、futex 与退出必须覆盖其架构汇编中直接使用 Linux ABI 的路径。支持范围与未支持操作见 [POSIX_SUPPORT.md](POSIX_SUPPORT.md)。
 
@@ -87,8 +91,20 @@ Newlib 使用校验过的 4.5.0 源码构建动态重入与 retargetable locking
 
 Lua 5.4 与 LVGL 9 复用仓库旧库，作为独立用户 ELF 运行；LVGL 验证真实软件渲染和像素变化。软件帧缓冲通过不等于 LCD、USB、GPIO 或真实开发板验证。旧专用 USB、显示、键盘板级代码仍需对应控制器/板卡的服务适配与硬件回归，不参与无模型平台的通过结论。
 
+## Linux personality 与共享对象
+
+ARM、ARM64、RV64 的 Linux personality 解码真实六参数 syscall ABI。内核保留原始 Linux 上下文，文件请求转入独立链接的用户态 gateway，再经 native IPC 调用 VFS；返回时恢复原帧后投递信号。用户态 ld.so 执行动态重定位、构造器及 dlopen，内核不承担文件系统业务或 libc 分配器。
+
+fork 复制私有映射并保留共享映射的物理身份；exec 分阶段准备新地址空间，失败保留旧镜像，成功保留进程 PID 并替换上下文。处理器帧、signal mask、pending、sigreturn、TLS、robust futex 和取消机制分别处理。ARM 兼容配置还映射受控只读可执行的 Linux kuser helper 页；不因此允许任意高地址用户访问。
+
+RAM 文件的读写和 MAP_SHARED 指向同一物理后端。只有可信 VFS 具有共享对象 broker 权限；每次映射得到绑定地址空间、对象 generation 和 FD 最大权限的一次性租约。成功和失败映射均消费该次授权，VMA 保存独立 maxprot；同进程此前获得可写映射不能提升后来只读 FD 的映射权限。已存在映射、尚未消费的有效租约和队列中的共享 futex 维持物理页身份，关闭 FD、unlink 和最后解除映射分别处理。进程共享 futex 用物理页身份及偏移匹配，允许不同虚拟地址同步。
+
+兼容配置的 RAM/initramfs 路径上限为含 NUL 的 256 字节，双路径通过同一次受 token 约束的 span 传输，目录记录支持分片。默认配置仍为 64 字节；持久化格式的路径字段保留 64 字节并显式拒绝超长名称，不修改已有磁盘格式。执行路径先由用户态 VFS 处理 cwd、规范化与符号链接，再由内核装载 initramfs ELF；尚不等同于执行任意磁盘或 RAM 文件中的程序。
+
+共享 RAM 文件即时保持页数据一致，msync 仍检查地址、flags 和完整映射范围；这不意味着持久化磁盘映射已经实现。截断后越 EOF 页的 SIGBUS、按需分页和交换仍是未完成的语义。
+
 ## 实现边界
 
-当前是有界的静态链接微内核系统，支持多个独立 ELF 和并发线程；不提供完整 Linux 二进制 ABI、完整 POSIX、glibc、fork、动态链接、通用信号、网络协议栈、文件映射、按需分页或交换。它们是按应用需求安排的后续兼容目标。C 库通过真实标准程序验证所声明子集，不支持操作应明确返回错误。
+当前仍是有界微内核系统。native Newlib/musl 与 Linux/glibc 两条路径分别验收，已实现动态链接、fork/exec、信号和共享文件的声明子集；完整 Linux ABI、完整 POSIX、网络协议栈、完整 TTY/作业控制、按需分页和交换尚未完成。C 库通过真实标准程序验证所声明范围，不支持操作应明确返回错误。逐接口边界见 [POSIX_SUPPORT.md](POSIX_SUPPORT.md)。
 
 真实硬件与远端 CI 状态必须在验证报告中单列。QEMU 证明所选模型中的行为，不能代替板卡时钟、引脚、DMA 一致性、缓存和外设电气行为测试。

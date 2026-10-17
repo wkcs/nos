@@ -85,3 +85,20 @@ void nos_uart_get_stats(struct nos_uart_stats *stats)
     stats->ready = __atomic_load_n(&rx_ready, __ATOMIC_ACQUIRE);
 #endif
 }
+
+int nos_uart_readable(void)
+{
+#ifdef NOS_NORMAL_BOOT
+    reap_dead_reader();
+    if (__atomic_load_n(&rx_started, __ATOMIC_ACQUIRE) && !__atomic_load_n(&rx_failed, __ATOMIC_ACQUIRE))
+        return __atomic_load_n(&rx_head, __ATOMIC_ACQUIRE) != __atomic_load_n(&rx_tail, __ATOMIC_ACQUIRE);
+#endif
+    intptr_t ready = nos_syscall(NOS_SYS_DEVICE, 5, 0, 0);
+    return ready >= 0 && (ready & 1);
+}
+
+int nos_uart_writable(void)
+{
+    intptr_t ready = nos_syscall(NOS_SYS_DEVICE, 5, 0, 0);
+    return ready >= 0 && (ready & 4);
+}

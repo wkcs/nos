@@ -20,7 +20,7 @@ struct arch_frame { uintptr_t saved[8], r[4], ip, lr, pc, status, sp; };
 #define ARCH_NAME "stm32f405"
 #define FRAME_RESULT(f) ((f)->r[0])
 #else
-struct arch_frame { uintptr_t r[13], sp, lr, pc, status, tls; };
+struct arch_frame { uintptr_t r[13], sp, lr, pc, status, tls; uint64_t d[32]; uintptr_t fpscr, padding; };
 #define ARCH_NAME "armv7"
 #define FRAME_RESULT(f) ((f)->r[0])
 #endif
@@ -37,7 +37,8 @@ _Static_assert(offsetof(struct arch_frame, pc) == 256 && offsetof(struct arch_fr
 #elif defined(NOS_ARM_M)
 _Static_assert(offsetof(struct arch_frame, sp) == 64, "Cortex-M exception ABI");
 #else
-_Static_assert(offsetof(struct arch_frame, pc) == 60 && offsetof(struct arch_frame, tls) == 68 && sizeof(struct arch_frame) == 72, "ARM exception ABI");
+_Static_assert(offsetof(struct arch_frame, pc) == 60 && offsetof(struct arch_frame, tls) == 68 && offsetof(struct arch_frame, d) == 72 &&
+               offsetof(struct arch_frame, fpscr) == 328 && sizeof(struct arch_frame) == 336, "ARM exception ABI");
 #endif
 struct task;
 unsigned arch_cpu_id(void);
@@ -52,6 +53,14 @@ intptr_t arch_device_operation(struct task *task, uintptr_t op, uintptr_t b, uin
 int arch_mpu_valid_range(uintptr_t base, size_t size);
 #endif
 void arch_platform_init(void);
+uint64_t arch_realtime_ns(void);
+uintptr_t arch_fault_address(void);
+unsigned arch_fault_signal(void);
+#if defined(NOS_ARM) || defined(NOS_ARM_M)
+uintptr_t arch_user_helper_phys(uintptr_t va);
+#else
+static inline uintptr_t arch_user_helper_phys(uintptr_t va) { (void)va; return 0; }
+#endif
 void arch_putc(char c);
 void arch_shutdown(int failed) __attribute__((noreturn));
 void arch_timer_init(void);

@@ -1,7 +1,9 @@
 /* Copyright (C) 2026 NOS contributors */
 #include "init.h"
 #include "user.h"
+#include "linux.h"
 static unsigned service_pid;
+#define NOS_SHELL_ARGC 8u
 
 int nos_exec(const char *path, const char *const *argv, const char *const *envp, unsigned priority)
 {
@@ -45,14 +47,33 @@ static void restart_service(void)
     if (rc >= 0) service_pid = (unsigned)rc;
     report("restart", rc);
 }
-static void run_program(unsigned count, char **words)
+static int exec_linux(const char *path, const char *const *argv, const char *const *envp)
 {
-    const char *arguments[NOS_EXEC_ARGC + 1];
-    if (!count || count > NOS_EXEC_ARGC) { nos_puts("run /bin/program [args]\n"); return; }
+#ifdef NOS_LINUX_COMPAT
+    unsigned char random[16];
+    for (size_t copied = 0; copied < sizeof(random);) {
+        struct nos_message entropy = {.op = NOS_VFS_GETRANDOM, .len = sizeof(random) - copied};
+        intptr_t rc = nos_rpc(&entropy);
+        if (rc < 0) return (int)rc;
+        if (!rc || (uintptr_t)rc > sizeof(random) - copied || entropy.len != (size_t)rc) return -NOS_EIO;
+        u_memcpy(random + copied, entropy.data, (size_t)rc);
+        copied += (size_t)rc;
+    }
+    struct nos_exec_request request = {path, argv, envp, 8};
+    return (int)nos_syscall(NOS_SYS_EXEC_LINUX, (uintptr_t)&request,
+                            (uintptr_t)random, NOS_EXEC_RANDOM_VALID);
+#else
+    (void)path; (void)argv; (void)envp; return -NOS_ENOTSUP;
+#endif
+}
+static void run_program(unsigned count, char **words, unsigned linux_abi)
+{
+    const char *arguments[NOS_SHELL_ARGC + 1];
+    if (!count || count > NOS_SHELL_ARGC) { nos_puts("run /bin/program [args]\n"); return; }
     for (unsigned i = 0; i < count; i++) arguments[i] = words[i];
     arguments[count] = 0;
-    const char *environment[] = {"PATH=/bin", "NOS=1", 0};
-    int pid = nos_exec(words[0], arguments, environment, 8);
+    const char *environment[] = {"PATH=/bin", "NOS=1", "LD_LIBRARY_PATH=/lib", 0};
+    int pid = linux_abi ? exec_linux(words[0], arguments, environment) : nos_exec(words[0], arguments, environment, 8);
     if (pid < 0) { report("exec", pid); return; }
     intptr_t status = 0;
     intptr_t rc = nos_syscall(NOS_SYS_WAIT, (uintptr_t)pid, (uintptr_t)&status, 0);
@@ -60,9 +81,9 @@ static void run_program(unsigned count, char **words)
 }
 static void shell_command(char *line)
 {
-    char *words[NOS_EXEC_ARGC + 1]; unsigned count = 0;
+    char *words[NOS_SHELL_ARGC + 1]; unsigned count = 0;
     char *p = line;
-    while (*p && count < NOS_EXEC_ARGC + 1) {
+    while (*p && count < NOS_SHELL_ARGC + 1) {
         while (*p == ' ' || *p == '\t') p++;
         if (!*p) break;
         words[count++] = p;
@@ -73,6 +94,9 @@ static void shell_command(char *line)
     if (u_streq(words[0], "help")) {
         nos_puts("help | ls [path] | cat path | write path text | mkdir path | mv old new\n"
                  "rm path | rmdir path | mount [path] | sync | run /bin/program [args] | stats | restart\n");
+#ifdef NOS_LINUX_COMPAT
+        nos_puts("runlinux /bin/program [args]\n");
+#endif
     } else if (u_streq(words[0], "ls")) {
         int fd = nos_open(count > 1 ? words[1] : "/", NOS_O_RDONLY);
         if (fd < 0) { report("ls", fd); return; }
@@ -107,7 +131,10 @@ static void shell_command(char *line)
     else if (u_streq(words[0], "rmdir") && count == 2) report("rmdir", nos_rmdir(words[1]));
     else if (u_streq(words[0], "mount") && count <= 2) report("mount", nos_mount(count == 2 ? words[1] : "/persist", 1));
     else if (u_streq(words[0], "sync") && count == 1) report("sync", nos_sync());
-    else if (u_streq(words[0], "run")) run_program(count - 1, words + 1);
+    else if (u_streq(words[0], "run")) run_program(count - 1, words + 1, 0);
+#ifdef NOS_LINUX_COMPAT
+    else if (u_streq(words[0], "runlinux")) run_program(count - 1, words + 1, 1);
+#endif
     else if (u_streq(words[0], "restart") && count == 1) restart_service();
     else if (u_streq(words[0], "stats")) {
         struct nos_object_stats stats;
@@ -122,7 +149,7 @@ void nos_init(uintptr_t argument)
     (void)argument;
     nos_puts("NOS NORMAL BOOT: supervised VFS and independent ELF applications\n");
     char *boot_arguments[] = {"/bin/hello", "boot"};
-    run_program(2, boot_arguments);
+    run_program(2, boot_arguments, 0);
     nos_puts("NOS SHELL READY\nnos> ");
     char line[256]; unsigned length = 0, dropping = 0;
     for (;;) {

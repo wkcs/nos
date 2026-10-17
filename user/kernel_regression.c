@@ -90,6 +90,134 @@ static void reply_unmap_thread(uintptr_t pointer)
     nos_syscall(NOS_SYS_MUNMAP, probe->address, NOS_PAGE_SIZE, 0);
     nos_syscall(NOS_SYS_EXIT, 0, 0, 0);
 }
+#ifdef NOS_LINUX_COMPAT
+struct bulk_control { uintptr_t endpoint, target, address; unsigned mode, tid; };
+static void bulk_control_thread(uintptr_t pointer)
+{
+    struct bulk_control *control = (void *)pointer; struct nos_message message;
+    intptr_t rc;
+    do {
+        rc = nos_syscall(NOS_SYS_RECV, control->endpoint, (uintptr_t)&message, 0);
+        if (rc == -NOS_EACCES) nos_syscall(NOS_SYS_SLEEP, 1, 0, 0);
+    } while (rc == -NOS_EACCES);
+    if (!rc) {
+        message.value = control->mode == 1 ? nos_syscall(NOS_SYS_MUNMAP, control->address, NOS_PAGE_SIZE, 0) :
+            nos_syscall(NOS_SYS_ENDPOINT_REVOKE, control->target, control->address, NOS_RIGHT_RECV);
+        nos_syscall(NOS_SYS_REPLY, (uintptr_t)message.sender, (uintptr_t)&message, 0);
+    }
+    nos_syscall(NOS_SYS_EXIT, 0, 0, 0);
+}
+static void bulk_service(uintptr_t endpoint)
+{
+    int ok = 1;
+    for (;;) {
+        struct nos_message message; intptr_t rc;
+        do {
+            rc = nos_syscall(NOS_SYS_RECV, endpoint, (uintptr_t)&message, 0);
+            if (rc == -NOS_EACCES) nos_syscall(NOS_SYS_SLEEP, 1, 0, 0);
+        } while (rc == -NOS_EACCES);
+        if (rc) nos_syscall(NOS_SYS_EXIT, 76, 0, 0);
+        if (message.op < 0) continue;
+        unsigned char buffer[32];
+        struct nos_ipc_xfer transfer = {message.sender, message.token, 4, (uintptr_t)buffer, 8, NOS_IPC_FETCH};
+        if (message.op == 1) {
+            ok &= !nos_syscall(NOS_SYS_IPC_XFER, (uintptr_t)&transfer, 0, 0);
+            for (unsigned i = 0; i < 8; i++) ok &= buffer[i] == ((i + 4) ^ 0x5a);
+            transfer.offset = 95; transfer.count = 2;
+            ok &= nos_syscall(NOS_SYS_IPC_XFER, (uintptr_t)&transfer, 0, 0) == -NOS_EINVAL;
+            transfer.offset = 0; transfer.count = NOS_IPC_BULK_MAX + 1;
+            ok &= nos_syscall(NOS_SYS_IPC_XFER, (uintptr_t)&transfer, 0, 0) == -NOS_EINVAL;
+            transfer.count = 8; transfer.direction = 2;
+            ok &= nos_syscall(NOS_SYS_IPC_XFER, (uintptr_t)&transfer, 0, 0) == -NOS_EINVAL;
+            transfer.direction = NOS_IPC_FETCH; transfer.token++;
+            ok &= nos_syscall(NOS_SYS_IPC_XFER, (uintptr_t)&transfer, 0, 0) == -NOS_EPERM;
+            transfer.token--; transfer.sender += NOS_TASKS;
+            ok &= nos_syscall(NOS_SYS_IPC_XFER, (uintptr_t)&transfer, 0, 0) == -NOS_EPERM;
+            transfer.sender = message.sender; transfer.buffer = 1;
+            ok &= nos_syscall(NOS_SYS_IPC_XFER, (uintptr_t)&transfer, 0, 0) == -NOS_EFAULT;
+            intptr_t scratch = nos_syscall(NOS_SYS_MMAP, NOS_PROT_READ | NOS_PROT_WRITE, NOS_PAGE_SIZE, 0);
+            if (nos_pointer_is_error(scratch)) ok = 0;
+            else {
+                transfer.buffer = (uintptr_t)scratch + NOS_PAGE_SIZE - 4;
+                ok &= nos_syscall(NOS_SYS_IPC_XFER, (uintptr_t)&transfer, 0, 0) == -NOS_EFAULT;
+                nos_syscall(NOS_SYS_MUNMAP, (uintptr_t)scratch, NOS_PAGE_SIZE, 0);
+            }
+            message.bulk_in = 1; transfer.buffer = (uintptr_t)buffer;
+            ok &= !nos_syscall(NOS_SYS_IPC_XFER, (uintptr_t)&transfer, 0, 0);
+            for (unsigned i = 0; i < 32; i++) buffer[i] = (unsigned char)(0xa0 + i);
+            transfer.direction = NOS_IPC_STORE; transfer.count = 32;
+            ok &= !nos_syscall(NOS_SYS_IPC_XFER, (uintptr_t)&transfer, 0, 0);
+            message.value = ok;
+            nos_syscall(NOS_SYS_REPLY, (uintptr_t)message.sender, (uintptr_t)&message, 0);
+            ok &= nos_syscall(NOS_SYS_IPC_XFER, (uintptr_t)&transfer, 0, 0) == -NOS_EPERM;
+        } else if (message.op == 2) {
+            nos_syscall(NOS_SYS_SLEEP, 5, 0, 0);
+            ok &= nos_syscall(NOS_SYS_IPC_XFER, (uintptr_t)&transfer, 0, 0) == -NOS_EPERM;
+        } else if (message.op == 3) {
+            ok &= !nos_syscall(NOS_SYS_IPC_XFER, (uintptr_t)&transfer, 0, 0) && buffer[0] == 0x55;
+            message.value = ok; nos_syscall(NOS_SYS_REPLY, (uintptr_t)message.sender, (uintptr_t)&message, 0);
+        } else {
+            struct nos_message control = {.op = 1};
+            ok &= !nos_syscall(NOS_SYS_CALL, (uintptr_t)message.arg, (uintptr_t)&control, (uintptr_t)&control) && !control.value;
+            int expected = message.op == 4 ? -NOS_EFAULT : -NOS_EPERM;
+            ok &= nos_syscall(NOS_SYS_IPC_XFER, (uintptr_t)&transfer, 0, 0) == expected;
+            transfer.direction = NOS_IPC_STORE;
+            ok &= nos_syscall(NOS_SYS_IPC_XFER, (uintptr_t)&transfer, 0, 0) == expected;
+            if (message.op == 5) nos_syscall(NOS_SYS_EXIT, ok ? 75 : 76, 0, 0);
+            message.value = ok; nos_syscall(NOS_SYS_REPLY, (uintptr_t)message.sender, (uintptr_t)&message, 0);
+        }
+    }
+}
+static void bulk_regression(void)
+{
+    unsigned char input[96], output[34];
+    for (unsigned i = 0; i < sizeof(input); i++) input[i] = (unsigned char)(i ^ 0x5a);
+    u_memset(output, 0xee, sizeof(output));
+    intptr_t endpoint = nos_syscall(NOS_SYS_ENDPOINT_CREATE, 0, 0, 0);
+    intptr_t server = spawn(bulk_service, (uintptr_t)endpoint, 6);
+    int ok = server >= 0 && endpoint >= 0 && !nos_syscall(NOS_SYS_ENDPOINT_GRANT, (uintptr_t)server, (uintptr_t)endpoint, NOS_RIGHT_RECV);
+    struct nos_message message = {.op = 1, .bulk_in = 1, .bulk_in_len = 8};
+    ok &= nos_syscall(NOS_SYS_CALL, (uintptr_t)endpoint, (uintptr_t)&message, (uintptr_t)&message) == -NOS_EFAULT;
+    message.bulk_in = (uintptr_t)input; message.bulk_in_len = NOS_IPC_BULK_MAX + 1;
+    ok &= nos_syscall(NOS_SYS_CALL, (uintptr_t)endpoint, (uintptr_t)&message, (uintptr_t)&message) == -NOS_EINVAL;
+    message.bulk_in_len = sizeof(input); message.bulk_out = 1; message.bulk_out_len = 8;
+    ok &= nos_syscall(NOS_SYS_CALL, (uintptr_t)endpoint, (uintptr_t)&message, (uintptr_t)&message) == -NOS_EFAULT;
+    message.bulk_out = (uintptr_t)(output + 1); message.bulk_out_len = 32;
+    ok &= !nos_syscall(NOS_SYS_CALL, (uintptr_t)endpoint, (uintptr_t)&message, (uintptr_t)&message) && message.value == 1;
+    for (unsigned i = 0; i < 32; i++) ok &= output[i + 1] == (unsigned char)(0xa0 + i);
+    ok &= output[0] == 0xee && output[33] == 0xee;
+    nos_check(ok, "ipc_bulk_token_bounds");
+    message = (struct nos_message){.op = 2, .bulk_in = (uintptr_t)input, .bulk_in_len = sizeof(input)};
+    struct nos_call_args call = {(uintptr_t)endpoint, (uintptr_t)&message, (uintptr_t)&message, 2};
+    ok &= nos_syscall(NOS_SYS_CALL_EX, (uintptr_t)&call, 0, 0) == -NOS_ETIMEDOUT;
+    input[4] = 0x55;
+    message = (struct nos_message){.op = 3, .bulk_in = (uintptr_t)input, .bulk_in_len = sizeof(input)};
+    ok &= !nos_syscall(NOS_SYS_CALL, (uintptr_t)endpoint, (uintptr_t)&message, (uintptr_t)&message) && message.value == 1;
+    for (unsigned mode = 1; mode <= 2; mode++) {
+        intptr_t payload = nos_syscall(NOS_SYS_MMAP, 3, NOS_PAGE_SIZE, 0);
+        intptr_t stack = nos_syscall(NOS_SYS_MMAP, 3, NOS_PAGE_SIZE, 0);
+        intptr_t control_endpoint = nos_syscall(NOS_SYS_ENDPOINT_CREATE, 0, 0, 0);
+        struct bulk_control control = {(uintptr_t)control_endpoint, (uintptr_t)server, mode == 1 ? (uintptr_t)payload : (uintptr_t)endpoint, mode, 0};
+        struct nos_thread_args args = {(uintptr_t)bulk_control_thread, (uintptr_t)&control, (uintptr_t)stack, NOS_PAGE_SIZE, 0,
+                                      (uintptr_t)&control.tid, (uintptr_t)&control.tid};
+        intptr_t worker = nos_syscall(NOS_SYS_THREAD_CREATE, (uintptr_t)&args, UINTPTR_MAX, 0);
+        ok &= worker >= 0 && !nos_syscall(NOS_SYS_TASK_AUTHORIZE, (uintptr_t)worker, NOS_CAP_SPAWN, 0) &&
+              !nos_syscall(NOS_SYS_ENDPOINT_GRANT, (uintptr_t)worker, (uintptr_t)control_endpoint, NOS_RIGHT_RECV) &&
+              !nos_syscall(NOS_SYS_ENDPOINT_GRANT, (uintptr_t)server, (uintptr_t)control_endpoint, NOS_RIGHT_CALL);
+        message = (struct nos_message){.op = 3 + mode, .arg = control_endpoint, .bulk_in = (uintptr_t)payload, .bulk_in_len = 96,
+                                      .bulk_out = (uintptr_t)payload + 128, .bulk_out_len = 96};
+        intptr_t rc = nos_syscall(NOS_SYS_CALL, (uintptr_t)endpoint, (uintptr_t)&message, (uintptr_t)&message);
+        ok &= mode == 1 ? !rc && message.value == 1 : rc == -NOS_EACCES;
+        while (__atomic_load_n(&control.tid, __ATOMIC_ACQUIRE))
+            nos_syscall(NOS_SYS_FUTEX_WAIT, (uintptr_t)&control.tid, control.tid, 0);
+        nos_syscall(NOS_SYS_MUNMAP, (uintptr_t)stack, NOS_PAGE_SIZE, 0);
+        if (mode == 2) nos_syscall(NOS_SYS_MUNMAP, (uintptr_t)payload, NOS_PAGE_SIZE, 0);
+    }
+    ok &= wait_for(server, 75);
+    nos_syscall(NOS_SYS_ENDPOINT_CLOSE, (uintptr_t)endpoint, 0, 0);
+    nos_check(ok, "ipc_bulk_cancel_revocation");
+}
+#endif
 void nos_kernel_regression(void)
 {
     struct nos_abi_info abi;
@@ -264,6 +392,9 @@ void nos_kernel_regression(void)
     nos_syscall(NOS_SYS_OBJECT_STATS, (uintptr_t)&after, 0, 0);
     nos_check(ok && before.tasks == after.tasks && before.free_pages == after.free_pages,
               "orphan_task_reclamation");
+#ifdef NOS_LINUX_COMPAT
+    bulk_regression();
+#endif
 
     /* Killing a service returns errors to clients; explicit init restart creates a fresh generation. */
     ok = !nos_syscall(NOS_SYS_TASK_CANCEL, 0, 0, 0);

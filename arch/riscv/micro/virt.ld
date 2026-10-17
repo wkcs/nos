@@ -1,5 +1,6 @@
 /* Copyright (C) 2026 NOS contributors */
 ENTRY(_start)
+NOS_USER_TEMPLATE_LIMIT = DEFINED(NOS_USER_TEMPLATE_LIMIT) ? NOS_USER_TEMPLATE_LIMIT : 24576;
 PHDRS { kernel PT_LOAD FLAGS(5); kernel_data PT_LOAD FLAGS(6); user PT_LOAD FLAGS(5); data PT_LOAD FLAGS(6); }
 SECTIONS {
  . = 0x80000000;
@@ -25,6 +26,6 @@ SECTIONS {
    __user_data_end = .;
  } :data
  .user_bss (0x01000000 + SIZEOF(.user_data)) (NOLOAD) : { __user_bss_start = .; */user/*.o(.bss* .sbss* COMMON) */servers/*.o(.bss* .sbss* COMMON) */libc/port/*.o(.bss* .sbss* COMMON) *libc.a:*(.bss* .sbss* COMMON) *libgcc.a:*(.bss* .sbss* COMMON) __user_bss_end = .; } :data
- ASSERT(__user_bss_end - __user_data_start < 24576, "user template exceeds reserved data area")
+ ASSERT(__user_bss_end - __user_data_start <= NOS_USER_TEMPLATE_LIMIT, "user template exceeds reserved data area")
  /DISCARD/ : { *(.comment .note* .eh_frame* .ARM.exidx* .ARM.extab*) }
 }

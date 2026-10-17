@@ -87,12 +87,14 @@ struct arch_frame *arch_return_frame(struct arch_frame *f)
     return stack;
 }
 #else
-struct tables { uint32_t root[4096]; uint32_t text[256], data[256], heap[2][256], device[256]; } __attribute__((aligned(16384)));
+struct tables { uint32_t root[4096], user[NOS_USER_PT_SLOTS][256], helper[256];
+    unsigned short binding[NOS_USER_PT_SLOTS], live[NOS_USER_PT_SLOTS];
+} __attribute__((aligned(16384)));
 /* The stride must retain the 16 KiB TTBR alignment for every task. */
 static struct tables spaces[NOS_TASKS] __attribute__((aligned(16384)));
 static int enabled[NOS_CPUS];
 static unsigned kernel_tables_ready;
-static uint32_t kernel_pages[16][256] __attribute__((aligned(1024)));
+static uint32_t kernel_pages[128][256] __attribute__((aligned(1024)));
 extern char __kernel_start[], __kernel_ro_end[], kernel_stack_guard[];
 static unsigned period, claimed[NOS_CPUS];
 void arch_platform_init(void) { }
@@ -125,8 +127,9 @@ void arch_timer_ack(void)
 void arch_space_init(unsigned id)
 {
     struct tables *t = &spaces[id]; k_memset(t, 0, sizeof(*t));
+    for (unsigned n = 0; n < NOS_USER_PT_SLOTS; n++) t->binding[n] = 0xffff;
     for (unsigned i = 0x400; i < 0x480; i++) t->root[i] = (i << 20) | 2 | (1u << 10) | (1u << 4) | (1u << 12) | (1u << 16);
-    for (unsigned block = 0; block < 16; block++) {
+    for (unsigned block = 0; block < 128; block++) {
         t->root[0x400 + block] = (uintptr_t)kernel_pages[block] | 1;
         if (!kernel_tables_ready) for (unsigned page = 0; page < 256; page++) {
             uintptr_t pa = 0x40000000u + block * 0x100000 + page * 4096;
@@ -141,27 +144,54 @@ void arch_space_init(unsigned id)
     t->root[0x80] = 0x08000000 | 2 | (1u << 10) | (1u << 4);
     t->root[0xa0] = 0x0a000000 | 2 | (1u << 10) | (1u << 4);
     t->root[0x90] = 0x09000000 | 2 | (1u << 10) | (1u << 4);
-    t->root[4] = (uintptr_t)t->text | 1;
-    t->root[16] = (uintptr_t)t->data | 1;
-    t->root[32] = (uintptr_t)t->heap[0] | 1;
-    t->root[33] = (uintptr_t)t->heap[1] | 1;
-    t->root[48] = (uintptr_t)t->device | 1;
+#ifdef NOS_LINUX_COMPAT
+    extern char __kuser_start[];
+    t->root[0xfff] = (uintptr_t)t->helper | 1;
+    t->helper[0xf0] = (uintptr_t)__kuser_start | 2 | (1u << 6) | (1u << 10) | 0x220;
+#endif
+
+}
+static uint32_t *user_pte(struct tables *t, uintptr_t va, int create, unsigned *slot)
+{
+    if (va < VM_USER_BASE || va >= VM_USER_END) return NULL;
+    unsigned block = (unsigned)(va >> 20), free_slot = NOS_USER_PT_SLOTS;
+    if ((t->root[block] & 3) == 2) return NULL;
+    for (unsigned n = 0; n < NOS_USER_PT_SLOTS; n++) {
+        if (t->binding[n] == block) { if (slot) *slot = n; return &t->user[n][(va >> 12) & 255]; }
+        if (t->binding[n] == 0xffff && free_slot == NOS_USER_PT_SLOTS) free_slot = n;
+    }
+    if (!create || free_slot == NOS_USER_PT_SLOTS) return NULL;
+    k_memset(t->user[free_slot], 0, sizeof(t->user[free_slot]));
+    t->binding[free_slot] = (unsigned short)block;
+    t->root[block] = (uintptr_t)t->user[free_slot] | 1;
+    if (slot) *slot = free_slot;
+    return &t->user[free_slot][(va >> 12) & 255];
+}
+static void retire_user_tables(int finish)
+{
+    for (unsigned id = 0; id < NOS_TASKS; id++) for (unsigned n = 0; n < NOS_USER_PT_SLOTS; n++) {
+        struct tables *t = &spaces[id];
+        if (t->binding[n] == 0xffff || t->live[n]) continue;
+        if (!finish) t->root[t->binding[n]] = 0; else t->binding[n] = 0xffff;
+    }
 }
 int arch_map(unsigned id, uintptr_t va, uintptr_t pa, unsigned flags)
 {
     struct tables *t = &spaces[id];
-    uint32_t *p = va >> 20 == 4 ? t->text : va >> 20 == 16 ? t->data : (va >> 20 >= 32 && va >> 20 < 34) ? t->heap[(va >> 20) - 32] : va >> 20 == 48 ? t->device : NULL;
-    if (!p || (va & 4095) || (pa & 4095)) return -NOS_EINVAL;
+    if ((va & 4095) || (pa & 4095) || ((flags & 6) == 6)) return -NOS_EINVAL;
+    unsigned slot = 0; uint32_t *p = user_pte(t, va, !!flags, &slot);
+    if (!p) return flags ? -NOS_ENOMEM : 0;
+    if (!*p && flags) t->live[slot]++; else if (*p && !flags) t->live[slot]--;
     unsigned bits = 2 | (1u << 6) | (1u << 10);
     bits |= (flags & ARCH_MAP_PRIVILEGED) ? ((flags & NOS_PROT_WRITE) ? 0x10 : 0x210) :
         ((flags & NOS_PROT_WRITE) ? 0x30 : 0x220);
     if (!(flags & NOS_PROT_EXEC)) bits |= 1;
-    p[(va >> 12) & 255] = flags ? pa | bits : 0;
+    *p = flags ? pa | bits : 0;
     return 0;
 }
 void arch_unmap(unsigned id, uintptr_t va) { (void)arch_map(id, va, 0, 0); }
 void arch_tlb_sync(void)
-{ unsigned zero = 0; __asm__ volatile("dsb ishst; mcr p15, 0, %0, c8, c3, 0; dsb ish; isb" :: "r"(zero) : "memory"); }
+{ retire_user_tables(0); unsigned zero = 0; __asm__ volatile("dsb ishst; mcr p15, 0, %0, c8, c3, 0; dsb ish; isb" :: "r"(zero) : "memory"); retire_user_tables(1); }
 void arch_cache_sync(void)
 { unsigned zero = 0; __asm__ volatile("dsb ish; mcr p15, 0, %0, c7, c1, 0; dsb ish; isb" :: "r"(zero) : "memory"); }
 unsigned arch_cpu_id(void)
@@ -195,7 +225,7 @@ void arch_space_switch(unsigned id)
     }
 }
 void arch_frame_init(struct arch_frame *f, uintptr_t pc, uintptr_t sp, uintptr_t arg, uintptr_t second)
-{ k_memset(f, 0, sizeof(*f)); f->pc = pc; f->sp = sp; f->status = 0x10; f->r[0] = arg; f->r[1] = second; }
+{ k_memset(f, 0, sizeof(*f)); f->pc = pc & ~(uintptr_t)1; f->sp = sp; f->status = 0x10 | ((pc & 1) ? 0x20 : 0); f->r[0] = arg; f->r[1] = second; }
 struct arch_frame *arch_return_frame(struct arch_frame *f) { return f; }
 #endif
 void arch_shutdown(int failed)
@@ -215,10 +245,12 @@ intptr_t arch_device_operation(struct task *task, uintptr_t op, uintptr_t b, uin
 {
 #ifdef NOS_ARM_M
     (void)task; (void)b; (void)c;
+    if (op == 5) { unsigned status = *reg(0x40011000); return ((status & (1u << 5)) ? 1 : 0) | ((status & (1u << 7)) ? 4 : 0); }
     if (op == 4) { if (b) *reg(0x4001100c) |= 1u << 5; else *reg(0x4001100c) &= ~(1u << 5); return 0; }
     if (!op) return (*reg(0x40011000) & (1u << 5)) ? (intptr_t)(*reg(0x40011004) & 255) : -NOS_EAGAIN;
     return -NOS_ENOTSUP;
 #else
+    if (op == 5) { unsigned status = *reg(0x09000018); return (!(status & 0x10) ? 1 : 0) | (!(status & 0x20) ? 4 : 0); }
     if (op == 4) { *reg(0x09000038) = b ? ((1u << 4) | (1u << 6)) : 0; return 0; }
     if (!op) {
         if (*reg(0x09000018) & 0x10) { *reg(0x09000044) = 1u << 6; return -NOS_EAGAIN; }
@@ -228,11 +260,72 @@ intptr_t arch_device_operation(struct task *task, uintptr_t op, uintptr_t b, uin
     if (op == 2) {
         if (b < 0x0a000000u || b >= 0x0a004000u || (b & 4095) ||
             c < 0x03000000u || c >= 0x03100000u || (c & 4095)) return -NOS_EINVAL;
-        spaces[task->space_id].device[(c >> 12) & 255] = b | 2 | 0x30 | 1;
+        struct tables *t = &spaces[task->space_id]; unsigned slot;
+        uint32_t *pte = user_pte(t, c, 1, &slot);
+        if (!pte) return -NOS_ENOMEM;
+        if (!*pte) t->live[slot]++;
+        *pte = b | 2 | 0x30 | 1;
         arch_tlb_sync(); return (intptr_t)c;
     }
     if (op == 3) { uintptr_t pa = task_user_phys(task, b); return pa ? (intptr_t)pa : -NOS_EFAULT; }
     return -NOS_ENOTSUP;
+#endif
+}
+
+uintptr_t arch_user_helper_phys(uintptr_t va)
+{
+#if defined(NOS_LINUX_COMPAT) && !defined(NOS_ARM_M)
+    extern char __kuser_start[];
+    if (va >= 0xffff0000u && va < 0xffff1000u) return (uintptr_t)__kuser_start + va - 0xffff0000u;
+#else
+    (void)va;
+#endif
+    return 0;
+}
+
+/* PL031 data register reports UTC seconds.  Its page is privileged in
+ * the existing UART device block; user mapping APIs exclude that block. */
+#ifndef NOS_ARM_M
+unsigned arm_fault_kind[NOS_CPUS];
+#endif
+unsigned arch_fault_signal(void)
+{
+#ifdef NOS_ARM_M
+    return (*reg(0xe000ed28u) & (1u << 16)) ? 4 : 11;
+#else
+    unsigned kind = arm_fault_kind[arch_cpu_id()], status;
+    if (!kind) return 4; /* Undefined instruction. */
+    if (kind == 1) __asm__ volatile("mrc p15, 0, %0, c5, c0, 1" : "=r"(status));
+    else __asm__ volatile("mrc p15, 0, %0, c5, c0, 0" : "=r"(status));
+    unsigned cause = (status & 15) | ((status >> 6) & 16);
+    return cause == 1 ? 7 : 11;
+#endif
+}
+
+uintptr_t arch_fault_address(void)
+{
+#ifdef NOS_ARM_M
+    unsigned status = *reg(0xe000ed28u);
+    if (status & (1u << 7)) return *reg(0xe000ed34u);
+    if (status & (1u << 15)) return *reg(0xe000ed38u);
+    return 0;
+#else
+    uintptr_t address;
+    if (arm_fault_kind[arch_cpu_id()] == 1)
+        __asm__ volatile("mrc p15, 0, %0, c6, c0, 2" : "=r"(address));
+    else if (arm_fault_kind[arch_cpu_id()] == 2)
+        __asm__ volatile("mrc p15, 0, %0, c6, c0, 0" : "=r"(address));
+    else address = 0;
+    return address;
+#endif
+}
+
+uint64_t arch_realtime_ns(void)
+{
+#ifdef NOS_ARM_M
+    return 0;
+#else
+    return (uint64_t)*reg(0x09010000u) * 1000000000ull;
 #endif
 }
 
@@ -253,7 +346,7 @@ void arch_device_revoke(struct task *task)
 #endif
     for (unsigned i = 0; i < count; i++) {
         volatile uint32_t *mmio = (void *)(base + i * stride);
-        if (mmio[0] != 0x74726976 || mmio[2] != 2) continue;
+        if (mmio[0] != 0x74726976 || (mmio[2] != 2 && mmio[2] != 4)) continue;
         mmio[0x70 / 4] = 0;
 #ifdef NOS_RISCV
         __asm__ volatile("fence iorw, iorw" ::: "memory");
@@ -316,11 +409,12 @@ unsigned arch_mapping_flags(unsigned id, uintptr_t va)
 #ifdef NOS_ARM_M
     (void)id; (void)va; return 0;
 #else
-    struct tables *t = &spaces[id];
-    uint32_t *p = va >> 20 == 4 ? t->text : va >> 20 == 16 ? t->data :
-        (va >> 20 >= 32 && va >> 20 < 34) ? t->heap[(va >> 20) - 32] : NULL;
-    if (!p || !p[(va >> 12) & 255]) return 0;
-    uint32_t entry = p[(va >> 12) & 255];
+#ifdef NOS_LINUX_COMPAT
+    if (va >= 0xffff0000u && va < 0xffff1000u) return spaces[id].helper[0xf0] ? 5 : 0;
+#endif
+    uint32_t *p = user_pte(&spaces[id], va, 0, NULL);
+    if (!p || !*p) return 0;
+    uint32_t entry = *p;
     return 1 | ((entry & 0x30) == 0x30 ? 2 : 0) | (!(entry & 1) ? 4 : 0);
 #endif
 }

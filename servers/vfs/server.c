@@ -1,10 +1,29 @@
 /* Copyright (C) 2026 NOS contributors */
 #include "abi.h"
+#include "poll_abi.h"
 #include "../drivers/devices.h"
 #include "../fatfs/adapter.h"
+#ifndef NOS_PATH_MAX
+#ifdef NOS_LINUX_COMPAT
+#define NOS_PATH_MAX 256u
+#else
+#define NOS_PATH_MAX 64u
+#endif
+#endif
+#ifdef NOS_LINUX_COMPAT
+#define PATH_DATA_MAX (2u * NOS_PATH_MAX)
+#else
+#define PATH_DATA_MAX NOS_MSG_DATA
+#endif
+#define JOINED_PATH_MAX (2u * NOS_PATH_MAX)
 #define NODE_COUNT 16u
-#define FILE_BYTES 512u
-#define FDS 11u
+#define INLINE_BYTES 512u
+#ifdef NOS_LINUX_COMPAT
+#define FILE_BYTES 8192u
+#else
+#define FILE_BYTES INLINE_BYTES
+#endif
+#define FDS NOS_FD_LIMIT
 #define OPEN_COUNT (NOS_TASKS * FDS)
 #define PIPE_COUNT 2u
 #define PIPE_BYTES 256u
@@ -12,10 +31,20 @@
 #define MODE_FILE 0100000u
 #define MODE_CHAR 0020000u
 #define MODE_FIFO 0010000u
+#define MODE_LINK 0120000u
+#define NODE_TYPE(n) ((n)->mode & 0170000u)
 #define NO_NODE 0xffffu
-struct vnode { char name[64], bytes[FILE_BYTES]; size_t size; unsigned mode, used, linked, refs, persistent; };
-struct description { unsigned node, offset, flags, refs, kind, pipe; };
-struct fd_table { intptr_t pid; unsigned short fd[FDS]; };
+#ifndef NOS_O_DIRECTORY
+#define NOS_O_DIRECTORY 0x10000u
+#define NOS_O_NOFOLLOW 0x20000u
+#define NOS_O_CLOEXEC 0x80000u
+#define NOS_O_EXCL 0x80u
+#endif
+struct vnode { char name[NOS_PATH_MAX], bytes[INLINE_BYTES]; size_t size; unsigned mode; uint16_t used, linked, refs, persistent; };
+struct description { uint64_t offset, size; uint32_t flags; uint16_t node, refs, kind, pipe; };
+_Static_assert(OPEN_COUNT + NOS_TASKS < UINT16_MAX, "OFD references fit in 16 bits");
+_Static_assert(sizeof(struct description) == 32, "compact OFD layout");
+struct fd_table { intptr_t pid; unsigned short fd[FDS]; unsigned fd_flags; unsigned short mask; char cwd[NOS_PATH_MAX]; };
 struct pipe_buffer { char bytes[PIPE_BYTES]; unsigned head, size, readers, writers; };
 static struct vnode nodes[NODE_COUNT];
 static struct description opened[OPEN_COUNT];
@@ -23,18 +52,26 @@ static struct fd_table fds[NOS_TASKS];
 static struct pipe_buffer pipes[PIPE_COUNT];
 static unsigned disk_mounted;
 static unsigned fat_mounted;
-static char fat_path[64];
+static char fat_path[NOS_PATH_MAX];
 static unsigned disk_generation;
-static char mount_path[64];
+static char mount_path[NOS_PATH_MAX];
+#include "file_data.h"
+static int archive_lookup(const char *, unsigned *, uint64_t *);
+static int canonical_path(const char *, size_t, char [NOS_PATH_MAX]);
 static int prefix(const char *s, const char *p)
 { while (*p) if (*s++ != *p++) return 0; return 1; }
 static int child_path(const char *s, const char *p)
 { size_t n = u_strlen(p); return prefix(s, p) && (n == 1 || s[n] == '/'); }
 static int backend(const char *p)
-{ return child_path(p, "/dev") || u_streq(p, "/dev") ? 1 : child_path(p, "/proc") || u_streq(p, "/proc") ? 2 : 0; }
+{
+#ifdef NOS_LINUX_COMPAT
+    /* POSIX named IPC objects are RAM files under a writable tmpfs namespace. */
+    if (u_streq(p, "/dev/shm") || child_path(p, "/dev/shm")) return 0;
+#endif
+    return child_path(p, "/dev") || u_streq(p, "/dev") ? 1 : child_path(p, "/proc") || u_streq(p, "/proc") ? 2 : 0; }
 static int normalize(const char *src, size_t len, char *dst)
 {
-    if (!len || len > 64 || src[0] != '/' || src[len - 1]) return -NOS_EINVAL;
+    if (!len || len > NOS_PATH_MAX || src[0] != '/' || src[len - 1]) return -NOS_EINVAL;
     size_t end = 1, i = 1; dst[0] = '/';
     while (i < len - 1) {
         while (i < len - 1 && src[i] == '/') i++;
@@ -47,7 +84,7 @@ static int normalize(const char *src, size_t len, char *dst)
             continue;
         }
         if (end > 1) dst[end++] = '/';
-        if (end + n >= 64) return -NOS_ENAMETOOLONG;
+        if (end + n >= NOS_PATH_MAX) return -NOS_ENAMETOOLONG;
         u_memcpy(dst + end, src + start, n); end += n;
     }
     dst[end] = 0;
@@ -64,32 +101,68 @@ static int path_equal(const char *a, const char *b, unsigned fold)
 }
 static const char *fat_relative(const char *path)
 { const char *p = path + u_strlen(fat_path); return *p ? p : "/"; }
-static int lookup(const char *path)
+static int lookup_entry(const char *path)
 {
     for (unsigned i = 0; i < NODE_COUNT; i++)
         if (nodes[i].used && nodes[i].linked && path_equal(path, nodes[i].name, nodes[i].persistent == 2)) return (int)i;
     return -NOS_ENOENT;
 }
+static unsigned inode_of(unsigned entry)
+{ return nodes[entry].used == 2 ? (unsigned)nodes[entry].size : entry; }
+static int lookup(const char *path)
+{ int entry = lookup_entry(path); return entry < 0 ? entry : (int)inode_of((unsigned)entry); }
+static unsigned node_links(unsigned inode)
+{
+    unsigned count = nodes[inode].linked != 0;
+    for (unsigned i = 0; i < NODE_COUNT; i++) if (nodes[i].used == 2 && nodes[i].linked && nodes[i].size == inode) count++;
+    return count;
+}
+static void remove_entry(unsigned entry)
+{
+    if (nodes[entry].used == 2) { clear_node(entry); return; }
+    struct vnode *node = &nodes[entry];
+    for (unsigned i = 0; i < NODE_COUNT; i++) if (nodes[i].used == 2 && nodes[i].linked && nodes[i].size == entry) {
+        u_memcpy(node->name, nodes[i].name, u_strlen(nodes[i].name) + 1);
+        clear_node(i); return;
+    }
+    node->linked = 0; if (!node->refs) clear_node((unsigned)(node - nodes));
+}
 static int parent_of(const char *path)
 {
-    char parent[64]; size_t n = u_strlen(path);
+    char parent[NOS_PATH_MAX]; size_t n = u_strlen(path);
     while (n > 1 && path[n - 1] != '/') n--;
     if (n > 1) n--;
     u_memcpy(parent, path, n); parent[n] = 0;
     int p = lookup(parent);
-    return p < 0 ? p : nodes[p].mode == MODE_DIR ? p : -NOS_ENOTDIR;
+    return p < 0 ? p : NODE_TYPE(&nodes[p]) == MODE_DIR ? p : -NOS_ENOTDIR;
 }
 static int create(const char *path, unsigned mode)
 {
     if (u_streq(path, "/")) return -NOS_EEXIST;
-    int p = parent_of(path); if (p < 0) return p;
+    int p = parent_of(path);
+    if (p < 0) {
+        char parent[NOS_PATH_MAX]; size_t end = u_strlen(path);
+        while (end > 1 && path[end - 1] != '/') end--;
+        if (end > 1) end--;
+        u_memcpy(parent, path, end); parent[end] = 0;
+        unsigned kind; uint64_t size;
+        if (archive_lookup(parent, &kind, &size) >= 0) return -30;
+        return p;
+    }
     if (backend(path)) return -NOS_EACCES;
+    if (nodes[p].persistent && u_strlen(path) >= 64) return -NOS_ENAMETOOLONG;
     for (unsigned i = 0; i < NODE_COUNT; i++) if (!nodes[i].used) {
-        if (nodes[p].persistent == 2) { int rc = mode == MODE_DIR ? nos_fat_mkdir(fat_relative(path)) : nos_fat_write(fat_relative(path), "", 0); if (rc) return rc; }
-        u_memset(&nodes[i], 0, sizeof(nodes[i]));
+        #ifdef NOS_LINUX_COMPAT
+        if (next_file_inode == UINT64_MAX) return -NOS_ENOSPC;
+#endif
+        if (nodes[p].persistent == 2) { int rc = (mode & 0170000u) == MODE_DIR ? nos_fat_mkdir(fat_relative(path)) : nos_fat_write(fat_relative(path), "", 0); if (rc) return rc; }
+        clear_node(i);
         u_memcpy(nodes[i].name, path, u_strlen(path) + 1);
         nodes[i].mode = mode; nodes[i].used = nodes[i].linked = 1;
         nodes[i].persistent = nodes[p].persistent;
+#ifdef NOS_LINUX_COMPAT
+        file_inodes[i] = next_file_inode++;
+#endif
         return (int)i;
     }
     return -NOS_ENOSPC;
@@ -100,9 +173,9 @@ static void drop_description(unsigned d)
     if (!--opened[d].refs && d >= 3) {
         struct description *o = &opened[d];
         if (o->kind == 2) { struct pipe_buffer *p = &pipes[o->pipe]; if (o->flags & 3) p->writers--; else p->readers--; }
-        else if (o->node < NODE_COUNT) {
+        else if (o->kind < 3 && o->node < NODE_COUNT) {
             struct vnode *n = &nodes[o->node]; if (n->refs) n->refs--;
-            if (!n->linked && !n->refs) u_memset(n, 0, sizeof(*n));
+            if (!n->linked && !n->refs) clear_node((unsigned)(n - nodes));
         }
         u_memset(o, 0, sizeof(*o));
     }
@@ -116,7 +189,7 @@ static struct fd_table *table_for(intptr_t pid)
     for (unsigned i = 0; i < NOS_TASKS; i++) if (fds[i].pid < 0) { t = &fds[i]; break; }
     if (!t) return 0;
     {
-        release_table(t); t->pid = pid;
+        release_table(t); t->pid = pid; t->fd_flags = 0; t->mask = 0022; t->cwd[0] = '/'; t->cwd[1] = 0;
         for (unsigned i = 0; i < 3; i++) { t->fd[i] = i + 1; opened[i].refs++; }
     }
     return t;
@@ -125,10 +198,13 @@ static int free_fd(struct fd_table *t)
 { for (unsigned i = 0; i < FDS; i++) if (!t->fd[i]) return (int)i; return -NOS_EMFILE; }
 static int free_description(void)
 { for (unsigned i = 3; i < OPEN_COUNT; i++) if (!opened[i].refs) return (int)i; return -NOS_EMFILE; }
+#include "archive.h"
 static intptr_t read_data(struct description *d, char *data, size_t count)
 {
     if ((d->flags & 3) == NOS_O_WRONLY) return -NOS_EBADF;
     if (!count) return 0;
+    if (d->kind == ARCHIVE_DIRECTORY) return -NOS_EISDIR;
+    if (d->kind == ARCHIVE_FILE) { intptr_t n = archive_read(d->node, d->offset, data, count); if (n > 0) d->offset += (uint64_t)n; return n; }
     if (d->kind == 1) {
         size_t n = 0;
         while (n < count) { intptr_t c = nos_device_uart_read(); if (c < 0) return n ? (intptr_t)n : c; data[n++] = (char)c; }
@@ -142,14 +218,15 @@ static intptr_t read_data(struct description *d, char *data, size_t count)
         p->size -= count; return (intptr_t)count;
     }
     struct vnode *n = &nodes[d->node];
-    if (n->mode == MODE_DIR) return -NOS_EISDIR;
+    if (NODE_TYPE(n) == MODE_DIR) return -NOS_EISDIR;
     if (d->offset >= n->size) return 0;
     if (count > n->size - d->offset) count = n->size - d->offset;
-    u_memcpy(data, n->bytes + d->offset, count); d->offset += count; return (intptr_t)count;
+    u_memcpy(data, node_bytes(n) + (size_t)d->offset, count); d->offset += count; return (intptr_t)count;
 }
 static intptr_t write_data(struct description *d, const char *data, size_t count)
 {
     if (!(d->flags & 3)) return -NOS_EBADF;
+    if (d->kind >= ARCHIVE_FILE) return -30;
     if (!count) return 0;
     if (d->kind == 1) return nos_syscall(NOS_SYS_WRITE, (uintptr_t)data, count, 0);
     if (d->kind == 2) {
@@ -160,15 +237,17 @@ static intptr_t write_data(struct description *d, const char *data, size_t count
         p->size += count; return (intptr_t)count;
     }
     struct vnode *n = &nodes[d->node];
-    if (n->mode == MODE_DIR) return -NOS_EISDIR;
+    if (NODE_TYPE(n) == MODE_DIR) return -NOS_EISDIR;
     if (backend(n->name) == 2) return -NOS_EACCES;
     if (d->flags & 0x400u) d->offset = (unsigned)n->size;
-    if (d->offset >= FILE_BYTES) return -NOS_ENOSPC;
-    if (count > FILE_BYTES - d->offset) count = FILE_BYTES - d->offset;
-    if (d->offset > n->size) u_memset(n->bytes + n->size, 0, d->offset - n->size);
-    u_memcpy(n->bytes + d->offset, data, count); d->offset += count;
+    size_t limit = node_limit(n);
+    if (d->offset >= limit) return -NOS_ENOSPC;
+    if (count > limit - d->offset) count = limit - d->offset;
+    int reserve = node_reserve(n, (size_t)d->offset + count); if (reserve) return reserve;
+    if (d->offset > n->size) u_memset(node_bytes(n) + n->size, 0, d->offset - n->size);
+    u_memcpy(node_bytes(n) + d->offset, data, count); d->offset += count;
     if (d->offset > n->size) n->size = d->offset;
-    if (n->persistent == 2 && n->linked) { int rc = nos_fat_write(fat_relative(n->name), n->bytes, n->size); if (rc) return rc; }
+    if (n->persistent == 2 && n->linked) { int rc = nos_fat_write(fat_relative(n->name), node_bytes(n), n->size); if (rc) return rc; }
     return (intptr_t)count;
 }
 #include "pipe_wait.h"
@@ -195,6 +274,8 @@ static int disk_sync(void)
 {
     if (!disk_mounted) return -NOS_ENOTSUP;
     if (disk_generation == UINT32_MAX) return -NOS_EOVERFLOW;
+    for (unsigned i = 0; i < NODE_COUNT; i++) if (nodes[i].used && nodes[i].linked && nodes[i].persistent &&
+        (u_strlen(nodes[i].name) >= 64 || nodes[i].size > INLINE_BYTES)) return -NOS_ENAMETOOLONG;
     unsigned bank = (disk_generation + 1) & 1u, crc = ~0u, count = 0;
     unsigned char sector[512];
     for (unsigned i = 0; i < NODE_COUNT; i++) {
@@ -218,10 +299,11 @@ static int disk_sync(void)
 }
 static int disk_mount(const char *path)
 {
+    if (u_strlen(path) >= 64) return -NOS_ENAMETOOLONG;
     if (disk_mounted || fat_mounted) return -NOS_EBUSY;
     if (backend(path) || u_streq(path, "/")) return -NOS_EACCES;
     int root = lookup(path);
-    if (root >= 0 && nodes[root].mode != MODE_DIR) return -NOS_ENOTDIR;
+    if (root >= 0 && NODE_TYPE(&nodes[root]) != MODE_DIR) return -NOS_ENOTDIR;
     for (unsigned i = 0; i < NODE_COUNT; i++) if (nodes[i].used && nodes[i].linked && child_path(nodes[i].name, path)) return -NOS_ENOTEMPTY;
     int rc = nos_block_init(); if (rc) return rc;
     struct disk_header headers[2]; int valid[2];
@@ -243,10 +325,10 @@ static int disk_mount(const char *path)
             rc = nos_block_read(bank * BANK_SECTORS + 1 + 2 * i, sector); if (rc) return rc;
             u_memcpy(&entries[i], sector, sizeof(entries[i])); struct disk_node *entry = &entries[i];
             if (!entry->mode) continue;
-            if (entry->size > FILE_BYTES || entry->name[63] || !(entry->mode == MODE_FILE || entry->mode == MODE_DIR) || (entry->mode == MODE_DIR && entry->size)) return -NOS_EINVAL;
-            char canonical[64]; rc = normalize(entry->name, u_strlen(entry->name) + 1, canonical);
+            if (entry->size > INLINE_BYTES || entry->name[63] || !((entry->mode & 0170000u) == MODE_FILE || NODE_TYPE(entry) == MODE_DIR) || (NODE_TYPE(entry) == MODE_DIR && entry->size)) return -NOS_EINVAL;
+            char canonical[NOS_PATH_MAX]; rc = normalize(entry->name, u_strlen(entry->name) + 1, canonical);
             if (rc || !u_streq(canonical, entry->name) || !(u_streq(entry->name, path) || child_path(entry->name, path))) return -NOS_EACCES;
-            if (u_streq(entry->name, path)) { if (entry->mode != MODE_DIR) return -NOS_ENOTDIR; roots++; }
+            if (u_streq(entry->name, path)) { if ((entry->mode & 0170000u) != MODE_DIR) return -NOS_ENOTDIR; roots++; }
             for (unsigned j = 0; j < i; j++) if (entries[j].mode && u_streq(entries[j].name, entry->name)) return -NOS_EINVAL;
             count++;
         }
@@ -262,7 +344,7 @@ static int disk_mount(const char *path)
             int slot = -1; for (unsigned j = 0; j < NODE_COUNT; j++) if (!nodes[j].used) { slot = (int)j; break; }
             if (slot < 0) { rc = -NOS_ENOSPC; goto rollback; }
             rc = nos_block_read(bank * BANK_SECTORS + 2 + 2 * i, sector); if (rc) goto rollback;
-            struct vnode *n = &nodes[slot]; u_memset(n, 0, sizeof(*n));
+            struct vnode *n = &nodes[slot]; clear_node((unsigned)(n - nodes));
             u_memcpy(n->name, entry->name, 64); n->size = entry->size; n->mode = entry->mode; n->used = n->linked = n->persistent = 1;
             u_memcpy(n->bytes, sector, n->size); installed |= 1u << slot;
         }
@@ -271,52 +353,157 @@ static int disk_mount(const char *path)
     }
     u_memcpy(mount_path, path, u_strlen(path) + 1); disk_mounted = 1; return 0;
 rollback:
-    for (unsigned i = 0; i < NODE_COUNT; i++) if (installed & (1u << i)) u_memset(&nodes[i], 0, sizeof(nodes[i]));
-    nodes[root].persistent = 0; if (created) u_memset(&nodes[root], 0, sizeof(nodes[root])); return rc;
+    for (unsigned i = 0; i < NODE_COUNT; i++) if (installed & (1u << i)) clear_node(i);
+    nodes[root].persistent = 0; if (created) clear_node((unsigned)root); return rc;
 }
 static int fat_import(const char *path, unsigned depth)
 {
     if (depth > 8) return -NOS_EINVAL;
     for (unsigned index = 0;; index++) {
-        char name[64], full[64]; unsigned mode; size_t size;
+        char name[NOS_PATH_MAX], full[NOS_PATH_MAX]; unsigned mode; size_t size;
         int rc = nos_fat_list(fat_relative(path), index, name, &mode, &size);
         if (rc <= 0) return rc;
         if (name[0] == '.' && (!name[1] || (name[1] == '.' && !name[2]))) continue;
         size_t n = u_strlen(path), extra = u_strlen(name);
-        if (n + 1 + extra >= 64 || size > FILE_BYTES) return -NOS_ENOTSUP;
+        if (n + 1 + extra >= NOS_PATH_MAX || size > INLINE_BYTES) return -NOS_ENOTSUP;
         u_memcpy(full, path, n); full[n++] = '/'; u_memcpy(full + n, name, extra + 1);
         int slot = -1; for (unsigned i = 0; i < NODE_COUNT; i++) if (!nodes[i].used) { slot = (int)i; break; }
         if (slot < 0) return -NOS_ENOSPC;
-        struct vnode *node = &nodes[slot]; u_memset(node, 0, sizeof(*node));
-        u_memcpy(node->name, full, n + extra + 1); node->mode = mode; node->size = size; node->used = node->linked = 1; node->persistent = 2;
-        if (mode == MODE_DIR) rc = fat_import(full, depth + 1);
+        struct vnode *node = &nodes[slot]; clear_node((unsigned)(node - nodes));
+        u_memcpy(node->name, full, n + extra + 1); node->mode = mode | ((mode & 0170000u) == MODE_DIR ? 0777 : 0666); node->size = size; node->used = node->linked = 1; node->persistent = 2;
+        if ((mode & 0170000u) == MODE_DIR) rc = fat_import(full, depth + 1);
         else { rc = nos_fat_read(fat_relative(full), node->bytes, size); if (rc >= 0) rc = (size_t)rc == size ? 0 : -NOS_EIO; }
         if (rc) return rc;
     }
 }
 static int fat_mount(const char *path, int format)
 {
+    if (u_strlen(path) >= 64) return -NOS_ENAMETOOLONG;
     if (disk_mounted || fat_mounted) return -NOS_EBUSY;
     if (backend(path) || u_streq(path, "/")) return -NOS_EACCES;
     int root = lookup(path);
-    if (root >= 0 && nodes[root].mode != MODE_DIR) return -NOS_ENOTDIR;
+    if (root >= 0 && NODE_TYPE(&nodes[root]) != MODE_DIR) return -NOS_ENOTDIR;
     for (unsigned i = 0; i < NODE_COUNT; i++) if (nodes[i].used && nodes[i].linked && child_path(nodes[i].name, path)) return -NOS_ENOTEMPTY;
     int rc = nos_fat_mount(format); if (rc) return rc;
     unsigned created = root < 0; if (root < 0) root = create(path, MODE_DIR); if (root < 0) return root;
     u_memcpy(fat_path, path, u_strlen(path) + 1); nodes[root].persistent = 2;
     rc = fat_import(path, 0);
     if (rc) {
-        for (unsigned i = 0; i < NODE_COUNT; i++) if (nodes[i].persistent == 2 && (int)i != root) u_memset(&nodes[i], 0, sizeof(nodes[i]));
-        nodes[root].persistent = 0; if (created) u_memset(&nodes[root], 0, sizeof(nodes[root])); fat_path[0] = 0; return rc;
+        for (unsigned i = 0; i < NODE_COUNT; i++) if (nodes[i].persistent == 2 && (int)i != root) clear_node(i);
+        nodes[root].persistent = 0; if (created) clear_node((unsigned)root); fat_path[0] = 0; return rc;
     }
     fat_mounted = 1; return 0;
 }
+#include "path_io.h"
+static int path_stat(const char *path, struct nos_stat64 *st);
+#include "metadata.h"
+static int path_stat(const char *path, struct nos_stat64 *st)
+{
+    int node = lookup(path);
+    struct description description = { 0 };
+    if (node >= 0) description.node = (unsigned)node;
+    else { unsigned kind; uint64_t size; int index = archive_lookup(path, &kind, &size); if (index < 0) return index;
+        description.node = (unsigned)index; description.kind = kind; description.size = size; }
+    return full_stat(&description, st);
+}
 static void service(struct nos_message *m)
 {
+    unsigned create_mode = 0666;
+    if (m->op == NOS_VFS_OPENAT_MODE) {
+        create_mode = (uint32_t)m->arg >> 20; m->arg = (uint32_t)m->arg & 0xfffffu; m->op = NOS_VFS_OPENAT;
+    }
     if (m->sender < 0) { m->value = -NOS_EPERM; return; }
     if (m->len > NOS_MSG_DATA) { m->value = -NOS_EINVAL; return; }
     struct fd_table *t = table_for((intptr_t)m->process);
     if (!t) { m->value = -NOS_ENOSPC; return; }
+    if (m->op == NOS_VFS_SHARED_FILE) { shared_file(m, t); return; }
+    struct path_payload payload;
+    int input = path_input(m, &payload); if (input) { m->value = input; return; }
+    if (metadata_service(m, t, &payload)) return;
+    if (m->op == 32) {
+        struct nos_pollfd records[8];
+        if (m->len % sizeof(records[0]) || m->len > sizeof(records)) { m->value = -NOS_EINVAL; return; }
+        unsigned count = (unsigned)(m->len / sizeof(records[0])), ready = 0;
+        u_memcpy(records, m->data, m->len);
+        for (unsigned i = 0; i < count; i++) {
+            struct nos_pollfd *record = &records[i]; unsigned available = 0; record->revents = 0;
+            if (record->fd < 0) continue;
+            if ((unsigned)record->fd >= FDS || !t->fd[record->fd]) available = 32;
+            else {
+                struct description *description = &opened[t->fd[record->fd] - 1];
+                if (description->kind == 2) {
+                    struct pipe_buffer *pipe = &pipes[description->pipe];
+                    if (description->flags & 3) {
+                        if (pipe->size < PIPE_BYTES) available |= 4;
+                        if (!pipe->readers) available |= 8;
+                    } else {
+                        if (pipe->size) available |= 1;
+                        if (!pipe->writers) available |= 16;
+                    }
+                } else if (description->kind == 1) {
+                    if ((description->flags & 3) != NOS_O_WRONLY && nos_uart_readable()) available |= 1;
+                    if ((description->flags & 3) && nos_uart_writable()) available |= 4;
+                } else available = 1 | 4;
+            }
+            if (available & NOS_POLLIN) available |= NOS_POLLRDNORM;
+            if (available & NOS_POLLOUT) available |= NOS_POLLWRNORM;
+            record->revents = (int16_t)(available & ((unsigned)(uint16_t)record->events | 8u | 16u | 32u));
+            ready += record->revents != 0;
+        }
+        u_memcpy(m->data, records, m->len); m->value = ready; return;
+    }
+    if (m->op == NOS_VFS_GETRANDOM) {
+        if (m->arg < 0 || (uintptr_t)m->arg > 3u) { m->value = -NOS_EINVAL; return; }
+        m->value = nos_random_read(m->data, m->len, (unsigned)m->arg);
+        if (m->value >= 0) m->len = (size_t)m->value;
+        return;
+    }
+#ifdef NOS_LINUX_COMPAT
+    if (m->op == NOS_VFS_RESOLVE_PATH) {
+        char path[NOS_PATH_MAX]; struct nos_stat64 st;
+        if (m->value) { m->value = -NOS_EINVAL; return; }
+        int rc = metadata_path(t, m->arg, payload.bytes, payload.len, path, 1);
+        if (!rc) rc = path_stat(path, &st);
+        if (rc) { m->value = rc; return; }
+        path_output(m, path, u_strlen(path) + 1, 1); return;
+    }
+#endif
+    if (m->op == NOS_VFS_GETCWD) {
+        path_output(m, t->cwd, u_strlen(t->cwd) + 1, 1); return;
+    }
+    if (m->op == NOS_VFS_OPENAT) {
+        char path[NOS_PATH_MAX]; int rc = resolve_path(t, m->value, payload.bytes, payload.len, path);
+        if (rc) { m->value = rc; return; }
+        payload.len = u_strlen(path) + 1; u_memcpy(payload.bytes, path, payload.len); m->op = NOS_VFS_OPEN;
+    }
+    if (m->op == NOS_VFS_STATAT || m->op == NOS_VFS_CHDIR || m->op == NOS_VFS_READLINK) {
+        char path[NOS_PATH_MAX]; struct nos_stat64 st;
+        if (m->op == NOS_VFS_STATAT && (m->value < 0 || ((uintptr_t)m->value & ~(0x100u | 0x1000u)))) { m->value = -NOS_EINVAL; return; }
+        if (m->op == NOS_VFS_STATAT && (m->value & 0x1000) && payload.len == 1 && !payload.bytes[0] && m->arg != AT_CURRENT_DIRECTORY) {
+            if (m->arg < 0 || (uintptr_t)m->arg >= FDS || !t->fd[m->arg]) { m->value = -NOS_EBADF; return; }
+            m->value = full_stat(&opened[t->fd[m->arg] - 1], &st);
+        } else {
+            int rc = resolve_path(t, m->op == NOS_VFS_CHDIR ? AT_CURRENT_DIRECTORY : m->arg, payload.bytes, payload.len, path);
+            if (rc) { m->value = rc; return; }
+            rc = follow_links(path, m->op != NOS_VFS_READLINK && !(m->op == NOS_VFS_STATAT && (m->value & 0x100)));
+            if (rc) { m->value = rc; return; }
+            if (m->op == NOS_VFS_READLINK) {
+                int node = lookup(path);
+                if (node < 0) m->value = node;
+                else if (NODE_TYPE(&nodes[node]) != MODE_LINK) m->value = -NOS_EINVAL;
+                else path_output(m, nodes[node].bytes, nodes[node].size, 0);
+                return;
+            }
+            m->value = path_stat(path, &st);
+        }
+        if (m->value < 0) return;
+        if (m->op == NOS_VFS_CHDIR) {
+            if ((st.mode & 0170000) != MODE_DIR) { m->value = -NOS_ENOTDIR; return; }
+            u_memcpy(t->cwd, path, u_strlen(path) + 1); m->value = 0;
+        } else if (m->op == NOS_VFS_READLINK) m->value = -NOS_EINVAL;
+        else { u_memcpy(m->data, &st, sizeof(st)); m->len = sizeof(st); m->value = 0; }
+        return;
+    }
     if (m->op == NOS_VFS_DEVICE_STATS) {
         if (m->arg == 1) { struct nos_uart_stats stats; nos_uart_get_stats(&stats); u_memcpy(m->data, &stats, sizeof(stats)); m->len = sizeof(stats); m->value = 0; return; }
         if (m->arg) { m->value = -NOS_EINVAL; return; }
@@ -325,7 +512,7 @@ static void service(struct nos_message *m)
     }
     if (m->op == NOS_VFS_SYNC) { m->value = fat_mounted ? nos_fat_sync() : disk_sync(); return; }
     if (m->op == NOS_VFS_PIPE) {
-        if (m->arg < 0 || ((uintptr_t)m->arg & ~NOS_O_NONBLOCK)) { m->value = -NOS_EINVAL; return; }
+        if (m->arg < 0 || ((uintptr_t)m->arg & ~(NOS_O_NONBLOCK | NOS_O_CLOEXEC))) { m->value = -NOS_EINVAL; return; }
         unsigned flags = (unsigned)m->arg;
         int fd0 = free_fd(t), fd1 = -1, d0 = free_description(), d1 = -1, pipe = -1;
         if (fd0 >= 0) for (unsigned i = fd0 + 1; i < FDS; i++) if (!t->fd[i]) { fd1 = (int)i; break; }
@@ -337,69 +524,98 @@ static void service(struct nos_message *m)
         opened[d0] = (struct description){ .refs = 1, .kind = 2, .pipe = pipe, .flags = flags };
         opened[d1] = (struct description){ .refs = 1, .kind = 2, .pipe = pipe, .flags = NOS_O_WRONLY | flags };
         t->fd[fd0] = d0 + 1; t->fd[fd1] = d1 + 1;
+        t->fd_flags &= ~((1u << fd0) | (1u << fd1));
+        if (flags & NOS_O_CLOEXEC) t->fd_flags |= (1u << fd0) | (1u << fd1);
         int pair[2] = { fd0, fd1 }; u_memcpy(m->data, pair, sizeof(pair)); m->len = sizeof(pair); m->value = 0; return;
     }
     if (m->op == NOS_VFS_OPEN || m->op == NOS_VFS_MKDIR || m->op == NOS_VFS_UNLINK || m->op == NOS_VFS_RMDIR || m->op == NOS_VFS_RENAME || m->op == NOS_VFS_MOUNT) {
-        char path[64]; size_t path_len = m->len;
-        if (m->op == NOS_VFS_RENAME) { path_len = 0; while (path_len < m->len && m->data[path_len]) path_len++; path_len++; }
-        int rc = normalize(m->data, path_len, path); if (rc) { m->value = rc; return; }
+        char path[NOS_PATH_MAX]; size_t path_len = payload.len;
+        if (m->op == NOS_VFS_RENAME) { path_len = 0; while (path_len < payload.len && payload.bytes[path_len]) path_len++; path_len++; }
+        int rc = resolve_path(t, AT_CURRENT_DIRECTORY, payload.bytes, path_len, path); if (rc) { m->value = rc; return; }
+        int rc_follow = follow_links(path, m->op == NOS_VFS_OPEN && !(m->arg & NOS_O_NOFOLLOW));
+        if (rc_follow) { m->value = rc_follow; return; }
         int node = lookup(path);
+        if (m->op == NOS_VFS_OPEN && node >= 0 && NODE_TYPE(&nodes[node]) == MODE_LINK) { m->value = -40; return; }
+        if (node < 0 && (m->op == NOS_VFS_MKDIR || m->op == NOS_VFS_UNLINK || m->op == NOS_VFS_RMDIR || m->op == NOS_VFS_RENAME)) {
+            unsigned kind; uint64_t size;
+            if (archive_lookup(path, &kind, &size) >= 0) { m->value = m->op == NOS_VFS_MKDIR ? -NOS_EEXIST : -30; return; }
+        }
         if (m->op == NOS_VFS_MOUNT) { if (m->process != 1) { m->value = -NOS_EPERM; return; } m->value = m->arg == 1 ? disk_mount(path) : m->arg == 2 || m->arg == 3 ? fat_mount(path, m->arg == 3) : -NOS_ENOTSUP; return; }
-        if (m->op == NOS_VFS_MKDIR) { m->value = node >= 0 ? -NOS_EEXIST : create(path, MODE_DIR); if (m->value >= 0) m->value = 0; return; }
+        if (m->op == NOS_VFS_MKDIR) { m->value = node >= 0 ? -NOS_EEXIST : create(path, MODE_DIR | (0777 & ~t->mask)); if (m->value >= 0) m->value = 0; return; }
         if (m->op == NOS_VFS_UNLINK || m->op == NOS_VFS_RMDIR) {
             if (node < 0) { m->value = node; return; }
             struct vnode *n = &nodes[node];
             if (backend(path) || node == 0 || (disk_mounted && u_streq(path, mount_path)) || (fat_mounted && u_streq(path, fat_path))) { m->value = -NOS_EACCES; return; }
-            if (m->op == NOS_VFS_UNLINK && n->mode == MODE_DIR) { m->value = -NOS_EISDIR; return; }
-            if (m->op == NOS_VFS_RMDIR && n->mode != MODE_DIR) { m->value = -NOS_ENOTDIR; return; }
+            if (m->op == NOS_VFS_UNLINK && NODE_TYPE(n) == MODE_DIR) { m->value = -NOS_EISDIR; return; }
+            if (m->op == NOS_VFS_RMDIR && NODE_TYPE(n) != MODE_DIR) { m->value = -NOS_ENOTDIR; return; }
             for (unsigned i = 0; i < NODE_COUNT; i++) if (nodes[i].used && nodes[i].linked && child_path(nodes[i].name, path)) { m->value = -NOS_ENOTEMPTY; return; }
             if (n->persistent == 2) { rc = nos_fat_unlink(fat_relative(path)); if (rc) { m->value = rc; return; } }
-            n->linked = 0; if (!n->refs) u_memset(n, 0, sizeof(*n)); m->value = 0; return;
+            int entry = lookup_entry(path); remove_entry((unsigned)entry); m->value = 0; return;
         }
         if (m->op == NOS_VFS_RENAME) {
-            char dest[64]; rc = normalize(m->data + path_len, m->len - path_len, dest);
+            char dest[NOS_PATH_MAX]; rc = resolve_path(t, AT_CURRENT_DIRECTORY, payload.bytes + path_len, payload.len - path_len, dest);
             if (rc || node < 0) { m->value = rc ? rc : node; return; }
-            if (u_streq(path, dest)) { m->value = 0; return; }
+            if (u_streq(path, dest) || (lookup(dest) >= 0 && lookup(dest) == node)) { m->value = 0; return; }
             if (node == 0 || backend(path) || backend(dest) || child_path(dest, path) || (disk_mounted && u_streq(path, mount_path)) || (fat_mounted && u_streq(path, fat_path))) { m->value = -NOS_EACCES; return; }
             int parent = parent_of(dest); if (parent < 0) { m->value = parent; return; }
             if (nodes[parent].persistent != nodes[node].persistent) { m->value = -18; return; }
             int existing = lookup(dest);
             if (existing >= 0) {
                 struct vnode *n = &nodes[existing];
-                if ((n->mode == MODE_DIR) != (nodes[node].mode == MODE_DIR)) { m->value = n->mode == MODE_DIR ? -NOS_EISDIR : -NOS_ENOTDIR; return; }
+                if ((NODE_TYPE(n) == MODE_DIR) != (NODE_TYPE(&nodes[node]) == MODE_DIR)) { m->value = NODE_TYPE(n) == MODE_DIR ? -NOS_EISDIR : -NOS_ENOTDIR; return; }
                 for (unsigned i = 0; i < NODE_COUNT; i++) if (nodes[i].used && nodes[i].linked && child_path(nodes[i].name, dest)) { m->value = -NOS_ENOTEMPTY; return; }
             }
             size_t old = u_strlen(path), replacement = u_strlen(dest);
-            for (unsigned i = 0; i < NODE_COUNT; i++) if (nodes[i].used && nodes[i].linked && child_path(nodes[i].name, path) && replacement + u_strlen(nodes[i].name + old) >= 64) { m->value = -NOS_ENAMETOOLONG; return; }
+            size_t name_limit = nodes[node].persistent ? 64u : NOS_PATH_MAX;
+            if (replacement >= name_limit) { m->value = -NOS_ENAMETOOLONG; return; }
+            for (unsigned i = 0; i < NODE_COUNT; i++) if (nodes[i].used && nodes[i].linked && child_path(nodes[i].name, path) && replacement + u_strlen(nodes[i].name + old) >= name_limit) { m->value = -NOS_ENAMETOOLONG; return; }
             if (nodes[node].persistent == 2) { if (existing >= 0) { m->value = -NOS_EEXIST; return; } rc = nos_fat_rename(fat_relative(path), fat_relative(dest)); if (rc) { m->value = rc; return; } }
-            if (existing >= 0) { nodes[existing].linked = 0; if (!nodes[existing].refs) u_memset(&nodes[existing], 0, sizeof(nodes[existing])); }
-            for (unsigned i = 0; i < NODE_COUNT; i++) if (nodes[i].used && nodes[i].linked && ((int)i == node || child_path(nodes[i].name, path))) {
-                char renamed[64]; u_memcpy(renamed, dest, replacement); size_t suffix = u_strlen(nodes[i].name + old);
+            if (existing >= 0) remove_entry((unsigned)lookup_entry(dest));
+            int source_entry = lookup_entry(path);
+            for (unsigned i = 0; i < NODE_COUNT; i++) if (nodes[i].used && nodes[i].linked && ((int)i == source_entry || child_path(nodes[i].name, path))) {
+                char renamed[NOS_PATH_MAX]; u_memcpy(renamed, dest, replacement); size_t suffix = u_strlen(nodes[i].name + old);
                 u_memcpy(renamed + replacement, nodes[i].name + old, suffix + 1); u_memcpy(nodes[i].name, renamed, replacement + suffix + 1);
             }
             m->value = 0; return;
         }
         if (m->arg < 0 || (uintptr_t)m->arg > 0xffffffffu) { m->value = -NOS_EINVAL; return; }
         unsigned flags = (unsigned)m->arg;
-        if (flags & ~(NOS_O_RDWR | NOS_O_WRONLY | NOS_O_CREAT | NOS_O_TRUNC | NOS_O_APPEND | NOS_O_NONBLOCK) || (flags & 3) == 3) { m->value = -NOS_EINVAL; return; }
+        if (flags & ~(NOS_O_RDWR | NOS_O_WRONLY | NOS_O_CREAT | NOS_O_TRUNC | NOS_O_APPEND | NOS_O_NONBLOCK | NOS_O_DIRECTORY | NOS_O_NOFOLLOW | NOS_O_CLOEXEC | NOS_O_EXCL) || (flags & 3) == 3) { m->value = -NOS_EINVAL; return; }
         int fd = free_fd(t), desc = free_description();
         if (fd < 0 || desc < 0) { m->value = -NOS_EMFILE; return; }
-        if (node < 0 && (flags & NOS_O_CREAT)) node = create(path, MODE_FILE);
+        unsigned archive_kind = 0; uint64_t archive_size = 0;
+        int archive_index = node < 0 ? archive_lookup(path, &archive_kind, &archive_size) : -NOS_ENOENT;
+        if (archive_index >= 0) {
+            if ((flags & NOS_O_CREAT) && (flags & NOS_O_EXCL)) { m->value = -NOS_EEXIST; return; }
+            if ((flags & 3) || (flags & NOS_O_TRUNC)) { m->value = -30; return; }
+            if ((flags & NOS_O_DIRECTORY) && archive_kind != ARCHIVE_DIRECTORY) { m->value = -NOS_ENOTDIR; return; }
+            opened[desc] = (struct description){ .node = (unsigned)archive_index, .kind = archive_kind, .size = archive_size, .flags = flags, .refs = 1 };
+            t->fd[fd] = desc + 1; t->fd_flags &= ~(1u << fd);
+            if (flags & NOS_O_CLOEXEC) t->fd_flags |= 1u << fd;
+            m->value = fd; return;
+        }
+        if (node >= 0 && (flags & NOS_O_CREAT) && (flags & NOS_O_EXCL)) { m->value = -NOS_EEXIST; return; }
+        if (node < 0 && (flags & NOS_O_CREAT)) node = create(path, MODE_FILE | (create_mode & ~t->mask));
         if (node < 0) { m->value = node; return; }
-        if (nodes[node].mode == MODE_DIR && ((flags & 3) || (flags & NOS_O_TRUNC))) { m->value = -NOS_EISDIR; return; }
+        if ((flags & NOS_O_DIRECTORY) && NODE_TYPE(&nodes[node]) != MODE_DIR) { m->value = -NOS_ENOTDIR; return; }
+        if (NODE_TYPE(&nodes[node]) == MODE_DIR && ((flags & 3) || (flags & NOS_O_TRUNC))) { m->value = -NOS_EISDIR; return; }
         if ((flags & 3) && backend(path) == 2) { m->value = -NOS_EACCES; return; }
         if ((flags & NOS_O_TRUNC) && (flags & 3)) {
             if (nodes[node].persistent == 2) { rc = nos_fat_write(fat_relative(path), "", 0); if (rc) { m->value = rc; return; } }
             nodes[node].size = 0;
         }
-        opened[desc] = (struct description){ .node = node, .flags = flags, .refs = 1, .kind = nodes[node].mode == MODE_CHAR ? 1u : 0u };
-        nodes[node].refs++; t->fd[fd] = desc + 1; m->value = fd; return;
+        opened[desc] = (struct description){ .node = node, .flags = flags, .refs = 1, .kind = NODE_TYPE(&nodes[node]) == MODE_CHAR ? 1u : 0u };
+        nodes[node].refs++; t->fd[fd] = desc + 1; t->fd_flags &= ~(1u << fd);
+        if (flags & NOS_O_CLOEXEC) t->fd_flags |= 1u << fd;
+        m->value = fd; return;
     }
     if (m->arg < 0 || (uintptr_t)m->arg >= FDS || !t->fd[m->arg]) { m->value = -NOS_EBADF; return; }
     unsigned fd = (unsigned)m->arg, desc = t->fd[fd] - 1;
     struct description *d = &opened[desc];
     switch (m->op) {
     case NOS_VFS_DUP: {
+        unsigned close_on_exec = (unsigned char)m->data[0];
+        if (close_on_exec > 1) { m->value = -NOS_EINVAL; break; }
         intptr_t target = m->value;
         if (target < 0) {
             if (m->len >= FDS) { m->value = -NOS_EINVAL; break; }
@@ -407,15 +623,44 @@ static void service(struct nos_message *m)
             for (unsigned i = (unsigned)m->len; i < FDS; i++) if (!t->fd[i]) { target = (intptr_t)i; break; }
         }
         if (target < 0 || (uintptr_t)target >= FDS) { m->value = target < 0 ? target : -NOS_EBADF; break; }
-        if ((unsigned)target != fd) { if (t->fd[target]) drop_description(t->fd[target] - 1); t->fd[target] = desc + 1; d->refs++; }
+        if ((unsigned)target == fd && close_on_exec) { m->value = -NOS_EINVAL; break; }
+        if ((unsigned)target != fd) { if (t->fd[target]) drop_description(t->fd[target] - 1); t->fd[target] = desc + 1; t->fd_flags = (t->fd_flags & ~(1u << target)) | (close_on_exec << target); d->refs++; }
         m->value = target; break;
+    }
+    case 30: m->value = (t->fd_flags >> fd) & 1u; break;
+    case 31:
+        if (m->value < 0 || m->value > 1) m->value = -NOS_EINVAL;
+        else { t->fd_flags = (t->fd_flags & ~(1u << fd)) | ((unsigned)m->value << fd); m->value = 0; }
+        break;
+    case NOS_VFS_FCHDIR: {
+        char path[NOS_PATH_MAX]; m->value = !description_directory(d) ? -NOS_ENOTDIR : description_path(d, path);
+        if (!m->value) u_memcpy(t->cwd, path, u_strlen(path) + 1);
+        break;
+    }
+    case NOS_VFS_STAT64: {
+        struct nos_stat64 st; m->value = full_stat(d, &st);
+        if (!m->value) { u_memcpy(m->data, &st, sizeof(st)); m->len = sizeof(st); }
+        break;
+    }
+    case NOS_VFS_GETDENTS: get_directory(m, d); break;
+    case NOS_VFS_PREAD: case NOS_VFS_PWRITE: {
+        uint64_t offset; u_memcpy(&offset, m->data, sizeof(offset));
+        if (offset > INT64_MAX) { m->value = -NOS_EINVAL; break; }
+        if (d->kind == 1 || d->kind == 2) { m->value = -29; break; }
+        if (m->op == NOS_VFS_PWRITE && m->len < 8) { m->value = -NOS_EINVAL; break; }
+        struct description positioned = *d; positioned.offset = offset;
+        if (m->op == NOS_VFS_PWRITE) positioned.flags &= ~NOS_O_APPEND;
+        if (m->op == NOS_VFS_PREAD) {
+            m->value = read_data(&positioned, m->data, m->len); if (m->value >= 0) m->len = (size_t)m->value;
+        } else m->value = write_data(&positioned, m->data + 8, m->len - 8);
+        break;
     }
     case NOS_VFS_GETFLAGS: m->value = d->flags & (3u | NOS_O_APPEND | NOS_O_NONBLOCK); break;
     case NOS_VFS_SETFLAGS:
         if (m->value < 0 || ((uintptr_t)m->value & ~(3u | NOS_O_APPEND | NOS_O_NONBLOCK))) m->value = -NOS_EINVAL;
         else { d->flags = (d->flags & ~(NOS_O_APPEND | NOS_O_NONBLOCK)) | ((unsigned)m->value & (NOS_O_APPEND | NOS_O_NONBLOCK)); m->value = 0; }
         break;
-    case NOS_VFS_CLOSE: t->fd[fd] = 0; drop_description(desc); m->value = 0; break;
+    case NOS_VFS_CLOSE: t->fd[fd] = 0; t->fd_flags &= ~(1u << fd); drop_description(desc); m->value = 0; break;
     case NOS_VFS_READ: case NOS_VFS_WRITE:
         if (m->value < 0 || ((uintptr_t)m->value & ~NOS_IO_DONTWAIT)) { m->value = -NOS_EINVAL; break; }
         if ((m->op == NOS_VFS_READ && (d->flags & 3) == NOS_O_WRONLY) ||
@@ -427,30 +672,27 @@ static void service(struct nos_message *m)
         if (m->op == NOS_VFS_READ && m->value >= 0) m->len = (size_t)m->value;
         break;
     case NOS_VFS_SEEK: {
-        if (d->kind) { m->value = -29; break; }
+        if (d->kind == 1 || d->kind == 2) { m->value = -29; break; }
         if (m->len > 2) { m->value = -NOS_EINVAL; break; }
-        struct vnode *n = &nodes[d->node];
-        intptr_t base = m->len == 0 ? 0 : m->len == 1 ? (intptr_t)d->offset : (intptr_t)n->size;
-        if (m->value < -base || m->value > (intptr_t)FILE_BYTES - base) { m->value = -NOS_EINVAL; break; }
-        d->offset = (unsigned)(base + m->value); m->value = d->offset; break;
+        uint64_t size = d->kind == ARCHIVE_FILE ? d->size : d->kind == ARCHIVE_DIRECTORY ? 0 : nodes[d->node].size;
+        uint64_t base = m->len == 0 ? 0 : m->len == 1 ? d->offset : size;
+        if ((m->value < 0 && (uint64_t)(-(m->value + 1)) + 1 > base) ||
+            (m->value >= 0 && (uint64_t)m->value > INT64_MAX - base)) { m->value = -NOS_EINVAL; break; }
+        uint64_t result = m->value < 0 ? base - ((uint64_t)(-(m->value + 1)) + 1) : base + (uint64_t)m->value;
+        if (result > INTPTR_MAX) { m->value = -NOS_EOVERFLOW; break; }
+        d->offset = result; m->value = (intptr_t)result; break;
     }
     case NOS_VFS_STAT: {
         struct nos_stat st;
         u_memset(&st, 0, sizeof(st));
-        st.size = d->kind ? 0 : nodes[d->node].size;
-        st.mode = d->kind == 2 ? MODE_FIFO : d->kind == 1 ? MODE_CHAR : nodes[d->node].mode;
+        st.size = d->kind == ARCHIVE_FILE ? (size_t)d->size : d->kind ? 0 : nodes[d->node].size;
+        st.mode = d->kind == ARCHIVE_FILE ? MODE_FILE : d->kind == ARCHIVE_DIRECTORY ? MODE_DIR : d->kind == 2 ? MODE_FIFO : d->kind == 1 ? MODE_CHAR : nodes[d->node].mode;
         u_memcpy(m->data, &st, sizeof(st)); m->len = sizeof(st); m->value = 0; break;
     }
     case NOS_VFS_READDIR: {
-        if (d->kind || nodes[d->node].mode != MODE_DIR) { m->value = -NOS_ENOTDIR; break; }
-        if (m->value < 0) { m->value = -NOS_EINVAL; break; }
-        intptr_t index = m->value; const char *dir = nodes[d->node].name; size_t len = u_strlen(dir); unsigned skipped = 0; m->value = 0;
-        for (unsigned i = 0; i < NODE_COUNT; i++) if (nodes[i].used && nodes[i].linked && child_path(nodes[i].name, dir)) {
-            const char *name = nodes[i].name + len + (len > 1); int deeper = 0;
-            for (size_t j = 0; name[j]; j++) if (name[j] == '/') deeper = 1;
-            if (deeper || !*name || skipped++ != (uintptr_t)index) continue;
-            m->len = u_strlen(name) + 1; u_memcpy(m->data, name, m->len); m->value = 1; break;
-        }
+        char name[NOS_PATH_MAX]; struct nos_stat64 st;
+        int rc = m->value < 0 ? -NOS_EINVAL : directory_entry(d, (uint64_t)m->value + 2, name, &st);
+        m->value = rc; if (rc > 0) { path_output(m, name, u_strlen(name) + 1, 1); if (m->value >= 0) m->value = 1; }
         break;
     }
     default: m->value = -NOS_ENOSYS; break;
@@ -459,10 +701,14 @@ static void service(struct nos_message *m)
 void nos_vfs_server(uintptr_t unused)
 {
     (void)unused;
-    const char *initial[] = { "/", "/tmp", "/dev", "/proc", "/dev/console", "/proc/version" };
-    for (unsigned i = 0; i < 6; i++) {
+    const char *initial[] = { "/", "/tmp", "/dev", "/proc", "/dev/console", "/proc/version"
+#ifdef NOS_LINUX_COMPAT
+        , "/dev/shm"
+#endif
+    };
+    for (unsigned i = 0; i < sizeof(initial) / sizeof(initial[0]); i++) {
         u_memcpy(nodes[i].name, initial[i], u_strlen(initial[i]) + 1);
-        nodes[i].used = nodes[i].linked = 1; nodes[i].mode = i < 4 ? MODE_DIR : i == 4 ? MODE_CHAR : MODE_FILE;
+        nodes[i].used = nodes[i].linked = 1; nodes[i].mode = i < 4 || i == 6 ? MODE_DIR | (i == 6 ? 01777 : 0777) : i == 4 ? MODE_CHAR | 0666 : MODE_FILE | 0444;
     }
     const char *version = "NOS microkernel\n";
     nodes[5].size = u_strlen(version); u_memcpy(nodes[5].bytes, version, nodes[5].size);
@@ -473,6 +719,8 @@ void nos_vfs_server(uintptr_t unused)
         struct nos_message message;
         if (nos_syscall(NOS_SYS_RECV, 0, (uintptr_t)&message, 0)) nos_syscall(NOS_SYS_EXIT, 1, 0, 0);
         uintptr_t sender = (uintptr_t)message.sender;
+        if (message.op == NOS_IPC_PROCESS_FORK) { inherit_files((intptr_t)message.process, message.value); pipe_complete(); continue; }
+        if (message.op == NOS_IPC_PROCESS_EXEC) { exec_files((intptr_t)message.process); pipe_complete(); continue; }
         if (message.op == NOS_IPC_PEER_CANCEL) { pipe_cancel(message.sender, message.token, 1); pipe_complete(); continue; }
         if (message.op == NOS_IPC_PEER_EXIT) {
             pipe_cancel(message.sender, 0, 0);
@@ -481,7 +729,17 @@ void nos_vfs_server(uintptr_t unused)
             pipe_complete(); continue;
         }
         defer_reply = 0; service(&message);
-        if (!defer_reply) nos_syscall(NOS_SYS_REPLY, sender, (uintptr_t)&message, 0);
+        if (!defer_reply) {
+            intptr_t rc = nos_syscall(NOS_SYS_REPLY, sender, (uintptr_t)&message, 0);
+#ifdef NOS_LINUX_COMPAT
+            if (rc && message.op == NOS_VFS_SHARED_FILE && !nos_pointer_is_error(message.value)) {
+                struct nos_shared_request request = { .handle = (uintptr_t)message.value };
+                nos_syscall(NOS_SYS_SHARED, NOS_SHARED_RELEASE, (uintptr_t)&request, 0);
+            }
+#else
+            (void)rc;
+#endif
+        }
         pipe_complete();
     }
 }

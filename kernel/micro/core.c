@@ -2,8 +2,20 @@
 #include "kernel.h"
 #include "elf.h"
 static struct spinlock kernel_lock;
+static unsigned device_service_caps(unsigned caps)
+{
+#ifdef NOS_LINUX_COMPAT
+    caps |= NOS_CAP_SHARED_BROKER;
+#endif
+    return (caps & ~(NOS_CAP_SPAWN | NOS_CAP_IPC)) | NOS_CAP_DEVICE;
+}
 static intptr_t dispatch(uintptr_t nr, uintptr_t a, uintptr_t b, uintptr_t c)
 {
+#if defined(NOS_MMU) && defined(NOS_LINUX_COMPAT)
+    if (current_task->abi == NOS_ABI_GATEWAY && current_task->signal_pending & ~current_task->signal_mask &&
+        (nr == NOS_SYS_CALL || nr == NOS_SYS_CALL_EX || nr == NOS_SYS_SLEEP || nr == NOS_SYS_FUTEX_WAIT))
+        return -NOS_EINTR;
+#endif
     switch (nr) {
     case NOS_SYS_WRITE: {
         char buffer[128];
@@ -29,6 +41,11 @@ static intptr_t dispatch(uintptr_t nr, uintptr_t a, uintptr_t b, uintptr_t c)
         current_task->state = TASK_SLEEP; reschedule = 1; return 0;
     case NOS_SYS_TICKS: return (intptr_t)kernel_ticks;
     case NOS_SYS_TICKS64: return user_copy_out(a, &kernel_ticks, sizeof(kernel_ticks));
+    case NOS_SYS_CLOCK_GET64: {
+        if (c) return -NOS_EINVAL;
+        struct nos_clock_value value; int rc = kernel_clock_snapshot(a, &value);
+        return rc ? rc : user_copy_out(b, &value, sizeof(value));
+    }
     case NOS_SYS_CAPS:
 #if defined(NOS_SELFTEST) && defined(NOS_KERNEL_FAULT_INJECT) && NOS_KERNEL_FAULT_INJECT
         arch_fault_probe();
@@ -41,10 +58,38 @@ static intptr_t dispatch(uintptr_t nr, uintptr_t a, uintptr_t b, uintptr_t c)
         if (a > 1) return -NOS_EINVAL;
         return a ? current_task->base_priority : current_task->priority;
     case NOS_SYS_SPAWN: return task_spawn(a, b, c);
-    case NOS_SYS_WAIT: return task_wait(a, b);
+    case NOS_SYS_WAIT: return task_wait(a, b, c);
+    case NOS_SYS_LINUX_WAITCONTROL: return linux_wait_control(a, b, c);
+    case NOS_SYS_LINUX_EXEC: return linux_exec_current(a, b, c);
+    case NOS_SYS_SHARED: {
+#if defined(NOS_MMU) && defined(NOS_LINUX_COMPAT)
+        struct nos_shared_request request;
+        if (c) return -NOS_EINVAL;
+        if (user_copy_in(&request, b, sizeof(request))) return -NOS_EFAULT;
+        if (request.handle > UINT32_MAX) return -NOS_EINVAL;
+        if (request.prot > 7 || request.flags > UINT32_MAX) {
+            if (a == NOS_SHARED_MAP) return vm_shared_map(current_task, (unsigned)request.handle, request.address,
+                request.length, request.offset, UINT32_MAX, UINT32_MAX);
+            return -NOS_EINVAL;
+        }
+        if (a == NOS_SHARED_CREATE) return vm_shared_create(current_task, request.length);
+        if (a == NOS_SHARED_GRANT) {
+            struct task *target = find_task(request.target);
+            if (!target || target->state == TASK_DEAD) return -NOS_ESRCH;
+            return vm_shared_grant(current_task, (unsigned)request.handle, target, (unsigned)request.prot);
+        }
+        if (a == NOS_SHARED_MAP) return vm_shared_map(current_task, (unsigned)request.handle, request.address,
+            request.length, request.offset, (unsigned)request.prot, (unsigned)request.flags);
+        if (a == NOS_SHARED_RELEASE) return vm_shared_release(current_task, (unsigned)request.handle);
+        return -NOS_EINVAL;
+#else
+        return -NOS_ENOTSUP;
+#endif
+    }
     case NOS_SYS_CALL: return ipc_call(a, b, c, 0);
     case NOS_SYS_RECV: return ipc_recv(a, b);
     case NOS_SYS_REPLY: return ipc_reply(a, b);
+    case NOS_SYS_IPC_XFER: return b || c ? -NOS_EINVAL : ipc_xfer(a);
     case NOS_SYS_MMAP: return a > UINT32_MAX ? -NOS_EINVAL : vm_map(current_task, (unsigned)a, b);
     case NOS_SYS_MUNMAP: return vm_unmap(current_task, a, b);
     case NOS_SYS_MPROTECT: return b > UINT32_MAX ? -NOS_EINVAL : vm_protect(current_task, a, (unsigned)b, c);
@@ -105,9 +150,24 @@ static intptr_t dispatch(uintptr_t nr, uintptr_t a, uintptr_t b, uintptr_t c)
     case NOS_SYS_FUTEX_REQUEUE: return futex_requeue(a);
     case NOS_SYS_TASK_CANCEL: {
         struct task *peer = find_task(a);
-        if (!peer || peer->state == TASK_DEAD) return -NOS_ESRCH;
+        if (!peer || (peer->state == TASK_DEAD && !(b & NOS_CANCEL_GROUP))) return -NOS_ESRCH;
         if (!(current_task->caps & NOS_CAP_SPAWN) && peer->parent != current_task->id) return -NOS_EACCES;
         if (peer == current_task || peer->id % NOS_TASKS >= NOS_IDLE_FIRST) return -NOS_EINVAL;
+        if (b & ~(uintptr_t)NOS_CANCEL_GROUP) return -NOS_EINVAL;
+        if (b & NOS_CANCEL_GROUP) {
+            unsigned group = peer->space_owner;
+            if (group == current_task->space_owner) return -NOS_EINVAL;
+            for (unsigned i = 0; i < NOS_IDLE_FIRST; i++) {
+                struct task *member = &tasks[i];
+                if (member->space_owner != group || member->state == TASK_UNUSED || member->state == TASK_DEAD || member->state == TASK_RETIRED) continue;
+#ifdef NOS_MMU
+                if (member->abi != NOS_ABI_NATIVE) member->linux_exit_signal = 9;
+#endif
+                if (member->run_cpu != UINT32_MAX && member->run_cpu != arch_cpu_id()) member->cancel_pending = 1;
+                else task_finish(member, -NOS_EINTR);
+            }
+            return 0;
+        }
         if (peer->run_cpu != UINT32_MAX && peer->run_cpu != arch_cpu_id()) {
             peer->cancel_pending = 1; return 0;
         }
@@ -123,7 +183,7 @@ static intptr_t dispatch(uintptr_t nr, uintptr_t a, uintptr_t b, uintptr_t c)
         }
         if (tasks[0].state == TASK_DEAD) task_reap(&tasks[0]);
         if (create_task(0, (uintptr_t)nos_vfs_server, 0, 4,
-            ((current_task->caps | NOS_CAP_DEVICE) & ~(NOS_CAP_SPAWN | NOS_CAP_IPC)), UINT32_MAX) < 0) return -NOS_ENOMEM;
+            device_service_caps(current_task->caps), UINT32_MAX) < 0) return -NOS_ENOMEM;
         ipc_init(); reschedule = 1; return tasks[0].id;
     case NOS_SYS_OBJECT_STATS: {
         struct nos_object_stats stats = { 0, mutex_count(), endpoint_count(), page_available() };
@@ -158,9 +218,28 @@ static intptr_t dispatch(uintptr_t nr, uintptr_t a, uintptr_t b, uintptr_t c)
     case NOS_SYS_DEVICE:
         if (!(current_task->caps & NOS_CAP_DEVICE)) return -NOS_EACCES;
         return arch_device_operation(current_task, a, b, c);
+    case NOS_SYS_BOOTFILE: return bootfile_operation(a, b);
+    case NOS_SYS_EXEC_LINUX: return task_exec_linux(a, b, c);
+    case NOS_SYS_LINUX_RETURN: return linux_gateway_return(a);
+    case NOS_SYS_LINUX_MAP: {
+#if defined(NOS_MMU) && defined(NOS_LINUX_COMPAT)
+        if (current_task->abi != NOS_ABI_GATEWAY) return -NOS_EPERM;
+        struct nos_linux_map request;
+        if (user_copy_in(&request, a, sizeof(request))) return -NOS_EFAULT;
+        if (request.prot > 7 || request.flags > UINT32_MAX) return -NOS_EINVAL;
+        return vm_map_linux(current_task, request.address, request.length,
+                            (unsigned)request.prot, (unsigned)request.flags);
+#else
+        return -NOS_ENOTSUP;
+#endif
+    }
     case NOS_SYS_EXEC_SPAWN: {
         if (!(current_task->caps & NOS_CAP_SPAWN)) return -NOS_EACCES;
-        struct nos_exec_request request; struct nos_exec_args args;
+        struct nos_exec_request request;
+#ifdef NOS_LINUX_COMPAT
+        static
+#endif
+        struct nos_exec_args args;
         if (user_copy_in(&request, a, sizeof(request))) return -NOS_EFAULT;
         if (request.priority > 30) return -NOS_EINVAL;
         int rc = nos_exec_copy_args(&request, &args); if (rc) return rc;
@@ -231,8 +310,16 @@ struct arch_frame *kernel_trap(struct arch_frame *frame, unsigned event)
         if (event == ARCH_TIMER && !hardware_irq) { arch_timer_ack(); scheduler_tick(); }
         reschedule = 1;
     } else if (event == ARCH_FAULT) {
-        if (current_task->id % NOS_TASKS == 1) kernel_fail("init task faulted");
-        task_finish(current_task, -NOS_EFAULT);
+#if defined(NOS_MMU) && defined(NOS_LINUX_COMPAT)
+        if (current_task->abi == NOS_ABI_LINUX) {
+            if (linux_signal_send(current_task, arch_fault_signal(), 1, 0, arch_fault_address()))
+                task_finish(current_task, -NOS_EFAULT);
+        } else
+#endif
+        {
+            if (current_task->id % NOS_TASKS == 1) kernel_fail("init task faulted");
+            task_finish(current_task, -NOS_EFAULT);
+        }
     } else {
         uintptr_t nr, a, b, c;
 #if defined(NOS_ARM64)
@@ -245,7 +332,22 @@ struct arch_frame *kernel_trap(struct arch_frame *frame, unsigned event)
 #else
         nr = frame->r[7]; a = frame->r[0]; b = frame->r[1]; c = frame->r[2];
 #endif
-        FRAME_RESULT(&current_task->frame) = (uintptr_t)dispatch(nr, a, b, c);
+#if defined(NOS_MMU) && defined(NOS_LINUX_COMPAT)
+        if (current_task->abi == NOS_ABI_LINUX) {
+            current_task->linux_syscall_frame = current_task->frame;
+            current_task->linux_syscall_number = nr; current_task->linux_restart_pending = 0;
+            uintptr_t arguments[6] = { a, b, c, 0, 0, 0 };
+#if defined(NOS_ARM64)
+            arguments[3] = frame->x[3]; arguments[4] = frame->x[4]; arguments[5] = frame->x[5];
+#elif defined(NOS_RISCV)
+            arguments[3] = frame->x[13]; arguments[4] = frame->x[14]; arguments[5] = frame->x[15];
+#else
+            arguments[3] = frame->r[3]; arguments[4] = frame->r[4]; arguments[5] = frame->r[5];
+#endif
+            FRAME_RESULT(&current_task->frame) = (uintptr_t)linux_dispatch(nr, arguments);
+        } else
+#endif
+            FRAME_RESULT(&current_task->frame) = (uintptr_t)dispatch(nr, a, b, c);
     }
     struct task *previous = current_task;
     previous->run_cpu = UINT32_MAX;
@@ -256,7 +358,17 @@ struct arch_frame *kernel_trap(struct arch_frame *frame, unsigned event)
         spin_unlock_irqrestore(&kernel_lock, irq);
         irq = spin_lock_irqsave(&kernel_lock); next = select_task();
     }
-    current_task = next; next->run_cpu = arch_cpu_id();
+    for (;;) {
+        current_task = next; next->run_cpu = arch_cpu_id();
+        linux_signal_deliver(next);
+        if (next->state == TASK_READY
+#ifdef NOS_MMU
+            && !next->linux_stopped
+#endif
+        ) break;
+        next->run_cpu = UINT32_MAX; next = select_task();
+        if (!next) kernel_fail("no runnable task after signal delivery");
+    }
     arch_space_switch(next->space_id);
     if (next->tls_slot && task_copy_out(next, next->tls_slot, &next->tls_value, sizeof(uintptr_t)))
         kernel_fail("invalid TLS binding");
@@ -289,7 +401,7 @@ void kernel_start(void)
 #if NOS_SMP > 1
     caps |= NOS_CAP_SMP;
 #endif
-    if (create_task(0, (uintptr_t)nos_vfs_server, 0, 4, (caps & ~NOS_CAP_IPC) | NOS_CAP_DEVICE, UINT32_MAX) < 0 ||
+    if (create_task(0, (uintptr_t)nos_vfs_server, 0, 4, device_service_caps(caps), UINT32_MAX) < 0 ||
         create_task(1,
 #ifdef NOS_NORMAL_BOOT
         (uintptr_t)nos_init,

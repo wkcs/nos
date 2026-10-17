@@ -6,6 +6,9 @@ static unsigned exit_ids[NOS_TASKS], exit_groups[NOS_TASKS], exit_alive[NOS_TASK
 struct cancel_notice { unsigned id, group; uint64_t token; };
 static struct cancel_notice canceled[NOS_ENDPOINTS][NOS_TASKS];
 static unsigned cancel_pending[NOS_ENDPOINTS];
+#define PROCESS_NOTICES (4u * NOS_TASKS)
+static struct nos_message process_notices[PROCESS_NOTICES];
+static unsigned process_head, process_count;
 static void notify_cancel(struct task *client);
 static unsigned endpoint_handle(unsigned i)
 {
@@ -13,7 +16,7 @@ static unsigned endpoint_handle(unsigned i)
 }
 static struct endpoint *lookup(uintptr_t handle, unsigned *index)
 {
-    if (handle > INT32_MAX || (handle && handle < NOS_ENDPOINT_BASE)) return NULL;
+    if (handle >= NOS_ENDPOINT_LIMIT || (handle && handle < NOS_ENDPOINT_BASE)) return NULL;
     unsigned i = handle ? ((unsigned)handle - NOS_ENDPOINT_BASE) % NOS_ENDPOINTS : 0;
     if (!endpoints[i].used || endpoint_handle(i) != handle) return NULL;
     *index = i; return &endpoints[i];
@@ -21,9 +24,26 @@ static struct endpoint *lookup(uintptr_t handle, unsigned *index)
 void ipc_init(void)
 {
     endpoints[0].used = 1; endpoints[0].owner = tasks[0].id;
-    cancel_pending[0] = 0; exit_pending = 0;
+    cancel_pending[0] = 0; exit_pending = 0; process_head = process_count = 0;
     tasks[0].endpoint_rights[0] = NOS_RIGHT_RECV | NOS_RIGHT_GRANT;
     for (unsigned i = 1; i < NOS_TASKS; i++) tasks[i].endpoint_rights[0] = NOS_RIGHT_CALL;
+}
+int ipc_process_notice(intptr_t operation, unsigned process, unsigned value)
+{
+    if (operation != NOS_IPC_PROCESS_FORK && operation != NOS_IPC_PROCESS_EXEC) return -NOS_EINVAL;
+    if (!endpoints[0].used) return -NOS_ESRCH;
+    struct task *server = find_task(endpoints[0].owner);
+    if (!server || server->state == TASK_DEAD) return -NOS_ESRCH;
+    if (process_count == PROCESS_NOTICES) return -NOS_EAGAIN;
+    struct nos_message notice; k_memset(&notice, 0, sizeof(notice));
+    notice.op = operation; notice.process = process; notice.value = value;
+    if (!process_count && server->state == TASK_RECV && server->endpoint_handle == 0 &&
+        !task_copy_out(server, server->pending, &notice, sizeof(notice))) {
+        server->state = TASK_READY;
+    } else {
+        process_notices[(process_head + process_count) % PROCESS_NOTICES] = notice; process_count++;
+    }
+    reschedule = 1; return 0;
 }
 void ipc_task_inherit(struct task *child, const struct task *parent)
 {
@@ -42,7 +62,7 @@ intptr_t endpoint_create(void)
 {
     if (!(current_task->caps & NOS_CAP_IPC)) return -NOS_EACCES;
     for (unsigned i = 1; i < NOS_ENDPOINTS; i++) {
-        if (endpoints[i].used || endpoints[i].generation > ((unsigned)INT32_MAX - NOS_ENDPOINT_BASE - i) / NOS_ENDPOINTS) continue;
+        if (endpoints[i].used || endpoints[i].generation > (NOS_ENDPOINT_LIMIT - 1u - NOS_ENDPOINT_BASE - i) / NOS_ENDPOINTS) continue;
         endpoints[i].used = 1; endpoints[i].owner = current_task->id; cancel_pending[i] = 0;
         current_task->endpoint_rights[i] = NOS_RIGHT_CALL | NOS_RIGHT_RECV | NOS_RIGHT_GRANT;
         return endpoint_handle(i);
@@ -121,7 +141,7 @@ static void notify_cancel(struct task *client)
     unsigned slot = client->id % NOS_TASKS;
     struct nos_message notice = { .sender = client->id, .op = NOS_IPC_PEER_CANCEL,
         .process = client->space_owner, .token = client->request.token };
-    if (server->state == TASK_RECV && server->endpoint_handle == client->endpoint_handle &&
+    if ((i || !process_count) && server->state == TASK_RECV && server->endpoint_handle == client->endpoint_handle &&
         !task_copy_out(server, server->pending, &notice, sizeof(notice))) {
         server->state = TASK_READY;
     } else {
@@ -154,7 +174,12 @@ intptr_t ipc_call(uintptr_t handle, uintptr_t request, uintptr_t reply, uint64_t
     if (!user_access(current_task, reply, sizeof(struct nos_message), 1) ||
         user_copy_in(&current_task->request, request, sizeof(struct nos_message))) return -NOS_EFAULT;
     if (current_task->request.len > NOS_MSG_DATA) return -NOS_EINVAL;
-    if (current_task->request.op == NOS_IPC_PEER_EXIT || current_task->request.op == NOS_IPC_PEER_CANCEL) return -NOS_EPERM;
+#ifdef NOS_LINUX_COMPAT
+    if (current_task->request.bulk_in_len > NOS_IPC_BULK_MAX || current_task->request.bulk_out_len > NOS_IPC_BULK_MAX) return -NOS_EINVAL;
+    if ((current_task->request.bulk_in_len && !user_access(current_task, current_task->request.bulk_in, current_task->request.bulk_in_len, 0)) ||
+        (current_task->request.bulk_out_len && !user_access(current_task, current_task->request.bulk_out, current_task->request.bulk_out_len, 1))) return -NOS_EFAULT;
+#endif
+    if (current_task->request.op < 0) return -NOS_EPERM;
     if (request_sequence == UINT64_MAX) return -NOS_EOVERFLOW;
     current_task->request.sender = current_task->id;
     current_task->request.process = current_task->space_owner;
@@ -164,7 +189,7 @@ intptr_t ipc_call(uintptr_t handle, uintptr_t request, uintptr_t reply, uint64_t
     current_task->endpoint_handle = (unsigned)handle;
     current_task->wake_tick = timeout ? kernel_ticks + timeout : 0;
     current_task->reply_from = server->id; current_task->state = TASK_REPLY;
-    if (server->state == TASK_RECV && server->endpoint_handle == handle) {
+    if ((i || !process_count) && server->state == TASK_RECV && server->endpoint_handle == handle) {
         if (task_copy_out(server, server->pending, &current_task->request, sizeof(struct nos_message))) {
             current_task->state = TASK_READY; return -NOS_EFAULT;
         }
@@ -177,6 +202,11 @@ intptr_t ipc_recv(uintptr_t handle, uintptr_t buffer)
     unsigned i; struct endpoint *ep = lookup(handle, &i);
     if (!ep || ep->owner != current_task->id || !(current_task->endpoint_rights[i] & NOS_RIGHT_RECV)) return -NOS_EACCES;
     if (!user_access(current_task, buffer, sizeof(struct nos_message), 1)) return -NOS_EFAULT;
+    if (!i && process_count) {
+        int rc = user_copy_out(buffer, &process_notices[process_head], sizeof(struct nos_message));
+        if (!rc) { process_head = (process_head + 1) % PROCESS_NOTICES; process_count--; }
+        return rc;
+    }
     if (cancel_pending[i]) {
         unsigned slot = 0;
         while (!(cancel_pending[i] & (1u << slot))) slot++;
@@ -209,6 +239,50 @@ intptr_t ipc_reply(uintptr_t pid, uintptr_t buffer)
     FRAME_RESULT(&client->frame) = (uintptr_t)rc; client->state = TASK_READY;
     client->request_sent = 0; mutex_recompute(); reschedule = 1; return rc;
 }
+intptr_t ipc_xfer(uintptr_t pointer)
+{
+#ifdef NOS_LINUX_COMPAT
+    struct nos_ipc_xfer args;
+    if (user_copy_in(&args, pointer, sizeof(args))) return -NOS_EFAULT;
+    struct task *client = find_task((uintptr_t)args.sender);
+    if (!client || client->state != TASK_REPLY || !client->request_sent || client->reply_from != current_task->id ||
+        args.token != client->request.token) return -NOS_EPERM;
+    unsigned index; struct endpoint *endpoint = lookup(client->endpoint_handle, &index);
+    if (!endpoint || endpoint->owner != current_task->id || !(current_task->endpoint_rights[index] & NOS_RIGHT_RECV)) return -NOS_EPERM;
+    if (args.direction > NOS_IPC_STORE || args.count > NOS_IPC_BULK_MAX) return -NOS_EINVAL;
+    uintptr_t base = args.direction == NOS_IPC_FETCH ? client->request.bulk_in : client->request.bulk_out;
+    size_t length = args.direction == NOS_IPC_FETCH ? client->request.bulk_in_len : client->request.bulk_out_len;
+    if (args.offset > length || args.count > length - args.offset || base > UINTPTR_MAX - args.offset) return -NOS_EINVAL;
+    uintptr_t remote = base + args.offset;
+    if (!user_access(client, remote, args.count, args.direction == NOS_IPC_STORE) ||
+        !user_access(current_task, args.buffer, args.count, args.direction == NOS_IPC_FETCH)) return -NOS_EFAULT;
+    unsigned char chunk[128]; size_t copied = 0;
+    while (copied < args.count) {
+        size_t count = args.count - copied; if (count > sizeof(chunk)) count = sizeof(chunk);
+        int rc;
+        if (args.direction == NOS_IPC_FETCH) {
+            rc = task_copy_in(client, chunk, remote + copied, count);
+            if (!rc) rc = user_copy_out(args.buffer + copied, chunk, count);
+        } else {
+            rc = user_copy_in(chunk, args.buffer + copied, count);
+            if (!rc) rc = task_copy_out(client, remote + copied, chunk, count);
+        }
+        if (rc) return rc;
+        copied += count;
+    }
+    return 0;
+#else
+    (void)pointer; return -NOS_ENOTSUP;
+#endif
+}
+void ipc_interrupt_task(struct task *task, intptr_t error)
+{
+    if (task->state == TASK_REPLY) notify_cancel(task);
+    if (task->state == TASK_REPLY || task->state == TASK_RECV) {
+        task->state = TASK_READY; FRAME_RESULT(&task->frame) = (uintptr_t)error;
+        mutex_recompute(); reschedule = 1;
+    }
+}
 intptr_t ipc_cancel(uintptr_t pid)
 {
     struct task *peer = find_task(pid);
@@ -237,6 +311,7 @@ void ipc_task_exit(struct task *task)
         if (!endpoints[i].used || endpoints[i].owner != task->id) continue;
         unsigned handle = endpoint_handle(i);
         endpoints[i].used = 0; cancel_pending[i] = 0;
+        if (!i) process_head = process_count = 0;
         if (i) endpoints[i].generation++;
         for (unsigned j = 0; j < NOS_TASKS; j++) {
             struct task *client = &tasks[j]; client->endpoint_rights[i] = 0;
@@ -253,7 +328,7 @@ void ipc_task_exit(struct task *task)
                 peer->state != TASK_DEAD && peer->state != TASK_RETIRED) alive++;
         }
         struct task *server = find_task(endpoints[0].owner);
-        if (server && server->state == TASK_RECV && server->endpoint_handle == 0) {
+        if (!process_count && server && server->state == TASK_RECV && server->endpoint_handle == 0) {
             struct nos_message notice = { .sender = task->id, .op = NOS_IPC_PEER_EXIT,
                 .process = task->space_owner, .value = alive };
             if (!task_copy_out(server, server->pending, &notice, sizeof(notice))) server->state = TASK_READY;

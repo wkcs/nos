@@ -14,7 +14,23 @@ VFS 消息由内核填入 `sender`、地址空间组 `process` 和回复 `token`
 - `rmdir` 只删除空目录。`rename` 支持 RAM 目录树改名及目标替换，保留打开引用。FatFs 改名目标已存在时返回 `EEXIST`，不承诺 RAM 后端的替换事务语义。
 - `READDIR` 的 `arg` 是目录 FD、`value` 是零起始索引，返回 1 和带 NUL 的名字，末尾返回 0。没有排序保证。
 - 管道容量 256 字节，写入消息最多 64 字节，单条消息保持原子性。默认空读/满写保存请求并继续处理其他 IPC，在另一端 I/O/关闭时回复；只有 `O_NONBLOCK` 或已完成部分 I/O 的续包返回 `EAGAIN`。没有写端返回 EOF，没有读端返回 `EPIPE`，不伪造尚未实现的 SIGPIPE。当前消息原子性上限仍是 64 字节，不能宣称完整 POSIX PIPE_BUF 支持。
-- 目录/文件共 16 个节点，每个文件最多 512 字节，每地址空间最多 11 个 FD，管道共 2 个。这些是当前明确的 MCU 配置上限，并不是无限容量的 POSIX 文件系统。
+- 目录/文件共 16 个节点，默认 RAM 文件和持久化文件最多 512 字节，默认每地址空间最多 11 个 FD（Linux 兼容配置为 32 个），管道共 2 个。这些是当前明确的 MCU 配置上限，并不是无限容量的 POSIX 文件系统。
+
+## 只读启动归档与 POSIX 元数据
+
+启动归档通过受权限检查的 BOOTFILE 读取接口访问；路径解析、目录枚举、FD 和 offset 仍归用户态 VFS 管理。独立归档 OFD 可读取大于 RAM 节点容量的 ELF、动态加载器与共享库。`pread/pwrite` 不改变 OFD offset，归档写操作返回 `EROFS`。目录枚举使用标准 Linux dirent64 记录，超过单次 IPC 的记录按 cookie 分片，不截断长名字。
+
+RAM 后端支持 create mode、umask、chmod、ftruncate/truncate、硬链接和符号链接。硬链接共享 inode 和文件数据；删除最后一个名字后，已打开引用继续存活，stat 的 nlink 为零。符号链接读出原始目标，普通 open/stat 跟随目标，NOFOLLOW/lstat 保留链接身份，循环返回 ELOOP。FatFs 不支持的权限或链接语义返回 ENOTSUP。默认配置的单路径缓冲区为 64 字节；Linux 兼容配置为 256 字节（含 NUL），两个路径合计可用 512 字节。持久化格式仍使用 63 字节路径，超出时返回 ENAMETOOLONG。
+
+可信 fork 通知复制 FD 表、cwd、umask 和 FD flags，并增加同一 OFD 的引用，所以父子共享 offset。成功 exec 通知只关闭 FD_CLOEXEC 描述符。通知由内核排队，用户不能伪造。POLL 查询不会消费字节，管道按实际数据/空间/端点报告，串口写就绪读取硬件状态；POLLIN/OUT 和 RDNORM/WRNORM 都可查询。
+
+`virtio_rng.c` 从 QEMU virtio-rng 的真实 DMA 队列获取熵，支持 legacy/modern 传输。该驱动当前轮询队列并抑制 IRQ，不宣称 RNG IRQ 已验证。未提供设备返回 ENODEV，不产生固定或时间派生的假随机数。
+
+长路径通过 profile 专用 IPC bulk span 传输，消息内联数据上限仍为 64 字节。调用时内核保存输入/输出边界，VFS 使用 sender/token 申请 FETCH/STORE；内核只允许服务访问仍有效且已送达的当前调用，并重新检查地址空间和范围。VFS 一次取回完整路径副本，不保存跨调用的路径片段。取消、过期 token 和其他线程的请求不能访问旧 span。GETCWD、READLINK 和 RESOLVE_PATH 使用受控输出 span；getdents64 的最长记录为 280 字节，通过现有 cookie 协议分片。
+
+Linux 兼容配置的 RAM 文件容量为 8192 字节，文件增长时才分配共享物理页；默认配置的 512 字节缓存和 24 KiB 模板上限保持不变。`/dev/shm` 是该配置下的可写 RAM 命名空间，命名信号量的临时文件、硬链接发布和 unlink 使用同一套 inode 引用规则。
+
+共享文件映射经 VFS 验证 FD，再由内核创建、授权和映射共享页对象。VFS 文件读写与客户端映射访问同一 backing；客户端只拿一次映射授权 lease，不能指定物理地址。权限上限来自原 FD，内核同时限制 MAP 与 MPROTECT；只读描述符不能升级成写映射。服务释放已 unlink 且无 FD 的节点后，已有客户端映射仍持有 backing 引用。完整的文件截断后页失效及越 EOF 页 SIGBUS 语义尚未实现，不能据此声称完整 POSIX mmap 一致性。
 
 ## 延迟 I/O 与串口 IRQ
 
@@ -63,6 +79,8 @@ QEMU 需附加 raw 磁盘：
 source /workspace/.nos-env/activate.sh
 python3 tests/qemu_persistence.py --platform arm64_virt --filesystem native
 python3 tests/qemu_persistence.py --platform arm64_virt --filesystem fat
+python3 tests/qemu_shared_files.py
+python3 tests/qemu_long_paths.py
 ```
 
 `user/libc_regression.c` 的 `vfs_pipe_blocking_read`、`vfs_pipe_blocking_write`、`vfs_pipe_nonblocking` 和 `vfs_pipe_timeout_cancel_reclaims` 验证线程阻塞唤醒、状态标志与取消后的 OFD 引用回收。完整 QEMU 矩阵将这些标记以及内核取消通知、坏回复缓冲区的检查列为必需项。存储开发验收记录在 `out/microkernel/storage-irq-results.json`，包含 13 项、26 次真实启动；最终集成状态以完整验收报告为准。

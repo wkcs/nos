@@ -2,7 +2,7 @@
 
 <!-- Copyright (C) 2026 NOS contributors -->
 
-本表描述当前端口的接口范围；是否已验证以本次 QEMU 报告为准。NOS 不提供完整 Linux syscall ABI 或完整 POSIX，musl 的系统调用号在适配层转换成 NOS ABI。不能把链接到真实 libc 等同于其全部功能可用。
+本表描述当前端口的接口范围；是否已验证以对应 QEMU 报告为准。正在实现的兼容目标是 **POSIX.1-2017，ARM、ARM64 和 RV64 MMU 同步推进**。完整 POSIX 尚未完成。native ABI 与 Linux personality 是两条不同的调用路径，不能从 glibc 程序通过推断 Newlib/musl 已获得相同的进程、信号和取消接口。逐接口族的缺口见 [POSIX.1-2017 接口分类](POSIX_2017_INTERFACES.md)。
 
 ## 库与平台
 
@@ -12,31 +12,51 @@
 | ARM64 / RV64GC + musl | 真实 musl 1.2.5 静态库、架构 syscall/clone/退出适配、真实 musl pthread |
 | RV32 Sv32 / RV32 非 MMU | minimal 原生 ABI；尚未移植/验证 RV32 Newlib 或 musl |
 | 库存 ARM Newlib | `NEWLIB_MODE=stock` 诊断回退；不作为共享地址空间 SMP 重入安全结论 |
-| glibc / 动态加载 | 未移植；没有 Linux 进程/信号/动态链接接口的完整兼容承诺 |
+| 三种 MMU 架构 + glibc | `LINUX_COMPAT=1`，真实 Debian glibc 2.41 与各架构 ld.so；ARM 为 GNU soft-float ABI |
 
 源码下载经 Debian 签名元数据及固定 SHA256 校验，输出在忽略的构建目录。`scripts/build_newlib.py` 对目标 CPU、编译器、configure 与源码身份建立缓存；`scripts/build_musl.py` 为各架构构建实际静态库。
 
-## 接口矩阵
+glibc 工具与库由 `scripts/setup_glibc_env.sh` 安装，`/workspace/.nos-env/glibc/manifest.json` 记录编译器、未修改 DSO 和精确源码身份。动态重定位、依赖库、构造器和 dlopen 由真正的用户态 ld.so 完成。内核提供虚拟内存、任务、TLS、futex 和信号机制；文件调用进入独立链接的用户态 gateway，再经 IPC 调用 VFS。文件系统业务没有移入特权内核。
+
+## Linux personality 与真实 glibc
+
+| 接口族 | 已实现与开发验证 | 仍需完善的边界 |
+|---|---|---|
+| 动态加载 | ET_DYN/PT_INTERP、auxv、真实随机 AT_RANDOM、DT_NEEDED、构造器、dlopen/dlsym/dlclose | 不是全部 Linux ABI；启动成功不能代替其他接口验收 |
+| C 库与线程 | malloc/stdio/errno/C TLS，真实 NPTL create/join、detach/TSD、robust owner death、延迟/异步取消 | 其他属性、优先级协议和全部取消点需逐项验收 |
+| 进程与信号 | 独立地址空间 fork、同 PID exec、共享 OFD/cwd/umask 与 CLOEXEC、waitpid 状态；真实处理器帧、sigreturn、mask/pending、altstack、RT FIFO、SIGPIPE、EINTR 与部分 SA_RESTART | 完整 wait 选项/rusage、凭据、会话、作业控制等仍有缺口 |
+| 文件与目录 | stat64、pread/pwrite、getdents64、标准目录接口、常用 *at、RAM mode/umask/truncate/hardlink/symlink；兼容配置 256 字节路径及受 token 约束的双路径传输 | chown、时间更新、完整权限执行、资源最小限值和跨后端语义仍需完善；持久后端仍有 64 字节路径限制 |
+| 多路 I/O | 真实 pipe/文件/UART readiness，poll/select、ppoll/pselect 临时信号 mask、超时/EOF/错误 FD | 使用有界 readiness 查询与等待；不是完整事件设备框架 |
+| 时间 | 实际 RTC 的 REALTIME、64 位 MONOTONIC、睡眠/绝对等待、ITIMER_REAL 信号 | 100 Hz 粒度；CPU 时钟及其他 timer 类型尚不完整 |
+| 虚拟内存 | 稀疏 PROT_NONE、事务式提交与回滚、MAP_FIXED/NOREPLACE、私有文件装载、fork 复制、真实 RAM 共享页与每次映射授权、W^X | 持久文件映射、按需缺页、文件截断后的 SIGBUS、交换仍未完成；私有 fork 是复制而非 COW |
+| 网络和终端 | UART 与有界管道服务 | socket 协议栈、完整 TTY/PTY、termios 和控制终端尚未完成 |
+
+`tests/qemu_glibc.py` 对三架构分别检查实际 interpreter、库与镜像摘要、严格来宾标记、RTC 宿主时间窗和 QEMU 退出状态；SMP 另检查真实 CPU 掩码。`tests/qemu_posix_suite.py` 执行固定上游提交、未修改断言的 OpenPOSIX 选定用例，分别记录失败、未解决、不支持、未执行与超时。选定用例通过不等于完整 POSIX 符合性。
+
+当前仍有低于完整 POSIX 要求的资源和语义：任务/线程容量有界，管道为 256 字节缓冲、64 字节消息原子写，尚未达到 POSIX 最小 PIPE_BUF 及所有线程/进程限值；文件锁、完整权限/身份与全部资源限制尚未实现。已有测试成功不能消除这些缺口。glibc 还可能报告其构建时面向 Linux 的 option/limit，需要逐项与 NOS 实际执行能力对齐，不能将其常量视为已经满足的规范保证。
+
+## native Newlib / musl 接口矩阵
 
 | 接口 | 当前支持 | 主要限制 |
 |---|---|---|
 | malloc/calloc/realloc/free | 两种真实库 | 受地址空间、VMA 数量与物理页配额限制；不使用内核 malloc 代替 libc 分配器 |
 | printf/浮点/stdio 文件 | 支持声明子集 | 文件容量有界；FILE 锁与分配器重入必须在目标 SMP 配置单独验证 |
 | errno/TLS | Newlib 每线程 `_reent`；musl 线程指针/TLS | Newlib 库重入与通用 C11 `_Thread_local` 的编译器 TLS ABI 是不同能力；独立 ELF 的真实 C TLS 测试使用 musl |
-| open/read/write/close/lseek/fstat | 支持常用标志与字段 | 非法缓冲区返回 EFAULT；零长度仍检查 FD；stat 提供 mode/size 等有限字段，不提供完整权限/用户身份模型 |
+| open/read/write/close/lseek/fstat | 常用标志，实际 stat64 inode/类型/大小/链接数，标准库宽度转换 | 非法缓冲区返回 EFAULT；零长度仍检查 FD；完整权限/用户身份模型未齐 |
 | dup/dup2/fcntl 标志 | 支持 FD 共享描述与重定向 | FD 表有界；不支持完整 fcntl/文件锁集合 |
 | pipe | 有界管道、读写端生命周期 | 256 字节缓冲，64 字节消息原子写；阻塞/非阻塞、超时/取消及错误回复缓冲区有专项回归；没有 SIGPIPE，断读端返回 EPIPE |
-| mkdir/rmdir/unlink/rename | 支持端口包装与 NOS VFS | RAM 与 FAT 的 rename 替换语义不同；没有 hardlink/symlink/chmod/完整 pathname API |
-| 目录遍历 | NOS `nos_readdir` | 不代表两种 libc 的完整 opendir/readdir/dirent 接口已适配 |
+| mkdir/rmdir/unlink/rename/link/symlink/chmod/truncate/umask | 常用 *at 包装、RAM 元数据、真实链接身份和符号链接解析 | FAT/原生持久化与 RAM 具有不同边界；完整 pathname/权限/时间语义未齐 |
+| 目录遍历 | opendir/fdopendir/readdir、定位 cookie、getcwd/chdir/fchdir | 每库与每架构分别验证；有界路径长度仍低于完整 POSIX 目标 |
+| poll/select/ppoll/pselect | VFS/pipe/UART 实际 readiness、超时、EOF 与错误 FD | native 非空临时信号 mask 仍返回不支持；Linux glibc 的原子 mask 路径不同 |
 | fsync/sync | 持久化后端和设备 FLUSH | RAM 后端不提供跨重启保证；原生双 bank 与 FAT 的事务承诺不同 |
-| mmap/munmap/mprotect | MMU 匿名映射、范围操作、PROT_NONE | 无文件映射、MAP_SHARED、MAP_FIXED 或任意地址布局；不允许 W+X；非 MMU mprotect 返回 ENOTSUP |
-| clock_gettime/nanosleep | CLOCK_MONOTONIC、100 Hz 时间粒度 | 使用 64 位 tick 快照，支持相对及单调绝对睡眠；没有初始化的日历时钟；CLOCK_REALTIME 等未实现操作返回 ENOTSUP |
+| mmap/munmap/mprotect | MMU 匿名私有映射、范围操作、PROT_NONE | Linux profile 的扩展不自动成为 native libc mmap 支持；不允许 W+X；非 MMU mprotect 返回 ENOTSUP |
+| clock_gettime/nanosleep/gettimeofday | 64 位单调快照、100 Hz 等待；MMU RTC 通过统一 CLOCK_GET64 接入，三架构库已实际通过 | STM32 无可用 RTC 时显式不支持且已验证实际 Newlib errno 转换；CPU 时钟未齐 |
 | getpid/gettid | 地址空间组 ID / 任务 ID | 不冒充 Linux PID namespace；内核句柄带 generation |
 | pthread_create/join/exit | Newlib NOS 端口与 musl 端口 | 上限受可用任务槽和栈/映射配额约束；musl 默认栈为嵌入式 16 KiB 配置，guard 4 KiB |
 | pthread mutex/condvar | 普通/递归锁、等待/信号/广播、有限 timedwait | 受支持时钟与线程 API 范围限制；不支持完整 robust/process-shared/优先级协议组合 |
 | pthread key/once | TLS key、析构、once | 使用有限表；不能由此推断支持线程取消 |
 | pthread_cancel/detach/信号 | 未完整支持 | Newlib 的 cancel/detach 返回 ENOTSUP；musl detach 具有退出栈回收桥接，但未列为本次专项验证；cancel 返回 ENOTSUP，不能把未实现的信号取消当成成功；仅允许运行库启动所需的有限信号掩码路径 |
-| fork/execve/共享库/网络 | 未支持 | NOS 提供受权的 initramfs ELF spawn；不是 POSIX execve 或 fork |
+| fork/execve/共享库/网络 | native 两种库尚未完整接入 | NOS 的 native ELF spawn 与 Linux personality 的真实 fork/exec 分别描述 |
 
 ## 退出与并发契约
 

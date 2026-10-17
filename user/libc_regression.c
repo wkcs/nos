@@ -9,6 +9,162 @@
 #include <stdio.h>
 #include <time.h>
 #include <unistd.h>
+#include <fcntl.h>
+#include <dirent.h>
+#include <sys/stat.h>
+#include <string.h>
+#include <poll.h>
+#include <sys/select.h>
+#include <sys/time.h>
+#endif
+
+#if defined(NOS_NEWLIB) || defined(NOS_MUSL)
+static int select_directory_item(const struct dirent *entry)
+{ return !strcmp(entry->d_name, "item"); }
+static void posix_directory_regression(void)
+{
+    char old_cwd[64] = "/", cwd[64], data[8] = { 0 };
+    int ok = getcwd(old_cwd, sizeof(old_cwd)) != NULL;
+    ok &= nos_mkdir("/pd") == 0;
+    int directory = open("/pd", O_RDONLY);
+    int fd = directory < 0 ? -1 : openat(directory, "item", O_CREAT | O_TRUNC | O_RDWR, 0600);
+    ok &= directory >= 0 && fd >= 0;
+    if (fd >= 0) {
+        ok &= write(fd, "abcdef", 6) == 6 && lseek(fd, 2, SEEK_SET) == 2;
+        ok &= pread(fd, data, 3, 1) == 3 && !memcmp(data, "bcd", 3) && lseek(fd, 0, SEEK_CUR) == 2;
+        ok &= pwrite(fd, "XY", 2, 3) == 2 && lseek(fd, 0, SEEK_CUR) == 2;
+        ok &= pread(fd, data, 6, 0) == 6 && !memcmp(data, "abcXYf", 6);
+        struct stat st;
+        ok &= !fstatat(directory, "item", &st, 0) && S_ISREG(st.st_mode) && st.st_size == 6 && st.st_ino;
+        close(fd);
+    }
+    nos_check(ok, "posix_openat_positioned_io_stat");
+    int cwd_ok = !chdir("/pd") && getcwd(cwd, sizeof(cwd)) && !strcmp(cwd, "/pd");
+    fd = open("item", O_RDONLY);
+    cwd_ok &= fd >= 0;
+    if (fd >= 0) close(fd);
+    cwd_ok &= !chdir("/") && !fchdir(directory) && getcwd(cwd, sizeof(cwd)) && !strcmp(cwd, "/pd");
+    cwd_ok &= !chdir(old_cwd);
+    nos_check(cwd_ok, "posix_cwd_relative_paths");
+    DIR *stream = opendir("/pd");
+    int found = 0, directory_ok = stream != NULL;
+    if (stream) {
+        directory_ok &= (fcntl(dirfd(stream), F_GETFD) & FD_CLOEXEC) != 0;
+        struct dirent *entry;
+        errno = 0;
+        while ((entry = readdir(stream))) if (!strcmp(entry->d_name, "item")) found++;
+        directory_ok &= errno == 0 && found == 1;
+        rewinddir(stream);
+        entry = readdir(stream);
+        directory_ok &= entry != NULL;
+        if (entry) {
+            long position = telldir(stream);
+            struct dirent *next = readdir(stream);
+            char expected[64];
+            if (next) {
+                strcpy(expected, next->d_name);
+                seekdir(stream, position);
+                next = readdir(stream);
+                directory_ok &= next && !strcmp(expected, next->d_name);
+            }
+        }
+        directory_ok &= !closedir(stream);
+    }
+    struct dirent **selected = NULL;
+    int selected_count = scandir("/pd", &selected, select_directory_item, alphasort);
+    directory_ok &= selected_count == 1 && selected && !strcmp(selected[0]->d_name, "item");
+    if (selected_count >= 0) {
+        for (int i = 0; i < selected_count; i++) free(selected[i]);
+        free(selected);
+    }
+    nos_check(directory_ok, "posix_directory_iteration_seek");
+    if (directory >= 0) close(directory);
+    nos_unlink("/pd/item"); nos_rmdir("/pd");
+
+    char long_path[63];
+    long_path[0] = '/';
+    memset(long_path + 1, 'q', 60); long_path[61] = 0;
+    fd = open(long_path, O_CREAT | O_RDWR | O_TRUNC, 0600);
+    if (fd >= 0) close(fd);
+    stream = opendir("/");
+    found = 0;
+    int long_ok = fd >= 0 && stream != NULL;
+    if (stream) {
+        struct dirent *entry;
+        errno = 0;
+        while ((entry = readdir(stream))) if (!strcmp(entry->d_name, long_path + 1)) found++;
+        long_ok &= !errno && found == 1 && !closedir(stream);
+    }
+    nos_check(long_ok, "posix_directory_long_record");
+    nos_unlink(long_path);
+}
+static void posix_poll_regression(void)
+{
+    int descriptors[2];
+    int ok = !pipe(descriptors);
+    if (!ok) { nos_check(0, "posix_poll_select_readiness"); return; }
+    struct pollfd query[2] = {{descriptors[0], POLLIN, -1}, {descriptors[1], POLLOUT, -1}};
+    ok &= poll(query, 2, 0) == 1 && !query[0].revents && (query[1].revents & POLLOUT);
+    ok &= write(descriptors[1], "abc", 3) == 3 && poll(query, 2, 0) == 2 && (query[0].revents & POLLIN);
+    fd_set input, output;
+    FD_ZERO(&input); FD_ZERO(&output);
+    FD_SET(descriptors[0], &input); FD_SET(descriptors[1], &output);
+    struct timeval zero = { 0, 0 };
+    ok &= select(descriptors[1] + 1, &input, &output, NULL, &zero) == 2 &&
+        FD_ISSET(descriptors[0], &input) && FD_ISSET(descriptors[1], &output);
+    struct timespec immediate = { 0, 0 };
+    ok &= ppoll(query, 2, &immediate, NULL) == 2;
+    FD_ZERO(&input); FD_SET(descriptors[0], &input);
+    ok &= pselect(descriptors[0] + 1, &input, NULL, NULL, &immediate, NULL) == 1 && FD_ISSET(descriptors[0], &input);
+    char bytes[8];
+    ok &= read(descriptors[0], bytes, 3) == 3 && !memcmp(bytes, "abc", 3);
+    nos_check(ok, "posix_poll_select_readiness");
+    struct timespec before = { 0, 0 }, after = { 0, 0 };
+    ok = !clock_gettime(CLOCK_MONOTONIC, &before) && poll(query, 1, 25) == 0 &&
+        !clock_gettime(CLOCK_MONOTONIC, &after);
+    int64_t elapsed = (int64_t)(after.tv_sec - before.tv_sec) * 1000000000 + after.tv_nsec - before.tv_nsec;
+    ok &= elapsed >= 20000000 && !close(descriptors[1]) && poll(query, 1, 0) == 1 &&
+        (query[0].revents & POLLHUP) && read(descriptors[0], bytes, sizeof(bytes)) == 0;
+    struct pollfd invalid[2] = {{32767, POLLIN, 0}, {-1, POLLIN, -1}};
+    ok &= poll(invalid, 2, 0) == 1 && (invalid[0].revents & POLLNVAL) && !invalid[1].revents;
+    FD_ZERO(&input); FD_SET(31, &input); zero = (struct timeval){0, 0}; errno = 0;
+    ok &= select(32, &input, NULL, NULL, &zero) == -1 && errno == EBADF;
+    ok &= !close(descriptors[0]);
+    nos_check(ok, "posix_poll_timeout_eof_invalid");
+}
+static void posix_metadata_regression(void)
+{
+    mode_t previous = umask(0027);
+    int fd = open("/meta", O_CREAT | O_RDWR | O_TRUNC, 0666);
+    struct stat st = { 0 };
+    int ok = fd >= 0 && !fstat(fd, &st) && (st.st_mode & 0777) == 0640;
+    if (fd >= 0) {
+        char bytes[8];
+        ok &= write(fd, "abcd", 4) == 4 && lseek(fd, 2, SEEK_SET) == 2 && !ftruncate(fd, 8) &&
+            lseek(fd, 0, SEEK_CUR) == 2 && pread(fd, bytes, 8, 0) == 8 && !memcmp(bytes, "abcd\0\0\0\0", 8);
+        ok &= !truncate("/meta", 2) && !fstat(fd, &st) && st.st_size == 2;
+        ok &= !chmod("/meta", 0600) && !fstat(fd, &st) && (st.st_mode & 0777) == 0600;
+        ok &= !fchmod(fd, 0644) && !fstat(fd, &st) && (st.st_mode & 0777) == 0644;
+        ok &= !close(fd);
+    }
+    umask(previous);
+    nos_check(ok, "posix_metadata_modes_truncate");
+    struct stat alias = { 0 };
+    ok = !link("/meta", "/hard") && !stat("/meta", &st) && !stat("/hard", &alias) &&
+        st.st_ino == alias.st_ino && st.st_nlink == 2 && alias.st_nlink == 2;
+    ok &= !symlink("hard", "/sym");
+    char target[8] = { 0 };
+    ok &= readlink("/sym", target, sizeof(target)) == 4 && !memcmp(target, "hard", 4) &&
+        !lstat("/sym", &st) && S_ISLNK(st.st_mode) && !stat("/sym", &st) && S_ISREG(st.st_mode) && st.st_ino == alias.st_ino;
+    ok &= !unlink("/meta");
+    fd = open("/hard", O_RDONLY);
+    if (fd >= 0) { ok &= read(fd, target, 2) == 2 && !memcmp(target, "ab", 2); close(fd); } else ok = 0;
+    ok &= !unlink("/hard");
+    errno = 0;
+    ok &= stat("/sym", &st) == -1 && errno == ENOENT && !lstat("/sym", &st) && S_ISLNK(st.st_mode);
+    ok &= !unlink("/sym");
+    nos_check(ok, "posix_metadata_links_symlinks");
+}
 #endif
 #if defined(NOS_MUSL) || defined(NOS_NEWLIB)
 #include <pthread.h>
@@ -289,6 +445,11 @@ void nos_libc_regression(void)
         "stdio_long_write");
     nos_close(fd); nos_unlink("/safeio");
     pipe_regression();
+#if defined(NOS_NEWLIB) || defined(NOS_MUSL)
+    posix_directory_regression();
+    posix_poll_regression();
+    posix_metadata_regression();
+#endif
 
 #ifndef NOS_MUSL
     struct nos_thread one, two;
@@ -380,5 +541,28 @@ void nos_libc_regression(void)
         !clock_gettime(CLOCK_MONOTONIC, &after) &&
         (after.tv_sec > deadline.tv_sec || (after.tv_sec == deadline.tv_sec && after.tv_nsec >= deadline.tv_nsec)),
         "libc_monotonic_absolute_sleep");
+#ifdef NOS_ARM_M
+    errno = 0;
+    nos_check(clock_gettime(CLOCK_REALTIME, &after) == -1 && errno == ENOTSUP,
+        "libc_realtime_unsupported");
+#else
+    struct timeval wall;
+    struct timespec resolution;
+    int rtc_ok = !clock_gettime(CLOCK_REALTIME, &after) && !gettimeofday(&wall, NULL) &&
+        !clock_getres(CLOCK_REALTIME, &resolution) && after.tv_sec >= 1577836800 &&
+        wall.tv_sec >= after.tv_sec && wall.tv_sec - after.tv_sec <= 1 &&
+        wall.tv_usec >= 0 && wall.tv_usec < 1000000 && resolution.tv_sec >= 0 &&
+        resolution.tv_nsec >= 0 && resolution.tv_nsec < 1000000000;
+    nos_check(rtc_ok, "libc_realtime_clock_gettimeofday");
+    if (rtc_ok) {
+        deadline = after;
+        deadline.tv_nsec += 20000000;
+        if (deadline.tv_nsec >= 1000000000) { deadline.tv_sec++; deadline.tv_nsec -= 1000000000; }
+        rtc_ok = !clock_nanosleep(CLOCK_REALTIME, TIMER_ABSTIME, &deadline, NULL) &&
+            !clock_gettime(CLOCK_REALTIME, &after) && (after.tv_sec > deadline.tv_sec ||
+            (after.tv_sec == deadline.tv_sec && after.tv_nsec >= deadline.tv_nsec));
+    }
+    nos_check(rtc_ok, "libc_realtime_absolute_sleep");
+#endif
 #endif
 }

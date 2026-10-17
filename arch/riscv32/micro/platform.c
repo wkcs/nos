@@ -31,6 +31,13 @@ void arch_irq_restore(uintptr_t value)
 { if (value & 2) __asm__ volatile("csrs sstatus, %0" :: "r"((uintptr_t)2) : "memory"); }
 void arch_timer_init(void) { __asm__ volatile("csrs sie, %0" :: "r"((uintptr_t)512)); }
 void arch_timer_ack(void) { __asm__ volatile("csrc sip, %0" :: "r"((uintptr_t)2)); }
+uint64_t arch_realtime_ns(void)
+{
+    uint32_t low = *(volatile uint32_t *)0x00101000u;
+    __asm__ volatile("fence iorw, iorw" ::: "memory");
+    uint32_t high = *(volatile uint32_t *)0x00101004u;
+    return ((uint64_t)high << 32) | low;
+}
 #ifdef NOS_MMU
 static uint32_t table(void *pointer) { return (((uintptr_t)pointer >> 12) << 10) | 1; }
 static uint32_t leaf(uintptr_t physical, unsigned flags, unsigned user)
@@ -140,6 +147,7 @@ intptr_t arch_device_operation(struct task *task, uintptr_t op, uintptr_t b, uin
         if (b > 1) return -NOS_EINVAL;
         uart[1] = b ? 1 : 0; return 0;
     }
+    if (op == 5) return ((uart[5] & 1) ? 1 : 0) | ((uart[5] & 0x20) ? 4 : 0);
     if (op == 1) return b < 8 ? (intptr_t)(0x10001000u + b * 0x1000u) : -NOS_EINVAL;
     if (op == 3) { uintptr_t physical = task_user_phys(task, b); return physical ? (intptr_t)physical : -NOS_EFAULT; }
 #ifdef NOS_MMU
@@ -165,7 +173,7 @@ void arch_device_revoke(struct task *task)
     arch_irq_mask(10, 1);
     for (unsigned i = 0; i < 8; i++) {
         volatile uint32_t *mmio = (void *)(uintptr_t)(0x10001000u + i * 0x1000u);
-        if (mmio[0] != 0x74726976 || mmio[2] != 2) continue;
+        if (mmio[0] != 0x74726976 || (mmio[2] != 2 && mmio[2] != 4)) continue;
         mmio[0x70 / 4] = 0; __asm__ volatile("fence iorw, iorw" ::: "memory");
         unsigned remaining = 100000;
         while (mmio[0x70 / 4] && remaining) remaining--;

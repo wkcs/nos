@@ -2,6 +2,12 @@ name: Microkernel QEMU capabilities
 on:
   push:
   pull_request:
+  workflow_dispatch:
+    inputs:
+      linux_compat:
+        description: Run the optional genuine Debian glibc and dynamic linker tests
+        type: boolean
+        default: false
 jobs:
   qemu:
     runs-on: ubuntu-latest
@@ -31,3 +37,54 @@ jobs:
             out/microkernel/persistence/
             out/microkernel/normal-validation/
             out/microkernel/build-configuration/**/incremental-results.json
+  linux-compat:
+    if: github.event_name == 'workflow_dispatch' && inputs.linux_compat
+    runs-on: ubuntu-latest
+    container: debian:trixie
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [arm_virt, arm64_virt, riscv_virt]
+    steps:
+      - name: Install host prerequisites
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends build-essential python3 git ca-certificates
+      - uses: actions/checkout@v4
+      - name: Prepare verified native and genuine glibc toolchains
+        run: |
+          bash scripts/setup_microkernel_env.sh
+          bash scripts/setup_glibc_env.sh
+      - name: Verify native POSIX VFS and actual entropy device
+        run: |
+          . /workspace/.nos-env/activate.sh
+          python3 tests/qemu_posix_vfs.py --platform ${{ matrix.platform }}
+      - name: Verify shared file pages and permission grants
+        run: |
+          . /workspace/.nos-env/activate.sh
+          python3 tests/qemu_shared_files.py --platform ${{ matrix.platform }}
+      - name: Verify long paths and bulk IPC
+        run: |
+          . /workspace/.nos-env/activate.sh
+          python3 tests/qemu_long_paths.py --platform ${{ matrix.platform }}
+      - name: Execute real ld.so, glibc and NPTL on QEMU
+        run: |
+          . /workspace/.nos-env/activate.sh
+          python3 tests/qemu_glibc.py --platform ${{ matrix.platform }}
+          python3 tests/qemu_glibc.py --platform ${{ matrix.platform }} --cpus 4
+      - name: Run selected unmodified upstream OpenPOSIX tests
+        run: |
+          . /workspace/.nos-env/activate.sh
+          python3 tests/qemu_posix_suite.py --platform ${{ matrix.platform }} --selection expanded
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: linux-compat-${{ matrix.platform }}
+          path: |
+            out/microkernel/glibc-reports/
+            out/microkernel/posix-vfs-reports/
+            out/microkernel/posix-suite-reports/
+            out/microkernel/posix-shared-reports/
+            out/microkernel/posix-long-path-reports/
+            /workspace/.nos-env/glibc/manifest.json

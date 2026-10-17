@@ -11,6 +11,8 @@ parser.add_argument("--output", required=True, type=Path)
 parser.add_argument("--file", action="append", default=[], metavar="PATH=ELF")
 parser.add_argument("--negative-fixtures", action="store_true",
                     help="embed malformed copies of the first ELF for loader regression")
+parser.add_argument("--path-max", type=int, choices=(64, 256), default=64,
+                    help="archive path limit including NUL; Linux profiles use 256")
 args = parser.parse_args()
 lines = ['/* Generated initramfs; Copyright (C) 2026 NOS contributors */',
          '#include "elf.h"', '']
@@ -104,7 +106,9 @@ if args.negative_fixtures and images:
             struct.pack_into('<I', bad, tags[rel_tag] + 4, start)
         images.append((f'/test/elf-{case}', bytes(bad)))
 for i, (name, data) in enumerate(images):
-    if not name.startswith("/") or name in [entry[0] for entry in entries]:
+    if (not name.startswith("/") or '\0' in name or len(name.encode('utf-8')) >= args.path_max or
+            any(len(component.encode('utf-8')) > 63 for component in name.split('/')) or
+            name in [entry[0] for entry in entries]):
         parser.error(f"invalid or duplicate archive path: {name}")
     if not data.startswith(b"\x7fELF"):
         parser.error(f"not an ELF image: {name}")
@@ -113,6 +117,10 @@ for i, (name, data) in enumerate(images):
         lines.append('    ' + ','.join(f'0x{b:02x}' for b in data[offset:offset + 24]) + ',')
     lines.append('};')
     entries.append((name, i))
+if args.negative_fixtures and entries:
+    entries.append(('/abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ', 0))
+    if args.path_max == 256:
+        entries.append(('/' + '/'.join([letter * 50 for letter in 'abcd'] + ['hello']), 0))
 lines += ['static int same(const char *a, const char *b)',
           '{ while (*a && *a == *b) { a++; b++; } return *a == *b; }',
           'const void *nos_initramfs_find(const char *path, size_t *bytes)', '{',
@@ -120,6 +128,10 @@ lines += ['static int same(const char *a, const char *b)',
 for name, i in entries:
     lines.append(f'    if (same(path, {json.dumps(name)})) {{ *bytes = sizeof(image_{i}); return image_{i}; }}')
 lines += ['    *bytes = 0; return 0;', '}', '']
+lines += ['const char *nos_initramfs_entry(size_t index, size_t *bytes)', '{', '    if (!bytes) return 0;', '    switch (index) {']
+for number, (name, i) in enumerate(entries):
+    lines.append(f'    case {number}: *bytes = sizeof(image_{i}); return {json.dumps(name)};')
+lines += ['    default: *bytes = 0; return 0;', '    }', '}', '']
 args.output.parent.mkdir(parents=True, exist_ok=True)
 contents = '\n'.join(lines)
 if not args.output.is_file() or args.output.read_text() != contents:

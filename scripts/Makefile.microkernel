@@ -5,6 +5,9 @@ MPU ?= 0
 SMP ?= 1
 PERSISTENCE_TEST ?= 0
 EXTRA_APPS ?= 0
+LINUX_COMPAT ?= 0
+POSIX_SUITE ?= 0
+POSIX_CASE_TICKS ?= 3000
 ifeq ($(filter $(BUILD_MODE),selftest normal),)
 $(error BUILD_MODE must be selftest or normal)
 endif
@@ -59,11 +62,36 @@ DEFS += -DNOS_MPU
 endif
 DEFS += -DNOS_SMP=$(SMP) -DNOS_PERSISTENCE_TEST=$(PERSISTENCE_TEST)
 DEFS += -DNOS_EXTRA_APPS=$(EXTRA_APPS)
+ifeq ($(LINUX_COMPAT),1)
+ifneq ($(filter $(PLATFORM),arm_virt arm64_virt riscv_virt),$(PLATFORM))
+$(error LINUX_COMPAT=1 requires arm_virt, arm64_virt or riscv_virt)
+endif
+ifneq ($(LIBC),minimal)
+$(error LINUX_COMPAT=1 uses LIBC=minimal for the built-in native runtime)
+endif
+DEFS += -DNOS_LINUX_COMPAT
+endif
+ifeq ($(POSIX_SUITE),1)
+ifneq ($(LINUX_COMPAT),1)
+$(error POSIX_SUITE=1 requires LINUX_COMPAT=1)
+endif
+DEFS += -DNOS_POSIX_SUITE -DNOS_POSIX_CASE_TICKS=$(POSIX_CASE_TICKS)
+endif
 COMMONFLAGS := $(CPUFLAGS) -ffreestanding -fno-builtin -fno-stack-protector -fno-pie -fno-pic -fno-common -ffunction-sections -fdata-sections -fno-tree-loop-distribute-patterns -Wall -Wextra -Werror -std=gnu11 -O2 -g -Iinclude/nos -MMD -MP $(DEFS)
 COMMONFLAGS += $(if $(filter selftest,$(BUILD_MODE)),-DNOS_SELFTEST,-DNOS_NORMAL_BOOT)
 COMMONFLAGS += $(EXTRA_CFLAGS)
-KERNEL_SRC := kernel/micro/core.c kernel/micro/task.c kernel/micro/ipc.c kernel/micro/irq.c kernel/micro/mutex.c kernel/micro/scheduler.c kernel/micro/memory.c kernel/micro/runtime.c kernel/micro/elf.c $(ARCH_DIR)/platform.c
-USER_SRC := user/runtime.c user/thread.c user/init.c servers/vfs/server.c servers/drivers/virtio_blk.c servers/drivers/uart.c
+ifeq ($(POSIX_SUITE),1)
+COMMONFLAGS += -I$(O)
+endif
+KERNEL_SRC := kernel/micro/core.c kernel/micro/task.c kernel/micro/ipc.c kernel/micro/irq.c kernel/micro/mutex.c kernel/micro/scheduler.c kernel/micro/memory.c kernel/micro/runtime.c kernel/micro/elf.c kernel/micro/linux.c kernel/micro/linux_signal.c kernel/micro/bootfile.c $(ARCH_DIR)/platform.c
+ifeq ($(LINUX_COMPAT),1)
+USER_SRC_LINUX := user/linux_regression.c
+ifeq ($(POSIX_SUITE),1)
+USER_SRC_LINUX += user/posix_suite.c
+endif
+endif
+USER_SRC := user/runtime.c user/thread.c user/posix_poll.c user/init.c servers/vfs/server.c servers/drivers/virtio_blk.c servers/drivers/virtio_rng.c servers/drivers/uart.c
+USER_SRC += $(USER_SRC_LINUX)
 USER_SRC += servers/fatfs/adapter.c
 ifneq ($(PLATFORM),stm32)
 USER_SRC += servers/fatfs/ff.c
@@ -82,6 +110,7 @@ $(error Newlib integration currently requires an ARM target)
 endif
 USER_SRC += libc/port/newlib.c
 USER_SRC += libc/port/newlib_pthread.c
+USERFLAGS += -Ilibc/port/newlib_include
 COMMONFLAGS += -DNOS_NEWLIB -D_POSIX_THREADS=1 -D_UNIX98_THREAD_MUTEX_ATTRIBUTES=1 -D_POSIX_TIMERS=1 -D_POSIX_MONOTONIC_CLOCK=1
 NEWLIB_MODE ?= dynamic
 ifeq ($(NEWLIB_MODE),dynamic)
@@ -121,11 +150,14 @@ KERNEL_LIBGCC := $(O)/kernel-libgcc.a
 KERNEL_LIBGCC_SYMBOLS := $(O)/kernel-libgcc.syms
 BUILD_SIGNATURE := $(O)/build-config.json
 LINKFLAGS ?= -nostdlib -static -no-pie -Wl,--build-id=none,--gc-sections
+ifeq ($(LINUX_COMPAT),1)
+LINKFLAGS += -Wl,--defsym=NOS_USER_TEMPLATE_LIMIT=131072
+endif
 make_quote = '$(subst ','"'"',$(1))'
 .PHONY: all clean test qemu-test qemu-run FORCE
 all: $(O)/nos.elf
 $(BUILD_SIGNATURE): FORCE
-	@$(PYTHON) scripts/build_signature.py --output $(call make_quote,$@) --compiler $(call make_quote,$(CC)) --value $(call make_quote,platform=$(PLATFORM)) --value $(call make_quote,libc=$(LIBC)) --value $(call make_quote,mode=$(BUILD_MODE)) --value $(call make_quote,cflags=$(COMMONFLAGS)) --value $(call make_quote,kernel_flags=$(KERNELFLAGS)) --value $(call make_quote,asm_flags=$(CPUFLAGS) $(DEFS)) --value $(call make_quote,linkflags=$(LINKFLAGS)) --value $(call make_quote,libraries=$(USER_LIBS)) --rule Makefile --rule scripts/Makefile.microkernel --rule scripts/build_signature.py --rule out/microkernel/config.mk
+	@$(PYTHON) scripts/build_signature.py --output $(call make_quote,$@) --compiler $(call make_quote,$(CC)) --value $(call make_quote,platform=$(PLATFORM)) --value $(call make_quote,libc=$(LIBC)) --value $(call make_quote,mode=$(BUILD_MODE)) --value $(call make_quote,cflags=$(COMMONFLAGS)) --value $(call make_quote,kernel_flags=$(KERNELFLAGS)) --value $(call make_quote,user_flags=$(USERFLAGS)) --value $(call make_quote,asm_flags=$(CPUFLAGS) $(DEFS)) --value $(call make_quote,linkflags=$(LINKFLAGS)) --value $(call make_quote,libraries=$(USER_LIBS)) --rule Makefile --rule scripts/Makefile.microkernel --rule scripts/build_signature.py --rule out/microkernel/config.mk $(LINUX_SIGNATURE)
 $(KERNEL_LIBGCC) $(KERNEL_LIBGCC_SYMBOLS) &: $(LIBGCC_ARCHIVE) scripts/kernel_libgcc.py $(BUILD_SIGNATURE)
 	$(PYTHON) scripts/kernel_libgcc.py --compiler $(CC) $(foreach flag,$(CPUFLAGS),--cpu-flag=$(flag)) --output $(O)
 $(O)/nos.elf: $(OBJECTS) $(LINKER) $(LIBC_ARCHIVE) $(LIBGCC_ARCHIVE) $(KERNEL_LIBGCC) $(BUILD_SIGNATURE)
@@ -133,7 +165,7 @@ $(O)/nos.elf: $(OBJECTS) $(LINKER) $(LIBC_ARCHIVE) $(LIBGCC_ARCHIVE) $(KERNEL_LI
 	$(CROSS)size $@
 $(O)/%.o: %.c $(BUILD_SIGNATURE)
 	@mkdir -p $(dir $@)
-	$(CC) $(COMMONFLAGS) $(if $(filter kernel/% arch/%,$<),$(KERNELFLAGS),) -c $< -o $@
+	$(CC) $(COMMONFLAGS) $(if $(filter kernel/% arch/%,$<),$(KERNELFLAGS),$(USERFLAGS)) -c $< -o $@
 	$(if $(filter kernel/% arch/%,$<),$(OBJCOPY) --redefine-syms $(KERNEL_LIBGCC_SYMBOLS) $@,@:)
 $(O)/%.o: %.S $(BUILD_SIGNATURE)
 	@mkdir -p $(dir $@)
@@ -144,7 +176,8 @@ APP_LINKER := apps/$(if $(filter stm32 riscv32_nommu,$(PLATFORM)),$(PLATFORM),ap
 APP_PICFLAGS := $(if $(filter stm32 riscv32_nommu,$(PLATFORM)),-fpie,-fno-pie -fno-pic)
 M4_APP_LINKFLAGS := -Wl,-pie,--no-dynamic-linker
 APP_LINKFLAGS := $(if $(filter stm32 riscv32_nommu,$(PLATFORM)),$(M4_APP_LINKFLAGS),-static -no-pie)
-$(O)/apps/hello.elf: apps/start.c apps/hello.c $(APP_LINKER) $(BUILD_SIGNATURE)
+APP_PUBLIC_HEADERS := $(wildcard include/nos/*.h include/nos/sys/*.h libc/port/newlib_include/*.h)
+$(O)/apps/hello.elf: apps/start.c apps/hello.c $(APP_LINKER) $(APP_PUBLIC_HEADERS) $(BUILD_SIGNATURE)
 	@mkdir -p $(dir $@)
 ifeq ($(PLATFORM),riscv32_nommu)
 	$(CC) $(CPUFLAGS) $(DEFS) -fpie -ffreestanding -fno-builtin -fno-stack-protector -Iinclude/nos -c apps/start.c -o $(O)/apps/hello_start.o
@@ -155,11 +188,98 @@ else
 endif
 INITRAMFS_FILES := --file /bin/hello=$(O)/apps/hello.elf
 INITRAMFS_IMAGES := $(O)/apps/hello.elf
-APP_LIBC_SOURCES := apps/start.c apps/libc_start.c user/runtime.c user/thread.c libc/port/$(LIBC).c
-APP_LIBC_FLAGS := $(COMMONFLAGS) -nostdlib -static -no-pie -Wl,--gc-sections,--build-id=none,-z,max-page-size=4096 -T apps/app.ld
+ifeq ($(LINUX_COMPAT),1)
+LINUX_SYSROOT ?= /workspace/.nos-env/root
+LINUX_MANIFEST ?= /workspace/.nos-env/glibc/manifest.json
+ifeq ($(PLATFORM),arm_virt)
+LINUX_TRIPLE := arm-linux-gnueabi
+LINUX_INTERPRETER := ld-linux.so.3
+else ifeq ($(PLATFORM),arm64_virt)
+LINUX_TRIPLE := aarch64-linux-gnu
+LINUX_INTERPRETER := ld-linux-aarch64.so.1
+else
+LINUX_TRIPLE := riscv64-linux-gnu
+LINUX_INTERPRETER := ld-linux-riscv64-lp64d.so.1
+endif
+LINUX_CC := $(LINUX_TRIPLE)-gcc
+LINUX_LIBRARY_ROOT := $(LINUX_SYSROOT)/usr/$(LINUX_TRIPLE)/lib
+LINUX_LIBRARIES := $(wildcard $(addprefix $(LINUX_LIBRARY_ROOT)/,$(LINUX_INTERPRETER) libc.so.6 libm.so.6 libpthread.so.0 libdl.so.2 librt.so.1 libresolv.so.2 libutil.so.1 libanl.so.1 libnss_dns.so.2 libnss_files.so.2 libgcc_s.so.1))
+LINUX_CFLAGS := $(CPUFLAGS) --sysroot=$(LINUX_SYSROOT) -isystem $(LINUX_SYSROOT)/usr/$(LINUX_TRIPLE)/include -Wall -Wextra -Werror -std=gnu11 -O2 -g
+LINUX_APP_FLAGS := $(LINUX_CFLAGS) -fPIE -pie -Wl,--build-id=none,--dynamic-linker=/lib/$(LINUX_INTERPRETER)
+LINUX_CRT_FILES := $(wildcard $(LINUX_LIBRARY_ROOT)/*crt*.o)
+LINUX_SIGNATURE = --value $(call make_quote,linux_flags=$(LINUX_APP_FLAGS)) --rule $(LINUX_MANIFEST) --rule $(shell command -v $(LINUX_CC))
+$(O)/apps/nos-linux-gateway.elf: user/linux_gateway.c user/runtime.c user/posix_poll.c apps/linux_gateway.ld $(wildcard include/nos/*.h include/nos/sys/*.h) $(LIBGCC_ARCHIVE) $(BUILD_SIGNATURE)
+	@mkdir -p $(dir $@)
+	$(LINUX_CC) $(LINUX_CFLAGS) $(if $(filter arm_virt,$(PLATFORM)),-fshort-enums,) $(DEFS) -Iinclude/nos -ffreestanding -fno-builtin -fno-stack-protector -fno-pie -fno-pic -ffunction-sections -fdata-sections -nostdlib -static -no-pie -Wl,--build-id=none,--gc-sections -Tapps/linux_gateway.ld user/linux_gateway.c user/runtime.c user/posix_poll.c $(LIBGCC_ARCHIVE) -o $@
+$(O)/apps/glibc_check.elf: apps/glibc_check.c $(LINUX_LIBRARIES) $(LINUX_CRT_FILES) $(LINUX_MANIFEST) $(BUILD_SIGNATURE)
+	@mkdir -p $(dir $@)
+	$(LINUX_CC) $(LINUX_APP_FLAGS) $< -pthread -ldl -lm -o $@
+$(O)/apps/glibc_threads.elf: apps/glibc_threads.c $(LINUX_LIBRARIES) $(LINUX_CRT_FILES) $(LINUX_MANIFEST) $(BUILD_SIGNATURE)
+	@mkdir -p $(dir $@)
+	$(LINUX_CC) $(LINUX_APP_FLAGS) $< -pthread -ldl -lm -o $@
+$(O)/apps/glibc_poll.elf: apps/glibc_poll.c $(LINUX_LIBRARIES) $(LINUX_CRT_FILES) $(LINUX_MANIFEST) $(BUILD_SIGNATURE)
+	@mkdir -p $(dir $@)
+	$(LINUX_CC) $(LINUX_APP_FLAGS) $< -pthread -ldl -lm -o $@
+$(O)/apps/glibc_signals.elf: apps/glibc_signals.c $(LINUX_LIBRARIES) $(LINUX_CRT_FILES) $(LINUX_MANIFEST) $(BUILD_SIGNATURE)
+	@mkdir -p $(dir $@)
+	$(LINUX_CC) $(LINUX_APP_FLAGS) $< -pthread -ldl -lm -o $@
+$(O)/apps/glibc_process.elf: apps/glibc_process.c $(LINUX_LIBRARIES) $(LINUX_CRT_FILES) $(LINUX_MANIFEST) $(BUILD_SIGNATURE)
+	@mkdir -p $(dir $@)
+	$(LINUX_CC) $(LINUX_APP_FLAGS) $< -pthread -ldl -lm -o $@
+$(O)/apps/glibc_sync.elf: apps/glibc_sync.c $(LINUX_LIBRARIES) $(LINUX_CRT_FILES) $(LINUX_MANIFEST) $(BUILD_SIGNATURE)
+	@mkdir -p $(dir $@)
+	$(LINUX_CC) $(LINUX_APP_FLAGS) $< -pthread -ldl -lm -o $@
+$(O)/apps/glibc_files.elf: apps/glibc_files.c $(LINUX_LIBRARIES) $(LINUX_CRT_FILES) $(LINUX_MANIFEST) $(BUILD_SIGNATURE)
+	@mkdir -p $(dir $@)
+	$(LINUX_CC) $(LINUX_APP_FLAGS) $< -pthread -ldl -lm -o $@
+$(O)/apps/glibc_futex_shared.elf: apps/glibc_futex_shared.c $(LINUX_LIBRARIES) $(LINUX_CRT_FILES) $(LINUX_MANIFEST) $(BUILD_SIGNATURE)
+	@mkdir -p $(dir $@)
+	$(LINUX_CC) $(LINUX_APP_FLAGS) $< -pthread -ldl -lm -o $@
+$(O)/apps/glibc_shared_sync.elf: apps/glibc_shared_sync.c $(LINUX_LIBRARIES) $(LINUX_CRT_FILES) $(LINUX_MANIFEST) $(BUILD_SIGNATURE)
+	@mkdir -p $(dir $@)
+	$(LINUX_CC) $(LINUX_APP_FLAGS) $< -pthread -ldl -lm -o $@
+$(O)/apps/glibc_paths.elf: apps/glibc_paths.c $(LINUX_LIBRARIES) $(LINUX_CRT_FILES) $(LINUX_MANIFEST) $(BUILD_SIGNATURE)
+	@mkdir -p $(dir $@)
+	$(LINUX_CC) $(LINUX_APP_FLAGS) $< -pthread -ldl -lm -o $@
+$(O)/apps/libnos_probe.so: apps/dynamic/library.c $(LINUX_LIBRARIES) $(LINUX_MANIFEST) $(BUILD_SIGNATURE)
+	@mkdir -p $(dir $@)
+	$(LINUX_CC) $(LINUX_CFLAGS) -fPIC -shared -nostdlib -Wl,--build-id=none,-soname,libnos_probe.so $< -o $@
+$(O)/apps/dynamic_check.elf: apps/dynamic/main.c apps/dynamic/start.S $(O)/apps/libnos_probe.so $(LINUX_LIBRARIES) $(LINUX_MANIFEST) $(BUILD_SIGNATURE)
+	@mkdir -p $(dir $@)
+	$(LINUX_CC) $(LINUX_APP_FLAGS) -ffreestanding -fno-builtin -fno-stack-protector -nostdlib -Wl,-e,_start,--no-as-needed,-rpath,/lib apps/dynamic/start.S apps/dynamic/main.c -L$(O)/apps -lnos_probe -o $@
+INITRAMFS_IMAGES += $(O)/apps/nos-linux-gateway.elf $(O)/apps/glibc_check.elf $(O)/apps/dynamic_check.elf $(O)/apps/libnos_probe.so $(LINUX_LIBRARIES)
+INITRAMFS_IMAGES += $(O)/apps/glibc_threads.elf
+INITRAMFS_FILES += --file /bin/glibc_threads=$(O)/apps/glibc_threads.elf
+INITRAMFS_IMAGES += $(O)/apps/glibc_poll.elf
+INITRAMFS_FILES += --file /bin/glibc_poll=$(O)/apps/glibc_poll.elf
+INITRAMFS_IMAGES += $(O)/apps/glibc_signals.elf
+INITRAMFS_FILES += --file /bin/glibc_signals=$(O)/apps/glibc_signals.elf
+INITRAMFS_IMAGES += $(O)/apps/glibc_process.elf
+INITRAMFS_FILES += --file /bin/glibc_process=$(O)/apps/glibc_process.elf
+INITRAMFS_IMAGES += $(O)/apps/glibc_sync.elf
+INITRAMFS_FILES += --file /bin/glibc_sync=$(O)/apps/glibc_sync.elf
+INITRAMFS_IMAGES += $(O)/apps/glibc_files.elf
+INITRAMFS_FILES += --file /bin/glibc_files=$(O)/apps/glibc_files.elf
+INITRAMFS_IMAGES += $(O)/apps/glibc_futex_shared.elf
+INITRAMFS_FILES += --file /bin/glibc_futex_shared=$(O)/apps/glibc_futex_shared.elf
+INITRAMFS_IMAGES += $(O)/apps/glibc_shared_sync.elf
+INITRAMFS_FILES += --file /bin/glibc_shared_sync=$(O)/apps/glibc_shared_sync.elf
+INITRAMFS_IMAGES += $(O)/apps/glibc_paths.elf
+INITRAMFS_FILES += --file /bin/glibc_paths=$(O)/apps/glibc_paths.elf
+INITRAMFS_FILES += --file /lib/nos-linux-gateway.elf=$(O)/apps/nos-linux-gateway.elf --file /bin/glibc_check=$(O)/apps/glibc_check.elf --file /bin/dynamic_check=$(O)/apps/dynamic_check.elf --file /lib/libnos_probe.so=$(O)/apps/libnos_probe.so
+INITRAMFS_FILES += $(foreach library,$(LINUX_LIBRARIES),--file /lib/$(notdir $(library))=$(library))
+ifeq ($(POSIX_SUITE),1)
+include $(O)/posix-files.mk
+INITRAMFS_IMAGES += $(POSIX_SUITE_IMAGES)
+INITRAMFS_FILES += $(POSIX_SUITE_FILES)
+LINUX_SIGNATURE += --rule $(O)/posix_cases.h --rule $(O)/manifest.json
+endif
+endif
+APP_LIBC_SOURCES := apps/start.c apps/libc_start.c user/runtime.c user/thread.c user/posix_poll.c libc/port/$(LIBC).c
+APP_LIBC_FLAGS := $(COMMONFLAGS) $(USERFLAGS) -nostdlib -static -no-pie -Wl,--gc-sections,--build-id=none,-z,max-page-size=4096 -T apps/app.ld
 ifneq ($(LIBC),minimal)
 ifneq ($(PLATFORM),stm32)
-$(O)/apps/libc_check.elf: $(APP_LIBC_SOURCES) apps/libc_check.c $(LIBC_ARCHIVE) apps/app.ld $(BUILD_SIGNATURE)
+$(O)/apps/libc_check.elf: $(APP_LIBC_SOURCES) apps/libc_check.c $(LIBC_ARCHIVE) apps/app.ld $(APP_PUBLIC_HEADERS) $(BUILD_SIGNATURE)
 	@mkdir -p $(dir $@)
 	$(CC) $(APP_LIBC_FLAGS) $(APP_LIBC_SOURCES) apps/libc_check.c $(USER_LIBS) -lgcc -o $@
 INITRAMFS_FILES += --file /bin/libc_check=$(O)/apps/libc_check.elf
@@ -171,17 +291,17 @@ ifneq ($(LIBC),musl)
 $(error EXTRA_APPS=1 requires LIBC=musl)
 endif
 USERLIB_ROOT := out/microkernel/userlibs/$(PLATFORM)
-$(O)/apps/lua.elf: $(APP_LIBC_SOURCES) apps/lua/main.c $(USERLIB_ROOT)/lua/liblua.a $(LIBC_ARCHIVE) apps/app.ld $(BUILD_SIGNATURE)
+$(O)/apps/lua.elf: $(APP_LIBC_SOURCES) apps/lua/main.c $(USERLIB_ROOT)/lua/liblua.a $(LIBC_ARCHIVE) apps/app.ld $(APP_PUBLIC_HEADERS) $(BUILD_SIGNATURE)
 	@mkdir -p $(dir $@)
 	$(CC) $(APP_LIBC_FLAGS) -Iapp/lua/lib $(APP_LIBC_SOURCES) apps/lua/main.c $(USERLIB_ROOT)/lua/liblua.a $(USER_LIBS) -lgcc -o $@
-$(O)/apps/lvgl.elf: $(APP_LIBC_SOURCES) apps/lvgl/main.c apps/lvgl/lv_conf.h $(USERLIB_ROOT)/lvgl/liblvgl.a $(LIBC_ARCHIVE) apps/app.ld $(BUILD_SIGNATURE)
+$(O)/apps/lvgl.elf: $(APP_LIBC_SOURCES) apps/lvgl/main.c apps/lvgl/lv_conf.h $(USERLIB_ROOT)/lvgl/liblvgl.a $(LIBC_ARCHIVE) apps/app.ld $(APP_PUBLIC_HEADERS) $(BUILD_SIGNATURE)
 	@mkdir -p $(dir $@)
 	$(CC) $(APP_LIBC_FLAGS) -DLV_CONF_INCLUDE_SIMPLE -Iapps/lvgl -Iapp/lvgl/lib $(APP_LIBC_SOURCES) apps/lvgl/main.c $(USERLIB_ROOT)/lvgl/liblvgl.a $(USER_LIBS) -lgcc -o $@
 INITRAMFS_FILES += --file /bin/lua=$(O)/apps/lua.elf --file /bin/lvgl=$(O)/apps/lvgl.elf
 INITRAMFS_IMAGES += $(O)/apps/lua.elf $(O)/apps/lvgl.elf
 endif
 $(O)/initramfs.c: $(INITRAMFS_IMAGES) scripts/embed_initramfs.py
-	$(PYTHON) scripts/embed_initramfs.py --output $@ $(INITRAMFS_FILES) $(if $(filter selftest,$(BUILD_MODE)),--negative-fixtures,)
+	$(PYTHON) scripts/embed_initramfs.py --output $@ $(INITRAMFS_FILES) $(if $(filter selftest,$(BUILD_MODE)),--negative-fixtures,) $(if $(filter 1,$(LINUX_COMPAT)),--path-max 256,)
 $(O)/initramfs.o: $(O)/initramfs.c $(BUILD_SIGNATURE)
 	$(CC) $(COMMONFLAGS) $(KERNELFLAGS) -c $< -o $@
 %_defconfig:

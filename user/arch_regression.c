@@ -41,7 +41,11 @@ static void halfword_regression(void)
 static void guard_worker(uintptr_t unused)
 {
     (void)unused;
+#ifdef NOS_LINUX_COMPAT
+    *(volatile unsigned char *)0x01030000u = 1;
+#else
     *(volatile unsigned char *)0x0100c000u = 1;
+#endif
     nos_syscall(NOS_SYS_EXIT, 99, 0, 0);
     for (;;) { }
 }
@@ -179,9 +183,35 @@ static void smp_regression(void)
     nos_check(after - before >= 50, "smp_clock_rate");
 }
 #endif
+#if defined(NOS_ARM) && defined(NOS_LINUX_COMPAT)
+static void arm_kuser_regression(void)
+{
+    volatile unsigned value = 7;
+    int (*compare)(unsigned, unsigned, volatile unsigned *) = (void *)0xffff0fc0u;
+    int (*compare64)(const uint64_t *, const uint64_t *, volatile uint64_t *) = (void *)0xffff0f60u;
+    uintptr_t (*get_tls)(void) = (void *)0xffff0fe0u;
+    void (*barrier)(void) = (void *)0xffff0fa0u;
+    uintptr_t tls; __asm__ volatile("mrc p15, 0, %0, c13, c0, 3" : "=r"(tls));
+    int ok = *(volatile unsigned *)0xffff0ffcu == 5;
+    barrier();
+    ok &= !compare(7, 11, &value) && value == 11;
+    ok &= compare(7, 19, &value) != 0 && value == 11;
+    uint64_t before = 0x1234567887654321ull, after = 0xabcdef0123456789ull;
+    volatile uint64_t wide = before;
+    ok &= !compare64(&before, &after, &wide) && wide == after;
+    ok &= compare64(&before, &before, &wide) != 0 && wide == after;
+    ok &= get_tls() == tls;
+    ok &= !nos_syscall(NOS_SYS_USER_CHECK, 0xffff0fa0u, 8, 1);
+    ok &= nos_syscall(NOS_SYS_USER_CHECK, 0xffff0fa0u, 8, 2) == -NOS_EFAULT;
+    nos_check(ok, "arm_linux_kuser_helpers");
+}
+#endif
 static const unsigned readonly_futex;
 void nos_arch_regression(void)
 {
+#if defined(NOS_ARM) && defined(NOS_LINUX_COMPAT)
+    arm_kuser_regression();
+#endif
     nos_check(nos_syscall(NOS_SYS_FUTEX_WAIT, (uintptr_t)&readonly_futex, 1, 0) == -NOS_EAGAIN,
         "futex_readonly_atomic_load");
 #ifdef NOS_RISCV

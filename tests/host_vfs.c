@@ -21,7 +21,10 @@ intptr_t nos_syscall(uintptr_t n, uintptr_t a, uintptr_t b, uintptr_t c)
     return -NOS_EACCES;
 }
 void nos_uart_init(void) { }
+int nos_uart_readable(void) { return 0; }
+int nos_uart_writable(void) { return 1; }
 void nos_uart_get_stats(struct nos_uart_stats *s) { memset(s, 0, sizeof(*s)); }
+intptr_t nos_random_read(void *buffer, size_t length, unsigned flags) { (void)buffer; (void)length; (void)flags; return -NOS_ENOTSUP; }
 uint64_t nos_block_capacity(void) { return 0; }
 uint64_t nos_block_interrupts(void) { return 0; }
 uint64_t nos_block_requests(void) { return 0; }
@@ -70,7 +73,7 @@ for(unsigned i=0;i<NOS_TASKS;i++)fds[i].pid=-1;
 nos_vfs_regression();
 unsigned random = 123456789u;
 for (unsigned i=0;i<100000;i++) {
- struct nos_message m={0}; random=random*1664525u+1013904223u; m.op=1+(random%16);m.sender=1;m.process=1;m.arg=(intptr_t)(random%24)-4;m.value=(intptr_t)(random%24)-4;
+ struct nos_message m={0}; random=random*1664525u+1013904223u; m.op=1+(random%44);m.sender=1;m.process=1;m.arg=(intptr_t)(random%40)-4;m.value=(intptr_t)(random%40)-4;
  m.len=random%90;
  for(size_t j=0;j<NOS_MSG_DATA;j++){random=random*1664525u+1013904223u;m.data[j]=(char)(random>>24);}
  if(i%3==0){strcpy(m.data,"/tmp/fuzz");m.len=10;}

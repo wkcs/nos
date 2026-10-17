@@ -15,7 +15,8 @@ def main():
     out.mkdir(parents=True)
     binary = out / 'host-vfs'
     command = ['gcc', '-DNOS_MMU', '-Iinclude/nos', '-fsanitize=address,undefined',
-               '-fno-omit-frame-pointer', '-g', '-O1', 'tests/host_vfs.c', '-o', str(binary)]
+               '-fno-omit-frame-pointer', '-ffunction-sections', '-fdata-sections',
+               '-Wl,--gc-sections', '-g', '-O1', 'tests/host_vfs.c', '-o', str(binary)]
     with (out / 'build.log').open('w') as log:
         build = subprocess.run(command, cwd=ROOT, stdout=log, stderr=subprocess.STDOUT)
     code = None
@@ -31,9 +32,14 @@ def main():
                 pass
     text = (out / 'host.log').read_text() if (out / 'host.log').exists() else ''
     good = build.returncode == 0 and code == 0 and 'PASS vfs_stateful_host_fuzz_100000' in text and 'FAIL' not in text
-    inputs = ['tests/host_vfs.c', 'servers/vfs/server.c', 'servers/vfs/pipe_wait.h', 'servers/vfs/regression.c', 'include/nos/abi.h']
+    inputs = ['tests/host_vfs.c', 'servers/vfs/server.c', 'servers/vfs/pipe_wait.h',
+              'servers/vfs/archive.h', 'servers/vfs/regression.c', 'servers/drivers/devices.h',
+              'servers/vfs/metadata.h',
+              'servers/vfs/file_data.h',
+              'include/nos/abi.h', 'include/nos/user.h', 'include/nos/poll_abi.h']
     result = {'passed': good, 'scope': 'VFS bounds only; host RPC/device stubs do not verify IPC or hardware',
               'build_returncode': build.returncode, 'returncode': code, 'iterations': 100000,
+              'fuzz_seed': 123456789, 'operation_range': [1, 44], 'descriptor_argument_range': [-4, 35],
               'compiler': subprocess.check_output(['gcc', '--version'], text=True).splitlines()[0],
               'source_sha256': {name: hashlib.sha256((ROOT / name).read_bytes()).hexdigest() for name in inputs},
               'sanitizers': ['address', 'undefined']}
