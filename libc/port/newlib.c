@@ -14,6 +14,7 @@
 #include <stdarg.h>
 #include <poll.h>
 #include <sys/select.h>
+#include <unistd.h>
 
 /* Every shared address space initializes its allocator lock before running an
  * application entry. A futex protects the publication if startup is preempted. */
@@ -77,6 +78,7 @@ int nos_newlib_errno(int code)
 {
     switch (code) {
     case NOS_EDEADLK: return EDEADLK;
+    case NOS_ENOLCK: return ENOLCK;
     case NOS_ENAMETOOLONG: return ENAMETOOLONG;
     case NOS_ENOSYS: return ENOSYS;
     case NOS_ENOTEMPTY: return ENOTEMPTY;
@@ -632,6 +634,36 @@ void __retarget_lock_release_recursive(_LOCK_T lock) { __retarget_lock_release(l
 #endif
 
 #include <stdarg.h>
+static int newlib_record_lock(int fd, int command, struct flock *pointer)
+{
+    struct flock input;
+    int rc;
+    if (command == F_GETLK && (rc = nos_user_check(pointer, sizeof(input), NOS_PROT_WRITE))) return (int)result(rc);
+    rc = nos_user_copy(&input, pointer, sizeof(input));
+    if (rc) return (int)result(rc);
+    if (input.l_type != F_RDLCK && input.l_type != F_WRLCK && input.l_type != F_UNLCK) {
+        rc = -NOS_EINVAL; return (int)result(rc);
+    }
+    if (input.l_whence != SEEK_SET && input.l_whence != SEEK_CUR && input.l_whence != SEEK_END) {
+        rc = -NOS_EINVAL; return (int)result(rc);
+    }
+    struct nos_record_lock lock = { .start = input.l_start, .length = input.l_len,
+        .type = input.l_type == F_RDLCK ? NOS_LOCK_READ : input.l_type == F_WRLCK ? NOS_LOCK_WRITE : NOS_LOCK_UNLOCK,
+        .whence = input.l_whence == SEEK_SET ? 0 : input.l_whence == SEEK_CUR ? 1 : 2 };
+    unsigned operation = command == F_GETLK ? NOS_LOCK_GET : command == F_SETLK ? NOS_LOCK_SET : NOS_LOCK_SET_WAIT;
+    rc = nos_record_lock(fd, operation, &lock);
+    if (rc) return (int)result(rc);
+    if (operation != NOS_LOCK_GET) return 0;
+    short type = lock.type == NOS_LOCK_READ ? F_RDLCK : lock.type == NOS_LOCK_WRITE ? F_WRLCK : F_UNLCK;
+    if (lock.type == NOS_LOCK_UNLOCK) {
+        rc = nos_user_copy(&pointer->l_type, &type, sizeof(type)); return (int)result(rc);
+    }
+    input.l_type = type; input.l_whence = SEEK_SET;
+    input.l_start = lock.start; input.l_len = lock.length; input.l_pid = lock.pid;
+    if ((int64_t)input.l_start != lock.start || (int64_t)input.l_len != lock.length ||
+        (int32_t)input.l_pid != lock.pid) { rc = -NOS_EOVERFLOW; return (int)result(rc); }
+    rc = nos_user_copy(pointer, &input, sizeof(input)); return (int)result(rc);
+}
 static int do_fcntl(int fd, int command, int argument)
 {
     if (command == F_DUPFD) return (int)result(nos_dup_min(fd, (unsigned)argument));
@@ -656,6 +688,10 @@ static int do_fcntl(int fd, int command, int argument)
 }
 int _fcntl(int fd, int command, ...)
 {
+    if (command == F_GETLK || command == F_SETLK || command == F_SETLKW) {
+        va_list args; va_start(args, command); struct flock *lock = va_arg(args, struct flock *); va_end(args);
+        return newlib_record_lock(fd, command, lock);
+    }
     int argument = 0;
     if (command == F_DUPFD || command == F_SETFL || command == F_SETFD
 #ifdef F_DUPFD_CLOEXEC
@@ -668,6 +704,10 @@ int _fcntl(int fd, int command, ...)
 }
 int fcntl(int fd, int command, ...)
 {
+    if (command == F_GETLK || command == F_SETLK || command == F_SETLKW) {
+        va_list args; va_start(args, command); struct flock *lock = va_arg(args, struct flock *); va_end(args);
+        return newlib_record_lock(fd, command, lock);
+    }
     int argument = 0;
     if (command == F_DUPFD || command == F_SETFL || command == F_SETFD
 #ifdef F_DUPFD_CLOEXEC

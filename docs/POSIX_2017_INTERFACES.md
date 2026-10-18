@@ -6,8 +6,8 @@
 | 接口族与代表 API | 需要的实际行为 | 当前接口层边界 |
 |---|---|---|
 | ISO C 内存、字符串、格式化、stdio、errno | 真实 C 库、每线程重入、共享 FILE/分配器同步、退出 flush | Newlib/musl 和真实动态 glibc 已有独立程序验证；Newlib 将 NOS/Linux 错误号转换为其实际 errno 编号，不把数字编码相同当作前提 |
-| 文件描述符：open/openat/close/read/write/readv/writev/lseek/dup/dup2/fcntl | OFD 共享偏移、短 I/O、阻塞/非阻塞、FD flags、原子 CLOEXEC | 用户态 VFS 提供真实 OFD 和 FD flags；三 MMU 的 native 两库及 glibc 独立文件程序已有回归，完整锁与所有 fcntl 命令仍未齐 |
-| 定位 I/O：pread/pwrite | 64 位消息偏移、不改变 OFD 偏移、错误/短 I/O | native wrapper 使用 64 位偏移；Newlib 的 off_t 仍受其真实 ABI 宽度限制 |
+| 文件描述符：open/openat/close/read/write/readv/writev/lseek/dup/dup2/fcntl | OFD 共享偏移、短 I/O、阻塞/非阻塞、FD flags、原子 CLOEXEC | 用户态 VFS 提供真实 OFD 和 FD flags；三 MMU 的 native 两库及 glibc 独立文件程序已有回归，Linux profile 新增进程记录锁 F_GETLK/F_SETLK/F_SETLKW；按 inode/进程归属，fork 不继承、exec 保留、任一同 inode FD 关闭释放本进程全部区间；native 默认仍 ENOTSUP，其他 fcntl 命令未齐 |
+| 定位 I/O：pread/pwrite | 64 位消息偏移、不改变 OFD 偏移、错误/短 I/O | native wrapper 使用 64 位偏移；Linux profile 的大 pread 使用 512 字节 bulk 中转，成功回复后再发布当前块，取消失败不发布该块；Newlib 的 off_t 仍受其真实 ABI 宽度限制 |
 | 文件信息：stat/lstat/fstat/fstatat | 实际 inode、类型/大小、链接数、所有者和时间；不能截断不可表示的数据 | 新 stat64 IPC；Newlib 的 ino_t/off_t/time_t 宽度需要溢出处理；权限和时间更新仍不完整 |
 | 目录：opendir/fdopendir/readdir/readdir_r/dirfd/rewinddir/telldir/seekdir/closedir | 每 OFD cursor、点目录、EOF 与 errno、长目录项、cookie 定位 | 新 getdents64 分片、Newlib DIR 实现、musl 真实目录实现桥接；新增独立 markers 验证 |
 | 路径：getcwd/chdir/fchdir、*at | 进程共享 cwd、dirfd 相对解析、绝对路径忽略 dirfd、空路径和 flags 校验 | 用户态 VFS 解析；Linux profile 输入路径含 NUL 上限 256 字节，双路径 512 字节经 token 绑定 bulk IPC 复制，默认仍 64 字节。三 MMU SMP2 的真实 glibc 已通过 guard 末尾 NUL、跨 guard EFAULT、最长双路径、280 字节目录项、getcwd 有界输出和最长 cwd 返回上级；相对执行另由进程程序验收，不宣称无限路径 |

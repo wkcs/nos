@@ -5,9 +5,31 @@ static struct spinlock kernel_lock;
 static unsigned device_service_caps(unsigned caps)
 {
 #ifdef NOS_LINUX_COMPAT
-    caps |= NOS_CAP_SHARED_BROKER;
+    caps |= NOS_CAP_SHARED_BROKER | NOS_CAP_PROCESS_QUERY;
 #endif
     return (caps & ~(NOS_CAP_SPAWN | NOS_CAP_IPC)) | NOS_CAP_DEVICE;
+}
+/* All callers hold kernel_lock, so task and fork-reference state agree. */
+static unsigned group_state(unsigned group)
+{
+    unsigned state = ipc_group_fork_references(group);
+    for (unsigned i = 0; i < NOS_TASKS; i++)
+        if (tasks[i].space_owner == group && tasks[i].state != TASK_UNUSED &&
+            tasks[i].state != TASK_DEAD && tasks[i].state != TASK_RETIRED) {
+            state |= NOS_GROUP_LIVE_TASKS; break;
+        }
+    return state;
+}
+/* Keep the bounded 512-byte scratch out of unrelated dispatch stack frames. */
+__attribute__((noinline)) static intptr_t group_query_batch(uintptr_t buffer, uintptr_t count)
+{
+    if (!count || count > NOS_GROUP_QUERY_MAX) return -NOS_EINVAL;
+    struct nos_group_state entries[NOS_GROUP_QUERY_MAX];
+    size_t bytes = count * sizeof(entries[0]);
+    if (user_copy_in(entries, buffer, bytes) || !user_access(current_task, buffer, bytes, 1)) return -NOS_EFAULT;
+    for (unsigned i = 0; i < count; i++) if (entries[i].group > INT32_MAX) return -NOS_EINVAL;
+    for (unsigned i = 0; i < count; i++) entries[i].state = (int32_t)group_state(entries[i].group);
+    return user_copy_out(buffer, entries, bytes);
 }
 static intptr_t dispatch(uintptr_t nr, uintptr_t a, uintptr_t b, uintptr_t c)
 {
@@ -31,6 +53,11 @@ static intptr_t dispatch(uintptr_t nr, uintptr_t a, uintptr_t b, uintptr_t c)
         return (intptr_t)b;
     }
     case NOS_SYS_GETPID: return current_task->id;
+    case NOS_SYS_GROUP_ALIVE:
+        if (!(current_task->caps & NOS_CAP_PROCESS_QUERY)) return -NOS_EACCES;
+        if (c == NOS_GROUP_QUERY_BATCH) return group_query_batch(a, b);
+        if (a > INT32_MAX || b || c) return -NOS_EINVAL;
+        return (intptr_t)group_state((unsigned)a);
     case NOS_SYS_YIELD: reschedule = 1; return 0;
     case NOS_SYS_EXIT:
         if (b && c) (void)vm_unmap(current_task, b, c);
@@ -205,7 +232,13 @@ static intptr_t dispatch(uintptr_t nr, uintptr_t a, uintptr_t b, uintptr_t c)
     case NOS_SYS_TASK_AUTHORIZE: {
         struct task *peer = find_task(a);
         if (!peer) return -NOS_ESRCH;
-        if (!(current_task->caps & NOS_CAP_SPAWN) || b & ~(uintptr_t)(NOS_CAP_SPAWN | NOS_CAP_IPC)) return -NOS_EACCES;
+        unsigned allowed = NOS_CAP_SPAWN | NOS_CAP_IPC;
+#ifdef NOS_SELFTEST
+        /* Initial init may grant a test observer access to lifecycle state.
+         * This observation privilege is never grantable in production. */
+        if (current_task->id == 1 && (current_task->caps & NOS_CAP_SPAWN)) allowed |= NOS_CAP_PROCESS_QUERY;
+#endif
+        if (!(current_task->caps & NOS_CAP_SPAWN) || b & ~(uintptr_t)allowed) return -NOS_EACCES;
         peer->caps |= (unsigned)b; return 0;
     }
     case NOS_SYS_CPU_QUERY:

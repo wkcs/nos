@@ -212,9 +212,78 @@ static intptr_t gateway_mmap(uintptr_t address, size_t length, unsigned prot, un
     if (rc) { (void)nos_syscall(NOS_SYS_MUNMAP, (uintptr_t)result, length, 0); return rc; }
     return result;
 }
+/* Linux flock layouts follow the target UAPI, independently of whether the
+ * application reached SYS_fcntl or ARM SYS_fcntl64. */
+static intptr_t gateway_record_lock(int fd, unsigned command, uintptr_t pointer)
+{
+    unsigned operation = command == F_GETLK ? NOS_LOCK_GET :
+        command == F_SETLK ? NOS_LOCK_SET : NOS_LOCK_SET_WAIT;
+#if defined(NOS_ARM)
+    int wide = command == F_GETLK64 || command == F_SETLK64 || command == F_SETLKW64;
+    if (wide) operation = command == F_GETLK64 ? NOS_LOCK_GET :
+        command == F_SETLK64 ? NOS_LOCK_SET : NOS_LOCK_SET_WAIT;
+    size_t bytes = wide ? sizeof(struct flock64) : sizeof(struct flock);
+#else
+    size_t bytes = sizeof(struct flock);
+#endif
+    struct nos_record_lock lock = { 0 };
+    int rc;
+#if defined(NOS_ARM)
+    if (wide) {
+        struct flock64 input;
+        rc = nos_user_copy(&input, (const void *)pointer, sizeof(input));
+        if (rc) return rc;
+        lock.start = input.l_start; lock.length = input.l_len;
+        lock.type = input.l_type; lock.whence = input.l_whence;
+    } else
+#endif
+    {
+        struct flock input;
+        rc = nos_user_copy(&input, (const void *)pointer, sizeof(input));
+        if (rc) return rc;
+        lock.start = input.l_start; lock.length = input.l_len;
+        lock.type = input.l_type; lock.whence = input.l_whence;
+    }
+    if (lock.type != F_RDLCK && lock.type != F_WRLCK && lock.type != F_UNLCK) return -EINVAL;
+    lock.type = lock.type == F_RDLCK ? NOS_LOCK_READ :
+        lock.type == F_WRLCK ? NOS_LOCK_WRITE : NOS_LOCK_UNLOCK;
+    if (operation == NOS_LOCK_GET) {
+        rc = nos_user_check((void *)pointer, bytes, NOS_PROT_WRITE);
+        if (rc) return rc;
+    }
+    rc = nos_record_lock(fd, operation, &lock);
+    if (rc || operation != NOS_LOCK_GET) return rc;
+    short type = lock.type == NOS_LOCK_READ ? F_RDLCK :
+        lock.type == NOS_LOCK_WRITE ? F_WRLCK : F_UNLCK;
+    /* Only l_type is changed for an unlocked result. Linux preserves the
+     * application's requested range, whence and ignored input pid. */
+    if (lock.type == NOS_LOCK_UNLOCK)
+        return nos_user_copy((void *)pointer, &type, sizeof(type));
+#if defined(NOS_ARM)
+    if (wide) {
+        struct flock64 output;
+        u_memset(&output, 0, sizeof(output));
+        output.l_type = type; output.l_whence = lock.whence;
+        output.l_start = lock.start; output.l_len = lock.length; output.l_pid = lock.pid;
+        return nos_user_copy((void *)pointer, &output, sizeof(output));
+    }
+    if (lock.start < INT32_MIN || lock.start > INT32_MAX ||
+        lock.length < INT32_MIN || lock.length > INT32_MAX) return -EOVERFLOW;
+#endif
+    struct flock output;
+    u_memset(&output, 0, sizeof(output));
+    output.l_type = type; output.l_whence = lock.whence;
+    output.l_start = lock.start; output.l_len = lock.length; output.l_pid = lock.pid;
+    return nos_user_copy((void *)pointer, &output, sizeof(output));
+}
 static intptr_t gateway_fcntl(int fd, unsigned command, uintptr_t value)
 {
     switch (command) {
+    case F_GETLK: case F_SETLK: case F_SETLKW:
+#if defined(NOS_ARM)
+    case F_GETLK64: case F_SETLK64: case F_SETLKW64:
+#endif
+        return gateway_record_lock(fd, command, value);
     case F_DUPFD: return value > INT_MAX ? -EINVAL : nos_dup_min(fd, (unsigned)value);
     case F_GETFD: case F_SETFD: {
         if (command == F_SETFD && value & ~1u) return -EINVAL;

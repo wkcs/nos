@@ -6,9 +6,12 @@ static unsigned exit_ids[NOS_TASKS], exit_groups[NOS_TASKS], exit_alive[NOS_TASK
 struct cancel_notice { unsigned id, group; uint64_t token; };
 static struct cancel_notice canceled[NOS_ENDPOINTS][NOS_TASKS];
 static unsigned cancel_pending[NOS_ENDPOINTS];
-#define PROCESS_NOTICES (4u * NOS_TASKS)
+#define PROCESS_NOTICES NOS_IPC_PROCESS_NOTICE_LIMIT
 static struct nos_message process_notices[PROCESS_NOTICES];
 static unsigned process_head, process_count;
+/* A delivered FORK still needs its parent's FD table until the server has
+ * processed it. Its next valid RECV implicitly acknowledges that delivery. */
+static unsigned delivered_fork_group, delivered_fork_valid;
 static void notify_cancel(struct task *client);
 static unsigned endpoint_handle(unsigned i)
 {
@@ -25,8 +28,19 @@ void ipc_init(void)
 {
     endpoints[0].used = 1; endpoints[0].owner = tasks[0].id;
     cancel_pending[0] = 0; exit_pending = 0; process_head = process_count = 0;
+    delivered_fork_valid = 0;
     tasks[0].endpoint_rights[0] = NOS_RIGHT_RECV | NOS_RIGHT_GRANT;
     for (unsigned i = 1; i < NOS_TASKS; i++) tasks[i].endpoint_rights[0] = NOS_RIGHT_CALL;
+}
+unsigned ipc_group_fork_references(unsigned group)
+{
+    if (delivered_fork_valid && delivered_fork_group == group) return NOS_GROUP_FORK_REFERENCES;
+    for (unsigned n = 0; n < process_count; n++) {
+        const struct nos_message *notice = &process_notices[(process_head + n) % PROCESS_NOTICES];
+        if (notice->op == NOS_IPC_PROCESS_FORK && notice->process == group)
+            return NOS_GROUP_FORK_REFERENCES;
+    }
+    return 0;
 }
 int ipc_process_notice(intptr_t operation, unsigned process, unsigned value)
 {
@@ -39,6 +53,9 @@ int ipc_process_notice(intptr_t operation, unsigned process, unsigned value)
     notice.op = operation; notice.process = process; notice.value = value;
     if (!process_count && server->state == TASK_RECV && server->endpoint_handle == 0 &&
         !task_copy_out(server, server->pending, &notice, sizeof(notice))) {
+        if (operation == NOS_IPC_PROCESS_FORK) {
+            delivered_fork_group = process; delivered_fork_valid = 1;
+        }
         server->state = TASK_READY;
     } else {
         process_notices[(process_head + process_count) % PROCESS_NOTICES] = notice; process_count++;
@@ -76,6 +93,7 @@ intptr_t endpoint_close(uintptr_t handle)
     if (!(current_task->endpoint_rights[i] & NOS_RIGHT_GRANT) &&
         !(current_task->caps & NOS_CAP_SPAWN)) return -NOS_EACCES;
     ep->used = 0; cancel_pending[i] = 0;
+    if (!i) { process_head = process_count = 0; delivered_fork_valid = 0; }
     if (i) ep->generation++;
     for (unsigned n = 0; n < NOS_TASKS; n++) {
         struct task *peer = &tasks[n]; peer->endpoint_rights[i] = 0;
@@ -202,9 +220,16 @@ intptr_t ipc_recv(uintptr_t handle, uintptr_t buffer)
     unsigned i; struct endpoint *ep = lookup(handle, &i);
     if (!ep || ep->owner != current_task->id || !(current_task->endpoint_rights[i] & NOS_RIGHT_RECV)) return -NOS_EACCES;
     if (!user_access(current_task, buffer, sizeof(struct nos_message), 1)) return -NOS_EFAULT;
+    if (!i) delivered_fork_valid = 0;
     if (!i && process_count) {
         int rc = user_copy_out(buffer, &process_notices[process_head], sizeof(struct nos_message));
-        if (!rc) { process_head = (process_head + 1) % PROCESS_NOTICES; process_count--; }
+        if (!rc) {
+            if (process_notices[process_head].op == NOS_IPC_PROCESS_FORK) {
+                delivered_fork_group = (unsigned)process_notices[process_head].process;
+                delivered_fork_valid = 1;
+            }
+            process_head = (process_head + 1) % PROCESS_NOTICES; process_count--;
+        }
         return rc;
     }
     if (cancel_pending[i]) {
@@ -311,7 +336,7 @@ void ipc_task_exit(struct task *task)
         if (!endpoints[i].used || endpoints[i].owner != task->id) continue;
         unsigned handle = endpoint_handle(i);
         endpoints[i].used = 0; cancel_pending[i] = 0;
-        if (!i) process_head = process_count = 0;
+        if (!i) { process_head = process_count = 0; delivered_fork_valid = 0; }
         if (i) endpoints[i].generation++;
         for (unsigned j = 0; j < NOS_TASKS; j++) {
             struct task *client = &tasks[j]; client->endpoint_rights[i] = 0;

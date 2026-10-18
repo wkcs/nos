@@ -26,6 +26,7 @@ glibc 工具与库由 `scripts/setup_glibc_env.sh` 安装，`/workspace/.nos-env
 | C 库与线程 | malloc/stdio/errno/C TLS，真实 NPTL create/join、detach/TSD、robust owner death、延迟/异步取消 | 其他属性、优先级协议和全部取消点需逐项验收 |
 | 进程与信号 | 独立地址空间 fork、同 PID exec、共享 OFD/cwd/umask 与 CLOEXEC、waitpid 状态；真实处理器帧、sigreturn、mask/pending、altstack、RT FIFO、SIGPIPE、EINTR 与部分 SA_RESTART | 完整 wait 选项/rusage、凭据、会话、作业控制等仍有缺口 |
 | 文件与目录 | stat64、pread/pwrite、getdents64、标准目录接口、常用 *at、RAM mode/umask/truncate/hardlink/symlink；兼容配置 256 字节路径及受 token 约束的双路径传输 | chown、时间更新、完整权限执行、资源最小限值和跨后端语义仍需完善；持久后端仍有 64 字节路径限制 |
+| 进程记录锁 | Linux profile 的 F_GETLK/F_SETLK/F_SETLKW，按 inode + 进程持有；区间拆分合并、阻塞、EINTR/SA_RESTART、EDEADLK、取消与退出清理，ARM old/wide flock 转换 | 64 个有界锁区间，容量不足返回 ENOLCK；默认 native 配置明确 ENOTSUP，其他 fcntl 扩展未齐 |
 | 多路 I/O | 真实 pipe/文件/UART readiness，poll/select、ppoll/pselect 临时信号 mask、超时/EOF/错误 FD | 使用有界 readiness 查询与等待；不是完整事件设备框架 |
 | 时间 | 实际 RTC 的 REALTIME、64 位 MONOTONIC、睡眠/绝对等待、ITIMER_REAL 信号 | 100 Hz 粒度；CPU 时钟及其他 timer 类型尚不完整 |
 | 虚拟内存 | 稀疏 PROT_NONE、事务式提交与回滚、MAP_FIXED/NOREPLACE、私有文件装载、fork 复制、真实 RAM 共享页与每次映射授权、W^X | 持久文件映射、按需缺页、文件截断后的 SIGBUS、交换仍未完成；私有 fork 是复制而非 COW |
@@ -69,3 +70,5 @@ Newlib 使用 `TLS_GET` 获取任务本地 `_reent`，通过独立绑定槽避�
 futex 比较使用对齐的 32 位原子读，保留负锁字位模式；WAIT 可读只读映射，clear_tid 仍需可写。REQUEUE/CMP_REQUEUE 在同一内核临界区处理源比较、唤醒与移动等待者，测试包含两等待者换队及三个真实 musl 条件变量等待者广播。TLS 绑定槽被解除映射或撤销写权限时会解绑；TCB/TLS 数据本身的生命周期由应用维护。
 
 SMP、MPU、非 MMU 和不同 C 库必须分别执行对应验证。某个最小库或单核测试通过，不能代替另一种 C 库的跨核结果。
+
+完整兼容回归使用 `python3 tests/acceptance.py --include-posix --require-frozen-source`。完整 glibc 程序组的默认宿主预算为 420 秒，单应用 focused 和原生专项为 180 秒；`--timeout` 可显式覆盖。预算是软件模拟的防挂上限，不是延迟承诺，也不免除缺失标记、非零退出或应用内断言失败。

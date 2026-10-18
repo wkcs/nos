@@ -241,6 +241,15 @@ $(O)/apps/glibc_shared_sync.elf: apps/glibc_shared_sync.c $(LINUX_LIBRARIES) $(L
 $(O)/apps/glibc_paths.elf: apps/glibc_paths.c $(LINUX_LIBRARIES) $(LINUX_CRT_FILES) $(LINUX_MANIFEST) $(BUILD_SIGNATURE)
 	@mkdir -p $(dir $@)
 	$(LINUX_CC) $(LINUX_APP_FLAGS) $< -pthread -ldl -lm -o $@
+$(O)/apps/glibc_record_locks.elf: apps/glibc_record_locks.c $(LINUX_LIBRARIES) $(LINUX_CRT_FILES) $(LINUX_MANIFEST) $(BUILD_SIGNATURE)
+	@mkdir -p $(dir $@)
+	$(LINUX_CC) $(LINUX_APP_FLAGS) $< -pthread -ldl -lm -o $@
+$(O)/apps/glibc_record_lock_lifecycle.elf: apps/glibc_record_lock_lifecycle.c $(LINUX_LIBRARIES) $(LINUX_CRT_FILES) $(LINUX_MANIFEST) $(BUILD_SIGNATURE)
+	@mkdir -p $(dir $@)
+	$(LINUX_CC) $(LINUX_APP_FLAGS) $< -pthread -ldl -lm -o $@
+$(O)/apps/glibc_record_gc.elf: apps/glibc_record_gc.c $(LINUX_LIBRARIES) $(LINUX_CRT_FILES) $(LINUX_MANIFEST) $(BUILD_SIGNATURE)
+	@mkdir -p $(dir $@)
+	$(LINUX_CC) $(LINUX_APP_FLAGS) $< -pthread -ldl -lm -o $@
 $(O)/apps/libnos_probe.so: apps/dynamic/library.c $(LINUX_LIBRARIES) $(LINUX_MANIFEST) $(BUILD_SIGNATURE)
 	@mkdir -p $(dir $@)
 	$(LINUX_CC) $(LINUX_CFLAGS) -fPIC -shared -nostdlib -Wl,--build-id=none,-soname,libnos_probe.so $< -o $@
@@ -266,6 +275,12 @@ INITRAMFS_IMAGES += $(O)/apps/glibc_shared_sync.elf
 INITRAMFS_FILES += --file /bin/glibc_shared_sync=$(O)/apps/glibc_shared_sync.elf
 INITRAMFS_IMAGES += $(O)/apps/glibc_paths.elf
 INITRAMFS_FILES += --file /bin/glibc_paths=$(O)/apps/glibc_paths.elf
+INITRAMFS_IMAGES += $(O)/apps/glibc_record_locks.elf
+INITRAMFS_FILES += --file /bin/glibc_record_locks=$(O)/apps/glibc_record_locks.elf
+INITRAMFS_IMAGES += $(O)/apps/glibc_record_lock_lifecycle.elf
+INITRAMFS_FILES += --file /bin/glibc_record_lock_lifecycle=$(O)/apps/glibc_record_lock_lifecycle.elf
+INITRAMFS_IMAGES += $(O)/apps/glibc_record_gc.elf
+INITRAMFS_FILES += --file /bin/glibc_record_gc=$(O)/apps/glibc_record_gc.elf
 INITRAMFS_FILES += --file /lib/nos-linux-gateway.elf=$(O)/apps/nos-linux-gateway.elf --file /bin/glibc_check=$(O)/apps/glibc_check.elf --file /bin/dynamic_check=$(O)/apps/dynamic_check.elf --file /lib/libnos_probe.so=$(O)/apps/libnos_probe.so
 INITRAMFS_FILES += $(foreach library,$(LINUX_LIBRARIES),--file /lib/$(notdir $(library))=$(library))
 ifeq ($(POSIX_SUITE),1)

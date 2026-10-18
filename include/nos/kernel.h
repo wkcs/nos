@@ -227,6 +227,7 @@ intptr_t endpoint_grant(uintptr_t pid, uintptr_t handle, uintptr_t rights, int r
 intptr_t ipc_cancel(uintptr_t pid);
 void ipc_timeouts(void);
 int ipc_process_notice(intptr_t operation, unsigned process, unsigned value);
+unsigned ipc_group_fork_references(unsigned group);
 void ipc_interrupt_task(struct task *task, intptr_t error);
 unsigned endpoint_count(void);
 struct task *select_task(void);

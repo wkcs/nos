@@ -173,11 +173,29 @@ void linux_signal_fork(struct task *child, const struct task *parent)
 }
 void linux_signal_discard(struct task *task)
 { k_memset(queues[task->id % NOS_TASKS], 0, sizeof(queues[0])); task->signal_pending = 0; task->signal_depth = 0; }
+/* fcntl is multiplexed. Only blocking POSIX record-lock requests restart;
+ * the saved frame describes the Linux caller rather than its native gateway. */
+static int interrupted_record_lock_wait(const struct task *task)
+{
+#ifdef NOS_ARM
+    uintptr_t command = task->linux_syscall_frame.r[1];
+    return (task->linux_syscall_number == 55 || task->linux_syscall_number == 221) &&
+        (command == 7 || command == 14);
+#else
+#ifdef NOS_ARM64
+    uintptr_t command = task->linux_syscall_frame.x[1];
+#else
+    uintptr_t command = task->linux_syscall_frame.x[11];
+#endif
+    return task->linux_syscall_number == 25 && command == 7;
+#endif
+}
 void linux_signal_interrupted(struct task *task)
 {
     uintptr_t number = task->linux_syscall_number;
     if (number == NR(3, 63) || number == NR(4, 64) || number == NR(145, 65) || number == NR(146, 66) ||
-        number == NR(322, 56) || number == NR(114, 260) || number == NR(240, 98))
+        number == NR(322, 56) || number == NR(114, 260) || number == NR(240, 98) ||
+        interrupted_record_lock_wait(task))
         task->linux_restart_pending = 1;
 }
 void linux_signal_exec(struct task *task, unsigned old_space)

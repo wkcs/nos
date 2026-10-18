@@ -25,6 +25,15 @@
 #endif
 #define FDS NOS_FD_LIMIT
 #define OPEN_COUNT (NOS_TASKS * FDS)
+#ifdef NOS_LINUX_COMPAT
+#ifndef NOS_IPC_PROCESS_NOTICE_LIMIT
+#define NOS_IPC_PROCESS_NOTICE_LIMIT (4u * NOS_TASKS)
+#endif
+/* Live groups, queued parent references, delivered fork and transient copies. */
+#define FD_TABLE_COUNT (NOS_TASKS + NOS_IPC_PROCESS_NOTICE_LIMIT + 3u)
+#else
+#define FD_TABLE_COUNT NOS_TASKS
+#endif
 #define PIPE_COUNT 2u
 #define PIPE_BYTES 256u
 #define MODE_DIR 0040000u
@@ -42,14 +51,20 @@
 #endif
 struct vnode { char name[NOS_PATH_MAX], bytes[INLINE_BYTES]; size_t size; unsigned mode; uint16_t used, linked, refs, persistent; };
 struct description { uint64_t offset, size; uint32_t flags; uint16_t node, refs, kind, pipe; };
-_Static_assert(OPEN_COUNT + NOS_TASKS < UINT16_MAX, "OFD references fit in 16 bits");
+_Static_assert(FD_TABLE_COUNT * FDS + NOS_TASKS < UINT16_MAX, "OFD references fit in 16 bits");
 _Static_assert(sizeof(struct description) == 32, "compact OFD layout");
 struct fd_table { intptr_t pid; unsigned short fd[FDS]; unsigned fd_flags; unsigned short mask; char cwd[NOS_PATH_MAX]; };
 struct pipe_buffer { char bytes[PIPE_BYTES]; unsigned head, size, readers, writers; };
+static void record_lock_close(intptr_t owner, const struct description *description);
 static struct vnode nodes[NODE_COUNT];
 static struct description opened[OPEN_COUNT];
-static struct fd_table fds[NOS_TASKS];
+static struct fd_table fds[FD_TABLE_COUNT];
 static struct pipe_buffer pipes[PIPE_COUNT];
+#ifdef NOS_LINUX_COMPAT
+/* Positional reads never change the OFD. Keep bounded transport staging off
+ * the service stack and independent of future increases to the IPC ceiling. */
+static char positioned_read_scratch[512];
+#endif
 static unsigned disk_mounted;
 static unsigned fat_mounted;
 static char fat_path[NOS_PATH_MAX];
@@ -180,13 +195,20 @@ static void drop_description(unsigned d)
         u_memset(o, 0, sizeof(*o));
     }
 }
+static void close_descriptor(struct fd_table *table, unsigned fd)
+{
+    if (fd >= FDS || !table->fd[fd]) return;
+    unsigned description = table->fd[fd] - 1;
+    record_lock_close(table->pid, &opened[description]);
+    table->fd[fd] = 0; table->fd_flags &= ~(1u << fd); drop_description(description);
+}
 static void release_table(struct fd_table *t)
-{ for (unsigned i = 0; i < FDS; i++) if (t->fd[i]) { drop_description(t->fd[i] - 1); t->fd[i] = 0; } t->pid = -1; }
+{ for (unsigned i = 0; i < FDS; i++) close_descriptor(t, i); t->pid = -1; }
 static struct fd_table *table_for(intptr_t pid)
 {
     struct fd_table *t = 0;
-    for (unsigned i = 0; i < NOS_TASKS; i++) if (fds[i].pid == pid) return &fds[i];
-    for (unsigned i = 0; i < NOS_TASKS; i++) if (fds[i].pid < 0) { t = &fds[i]; break; }
+    for (unsigned i = 0; i < FD_TABLE_COUNT; i++) if (fds[i].pid == pid) return &fds[i];
+    for (unsigned i = 0; i < FD_TABLE_COUNT; i++) if (fds[i].pid < 0) { t = &fds[i]; break; }
     if (!t) return 0;
     {
         release_table(t); t->pid = pid; t->fd_flags = 0; t->mask = 0022; t->cwd[0] = '/'; t->cwd[1] = 0;
@@ -251,6 +273,7 @@ static intptr_t write_data(struct description *d, const char *data, size_t count
     return (intptr_t)count;
 }
 #include "pipe_wait.h"
+#include "record_lock.h"
 static unsigned crc32(unsigned crc, const void *buffer, size_t count)
 {
     const unsigned char *p = buffer;
@@ -414,8 +437,10 @@ static void service(struct nos_message *m)
     }
     if (m->sender < 0) { m->value = -NOS_EPERM; return; }
     if (m->len > NOS_MSG_DATA) { m->value = -NOS_EINVAL; return; }
+    collect_process_owners();
     struct fd_table *t = table_for((intptr_t)m->process);
     if (!t) { m->value = -NOS_ENOSPC; return; }
+    if (m->op == NOS_VFS_RECORD_LOCK) { record_lock_service(m, t); return; }
     if (m->op == NOS_VFS_SHARED_FILE) { shared_file(m, t); return; }
     struct path_payload payload;
     int input = path_input(m, &payload); if (input) { m->value = input; return; }
@@ -624,7 +649,7 @@ static void service(struct nos_message *m)
         }
         if (target < 0 || (uintptr_t)target >= FDS) { m->value = target < 0 ? target : -NOS_EBADF; break; }
         if ((unsigned)target == fd && close_on_exec) { m->value = -NOS_EINVAL; break; }
-        if ((unsigned)target != fd) { if (t->fd[target]) drop_description(t->fd[target] - 1); t->fd[target] = desc + 1; t->fd_flags = (t->fd_flags & ~(1u << target)) | (close_on_exec << target); d->refs++; }
+        if ((unsigned)target != fd) { if (t->fd[target]) close_descriptor(t, (unsigned)target); t->fd[target] = desc + 1; t->fd_flags = (t->fd_flags & ~(1u << target)) | (close_on_exec << target); d->refs++; }
         m->value = target; break;
     }
     case 30: m->value = (t->fd_flags >> fd) & 1u; break;
@@ -651,6 +676,17 @@ static void service(struct nos_message *m)
         struct description positioned = *d; positioned.offset = offset;
         if (m->op == NOS_VFS_PWRITE) positioned.flags &= ~NOS_O_APPEND;
         if (m->op == NOS_VFS_PREAD) {
+#ifdef NOS_LINUX_COMPAT
+            if (m->bulk_out_len) {
+                if (m->len != sizeof(offset) || m->bulk_out_len > sizeof(positioned_read_scratch)) { m->value = -NOS_EINVAL; break; }
+                intptr_t count = read_data(&positioned, positioned_read_scratch, m->bulk_out_len);
+                if (count > 0) {
+                    int rc = path_transfer(m, positioned_read_scratch, (size_t)count, NOS_IPC_STORE);
+                    if (rc) count = rc;
+                }
+                m->len = 0; m->value = count; break;
+            }
+#endif
             m->value = read_data(&positioned, m->data, m->len); if (m->value >= 0) m->len = (size_t)m->value;
         } else m->value = write_data(&positioned, m->data + 8, m->len - 8);
         break;
@@ -660,7 +696,7 @@ static void service(struct nos_message *m)
         if (m->value < 0 || ((uintptr_t)m->value & ~(3u | NOS_O_APPEND | NOS_O_NONBLOCK))) m->value = -NOS_EINVAL;
         else { d->flags = (d->flags & ~(NOS_O_APPEND | NOS_O_NONBLOCK)) | ((unsigned)m->value & (NOS_O_APPEND | NOS_O_NONBLOCK)); m->value = 0; }
         break;
-    case NOS_VFS_CLOSE: t->fd[fd] = 0; t->fd_flags &= ~(1u << fd); drop_description(desc); m->value = 0; break;
+    case NOS_VFS_CLOSE: close_descriptor(t, fd); m->value = 0; break;
     case NOS_VFS_READ: case NOS_VFS_WRITE:
         if (m->value < 0 || ((uintptr_t)m->value & ~NOS_IO_DONTWAIT)) { m->value = -NOS_EINVAL; break; }
         if ((m->op == NOS_VFS_READ && (d->flags & 3) == NOS_O_WRONLY) ||
@@ -713,20 +749,25 @@ void nos_vfs_server(uintptr_t unused)
     const char *version = "NOS microkernel\n";
     nodes[5].size = u_strlen(version); u_memcpy(nodes[5].bytes, version, nodes[5].size);
     for (unsigned i = 0; i < 3; i++) opened[i] = (struct description){ .node = 4, .kind = 1, .flags = i ? NOS_O_WRONLY : NOS_O_RDONLY };
-    for (unsigned i = 0; i < NOS_TASKS; i++) fds[i].pid = -1;
+    for (unsigned i = 0; i < FD_TABLE_COUNT; i++) fds[i].pid = -1;
     nos_uart_init();
     for (;;) {
         struct nos_message message;
         if (nos_syscall(NOS_SYS_RECV, 0, (uintptr_t)&message, 0)) nos_syscall(NOS_SYS_EXIT, 1, 0, 0);
         uintptr_t sender = (uintptr_t)message.sender;
-        if (message.op == NOS_IPC_PROCESS_FORK) { inherit_files((intptr_t)message.process, message.value); pipe_complete(); continue; }
-        if (message.op == NOS_IPC_PROCESS_EXEC) { exec_files((intptr_t)message.process); pipe_complete(); continue; }
-        if (message.op == NOS_IPC_PEER_CANCEL) { pipe_cancel(message.sender, message.token, 1); pipe_complete(); continue; }
+        if (message.op == NOS_IPC_PROCESS_FORK) {
+            if (inherit_files((intptr_t)message.process, message.value)) nos_syscall(NOS_SYS_EXIT, NOS_ENOSPC, 0, 0);
+            service_complete(); continue;
+        }
+        if (message.op == NOS_IPC_PROCESS_EXEC) { exec_files((intptr_t)message.process); service_complete(); continue; }
+        if (message.op == NOS_IPC_PEER_CANCEL) { pipe_cancel(message.sender, message.token, 1); service_complete(); continue; }
         if (message.op == NOS_IPC_PEER_EXIT) {
             pipe_cancel(message.sender, 0, 0);
+#ifndef NOS_LINUX_COMPAT
             if (!message.value) for (unsigned i = 0; i < NOS_TASKS; i++)
                 if (fds[i].pid == (intptr_t)message.process) release_table(&fds[i]);
-            pipe_complete(); continue;
+#endif
+            service_complete(); continue;
         }
         defer_reply = 0; service(&message);
         if (!defer_reply) {
@@ -740,6 +781,6 @@ void nos_vfs_server(uintptr_t unused)
             (void)rc;
 #endif
         }
-        pipe_complete();
+        service_complete();
     }
 }

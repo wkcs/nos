@@ -280,6 +280,31 @@ intptr_t nos_seek(int fd, intptr_t offset, int whence)
     struct nos_message m = { .op = NOS_VFS_SEEK, .arg = fd, .value = offset, .len = (size_t)whence };
     return nos_rpc(&m);
 }
+int nos_record_lock(int fd, unsigned command, struct nos_record_lock *lock)
+{
+#ifdef NOS_LINUX_COMPAT
+    _Static_assert(sizeof(struct nos_record_lock) == 32, "record lock IPC layout");
+    if (command > NOS_LOCK_SET_WAIT) return -NOS_EINVAL;
+    if (command == NOS_LOCK_GET) {
+        int rc = nos_user_check(lock, sizeof(*lock), NOS_PROT_WRITE);
+        if (rc) return rc;
+    }
+    struct nos_record_lock input;
+    int rc = nos_user_copy(&input, lock, sizeof(input));
+    if (rc) return rc;
+    if (input.reserved) return -NOS_EINVAL;
+    struct nos_message message = { .op = NOS_VFS_RECORD_LOCK, .arg = fd,
+        .value = command, .len = sizeof(input) };
+    u_memcpy(message.data, &input, sizeof(input));
+    intptr_t result = nos_rpc(&message);
+    if (result || command != NOS_LOCK_GET) return (int)result;
+    if (message.len != sizeof(input)) return -NOS_EIO;
+    return nos_user_copy(lock, message.data, sizeof(input));
+#else
+    (void)fd; (void)command; (void)lock;
+    return -NOS_ENOTSUP;
+#endif
+}
 int nos_stat_fd(int fd, struct nos_stat *st)
 {
     struct nos_message m = { .op = NOS_VFS_STAT, .arg = fd };
@@ -308,6 +333,34 @@ int nos_stat_at(int directory, const char *path, unsigned flags, struct nos_stat
     if (m.len != sizeof(*st)) return -NOS_EIO;
     return nos_user_copy(st, m.data, sizeof(*st));
 }
+#ifdef NOS_LINUX_COMPAT
+#define NOS_PREAD_BULK_BYTES 512u
+_Static_assert(NOS_PREAD_BULK_BYTES <= NOS_IPC_BULK_MAX, "pread scratch fits IPC bulk");
+static intptr_t positioned_bulk_read(int fd, void *buffer, size_t count, uint64_t offset)
+{
+    unsigned char scratch[NOS_PREAD_BULK_BYTES];
+    size_t done = 0;
+    while (done < count) {
+        size_t wanted = count - done < sizeof(scratch) ? count - done : sizeof(scratch);
+        struct nos_message message = {.op = NOS_VFS_PREAD, .arg = fd, .len = sizeof(offset),
+            .bulk_out = (uintptr_t)scratch, .bulk_out_len = wanted};
+        uint64_t position = offset + done;
+        u_memcpy(message.data, &position, sizeof(position));
+        intptr_t result = nos_rpc(&message);
+        if (result < 0) return done ? (intptr_t)done : result;
+        if ((size_t)result > wanted || message.len) return done ? (intptr_t)done : -NOS_EIO;
+        /* A STORE may precede a cancelled or failed reply.  Only scratch is
+         * exposed to the server; publish this block after a successful RPC. */
+        if (result) {
+            int rc = nos_user_copy((char *)buffer + done, scratch, (size_t)result);
+            if (rc) return done ? (intptr_t)done : rc;
+        }
+        done += (size_t)result;
+        if ((size_t)result < wanted) break;
+    }
+    return (intptr_t)done;
+}
+#endif
 static intptr_t positioned_io(int fd, void *buffer, size_t count, int64_t offset, int write)
 {
     if (offset < 0) return -NOS_EINVAL;
@@ -315,6 +368,9 @@ static intptr_t positioned_io(int fd, void *buffer, size_t count, int64_t offset
         return -NOS_EOVERFLOW;
     int rc = nos_user_check(buffer, count, write ? NOS_PROT_READ : NOS_PROT_WRITE);
     if (rc) return rc;
+#ifdef NOS_LINUX_COMPAT
+    if (!write && count > NOS_MSG_DATA) return positioned_bulk_read(fd, buffer, count, (uint64_t)offset);
+#endif
     size_t done = 0;
     do {
         size_t limit = write ? NOS_MSG_DATA - 8 : NOS_MSG_DATA;

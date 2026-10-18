@@ -95,6 +95,8 @@ Lua 5.4 与 LVGL 9 复用仓库旧库，作为独立用户 ELF 运行；LVGL 验
 
 ARM、ARM64、RV64 的 Linux personality 解码真实六参数 syscall ABI。内核保留原始 Linux 上下文，文件请求转入独立链接的用户态 gateway，再经 native IPC 调用 VFS；返回时恢复原帧后投递信号。用户态 ld.so 执行动态重定位、构造器及 dlopen，内核不承担文件系统业务或 libc 分配器。
 
+Linux profile 的大定位读使用现有 512 字节 bulk 上限；VFS 对 OFD 副本读取，并向 runtime 的暂存区 STORE。runtime 仅在 RPC 成功且长度合法后复制当前块到调用方，避免 STORE 与回复之间取消时发布失败块；整次调用仍保留先前已完成块的短读语义。小读、pwrite 和默认嵌入式配置保留原协议，文件偏移不变。
+
 fork 复制私有映射并保留共享映射的物理身份；exec 分阶段准备新地址空间，失败保留旧镜像，成功保留进程 PID 并替换上下文。处理器帧、signal mask、pending、sigreturn、TLS、robust futex 和取消机制分别处理。ARM 兼容配置还映射受控只读可执行的 Linux kuser helper 页；不因此允许任意高地址用户访问。
 
 RAM 文件的读写和 MAP_SHARED 指向同一物理后端。只有可信 VFS 具有共享对象 broker 权限；每次映射得到绑定地址空间、对象 generation 和 FD 最大权限的一次性租约。成功和失败映射均消费该次授权，VMA 保存独立 maxprot；同进程此前获得可写映射不能提升后来只读 FD 的映射权限。已存在映射、尚未消费的有效租约和队列中的共享 futex 维持物理页身份，关闭 FD、unlink 和最后解除映射分别处理。进程共享 futex 用物理页身份及偏移匹配，允许不同虚拟地址同步。
@@ -108,3 +110,11 @@ RAM 文件的读写和 MAP_SHARED 指向同一物理后端。只有可信 VFS �
 当前仍是有界微内核系统。native Newlib/musl 与 Linux/glibc 两条路径分别验收，已实现动态链接、fork/exec、信号和共享文件的声明子集；完整 Linux ABI、完整 POSIX、网络协议栈、完整 TTY/作业控制、按需分页和交换尚未完成。C 库通过真实标准程序验证所声明范围，不支持操作应明确返回错误。逐接口边界见 [POSIX_SUPPORT.md](POSIX_SUPPORT.md)。
 
 真实硬件与远端 CI 状态必须在验证报告中单列。QEMU 证明所选模型中的行为，不能代替板卡时钟、引脚、DMA 一致性、缓存和外设电气行为测试。
+
+## 进程记录锁与生命周期查询
+
+Linux profile 的文件记录锁驻用户态 VFS，以真实 inode 和带 generation 的进程组 ID 为键；线程共享锁，fork 不继承，exec 仅按实际 CLOEXEC 关闭释放相关 inode 锁。区间表有界，拆分/合并先生成候选，token 校验的回复成功后才提交；取消、坏回复和退出不得留下错误授予的锁。ARM 的旧 32 位和宽 64 位 flock 由用户态 gateway 分别转换，不把 libc 结构直接当成服务 ABI。
+
+退出通知按任务槽合并，槽复用可能覆盖旧组的最终通知。受 PROCESS_QUERY capability 限制的 GROUP_ALIVE 返回完整组身份的 live-task 位，以及内核 IPC 中排队/已交付但尚未确认的 fork 引用位。VFS 在服务请求及延迟回复前，用同一内核临界区内的有界批量快照查询所有相关组，再清理无 live task 的锁与等待；仅当 fork 引用也归零时释放 FD 表。批量模式保留逐组查询的 capability、完整 generation 和 fork 引用语义，先复制并验证全部输入，再生成状态并复制结果；失败时 VFS 保留全部现有状态。fork 先继承 FD，下一次合法 RECV 确认已交付通知；无效 RECV 不能提前释放引用。兼容配置为这些有界待继承父组另外预留 FD 表，默认嵌入式配置保持原容量。
+
+该查询提供生命周期机制，不把锁、FD 或文件系统业务放入内核。自测镜像仅允许初始 init 为测试观察者授予查询 capability；正常启动镜像保持原授权策略，普通客户端不能自行获取该权限。

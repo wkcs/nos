@@ -41,21 +41,22 @@ static int canonical_path(const char *input, size_t bytes, char path[NOS_PATH_MA
     return 0;
 }
 
-static void inherit_files(intptr_t parent, intptr_t child)
+static int inherit_files(intptr_t parent, intptr_t child)
 {
-    if (parent == child) return;
+    if (parent == child) return 0;
     struct fd_table *source = table_for(parent), *target = table_for(child);
-    if (!source || !target) return;
+    if (!source || !target) return -NOS_ENOSPC;
     release_table(target);
     *target = *source; target->pid = child;
     for (unsigned fd = 0; fd < FDS; fd++) if (target->fd[fd]) opened[target->fd[fd] - 1].refs++;
+    return 0;
 }
 static void exec_files(intptr_t group)
 {
-    for (unsigned i = 0; i < NOS_TASKS; i++) if (fds[i].pid == group) {
+    for (unsigned i = 0; i < FD_TABLE_COUNT; i++) if (fds[i].pid == group) {
         struct fd_table *table = &fds[i];
         for (unsigned fd = 0; fd < FDS; fd++) if ((table->fd_flags & (1u << fd)) && table->fd[fd]) {
-            drop_description(table->fd[fd] - 1); table->fd[fd] = 0;
+            close_descriptor(table, fd);
         }
         table->fd_flags = 0; return;
     }

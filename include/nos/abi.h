@@ -73,6 +73,7 @@ static inline int nos_pointer_is_error(intptr_t value) { return (uintptr_t)value
 #define NOS_EPIPE 32
 #define NOS_ERANGE 34
 #define NOS_EDEADLK 35
+#define NOS_ENOLCK 37
 #define NOS_ENAMETOOLONG 36
 #define NOS_ENOSYS 38
 #define NOS_ENOTEMPTY 39
@@ -104,12 +105,20 @@ static inline int nos_pointer_is_error(intptr_t value) { return (uintptr_t)value
 #define NOS_CAP_MPU 64u
 #define NOS_CAP_SMP 128u
 #define NOS_CAP_SHARED_BROKER 256u
+#define NOS_CAP_PROCESS_QUERY 512u
+/* GROUP_ALIVE reports live tasks separately from pending FD inheritance. */
+#define NOS_GROUP_LIVE_TASKS 1u
+#define NOS_GROUP_FORK_REFERENCES 2u
+#define NOS_GROUP_QUERY_BATCH 1u
+#define NOS_GROUP_QUERY_MAX 64u
+struct nos_group_state { uint32_t group; int32_t state; };
 #define NOS_FEATURE_MASK (NOS_CAP_MMU | NOS_CAP_USER | NOS_CAP_PREEMPT | NOS_CAP_MPU | NOS_CAP_SMP)
-#define NOS_PERMISSION_MASK (NOS_CAP_IPC | NOS_CAP_SPAWN | NOS_CAP_DEVICE | NOS_CAP_SHARED_BROKER)
+#define NOS_PERMISSION_MASK (NOS_CAP_IPC | NOS_CAP_SPAWN | NOS_CAP_DEVICE | NOS_CAP_SHARED_BROKER | NOS_CAP_PROCESS_QUERY)
 #define NOS_IPC_PEER_EXIT (-1)
 #define NOS_IPC_PEER_CANCEL (-2)
 #define NOS_IPC_PROCESS_FORK (-3)
 #define NOS_IPC_PROCESS_EXEC (-4)
+#define NOS_IPC_PROCESS_NOTICE_LIMIT (4u * NOS_TASKS)
 enum nos_syscall {
     NOS_SYS_WRITE = 0,
     NOS_SYS_GETPID = 1,
@@ -177,6 +186,7 @@ enum nos_syscall {
     NOS_SYS_SHARED = 63,
     NOS_SYS_CLOCK_GET64 = 64,
     NOS_SYS_IPC_XFER = 65,
+    NOS_SYS_GROUP_ALIVE = 66,
 };
 enum nos_vfs_op {
     NOS_VFS_OPEN = 1, NOS_VFS_CLOSE, NOS_VFS_READ, NOS_VFS_WRITE,
@@ -191,7 +201,7 @@ enum nos_vfs_op {
     NOS_VFS_CHMOD = 36, NOS_VFS_SYMLINK = 37, NOS_VFS_LINK = 38,
     NOS_VFS_OPENAT_MODE = 39, NOS_VFS_MKDIRAT = 40, NOS_VFS_TRUNCATE = 41,
     NOS_VFS_UNLINKAT = 42, NOS_VFS_RENAMEAT = 43, NOS_VFS_SHARED_FILE = 44,
-    NOS_VFS_RESOLVE_PATH = 45
+    NOS_VFS_RESOLVE_PATH = 45, NOS_VFS_RECORD_LOCK = 46
 };
 struct nos_message {
     intptr_t sender, op, value, arg;
@@ -227,6 +237,18 @@ struct nos_stat64 {
     uint64_t ino, size, blocks;
     int64_t atime_sec, mtime_sec, ctime_sec;
     uint32_t mode, nlink, uid, gid;
+};
+#define NOS_LOCK_GET 0u
+#define NOS_LOCK_SET 1u
+#define NOS_LOCK_SET_WAIT 2u
+#define NOS_LOCK_READ 0
+#define NOS_LOCK_WRITE 1
+#define NOS_LOCK_UNLOCK 2
+struct nos_record_lock {
+    int64_t start, length;
+    int32_t pid;
+    int16_t type, whence;
+    uint64_t reserved;
 };
 struct nos_bootfile_io { uint32_t index, flags; uint64_t offset; uintptr_t buffer; size_t count; };
 #define NOS_BOOTFILE_LOOKUP 0u

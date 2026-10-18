@@ -23,8 +23,22 @@ static void pipe_cancel(intptr_t sender, uint64_t token, int by_slot)
         if (matches) { wait->used = 0; drop_description(wait->description); }
     }
 }
+#ifdef NOS_LINUX_COMPAT
+/* Authoritative group death retires every syscall pin, even when the final
+ * task-slot exit/cancel notice was overwritten by a later generation. */
+static void pending_owner_exit(uintptr_t owner)
+{
+    for (unsigned i = 0; i < NOS_TASKS; i++) {
+        struct pending_io *wait = &pending_io[i];
+        if (wait->used && wait->message.process == owner) {
+            wait->used = 0; drop_description(wait->description);
+        }
+    }
+}
+#endif
 static int pipe_can_complete(const struct pending_io *wait)
 {
+    if (wait->used != 1) return 0;
     const struct description *description = &opened[wait->description];
     const struct pipe_buffer *pipe = &pipes[description->pipe];
     if (wait->message.op == NOS_VFS_READ) return !wait->message.len || pipe->size || !pipe->writers;

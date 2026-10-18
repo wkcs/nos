@@ -30,6 +30,7 @@ int nos_dup(int fd);
 int nos_dup_min(int fd, unsigned minimum);
 int nos_dup_cloexec(int fd, unsigned minimum);
 int nos_getflags(int fd);
+int nos_record_lock(int fd, unsigned command, struct nos_record_lock *lock);
 int nos_setflags(int fd, unsigned flags);
 int nos_getfd(int fd);
 int nos_setfd(int fd, unsigned flags);

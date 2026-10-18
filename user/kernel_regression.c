@@ -7,6 +7,8 @@ static int wait_for(intptr_t pid, intptr_t expected)
     intptr_t status = 0;
     return pid >= 0 && !nos_syscall(NOS_SYS_WAIT, (uintptr_t)pid, (uintptr_t)&status, 0) && status == expected;
 }
+#include "group_liveness_regression.h"
+#include "record_lock_gc_regression.h"
 static void endpoint_service(uintptr_t endpoint)
 {
     nos_syscall(NOS_SYS_SLEEP, 1, 0, 0);
@@ -208,8 +210,10 @@ static void bulk_regression(void)
                                       .bulk_out = (uintptr_t)payload + 128, .bulk_out_len = 96};
         intptr_t rc = nos_syscall(NOS_SYS_CALL, (uintptr_t)endpoint, (uintptr_t)&message, (uintptr_t)&message);
         ok &= mode == 1 ? !rc && message.value == 1 : rc == -NOS_EACCES;
-        while (__atomic_load_n(&control.tid, __ATOMIC_ACQUIRE))
-            nos_syscall(NOS_SYS_FUTEX_WAIT, (uintptr_t)&control.tid, control.tid, 0);
+        unsigned tid;
+        /* The expected value must be the same nonzero value we observed. */
+        while ((tid = __atomic_load_n(&control.tid, __ATOMIC_ACQUIRE)))
+            nos_syscall(NOS_SYS_FUTEX_WAIT, (uintptr_t)&control.tid, tid, 0);
         nos_syscall(NOS_SYS_MUNMAP, (uintptr_t)stack, NOS_PAGE_SIZE, 0);
         if (mode == 2) nos_syscall(NOS_SYS_MUNMAP, (uintptr_t)payload, NOS_PAGE_SIZE, 0);
     }
@@ -220,6 +224,8 @@ static void bulk_regression(void)
 #endif
 void nos_kernel_regression(void)
 {
+    nos_group_liveness_regression();
+    nos_record_gc_regression();
     struct nos_abi_info abi;
     nos_check(!nos_syscall(NOS_SYS_ABI_QUERY, (uintptr_t)&abi, 0, 0) &&
         abi.version == NOS_ABI_VERSION && abi.word_bits == sizeof(uintptr_t) * 8 &&

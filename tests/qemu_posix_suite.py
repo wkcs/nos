@@ -10,7 +10,7 @@ import subprocess
 import sys
 import time
 
-from qemu_glibc import PLATFORMS, RNG, LINUX_KERNEL
+from qemu_glibc import PLATFORMS, RNG, LINUX_KERNEL, LINUX_GC_KERNEL, LINUX_SINGLE_CPU_KERNEL
 from qemu_matrix import ROOT, COMMON, MMU, file_digest, git_identity, tool_version
 from qemu_guest import run_guest
 from qemu_platforms import qemu_command
@@ -122,8 +122,10 @@ def main():
             if name in cleanup:
                 case.update(classification='cleanup_failed', cleanup_status=cleanup[name])
         checks = {line[5:] for line in text.splitlines() if line.startswith('PASS ')}
-        required = COMMON | MMU | LINUX_KERNEL | {'fpu_context_switch', 'shared_thread_create', 'shared_thread_lock',
+        required = COMMON | MMU | LINUX_KERNEL | LINUX_GC_KERNEL | {'fpu_context_switch', 'shared_thread_create', 'shared_thread_lock',
                                    'shared_thread_join_futex_condition', 'open_posix_selected_cases'}
+        if args.cpus == 1:
+            required |= LINUX_SINGLE_CPU_KERNEL
         if platform.startswith('riscv'):
             required |= {'riscv_halfword_thread_entry'}
         if platform == 'arm_virt':

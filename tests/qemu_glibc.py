@@ -36,6 +36,7 @@ LINUX |= {'glibc_rwlock_barrier_once', 'glibc_tsd_destructor_reentry',
           'glibc_unnamed_semaphore_wait_post', 'glibc_unnamed_semaphore_timedwait', 'glibc_sync_application'}
 LINUX |= {'glibc_file_modes_positioned_io_truncate', 'glibc_file_links_dirfd_lifetime', 'glibc_files_application'}
 LINUX |= {'glibc_path_255_double_path_cwd', 'glibc_directory_long_fragmented_record'}
+LINUX |= {'glibc_pread_bulk_contents_guard_offset', 'glibc_pread_bulk_archive_inline_equivalence'}
 LINUX |= {'glibc_path_bulk_guard_and_pairs', 'glibc_path_getcwd_getdents_280', 'glibc_paths_application'}
 LINUX |= {'glibc_exec_argument_budget', 'glibc_exec_many_short_arguments'}
 LINUX |= {'glibc_exec_guard_terminated_argument'}
@@ -46,6 +47,13 @@ LINUX |= {'glibc_execve_failed_preserves_image', 'glibc_signal_restart_blocking_
           'glibc_signal_default_termination_status', 'glibc_execve_nonleader_thread'}
 LINUX |= {'glibc_time_gettimeofday_uname', 'glibc_process_session_group_signals', 'glibc_execve_relative_symlink'}
 LINUX_KERNEL = {'ipc_bulk_token_bounds', 'ipc_bulk_cancel_revocation'}
+LINUX_KERNEL |= {'group_query_capability', 'group_query_dead_zombie',
+                 'group_query_leader_exit_thread_live', 'group_query_generation_slot_reuse',
+                 'group_query_observer_cleanup', 'group_query_batch_snapshot'}
+LINUX_GC_KERNEL = {'record_lock_exit_slot_reuse_gc', 'record_lock_pending_fork_fd_inheritance'}
+LINUX_SINGLE_CPU_KERNEL = {'pipe_pending_owner_exit_slot_reuse'}
+# Native regression supplies the helper's owner/observer modes; it is not a standalone case.
+LINUX_HELPER_APPS = ('glibc_record_gc',)
 APP_CHECKS = {
     'dynamic_check': {'linux_dynamic_needed_constructor'},
     'glibc_check': {'glibc_real_stdio_malloc_errno_tls_dlopen', 'glibc_exec_argument_budget',
@@ -66,12 +74,40 @@ APP_CHECKS = {
     'glibc_sync': {'glibc_rwlock_barrier_once', 'glibc_tsd_destructor_reentry',
                    'glibc_unnamed_semaphore_wait_post', 'glibc_unnamed_semaphore_timedwait'},
     'glibc_files': {'glibc_file_modes_positioned_io_truncate', 'glibc_file_links_dirfd_lifetime',
-                    'glibc_path_255_double_path_cwd', 'glibc_directory_long_fragmented_record'},
+                    'glibc_path_255_double_path_cwd', 'glibc_directory_long_fragmented_record',
+                    'glibc_pread_bulk_contents_guard_offset', 'glibc_pread_bulk_archive_inline_equivalence'},
     'glibc_futex_shared': {'glibc_shared_futex_alias_requeue'},
     'glibc_shared_sync': {'glibc_file_shared_coherence_permissions', 'glibc_shm_process_shared_sem_different_va',
                          'glibc_named_sem_exec_unlink_recreate'},
     'glibc_paths': {'glibc_path_bulk_guard_and_pairs', 'glibc_path_getcwd_getdents_280'},
 }
+RECORD_LOCK_CHECKS = {
+    'glibc_record_lock_process_ownership',
+    'glibc_record_lock_range_normalization',
+    'glibc_record_lock_split_merge',
+    'glibc_record_lock_close_dup2_release',
+    'glibc_record_lock_buffer_access',
+    'glibc_record_lock_wait_wake_owner_exit',
+    'glibc_record_lock_wait_signal_eintr',
+    'glibc_record_lock_wait_signal_restart',
+    'glibc_record_lock_deadlock_detection',
+    'glibc_record_lock_waiter_exit_reclaims',
+    'glibc_record_lock_wait_cancel_reclaims',
+    'glibc_record_lock_exec_cloexec_release',
+}
+LINUX |= RECORD_LOCK_CHECKS | {'glibc_record_locks_application'}
+APP_CHECKS['glibc_record_locks'] = RECORD_LOCK_CHECKS
+RECORD_LIFECYCLE_CHECKS = {
+    'glibc_record_exec_preserves_and_failed_exec',
+    'glibc_record_exec_cloexec_inode_scope',
+    'glibc_record_alias_unlink_recreate',
+    'glibc_record_inode_reuse_cleanup',
+    'glibc_record_rename_overwrite_inode_scope',
+    'glibc_record_dup2_identity_and_failed_source',
+    'glibc_record_dup2_same_ofd_target_close',
+}
+LINUX |= RECORD_LIFECYCLE_CHECKS | {'glibc_record_lock_lifecycle_application'}
+APP_CHECKS['glibc_record_lock_lifecycle'] = RECORD_LIFECYCLE_CHECKS
 POSIX_VFS = {'page_allocator', 'mapping_transaction_rollback', 'timer_preemption', 'vfs_archive_large_readonly',
              'vfs_openat_cwd_stat', 'vfs_archive_getdents_fragment', 'vfs_positional_io_offsets',
              'vfs_descriptor_cloexec', 'vfs_getrandom_device', 'vfs_mode_umask_truncate',
@@ -100,12 +136,20 @@ def main(mode='glibc'):
     parser.add_argument('--manifest', type=Path, default=Path('/workspace/.nos-env/glibc/manifest.json'))
     parser.add_argument('--output-root', type=Path)
     parser.add_argument('--qemu-bindir', default=os.environ.get('QEMU_BINDIR', ''))
-    parser.add_argument('--timeout', type=int, default=180)
+    parser.add_argument('--timeout', type=int, help='Host guest deadline in seconds; default 420 for full glibc, 180 for focused/native modes')
     parser.add_argument('--cpus', type=int, choices=(1, 2, 4), default=1)
     parser.add_argument('--app', choices=APP_CHECKS, help='Development-only single application; default tests all applications')
     args = parser.parse_args()
     if args.app and mode != 'glibc':
         parser.error('--app is only available for the glibc profile')
+    if args.timeout is not None and args.timeout <= 0:
+        parser.error('--timeout must be positive')
+    if args.timeout is not None:
+        timeout_seconds, timeout_policy = args.timeout, 'explicit'
+    elif mode == 'glibc' and args.app is None:
+        timeout_seconds, timeout_policy = 420, 'full_glibc'
+    else:
+        timeout_seconds, timeout_policy = 180, 'focused_or_native'
     run_id = time.time_ns()
     report = ROOT / 'out/microkernel' / (mode + '-reports') / str(run_id)
     report.mkdir(parents=True)
@@ -114,6 +158,7 @@ def main(mode='glibc'):
     metadata = {'run_id': run_id, 'profile': mode, 'source': git_identity(),
                 'started_ns': time.time_ns(), 'completed': False,
                 'focused_application': args.app,
+                'timeout_seconds': timeout_seconds, 'timeout_policy': timeout_policy,
                 'full_posix_conformance': False,
                 'entropy_backend': '/dev/urandom via QEMU virtio-rng; nondeterministic' if uses_rng else None}
     (report / 'metadata.json').write_text(json.dumps(metadata, indent=2) + '\n')
@@ -130,7 +175,8 @@ def main(mode='glibc'):
         saved = report / platform
         saved.mkdir()
         out.mkdir(parents=True, exist_ok=True)
-        item = {'platform': platform, 'passed': False}
+        item = {'platform': platform, 'passed': False,
+                'timeout_seconds': timeout_seconds, 'timeout_policy': timeout_policy}
         results.append(item)
         identity = checked_artifacts(manifest, platform) if manifest else None
         if identity:
@@ -160,16 +206,16 @@ def main(mode='glibc'):
         if identity:
             item['apps'] = {}
             readelf = identity['triple'] + '-readelf'
-            for name in ['nos-linux-gateway.elf', *(app + '.elf' for app in APP_CHECKS), 'libnos_probe.so']:
+            for name in ['nos-linux-gateway.elf', *(app + '.elf' for app in (*APP_CHECKS, *LINUX_HELPER_APPS)), 'libnos_probe.so']:
                 elf = out / 'apps' / name
                 inspection = subprocess.check_output([readelf, '-lWd', str(elf)], text=True)
                 (saved / (name + '.readelf')).write_text(inspection)
                 item['apps'][name] = {'sha256': file_digest(elf), 'bytes': elf.stat().st_size}
-                if name.removesuffix('.elf') in APP_CHECKS and identity['interpreter'] not in inspection:
+                if name.removesuffix('.elf') in (*APP_CHECKS, *LINUX_HELPER_APPS) and identity['interpreter'] not in inspection:
                     raise ValueError(f'Wrong interpreter: {elf}')
         host_started = time.time()
         try:
-            text, code, metrics = run_guest(command, saved / 'qemu.log', args.timeout)
+            text, code, metrics = run_guest(command, saved / 'qemu.log', timeout_seconds)
         except OSError as exc:
             text, code, metrics = str(exc), None, {'error': str(exc)}
         host_finished = time.time()
@@ -185,14 +231,18 @@ def main(mode='glibc'):
         checks = {line[5:] for line in text.splitlines() if line.startswith('PASS ')}
         linux_required = LINUX if not args.app else APP_CHECKS[args.app] | {'linux_focused_application'}
         native_required = {'posix-shared': SHARED_FILES, 'posix-long-path': LONG_PATHS, 'posix-vfs': POSIX_VFS}
-        required = native_required[mode] if mode != 'glibc' else COMMON | MMU | LINUX_KERNEL | linux_required | {
+        required = native_required[mode] if mode != 'glibc' else COMMON | MMU | LINUX_KERNEL | LINUX_GC_KERNEL | linux_required | {
             'fpu_context_switch', 'shared_thread_create', 'shared_thread_lock', 'shared_thread_join_futex_condition'}
         if mode in ('posix-shared', 'posix-long-path'):
             required |= LINUX_KERNEL
+        if mode == 'glibc' and args.cpus == 1:
+            required |= LINUX_SINGLE_CPU_KERNEL
         if mode == 'glibc' and platform.startswith('riscv'):
             required |= {'riscv_halfword_thread_entry'}
         if mode == 'glibc' and platform == 'arm_virt':
             required |= {'arm_linux_kuser_helpers'}
+            if args.app in (None, 'glibc_record_locks'):
+                required |= {'glibc_record_lock_arm_old_wide_layout'}
         if mode == 'glibc' and platform != 'arm_virt':
             required |= {'native_width_handle_validation', 'capability_high_bits_validation'}
         if mode == 'glibc' and args.cpus > 1:

@@ -7,9 +7,75 @@
 #include <fcntl.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/mman.h>
 #include <unistd.h>
 static int failed(const char *operation)
 { fprintf(stderr, "FAIL glibc_files (%s, errno=%d)\n", operation, errno); return 92; }
+static int positioned_bulk(void)
+{
+    unsigned char source[1537], output[1601];
+    for (size_t i = 0; i < sizeof(source); i++) source[i] = (unsigned char)(i * 37u + i / 251u);
+    int fd = open("/glibc-bulk-pread", O_CREAT | O_EXCL | O_RDWR, 0600);
+    if (fd < 0 || write(fd, source, sizeof(source)) != sizeof(source) || lseek(fd, 37, SEEK_SET) != 37)
+        return failed("bulk_pread_setup");
+    int alias = dup(fd);
+    memset(output, 0xa5, sizeof(output));
+    if (alias < 0 || pread(alias, output + 31, sizeof(source), 0) != sizeof(source) ||
+        memcmp(output + 31, source, sizeof(source)) || lseek(fd, 0, SEEK_CUR) != 37)
+        return failed("bulk_pread_unaligned_contents_offset");
+    for (size_t i = 0; i < sizeof(output); i++)
+        if ((i < 31 || i >= 31 + sizeof(source)) && output[i] != 0xa5) return failed("bulk_pread_canary");
+    memset(output, 0xa5, sizeof(output));
+    if (pread(fd, output, 1024, 1000) != 537 || memcmp(output, source + 1000, 537) ||
+        pread(fd, output + 1024, 512, sizeof(source)) || lseek(alias, 0, SEEK_CUR) != 37)
+        return failed("bulk_pread_eof_offset");
+    for (size_t i = 537; i < sizeof(output); i++) if (output[i] != 0xa5) return failed("bulk_pread_eof_canary");
+    long page = sysconf(_SC_PAGESIZE);
+    if (page <= 0) return failed("bulk_pread_page_size");
+    unsigned char *mapped = mmap(NULL, (size_t)page * 2, PROT_READ | PROT_WRITE,
+                                 MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (mapped == MAP_FAILED) return failed("bulk_pread_map");
+    unsigned char *crossing = mapped + page - 257;
+    memset(mapped, 0x5a, (size_t)page * 2);
+    if (pread(fd, crossing, 769, 123) != 769 || memcmp(crossing, source + 123, 769) ||
+        crossing[-1] != 0x5a || crossing[769] != 0x5a) return failed("bulk_pread_cross_page");
+    for (unsigned test = 0; test < 2; test++) {
+        memset(mapped, 0x5a, (size_t)page * 2);
+        if (mprotect(mapped + page, (size_t)page, test ? PROT_NONE : PROT_READ))
+            return failed("bulk_pread_protect");
+        errno = 0;
+        if (pread(fd, crossing, 769, 123) != -1 || errno != EFAULT || lseek(fd, 0, SEEK_CUR) != 37)
+            return failed("bulk_pread_guard_rejected");
+        for (size_t i = 0; i < 257; i++) if (crossing[i] != 0x5a) return failed("bulk_pread_guard_prefix");
+        if (mprotect(mapped + page, (size_t)page, PROT_READ | PROT_WRITE)) return failed("bulk_pread_unprotect");
+        for (size_t i = 257; i < 769; i++) if (crossing[i] != 0x5a) return failed("bulk_pread_guard_tail");
+    }
+    if (munmap(mapped, (size_t)page * 2)) return failed("bulk_pread_unmap");
+    int writing = open("/glibc-bulk-pread", O_WRONLY), directory = open("/", O_RDONLY | O_DIRECTORY);
+    if (writing < 0 || directory < 0) return failed("bulk_pread_bad_mode_setup");
+    errno = 0;
+    if (pread(writing, output, 512, 0) != -1 || errno != EBADF) return failed("bulk_pread_write_only");
+    errno = 0;
+    if (pread(directory, output, 512, 0) != -1 || errno != EISDIR) return failed("bulk_pread_directory");
+    if (close(writing) || close(directory) || close(alias) || close(fd) || unlink("/glibc-bulk-pread"))
+        return failed("bulk_pread_cleanup");
+    puts("PASS glibc_pread_bulk_contents_guard_offset");
+    /* Compare the new archive path against small inline reads of the same bytes. */
+    fd = open("/lib/libc.so.6", O_RDONLY);
+    if (fd < 0 || lseek(fd, 19, SEEK_SET) != 19) return failed("bulk_pread_archive_open");
+    for (size_t done = 0; done < 769;) {
+        size_t wanted = 769 - done < 64 ? 769 - done : 64;
+        if (pread(fd, source + done, wanted, 129 + (off_t)done) != (ssize_t)wanted)
+            return failed("bulk_pread_archive_reference");
+        done += wanted;
+    }
+    memset(output, 0xa5, sizeof(output));
+    if (pread(fd, output + 7, 769, 129) != 769 || memcmp(output + 7, source, 769) ||
+        output[6] != 0xa5 || output[776] != 0xa5 || lseek(fd, 0, SEEK_CUR) != 19 || close(fd))
+        return failed("bulk_pread_archive_contents_offset");
+    puts("PASS glibc_pread_bulk_archive_inline_equivalence");
+    return 0;
+}
 static int long_paths(void)
 {
     char parent[256] = "/path", first[256], second[256], symbol[256], data[256];
@@ -62,6 +128,8 @@ static int long_paths(void)
 }
 int main(void)
 {
+    int bulk = positioned_bulk();
+    if (bulk) return bulk;
     mode_t previous = umask(0077);
     if (mkdir("/glibc-files", 0777)) return failed("mkdir");
     int directory = open("/glibc-files", O_RDONLY | O_DIRECTORY | O_CLOEXEC);

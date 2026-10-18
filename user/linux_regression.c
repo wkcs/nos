@@ -72,6 +72,12 @@ void nos_linux_regression(void)
     result = run_linux("/bin/glibc_paths");
     failed("/bin/glibc_paths", result);
     nos_check(result == 0, "glibc_paths_application");
+    result = run_linux("/bin/glibc_record_locks");
+    failed("/bin/glibc_record_locks", result);
+    nos_check(result == 0, "glibc_record_locks_application");
+    result = run_linux("/bin/glibc_record_lock_lifecycle");
+    failed("/bin/glibc_record_lock_lifecycle", result);
+    nos_check(result == 0, "glibc_record_lock_lifecycle_application");
     result = run_linux("/bin/glibc_sync");
     failed("/bin/glibc_sync", result);
     nos_check(result == 0, "glibc_sync_application");
