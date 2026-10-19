@@ -35,7 +35,11 @@
 #define FD_TABLE_COUNT NOS_TASKS
 #endif
 #define PIPE_COUNT 2u
+#ifdef NOS_LINUX_COMPAT
+#define PIPE_BYTES NOS_PIPE_BUF
+#else
 #define PIPE_BYTES 256u
+#endif
 #define MODE_DIR 0040000u
 #define MODE_FILE 0100000u
 #define MODE_CHAR 0020000u
@@ -250,7 +254,18 @@ static intptr_t write_data(struct description *d, const char *data, size_t count
     if (!(d->flags & 3)) return -NOS_EBADF;
     if (d->kind >= ARCHIVE_FILE) return -30;
     if (!count) return 0;
-    if (d->kind == 1) return nos_syscall(NOS_SYS_WRITE, (uintptr_t)data, count, 0);
+    if (d->kind == 1) {
+        size_t done = 0;
+        while (done < count) {
+            size_t chunk = count - done; if (chunk > 1024) chunk = 1024;
+            intptr_t written = nos_syscall(NOS_SYS_WRITE, (uintptr_t)(data + done), chunk, 0);
+            if (written < 0) return done ? (intptr_t)done : written;
+            if ((size_t)written > chunk) return done ? (intptr_t)done : -NOS_EIO;
+            done += (size_t)written;
+            if ((size_t)written < chunk) break;
+        }
+        return (intptr_t)done;
+    }
     if (d->kind == 2) {
         struct pipe_buffer *p = &pipes[d->pipe];
         if (!p->readers) return -32; /* EPIPE, no unsupported signal emulation. */
@@ -697,16 +712,46 @@ static void service(struct nos_message *m)
         else { d->flags = (d->flags & ~(NOS_O_APPEND | NOS_O_NONBLOCK)) | ((unsigned)m->value & (NOS_O_APPEND | NOS_O_NONBLOCK)); m->value = 0; }
         break;
     case NOS_VFS_CLOSE: close_descriptor(t, fd); m->value = 0; break;
-    case NOS_VFS_READ: case NOS_VFS_WRITE:
-        if (m->value < 0 || ((uintptr_t)m->value & ~NOS_IO_DONTWAIT)) { m->value = -NOS_EINVAL; break; }
+    case NOS_VFS_READ: case NOS_VFS_WRITE: {
+        uintptr_t allowed_io = NOS_IO_DONTWAIT;
+#ifdef NOS_LINUX_COMPAT
+        if (m->op == NOS_VFS_WRITE) allowed_io |= NOS_IO_WRITE_LARGE;
+#endif
+        if (m->value < 0 || ((uintptr_t)m->value & ~allowed_io)) { m->value = -NOS_EINVAL; break; }
         if ((m->op == NOS_VFS_READ && (d->flags & 3) == NOS_O_WRONLY) ||
             (m->op == NOS_VFS_WRITE && !(d->flags & 3))) { m->value = -NOS_EBADF; break; }
-        if (d->kind == 2 && m->len && !(d->flags & NOS_O_NONBLOCK) && !(m->value & NOS_IO_DONTWAIT)) {
+#ifdef NOS_LINUX_COMPAT
+        if (d->kind == 2 && m->op == NOS_VFS_READ && m->bulk_out_len && m->bulk_out_len != m->len) {
+            m->value = -NOS_EINVAL; break;
+        }
+        if (m->op == NOS_VFS_WRITE && m->bulk_in_len) {
+            if (m->len || m->bulk_in_len > sizeof(pipe_scratch)) { m->value = -NOS_EINVAL; break; }
+            if (d->kind != 2) {
+                int rc = pipe_fetch(m, pipe_scratch, m->bulk_in_len);
+                m->value = rc ? rc : write_data(d, pipe_scratch, m->bulk_in_len);
+                break;
+            }
+        }
+#endif
+        if (d->kind == 2 && pipe_count(m)) {
+            struct pipe_buffer *pipe = &pipes[d->pipe];
+#ifdef NOS_LINUX_COMPAT
+            if (m->op == NOS_VFS_WRITE && (m->value & NOS_IO_WRITE_LARGE) && pipe->readers &&
+                ((d->flags & NOS_O_NONBLOCK) || (m->value & NOS_IO_DONTWAIT)) &&
+                PIPE_BYTES > pipe->size && pipe_count(m) > PIPE_BYTES - pipe->size)
+                pipe_limit_count(m, PIPE_BYTES - pipe->size);
+#endif
+            if (((d->flags & NOS_O_NONBLOCK) || (m->value & NOS_IO_DONTWAIT)) &&
+                (m->op == NOS_VFS_READ ? !pipe->size && pipe->writers :
+                    pipe->readers && pipe_count(m) > PIPE_BYTES - pipe->size)) {
+                m->value = -NOS_EAGAIN; break;
+            }
             int rc = pipe_defer(m, desc); if (rc) m->value = rc; break;
         }
         m->value = m->op == NOS_VFS_READ ? read_data(d, m->data, m->len) : write_data(d, m->data, m->len);
         if (m->op == NOS_VFS_READ && m->value >= 0) m->len = (size_t)m->value;
         break;
+    }
     case NOS_VFS_SEEK: {
         if (d->kind == 1 || d->kind == 2) { m->value = -29; break; }
         if (m->len > 2) { m->value = -NOS_EINVAL; break; }

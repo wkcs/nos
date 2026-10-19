@@ -54,6 +54,9 @@ void nos_linux_regression(void)
     result = run_linux("/bin/glibc_poll");
     failed("/bin/glibc_poll", result);
     nos_check(result == 0, "glibc_poll_application");
+    result = run_linux("/bin/glibc_pipe_atomic");
+    failed("/bin/glibc_pipe_atomic", result);
+    nos_check(result == 0, "glibc_pipe_atomic_application");
     result = run_linux("/bin/glibc_signals");
     failed("/bin/glibc_signals", result);
     nos_check(result == 0, "glibc_signal_application");

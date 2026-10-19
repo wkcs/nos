@@ -351,6 +351,11 @@ static void *pipe_transfer(void *argument)
 static void pipe_regression(void)
 {
     int descriptors[2];
+#ifdef NOS_LINUX_COMPAT
+    const size_t capacity = NOS_PIPE_BUF;
+#else
+    const size_t capacity = 256;
+#endif
     struct pipe_transfer transfer = { .write = 1, .count = 4, .buffer = "pipe" };
 #ifdef NOS_MUSL
     pthread_t worker;
@@ -381,7 +386,13 @@ static void pipe_regression(void)
 
     check_setup(!nos_pipe(descriptors), "vfs_pipe_full_setup");
     u_memset(data, 'x', sizeof(data));
-    check_setup(nos_write(descriptors[1], data, sizeof(data)) == sizeof(data), "vfs_pipe_fill");
+    int filled = 1;
+    for (size_t done = 0; done < capacity;) {
+        size_t count = capacity - done < sizeof(data) ? capacity - done : sizeof(data);
+        if (nos_write(descriptors[1], data, count) != (intptr_t)count) { filled = 0; break; }
+        done += count;
+    }
+    check_setup(filled, "vfs_pipe_fill");
     transfer.fd = descriptors[0]; transfer.write = 0; transfer.count = 64; transfer.go = 0;
 #ifdef NOS_MUSL
     check_setup(!pthread_create(&worker, NULL, pipe_transfer, &transfer), "vfs_pipe_writer_worker");
@@ -404,8 +415,12 @@ static void pipe_regression(void)
     check_setup(!nos_pipe2(descriptors, NOS_O_NONBLOCK), "vfs_pipe_nonblock_setup");
     int flags = nos_getflags(descriptors[0]);
     int ok = (flags & NOS_O_NONBLOCK) && nos_read(descriptors[0], data, 1) == -NOS_EAGAIN;
-    ok &= nos_write(descriptors[1], data, sizeof(data)) == sizeof(data) &&
-        nos_write(descriptors[1], data, 1) == -NOS_EAGAIN;
+    for (size_t done = 0; done < capacity;) {
+        size_t count = capacity - done < sizeof(data) ? capacity - done : sizeof(data);
+        if (nos_write(descriptors[1], data, count) != (intptr_t)count) { ok = 0; break; }
+        done += count;
+    }
+    ok &= nos_write(descriptors[1], data, 1) == -NOS_EAGAIN;
     int duplicate = nos_dup_min(descriptors[0], 8);
     ok &= duplicate >= 8 && !nos_setflags(duplicate, 0) && !(nos_getflags(descriptors[0]) & NOS_O_NONBLOCK);
     nos_check(ok, "vfs_pipe_nonblocking");

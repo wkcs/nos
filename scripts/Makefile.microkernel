@@ -220,6 +220,9 @@ $(O)/apps/glibc_threads.elf: apps/glibc_threads.c $(LINUX_LIBRARIES) $(LINUX_CRT
 $(O)/apps/glibc_poll.elf: apps/glibc_poll.c $(LINUX_LIBRARIES) $(LINUX_CRT_FILES) $(LINUX_MANIFEST) $(BUILD_SIGNATURE)
 	@mkdir -p $(dir $@)
 	$(LINUX_CC) $(LINUX_APP_FLAGS) $< -pthread -ldl -lm -o $@
+$(O)/apps/glibc_pipe_atomic.elf: apps/glibc_pipe_atomic.c $(LINUX_LIBRARIES) $(LINUX_CRT_FILES) $(LINUX_MANIFEST) $(BUILD_SIGNATURE)
+	@mkdir -p $(dir $@)
+	$(LINUX_CC) $(LINUX_APP_FLAGS) $< -pthread -ldl -lm -o $@
 $(O)/apps/glibc_signals.elf: apps/glibc_signals.c $(LINUX_LIBRARIES) $(LINUX_CRT_FILES) $(LINUX_MANIFEST) $(BUILD_SIGNATURE)
 	@mkdir -p $(dir $@)
 	$(LINUX_CC) $(LINUX_APP_FLAGS) $< -pthread -ldl -lm -o $@
@@ -261,6 +264,8 @@ INITRAMFS_IMAGES += $(O)/apps/glibc_threads.elf
 INITRAMFS_FILES += --file /bin/glibc_threads=$(O)/apps/glibc_threads.elf
 INITRAMFS_IMAGES += $(O)/apps/glibc_poll.elf
 INITRAMFS_FILES += --file /bin/glibc_poll=$(O)/apps/glibc_poll.elf
+INITRAMFS_IMAGES += $(O)/apps/glibc_pipe_atomic.elf
+INITRAMFS_FILES += --file /bin/glibc_pipe_atomic=$(O)/apps/glibc_pipe_atomic.elf
 INITRAMFS_IMAGES += $(O)/apps/glibc_signals.elf
 INITRAMFS_FILES += --file /bin/glibc_signals=$(O)/apps/glibc_signals.elf
 INITRAMFS_IMAGES += $(O)/apps/glibc_process.elf

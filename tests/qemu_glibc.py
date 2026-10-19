@@ -50,6 +50,8 @@ LINUX_KERNEL = {'ipc_bulk_token_bounds', 'ipc_bulk_cancel_revocation'}
 LINUX_KERNEL |= {'group_query_capability', 'group_query_dead_zombie',
                  'group_query_leader_exit_thread_live', 'group_query_generation_slot_reuse',
                  'group_query_observer_cleanup', 'group_query_batch_snapshot'}
+LINUX_KERNEL |= {'ipc_bulk_4096_fixture', 'ipc_bulk_4096_pages_canaries',
+                 'ipc_bulk_4096_limits_zero', 'ipc_bulk_4096_permissions_revocation'}
 LINUX_GC_KERNEL = {'record_lock_exit_slot_reuse_gc', 'record_lock_pending_fork_fd_inheritance'}
 LINUX_SINGLE_CPU_KERNEL = {'pipe_pending_owner_exit_slot_reuse'}
 # Native regression supplies the helper's owner/observer modes; it is not a standalone case.
@@ -108,6 +110,21 @@ RECORD_LIFECYCLE_CHECKS = {
 }
 LINUX |= RECORD_LIFECYCLE_CHECKS | {'glibc_record_lock_lifecycle_application'}
 APP_CHECKS['glibc_record_lock_lifecycle'] = RECORD_LIFECYCLE_CHECKS
+PIPE_ATOMIC_CHECKS = {
+    'glibc_pipe_limits_4096_iov1024',
+    'glibc_pipe_atomic_process_records',
+    'glibc_pipe_atomic_nonblock_no_partial',
+    'glibc_pipe_atomic_blocked_wakeup',
+    'glibc_pipe_atomic_signal_eintr_no_ghost',
+    'glibc_pipe_atomic_cancel_no_ghost',
+    'glibc_pipe_ofd_close_reuse_pin',
+    'glibc_pipe_large_blocking_progress',
+    'glibc_pipe_large_nonblock_prefix',
+    'glibc_pipe_partial_epipe_sigpipe_prefix',
+    'glibc_pipe_iov1024_guard_precheck',
+}
+LINUX |= PIPE_ATOMIC_CHECKS | {'glibc_pipe_atomic_application'}
+APP_CHECKS['glibc_pipe_atomic'] = PIPE_ATOMIC_CHECKS
 POSIX_VFS = {'page_allocator', 'mapping_transaction_rollback', 'timer_preemption', 'vfs_archive_large_readonly',
              'vfs_openat_cwd_stat', 'vfs_archive_getdents_fragment', 'vfs_positional_io_offsets',
              'vfs_descriptor_cloexec', 'vfs_getrandom_device', 'vfs_mode_umask_truncate',

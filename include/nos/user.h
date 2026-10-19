@@ -21,6 +21,9 @@ intptr_t nos_read_nowait(int fd, void *buffer, size_t count);
 intptr_t nos_write_nowait(int fd, const void *buffer, size_t count);
 intptr_t nos_posix_read(int fd, void *buffer, size_t count);
 intptr_t nos_posix_write(int fd, const void *buffer, size_t count);
+#ifdef NOS_LINUX_COMPAT
+intptr_t nos_posix_write_large(int fd, const void *buffer, size_t count);
+#endif
 void nos_process_exit(int status) __attribute__((noreturn));
 void nos_libc_task_cleanup(void);
 int nos_rmdir(const char *path);

@@ -62,6 +62,26 @@
 
 本批完成进程记录锁、generation/fork 引用回收和安全 512 字节定位读，**不代表完整 POSIX.1-2017 已完成**。真实凭据/权限、资源容量和限额、路径/pipe 与 libc 查询一致性、TTY/作业控制、网络及文件映射边界仍按支持范围表继续开发；非 MMU 限制、真实硬件和远端 CI 的未执行边界不变。
 
+## 管道 4096 / IOV1024 批次：开发证据
+
+以已推送 `f1211025a7dc7d297f1566ec665a03e06f5829c0` 为基线，Linux profile 实装 PIPE_BUF/pipe/BULK4096、IOV1024，以及原始大请求的非阻塞前缀、pipe 最终读 span 与部分写后 SIGPIPE 通知；默认 native 容量不扩大。原记录锁、batch generation/fork 查询、PREAD512 和 clear_tid 单快照修复保留。
+
+combined host `out/microkernel/host-vfs/1792365648160113008/results.json` 实际退出 0：100000 次有界输入、原 23 项记录锁/定位读/退出回收及新增 13 项 pipe ASan/UBSan 检查通过，后两项报告为 `1792365650351075573`、`1792365653142410098`。IPC、权限和回复仍为 host 模拟，不能冒充真实内核验证。
+
+新独立 glibc 应用在 GNU/Linux host 与 UBSan 共 11 项通过，ARM/A64/RV64 实际 glibc ELF 以 Werror 编译链接通过，尚未作为 NOS guest 成功证据。服务和 runtime/gateway 的三架构对象编译通过；实测编译栈链保守上限分别为 4928/5184/5248 字节，低于 8192，readv 为 792/992/1056。报告及源码哈希保存在 `out/pipe-atomic-objects/`。默认 A64 musl 完整链接仍为 24504/24576 字节模板。
+
+内核新增 4 项实际来宾断言，覆盖 4096 字节未对齐跨页、非相邻物理 backing、FETCH/STORE canary、RO/PROT_NONE/hole、CALL 后权限变更/撤权、4097/溢出/零边界及精确资源回归；它们当前只有编译证据。三架构单核/四核 focused 与新完整冻结 68 组必须另行执行，未执行前不得使用前批报告代替。
+
+## 管道 4096 / IOV1024 批次最终冻结验收
+
+最终报告 `out/microkernel/acceptance/1792365892261153665/results.json`：**68/68 组通过、complete=true、source_changed_during_run=false，开始与结束身份一致**。完整验收进程、六组 focused 与外层队列收据均实际退出 0，位于 `out/microkernel/pipe4096-iov1024-queue/1792365748254822931/`；命令仍为 `python3 tests/acceptance.py --include-posix --require-frozen-source`，没有放宽已有断言或期限。
+
+ARM/A64/RV64 单核及四核新管道 focused 全部通过；随后六组完整 glibc 分别通过 ARM 204/207、A64 204/207、RV64 205/208 项检查，缺失标记为空、退出 0。各组同时验证全部 11 项 pipe 程序标记（含 scalar/writev 部分写后 SIGPIPE、原子性、NONBLOCK 前缀、IOV1024/guard）及 4 项新增跨页 IPC 检查。三架构各 51/51 上游选定用例、原有八平台、持久化、SMP、stock QEMU STM32/MPU、RV32、时钟、异常与应用组全部通过。宿主组合保持 100000 次输入、23 项记录锁/回收及 13 项 pipe ASan/UBSan 检查。
+
+冻结基线 HEAD 为 `f1211025a7dc7d297f1566ec665a03e06f5829c0`，tracked diff SHA256 为 `e65530ca4c3db869c8a03ec0bc8722f6ee03a7bd846244a788089fcd03b55b1b`，新增源文件和各镜像摘要保存在报告。收尾前已独立确认当前 git_identity 完全等于 source_after，并保存全部输入哈希至 `out/microkernel/final-pipe4096-checkpoint/`；之后仅更新支持范围、接口表、执行计划和本报告。代码与测试输入仍为已验证快照。
+
+本批完成 Linux profile 的 PIPE_BUF4096/IOV1024 一致性与上述管道边界，不将默认 native 容量、未实现的真实凭据/权限、资源最小容量、TTY/网络、映射边界或所有 POSIX 接口算作完成。下一批继续稳定进程凭据、可信 IPC subject 与文件权限；本报告不声称完整 POSIX.1-2017 符合性。
+
 ## 阶段 0–5 历史验收
 
 以下报告要求 completed 等于 total，结果均取自该轮结束后的记录。

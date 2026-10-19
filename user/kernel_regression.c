@@ -103,8 +103,13 @@ static void bulk_control_thread(uintptr_t pointer)
         if (rc == -NOS_EACCES) nos_syscall(NOS_SYS_SLEEP, 1, 0, 0);
     } while (rc == -NOS_EACCES);
     if (!rc) {
-        message.value = control->mode == 1 ? nos_syscall(NOS_SYS_MUNMAP, control->address, NOS_PAGE_SIZE, 0) :
-            nos_syscall(NOS_SYS_ENDPOINT_REVOKE, control->target, control->address, NOS_RIGHT_RECV);
+        if (control->mode == 1)
+            message.value = nos_syscall(NOS_SYS_MUNMAP, control->address, NOS_PAGE_SIZE, 0);
+        else if (control->mode == 2)
+            message.value = nos_syscall(NOS_SYS_ENDPOINT_REVOKE, control->target, control->address, NOS_RIGHT_RECV);
+        else
+            message.value = nos_syscall(NOS_SYS_MPROTECT, control->address,
+                control->mode == 3 ? NOS_PROT_READ : 0, NOS_PAGE_SIZE);
         nos_syscall(NOS_SYS_REPLY, (uintptr_t)message.sender, (uintptr_t)&message, 0);
     }
     nos_syscall(NOS_SYS_EXIT, 0, 0, 0);
@@ -220,6 +225,188 @@ static void bulk_regression(void)
     ok &= wait_for(server, 75);
     nos_syscall(NOS_SYS_ENDPOINT_CLOSE, (uintptr_t)endpoint, 0, 0);
     nos_check(ok, "ipc_bulk_cancel_revocation");
+}
+/* No large automatic buffers: each side maps adjacent virtual pages with a
+ * live allocation by the other address space between their physical pages. */
+static unsigned char bulk_pattern(unsigned i, unsigned seed)
+{ return (unsigned char)((i * 7u) ^ seed); }
+static int bulk_bytes(const unsigned char *p, size_t bytes, unsigned char value)
+{
+    for (size_t i = 0; i < bytes; i++) if (p[i] != value) return 0;
+    return 1;
+}
+static int bulk_pattern_check(const unsigned char *p, unsigned seed)
+{
+    for (unsigned i = 0; i < NOS_PIPE_BUF; i++) if (p[i] != bulk_pattern(i, seed)) return 0;
+    return 1;
+}
+static int bulk_large_xfer(struct nos_ipc_xfer *x, intptr_t expected)
+{ return nos_syscall(NOS_SYS_IPC_XFER, (uintptr_t)x, 0, 0) == expected; }
+static void bulk_large_service(uintptr_t endpoint)
+{
+    uintptr_t pages = 0;
+    int ok = 1;
+    for (;;) {
+        struct nos_message m;
+        intptr_t rc = nos_syscall(NOS_SYS_RECV, endpoint, (uintptr_t)&m, 0);
+        if (rc == -NOS_EACCES) { nos_syscall(NOS_SYS_SLEEP, 1, 0, 0); continue; }
+        if (rc) nos_syscall(NOS_SYS_EXIT, 78, 0, 0);
+        if (m.op < 0) continue;
+        if (m.op == 1 || m.op == 2) {
+            intptr_t page = nos_syscall(NOS_SYS_MMAP, 3, NOS_PAGE_SIZE, 0);
+            ok &= !nos_pointer_is_error(page);
+            if (m.op == 1) pages = (uintptr_t)page;
+            else ok &= (uintptr_t)page == pages + NOS_PAGE_SIZE;
+        } else {
+            unsigned char *local = (void *)(pages + 31);
+            struct nos_ipc_xfer x = {m.sender, m.token, 0, (uintptr_t)local, NOS_PIPE_BUF, NOS_IPC_FETCH};
+            u_memset((void *)pages, 0xa9, 2 * NOS_PAGE_SIZE);
+            if (m.op == 3) {
+                ok &= bulk_large_xfer(&x, 0) && bulk_pattern_check(local, 0x53);
+                ok &= bulk_bytes((void *)pages, 31, 0xa9) &&
+                    bulk_bytes(local + NOS_PIPE_BUF, NOS_PAGE_SIZE - 31, 0xa9);
+                for (unsigned i = 0; i < NOS_PIPE_BUF; i++) local[i] = bulk_pattern(i, 0xc7);
+                x.direction = NOS_IPC_STORE; ok &= bulk_large_xfer(&x, 0);
+            } else if (m.op == 4) {
+                x.count = NOS_PIPE_BUF + 1; ok &= bulk_large_xfer(&x, -NOS_EINVAL);
+                x.direction = NOS_IPC_STORE; ok &= bulk_large_xfer(&x, -NOS_EINVAL);
+                x.direction = NOS_IPC_FETCH;
+                x.count = 0; x.offset = NOS_PIPE_BUF; x.buffer = UINTPTR_MAX;
+                ok &= bulk_large_xfer(&x, 0);
+                x.direction = NOS_IPC_STORE; ok &= bulk_large_xfer(&x, 0);
+                x.direction = NOS_IPC_FETCH;
+                x.offset++; ok &= bulk_large_xfer(&x, -NOS_EINVAL);
+                x.offset = SIZE_MAX; ok &= bulk_large_xfer(&x, -NOS_EINVAL);
+                x.offset = 0; x.count = 32; x.buffer = UINTPTR_MAX - 15;
+                ok &= bulk_large_xfer(&x, -NOS_EFAULT);
+                x.direction = NOS_IPC_STORE; ok &= bulk_large_xfer(&x, -NOS_EFAULT);
+                ok &= bulk_bytes((void *)pages, 2 * NOS_PAGE_SIZE, 0xa9);
+            } else if (m.op == 5) {
+                /* FETCH writes local memory; STORE only needs to read it. */
+                ok &= !nos_syscall(NOS_SYS_MPROTECT, pages + NOS_PAGE_SIZE, NOS_PROT_READ, NOS_PAGE_SIZE);
+                ok &= bulk_large_xfer(&x, -NOS_EFAULT) && bulk_bytes((void *)pages, 2 * NOS_PAGE_SIZE, 0xa9);
+                x.direction = NOS_IPC_STORE; ok &= bulk_large_xfer(&x, 0);
+                ok &= !nos_syscall(NOS_SYS_MPROTECT, pages + NOS_PAGE_SIZE, 0, NOS_PAGE_SIZE);
+                x.direction = NOS_IPC_FETCH; ok &= bulk_large_xfer(&x, -NOS_EFAULT);
+                x.direction = NOS_IPC_STORE; ok &= bulk_large_xfer(&x, -NOS_EFAULT);
+                ok &= bulk_bytes((void *)pages, NOS_PAGE_SIZE, 0xa9);
+                ok &= !nos_syscall(NOS_SYS_MPROTECT, pages + NOS_PAGE_SIZE, 3, NOS_PAGE_SIZE);
+                ok &= bulk_bytes((void *)pages, 2 * NOS_PAGE_SIZE, 0xa9);
+                ok &= !nos_syscall(NOS_SYS_MUNMAP, pages + NOS_PAGE_SIZE, NOS_PAGE_SIZE, 0);
+                x.direction = NOS_IPC_FETCH; ok &= bulk_large_xfer(&x, -NOS_EFAULT);
+                x.direction = NOS_IPC_STORE; ok &= bulk_large_xfer(&x, -NOS_EFAULT);
+                ok &= bulk_bytes((void *)pages, NOS_PAGE_SIZE, 0xa9);
+                ok &= nos_syscall(NOS_SYS_MMAP, 3, NOS_PAGE_SIZE, 0) == (intptr_t)(pages + NOS_PAGE_SIZE);
+            } else if (m.op == 10) {
+                x.count = 0; x.buffer = UINTPTR_MAX;
+                ok &= bulk_large_xfer(&x, 0);
+                x.direction = NOS_IPC_STORE; ok &= bulk_large_xfer(&x, 0);
+                x.count = 1; ok &= bulk_large_xfer(&x, -NOS_EINVAL);
+            } else {
+                /* The caller's spans were validated while both pages were RW.
+                 * The shared-AS worker changes them only after delivery. */
+                struct nos_message control = {.op = 1};
+                ok &= !nos_syscall(NOS_SYS_CALL, (uintptr_t)m.arg, (uintptr_t)&control, (uintptr_t)&control) && !control.value;
+                intptr_t expected = m.op == 6 ? 0 : m.op == 9 ? -NOS_EPERM : -NOS_EFAULT;
+                ok &= bulk_large_xfer(&x, expected);
+                ok &= m.op == 6 ? bulk_pattern_check(local, 0x53) : bulk_bytes((void *)pages, 2 * NOS_PAGE_SIZE, 0xa9);
+                x.direction = NOS_IPC_STORE;
+                ok &= bulk_large_xfer(&x, m.op == 9 ? -NOS_EPERM : -NOS_EFAULT);
+                if (m.op == 9) nos_syscall(NOS_SYS_EXIT, ok ? 77 : 78, 0, 0);
+            }
+        }
+        m.value = ok;
+        nos_syscall(NOS_SYS_REPLY, (uintptr_t)m.sender, (uintptr_t)&m, 0);
+    }
+}
+static int bulk_large_call(uintptr_t endpoint, struct nos_message *m)
+{ return !nos_syscall(NOS_SYS_CALL, endpoint, (uintptr_t)m, (uintptr_t)m) && m->value == 1; }
+static void bulk_large_regression(void)
+{
+    struct nos_object_stats before, after;
+    nos_syscall(NOS_SYS_OBJECT_STATS, (uintptr_t)&before, 0, 0);
+    intptr_t endpoint = nos_syscall(NOS_SYS_ENDPOINT_CREATE, 0, 0, 0);
+    intptr_t server = spawn(bulk_large_service, (uintptr_t)endpoint, 6);
+    int ok = endpoint >= 0 && server >= 0 && !nos_syscall(NOS_SYS_ENDPOINT_GRANT,
+        (uintptr_t)server, (uintptr_t)endpoint, NOS_RIGHT_RECV);
+    ok &= nos_syscall(NOS_SYS_LINUX_RAISE, 13, 0, 0) == -NOS_EPERM;
+    intptr_t pages = nos_syscall(NOS_SYS_MMAP, 3, NOS_PAGE_SIZE, 0);
+    struct nos_message m = {.op = 1};
+    ok &= !nos_pointer_is_error(pages) && bulk_large_call((uintptr_t)endpoint, &m);
+    intptr_t second = nos_syscall(NOS_SYS_MMAP, 3, NOS_PAGE_SIZE, 0);
+    ok &= (uintptr_t)second == (uintptr_t)pages + NOS_PAGE_SIZE;
+    m = (struct nos_message){.op = 2}; ok &= bulk_large_call((uintptr_t)endpoint, &m);
+    /* Allocation errors must stop before touching an unmapped test fixture. */
+    nos_check(ok, "ipc_bulk_4096_fixture");
+    if (!ok) {
+        nos_syscall(NOS_SYS_TASK_CANCEL, (uintptr_t)server, 0, 0);
+        wait_for(server, -NOS_EINTR); return;
+    }
+    unsigned char *remote = (void *)((uintptr_t)pages + 17);
+    u_memset((void *)(uintptr_t)pages, 0xee, 2 * NOS_PAGE_SIZE);
+    for (unsigned i = 0; i < NOS_PIPE_BUF; i++) remote[i] = bulk_pattern(i, 0x53);
+    m = (struct nos_message){.op = 3, .bulk_in = (uintptr_t)remote, .bulk_in_len = NOS_PIPE_BUF,
+        .bulk_out = (uintptr_t)remote, .bulk_out_len = NOS_PIPE_BUF};
+    ok &= bulk_large_call((uintptr_t)endpoint, &m) && bulk_pattern_check(remote, 0xc7);
+    ok &= bulk_bytes((void *)(uintptr_t)pages, 17, 0xee) && bulk_bytes(remote + NOS_PIPE_BUF, NOS_PAGE_SIZE - 17, 0xee);
+    nos_check(ok, "ipc_bulk_4096_pages_canaries");
+    m.op = 4; ok &= bulk_large_call((uintptr_t)endpoint, &m) && bulk_pattern_check(remote, 0xc7);
+    m.bulk_in_len = NOS_PIPE_BUF + 1;
+    ok &= nos_syscall(NOS_SYS_CALL, (uintptr_t)endpoint, (uintptr_t)&m, (uintptr_t)&m) == -NOS_EINVAL;
+    m.bulk_in_len = NOS_PIPE_BUF; m.bulk_out_len = NOS_PIPE_BUF + 1;
+    ok &= nos_syscall(NOS_SYS_CALL, (uintptr_t)endpoint, (uintptr_t)&m, (uintptr_t)&m) == -NOS_EINVAL;
+    m.bulk_out_len = NOS_PIPE_BUF; m.bulk_in = UINTPTR_MAX - 15;
+    ok &= nos_syscall(NOS_SYS_CALL, (uintptr_t)endpoint, (uintptr_t)&m, (uintptr_t)&m) == -NOS_EFAULT;
+    m.bulk_in = (uintptr_t)remote; m.bulk_out = UINTPTR_MAX - 15;
+    ok &= nos_syscall(NOS_SYS_CALL, (uintptr_t)endpoint, (uintptr_t)&m, (uintptr_t)&m) == -NOS_EFAULT;
+    m = (struct nos_message){.op = 10, .bulk_in = UINTPTR_MAX, .bulk_out = UINTPTR_MAX};
+    ok &= bulk_large_call((uintptr_t)endpoint, &m);
+    nos_check(ok, "ipc_bulk_4096_limits_zero");
+    m = (struct nos_message){.op = 5, .bulk_in = (uintptr_t)remote, .bulk_in_len = NOS_PIPE_BUF,
+        .bulk_out = (uintptr_t)remote, .bulk_out_len = NOS_PIPE_BUF};
+    ok &= bulk_large_call((uintptr_t)endpoint, &m) && bulk_bytes(remote, NOS_PIPE_BUF, 0xa9);
+    for (unsigned mode = 1; mode <= 4; mode++) {
+        u_memset((void *)(uintptr_t)pages, 0xee, 2 * NOS_PAGE_SIZE);
+        for (unsigned i = 0; i < NOS_PIPE_BUF; i++) remote[i] = bulk_pattern(i, 0x53);
+        intptr_t stack = nos_syscall(NOS_SYS_MMAP, 3, NOS_PAGE_SIZE, 0);
+        intptr_t control_endpoint = nos_syscall(NOS_SYS_ENDPOINT_CREATE, 0, 0, 0);
+        /* RO, NONE, hole, then endpoint authority revocation. */
+        unsigned action = mode == 1 ? 3 : mode == 2 ? 4 : mode == 3 ? 1 : 2;
+        struct bulk_control control = {(uintptr_t)control_endpoint, (uintptr_t)server,
+            mode == 4 ? (uintptr_t)endpoint : (uintptr_t)pages + NOS_PAGE_SIZE, action, 0};
+        struct nos_thread_args args = {(uintptr_t)bulk_control_thread, (uintptr_t)&control, (uintptr_t)stack,
+            NOS_PAGE_SIZE, 0, (uintptr_t)&control.tid, (uintptr_t)&control.tid};
+        intptr_t worker = nos_syscall(NOS_SYS_THREAD_CREATE, (uintptr_t)&args, UINTPTR_MAX, 0);
+        int ready = !nos_pointer_is_error(stack) && control_endpoint >= 0 && worker >= 0 &&
+            !nos_syscall(NOS_SYS_TASK_AUTHORIZE, (uintptr_t)worker, NOS_CAP_SPAWN, 0) &&
+            !nos_syscall(NOS_SYS_ENDPOINT_GRANT, (uintptr_t)worker, (uintptr_t)control_endpoint, NOS_RIGHT_RECV) &&
+            !nos_syscall(NOS_SYS_ENDPOINT_GRANT, (uintptr_t)server, (uintptr_t)control_endpoint, NOS_RIGHT_CALL);
+        if (!ready) { nos_check(0, "ipc_bulk_4096_control_fixture"); return; }
+        m = (struct nos_message){.op = 5 + mode, .arg = control_endpoint,
+            .bulk_in = (uintptr_t)remote, .bulk_in_len = NOS_PIPE_BUF,
+            .bulk_out = (uintptr_t)remote, .bulk_out_len = NOS_PIPE_BUF};
+        intptr_t rc = nos_syscall(NOS_SYS_CALL, (uintptr_t)endpoint, (uintptr_t)&m, (uintptr_t)&m);
+        ok &= mode == 4 ? rc == -NOS_EACCES : !rc && m.value == 1;
+        unsigned tid;
+        while ((tid = __atomic_load_n(&control.tid, __ATOMIC_ACQUIRE)))
+            nos_syscall(NOS_SYS_FUTEX_WAIT, (uintptr_t)&control.tid, tid, 0);
+        /* A failed full-range STORE must not even alter its writable prefix. */
+        for (unsigned i = 0; i < NOS_PAGE_SIZE - 17; i++) ok &= remote[i] == bulk_pattern(i, 0x53);
+        if (mode == 3)
+            ok &= (uintptr_t)nos_syscall(NOS_SYS_MMAP, 3, NOS_PAGE_SIZE, 0) == (uintptr_t)pages + NOS_PAGE_SIZE;
+        else if (mode < 3)
+            ok &= !nos_syscall(NOS_SYS_MPROTECT, (uintptr_t)pages + NOS_PAGE_SIZE, 3, NOS_PAGE_SIZE);
+        if (mode != 3) ok &= bulk_pattern_check(remote, 0x53);
+        ok &= bulk_bytes((void *)(uintptr_t)pages, 17, 0xee);
+        if (mode != 3) ok &= bulk_bytes(remote + NOS_PIPE_BUF, NOS_PAGE_SIZE - 17, 0xee);
+        ok &= !nos_syscall(NOS_SYS_MUNMAP, (uintptr_t)stack, NOS_PAGE_SIZE, 0);
+    }
+    ok &= wait_for(server, 77);
+    ok &= !nos_syscall(NOS_SYS_MUNMAP, (uintptr_t)pages, 2 * NOS_PAGE_SIZE, 0);
+    /* The receive owner's exit closes both the service and worker endpoints. */
+    nos_syscall(NOS_SYS_OBJECT_STATS, (uintptr_t)&after, 0, 0);
+    ok &= before.tasks == after.tasks && before.endpoints == after.endpoints && before.free_pages == after.free_pages;
+    nos_check(ok, "ipc_bulk_4096_permissions_revocation");
 }
 #endif
 void nos_kernel_regression(void)
@@ -400,6 +587,7 @@ void nos_kernel_regression(void)
               "orphan_task_reclamation");
 #ifdef NOS_LINUX_COMPAT
     bulk_regression();
+    bulk_large_regression();
 #endif
 
     /* Killing a service returns errors to clients; explicit init restart creates a fresh generation. */

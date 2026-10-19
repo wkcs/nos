@@ -70,6 +70,11 @@ const char *initial[]={"/","/tmp","/dev","/proc","/dev/console","/proc/version"}
 for(unsigned i=0;i<6;i++){strcpy(nodes[i].name,initial[i]);nodes[i].used=nodes[i].linked=1;nodes[i].mode=i<4?MODE_DIR:i==4?MODE_CHAR:MODE_FILE;}
 for(unsigned i=0;i<3;i++)opened[i]=(struct description){.node=4,.kind=1,.flags=i?NOS_O_WRONLY:0};
 for(unsigned i=0;i<NOS_TASKS;i++)fds[i].pid=-1;
+struct nos_message large_write={.op=NOS_VFS_WRITE,.arg=1,.len=1,.value=NOS_IO_WRITE_LARGE};
+large_write.data[0]='X';
+nos_check(nos_rpc(&large_write)==-NOS_EINVAL,"default_large_write_flag_rejected");
+struct nos_message invalid_read={.op=NOS_VFS_READ,.arg=0,.len=1,.value=NOS_IO_WRITE_LARGE};
+nos_check(nos_rpc(&invalid_read)==-NOS_EINVAL,"default_read_write_flag_rejected");
 nos_vfs_regression();
 unsigned random = 123456789u;
 for (unsigned i=0;i<100000;i++) {

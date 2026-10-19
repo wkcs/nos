@@ -254,6 +254,16 @@ static intptr_t dispatch(uintptr_t nr, uintptr_t a, uintptr_t b, uintptr_t c)
     case NOS_SYS_BOOTFILE: return bootfile_operation(a, b);
     case NOS_SYS_EXEC_LINUX: return task_exec_linux(a, b, c);
     case NOS_SYS_LINUX_RETURN: return linux_gateway_return(a);
+    case NOS_SYS_LINUX_RAISE:
+#if defined(NOS_MMU) && defined(NOS_LINUX_COMPAT)
+        if (current_task->abi != NOS_ABI_GATEWAY || !current_task->linux_gateway_active) return -NOS_EPERM;
+        if (!a || a > 64 || b || c) return -NOS_EINVAL;
+        /* Gateway cleanup must finish before handlers use the Linux stack.
+         * linux_signal_deliver defers all delivery until RETURN restores ABI. */
+        return linux_signal_send(current_task, (unsigned)a, 0, current_task->space_owner, 0);
+#else
+        return -NOS_EPERM;
+#endif
     case NOS_SYS_LINUX_MAP: {
 #if defined(NOS_MMU) && defined(NOS_LINUX_COMPAT)
         if (current_task->abi != NOS_ABI_GATEWAY) return -NOS_EPERM;

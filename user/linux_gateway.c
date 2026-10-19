@@ -118,25 +118,40 @@ static intptr_t gateway_statx(int dirfd, uintptr_t path, unsigned flags, uintptr
     return nos_user_copy((void *)output, &value, sizeof(value));
 }
 struct linux_iovec { uintptr_t base; size_t length; };
-static intptr_t vector_io(int fd, uintptr_t pointer, uintptr_t count, int write)
+/* The only PIPE_BUF-sized gateway scratch frame. Keep this out of line:
+ * runtime write_mode binds the buffer directly and allocates no second copy. */
+static __attribute__((noinline)) intptr_t vector_write_atomic(int fd,
+    const struct linux_iovec *vectors, size_t count, size_t total)
 {
-    struct linux_iovec vectors[16];
-    if (count > 16) return -EINVAL;
-    int rc = nos_user_copy(vectors, (const void *)pointer, count * sizeof(*vectors));
-    if (rc) return rc;
+    unsigned char gathered[NOS_PIPE_BUF];
+    size_t done = 0;
+    for (size_t i = 0; i < count; i++) {
+        int rc = nos_user_copy(gathered + done, (const void *)vectors[i].base, vectors[i].length);
+        if (rc) return rc;
+        done += vectors[i].length;
+    }
+    return nos_posix_write(fd, gathered, total);
+}
+static intptr_t vector_io_snapshot(int fd, const struct linux_iovec *vectors, size_t count, int write)
+{
     size_t total = 0;
     for (size_t i = 0; i < count; i++) {
         if (vectors[i].length > (size_t)INTPTR_MAX - total) return -EINVAL;
         total += vectors[i].length;
-        rc = nos_user_check((const void *)vectors[i].base, vectors[i].length,
+    }
+    for (size_t i = 0; i < count; i++) {
+        int rc = nos_user_check((const void *)vectors[i].base, vectors[i].length,
             write ? NOS_PROT_READ : NOS_PROT_WRITE);
         if (rc) return rc;
     }
+    if (!total) return write ? nos_write(fd, NULL, 0) : nos_read(fd, NULL, 0);
+    if (write && total <= NOS_PIPE_BUF) return vector_write_atomic(fd, vectors, count, total);
     intptr_t done = 0;
-    if (!count) return write ? nos_write(fd, NULL, 0) : nos_read(fd, NULL, 0);
     for (size_t i = 0; i < count; i++) {
-        intptr_t n = write ? (done ? nos_write_nowait(fd, (const void *)vectors[i].base, vectors[i].length) :
-                nos_posix_write(fd, (const void *)vectors[i].base, vectors[i].length)) :
+        if (!vectors[i].length) continue;
+        /* Only a read with a completed prefix requests DONTWAIT. A blocking
+         * writev larger than PIPE_BUF may interleave, but must keep waiting. */
+        intptr_t n = write ? nos_posix_write_large(fd, (const void *)vectors[i].base, vectors[i].length) :
             (done ? nos_read_nowait(fd, (void *)vectors[i].base, vectors[i].length) :
                 nos_posix_read(fd, (void *)vectors[i].base, vectors[i].length));
         if (n < 0) return done ? done : n;
@@ -144,6 +159,27 @@ static intptr_t vector_io(int fd, uintptr_t pointer, uintptr_t count, int write)
         if ((size_t)n < vectors[i].length) break;
     }
     return done;
+}
+static intptr_t vector_io(int fd, uintptr_t pointer, uintptr_t count, int write)
+{
+    /* Linux UIO_MAXIOV (and glibc _SC_IOV_MAX) is 1024. Snapshot before any
+     * I/O; neither a 16KiB array nor a mutable application iovec goes on the
+     * 8KiB gateway stack. Small calls retain the allocation-free fast path. */
+    struct linux_iovec local[16], *vectors = local;
+    if (count > 1024) return -EINVAL;
+    size_t bytes = count * sizeof(*vectors), mapped = 0;
+    if (count > sizeof(local) / sizeof(local[0])) {
+        mapped = (bytes + NOS_PAGE_SIZE - 1) & ~(size_t)(NOS_PAGE_SIZE - 1);
+        intptr_t address = nos_syscall(NOS_SYS_MMAP, NOS_PROT_READ | NOS_PROT_WRITE, mapped, 0);
+        if (pointer_error(address)) return address;
+        vectors = (void *)(uintptr_t)address;
+    }
+    int rc = nos_user_copy(vectors, (const void *)pointer, bytes);
+    intptr_t result = rc ? rc : vector_io_snapshot(fd, vectors, count, write);
+    /* GATEWAY signals are delivered after LINUX_RETURN, so an interrupted
+     * RPC reaches this cleanup before cancellation/SA_RESTART is delivered. */
+    if (mapped) (void)nos_syscall(NOS_SYS_MUNMAP, (uintptr_t)vectors, mapped, 0);
+    return result;
 }
 static intptr_t gateway_getrandom(uintptr_t buffer, size_t count, unsigned flags)
 {

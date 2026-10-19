@@ -27,6 +27,7 @@ glibc 工具与库由 `scripts/setup_glibc_env.sh` 安装，`/workspace/.nos-env
 | 进程与信号 | 独立地址空间 fork、同 PID exec、共享 OFD/cwd/umask 与 CLOEXEC、waitpid 状态；真实处理器帧、sigreturn、mask/pending、altstack、RT FIFO、SIGPIPE、EINTR 与部分 SA_RESTART | 完整 wait 选项/rusage、凭据、会话、作业控制等仍有缺口 |
 | 文件与目录 | stat64、pread/pwrite、getdents64、标准目录接口、常用 *at、RAM mode/umask/truncate/hardlink/symlink；兼容配置 256 字节路径及受 token 约束的双路径传输 | chown、时间更新、完整权限执行、资源最小限值和跨后端语义仍需完善；持久后端仍有 64 字节路径限制 |
 | 进程记录锁 | Linux profile 的 F_GETLK/F_SETLK/F_SETLKW，按 inode + 进程持有；区间拆分合并、阻塞、EINTR/SA_RESTART、EDEADLK、取消与退出清理，ARM old/wide flock 转换 | 64 个有界锁区间，容量不足返回 ENOLCK；默认 native 配置明确 ENOTSUP，其他 fcntl 扩展未齐 |
+| 管道与向量 I/O | Linux profile 实装 4096 字节 PIPE_BUF/缓冲与 1024 项 iovec；不超过 PIPE_BUF 的写入原子性、较大请求的非阻塞前缀、取消后不消费/注入，部分写入后仍投递 SIGPIPE；本批三架构单核/四核及完整冻结验收通过 | 有界 2 条管道及 pending 队列；默认 native 容量单列，未声明完整 FIFO/TTY |
 | 多路 I/O | 真实 pipe/文件/UART readiness，poll/select、ppoll/pselect 临时信号 mask、超时/EOF/错误 FD | 使用有界 readiness 查询与等待；不是完整事件设备框架 |
 | 时间 | 实际 RTC 的 REALTIME、64 位 MONOTONIC、睡眠/绝对等待、ITIMER_REAL 信号 | 100 Hz 粒度；CPU 时钟及其他 timer 类型尚不完整 |
 | 虚拟内存 | 稀疏 PROT_NONE、事务式提交与回滚、MAP_FIXED/NOREPLACE、私有文件装载、fork 复制、真实 RAM 共享页与每次映射授权、W^X | 持久文件映射、按需缺页、文件截断后的 SIGBUS、交换仍未完成；私有 fork 是复制而非 COW |
@@ -34,7 +35,7 @@ glibc 工具与库由 `scripts/setup_glibc_env.sh` 安装，`/workspace/.nos-env
 
 `tests/qemu_glibc.py` 对三架构分别检查实际 interpreter、库与镜像摘要、严格来宾标记、RTC 宿主时间窗和 QEMU 退出状态；SMP 另检查真实 CPU 掩码。`tests/qemu_posix_suite.py` 执行固定上游提交、未修改断言的 OpenPOSIX 选定用例，分别记录失败、未解决、不支持、未执行与超时。选定用例通过不等于完整 POSIX 符合性。
 
-当前仍有低于完整 POSIX 要求的资源和语义：任务/线程容量有界，管道为 256 字节缓冲、64 字节消息原子写，尚未达到 POSIX 最小 PIPE_BUF 及所有线程/进程限值；文件锁、完整权限/身份与全部资源限制尚未实现。已有测试成功不能消除这些缺口。glibc 还可能报告其构建时面向 Linux 的 option/limit，需要逐项与 NOS 实际执行能力对齐，不能将其常量视为已经满足的规范保证。
+当前仍有低于完整 POSIX 要求的资源和语义：任务/线程容量及所有线程/进程最小限值尚未满足，完整权限/身份与全部资源限制尚未实现。Linux profile 已有有界进程记录锁；本批将管道原子写与 glibc 报告的 PIPE_BUF4096、IOV_MAX1024 对齐，通过新冻结验收 `1792365892261153665`。默认 native 仍为 256 字节管道、64 字节消息原子写，未达到 POSIX 最小 PIPE_BUF。已有测试成功不能消除这些缺口。glibc 还可能报告其构建时面向 Linux 的 option/limit，需要逐项与 NOS 实际执行能力对齐，不能将其常量视为已经满足的规范保证。
 
 ## native Newlib / musl 接口矩阵
 

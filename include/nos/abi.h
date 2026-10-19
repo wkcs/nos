@@ -7,10 +7,13 @@
 #define NOS_MSG_DATA 64u
 #ifdef NOS_LINUX_COMPAT
 #define NOS_PATH_MAX 256u
+#define NOS_PIPE_BUF 4096u
+#define NOS_IPC_BULK_MAX 4096u
 #else
 #define NOS_PATH_MAX 64u
-#endif
+#define NOS_PIPE_BUF NOS_MSG_DATA
 #define NOS_IPC_BULK_MAX 512u
+#endif
 #if defined(NOS_MMU) || defined(NOS_RISCV32)
 #define NOS_TASKS 12u
 #else
@@ -94,6 +97,7 @@ static inline int nos_pointer_is_error(intptr_t value) { return (uintptr_t)value
 #define NOS_O_CLOEXEC 0x80000u
 #define NOS_FD_CLOEXEC 1u
 #define NOS_IO_DONTWAIT 1u
+#define NOS_IO_WRITE_LARGE 2u
 #define NOS_WAIT_NONBLOCK 1u
 #define NOS_CANCEL_GROUP 1u
 #define NOS_CAP_MMU 1u
@@ -187,6 +191,8 @@ enum nos_syscall {
     NOS_SYS_CLOCK_GET64 = 64,
     NOS_SYS_IPC_XFER = 65,
     NOS_SYS_GROUP_ALIVE = 66,
+    /* Queue a self-signal from an active Linux gateway; deliver after RETURN. */
+    NOS_SYS_LINUX_RAISE = 67,
 };
 enum nos_vfs_op {
     NOS_VFS_OPEN = 1, NOS_VFS_CLOSE, NOS_VFS_READ, NOS_VFS_WRITE,

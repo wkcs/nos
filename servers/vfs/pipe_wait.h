@@ -4,6 +4,31 @@
 struct pending_io { struct nos_message message; unsigned description, used; };
 static struct pending_io pending_io[NOS_TASKS];
 static unsigned defer_reply;
+#ifdef NOS_LINUX_COMPAT
+/* Only this serial service loop uses staging; client spans remain authorized
+ * by the kernel's saved request and live call token, never by a raw pointer. */
+static char pipe_scratch[NOS_PIPE_BUF];
+static int pipe_fetch(const struct nos_message *message, void *buffer, size_t count)
+{
+    struct nos_ipc_xfer request = { .sender = message->sender, .token = message->token,
+        .buffer = (uintptr_t)buffer, .count = count, .direction = NOS_IPC_FETCH };
+    return (int)nos_syscall(NOS_SYS_IPC_XFER, (uintptr_t)&request, 0, 0);
+}
+#endif
+static size_t pipe_count(const struct nos_message *message)
+{
+#ifdef NOS_LINUX_COMPAT
+    if (message->op == NOS_VFS_WRITE && message->bulk_in_len) return message->bulk_in_len;
+#endif
+    return message->len;
+}
+#ifdef NOS_LINUX_COMPAT
+static void pipe_limit_count(struct nos_message *message, size_t count)
+{
+    if (message->op == NOS_VFS_WRITE && message->bulk_in_len) { message->bulk_in_len = count; return; }
+    message->len = count;
+}
+#endif
 static int pipe_defer(struct nos_message *message, unsigned description)
 {
     for (unsigned i = 0; i < NOS_TASKS; i++) if (!pending_io[i].used) {
@@ -42,7 +67,7 @@ static int pipe_can_complete(const struct pending_io *wait)
     const struct description *description = &opened[wait->description];
     const struct pipe_buffer *pipe = &pipes[description->pipe];
     if (wait->message.op == NOS_VFS_READ) return !wait->message.len || pipe->size || !pipe->writers;
-    return !wait->message.len || !pipe->readers || wait->message.len <= PIPE_BYTES - pipe->size;
+    return !pipe_count(&wait->message) || !pipe->readers || pipe_count(&wait->message) <= PIPE_BYTES - pipe->size;
 }
 static void pipe_complete(void)
 {
@@ -53,18 +78,37 @@ static void pipe_complete(void)
         if (next < 0) return;
         struct pending_io *wait = &pending_io[next]; struct nos_message message = wait->message;
         struct description *description = &opened[wait->description]; struct pipe_buffer *pipe = &pipes[description->pipe];
-        size_t count = message.len;
+        size_t count = pipe_count(&message);
+        const char *write_bytes = message.data;
         if (message.op == NOS_VFS_READ) {
             if (count > pipe->size) count = pipe->size;
             for (size_t i = 0; i < count; i++) message.data[i] = pipe->bytes[(pipe->head + i) % PIPE_BYTES];
             message.value = (intptr_t)count; message.len = count;
-        } else message.value = count && !pipe->readers ? -32 : (intptr_t)count;
+#ifdef NOS_LINUX_COMPAT
+            if (message.bulk_out_len) {
+                struct nos_ipc_xfer request = { .sender = message.sender, .token = message.token,
+                    .buffer = (uintptr_t)message.data, .count = count, .direction = NOS_IPC_STORE };
+                int rc = count ? (int)nos_syscall(NOS_SYS_IPC_XFER, (uintptr_t)&request, 0, 0) : 0;
+                if (rc) message.value = rc;
+                message.len = 0;
+            }
+#endif
+        } else {
+            message.value = count && !pipe->readers ? -32 : (intptr_t)count;
+#ifdef NOS_LINUX_COMPAT
+            if (message.value > 0 && message.bulk_in_len) {
+                int rc = pipe_fetch(&message, pipe_scratch, count);
+                if (rc) message.value = rc;
+                else write_bytes = pipe_scratch;
+            }
+#endif
+        }
         /* Commit only after token-checked copy/reply succeeds. Cancelled calls
          * must neither consume existing bytes nor inject new ones. */
         intptr_t replied = nos_syscall(NOS_SYS_REPLY, (uintptr_t)message.sender, (uintptr_t)&message, 0);
         if (!replied && message.value > 0) {
             if (message.op == NOS_VFS_READ) { pipe->head = (pipe->head + count) % PIPE_BYTES; pipe->size -= count; }
-            else { for (size_t i = 0; i < count; i++) pipe->bytes[(pipe->head + pipe->size + i) % PIPE_BYTES] = message.data[i]; pipe->size += count; }
+            else { for (size_t i = 0; i < count; i++) pipe->bytes[(pipe->head + pipe->size + i) % PIPE_BYTES] = write_bytes[i]; pipe->size += count; }
         }
         wait->used = 0; drop_description(wait->description);
     }

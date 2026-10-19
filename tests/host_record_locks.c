@@ -10,7 +10,10 @@ static uint64_t sequence, fail_reply;
 static unsigned failures, batch_queries, scalar_queries;
 static intptr_t batch_error;
 static intptr_t store_error;
-static unsigned store_cancel, store_calls;
+static unsigned store_cancel, store_calls, cancel_after_store;
+static intptr_t fetch_error;
+static unsigned fetch_cancel, fetch_calls;
+static size_t uart_bytes, uart_calls, uart_max;
 static unsigned char archive_image[1536];
 static struct { uintptr_t owner; intptr_t state; unsigned used; } host_groups[NOS_TASKS + 4];
 static void group_state(uintptr_t owner, intptr_t state)
@@ -55,14 +58,27 @@ intptr_t nos_syscall(uintptr_t number, uintptr_t a, uintptr_t b, uintptr_t c)
     if (number == NOS_SYS_IPC_XFER) {
         const struct nos_ipc_xfer *transfer = (void *)a;
         struct host_call *call = &calls[(uintptr_t)transfer->sender % NOS_TASKS];
-        if (store_cancel) call->active = 0;
+        if (transfer->direction > NOS_IPC_STORE) return -NOS_EINVAL;
+        int store = transfer->direction == NOS_IPC_STORE;
+        if (store ? store_cancel : fetch_cancel) call->active = 0;
         if (!call->active || call->sender != transfer->sender || call->token != transfer->token) return -NOS_EPERM;
-        if (transfer->direction != NOS_IPC_STORE || transfer->offset > call->request.bulk_out_len ||
-            transfer->count > call->request.bulk_out_len - transfer->offset) return -NOS_EINVAL;
-        store_calls++;
-        if (store_error) return store_error;
-        memcpy((void *)(call->request.bulk_out + transfer->offset), (void *)transfer->buffer, transfer->count);
+        size_t length = store ? call->request.bulk_out_len : call->request.bulk_in_len;
+        uintptr_t base = store ? call->request.bulk_out : call->request.bulk_in;
+        if (transfer->offset > length || transfer->count > length - transfer->offset) return -NOS_EINVAL;
+        if (store) {
+            store_calls++; if (store_error) return store_error;
+            memcpy((void *)(base + transfer->offset), (void *)transfer->buffer, transfer->count);
+            if (cancel_after_store) call->active = 0;
+        } else {
+            fetch_calls++; if (fetch_error) return fetch_error;
+            memcpy((void *)transfer->buffer, (void *)(base + transfer->offset), transfer->count);
+        }
         return 0;
+    }
+    if (number == NOS_SYS_WRITE) {
+        if (b > 1024) return -NOS_EINVAL;
+        uart_calls++; uart_bytes += b; if (b > uart_max) uart_max = b;
+        return (intptr_t)b;
     }
     if (number == NOS_SYS_BOOTFILE) {
         struct nos_bootfile_io *io = (void *)b;

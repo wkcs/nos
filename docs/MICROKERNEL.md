@@ -46,7 +46,7 @@ PID、锁、IRQ 和端点带代际信息；对象类型有独立句柄范围，�
 
 端点 0 是初始 VFS 服务入口，其他端点可由授权任务创建和委托。回复必须匹配当前请求 token；超时、取消或对端退出后，旧回复不能完成新请求。服务重启使用新的任务 generation，等待中的客户端收到错误；RAM 文件与原有 FD 不自动恢复，持久化数据须重新挂载。
 
-Linux 兼容配置的 native 消息另带有界输入/输出 span，消息的 inline data 仍为 64 字节。IPC_XFER 只允许当前接收服务在调用仍等待回复时，以匹配 sender generation、token 和端点权限复制至多 512 字节；每次重新检查两端映射和权限。取消、超时、撤权、服务重启和旧 token 均不能留下可继续使用的跨地址空间读写权限。默认消息布局不变；兼容配置内的所有 native 客户端、服务与 gateway 必须使用相同构建配置，ABI_QUERY 暴露实际 message_bytes。
+Linux 兼容配置的 native 消息另带有界输入/输出 span，消息的 inline data 仍为 64 字节。IPC_XFER 只允许当前接收服务在调用仍等待回复时，以匹配 sender generation、token 和端点权限复制至多 4096 字节（Linux profile；默认上限仍为 512）；每次重新检查两端映射和权限。取消、超时、撤权、服务重启和旧 token 均不能留下可继续使用的跨地址空间读写权限。默认消息布局不变；兼容配置内的所有 native 客户端、服务与 gateway 必须使用相同构建配置，ABI_QUERY 暴露实际 message_bytes。
 
 ## 架构、内存与上下文
 
@@ -95,7 +95,7 @@ Lua 5.4 与 LVGL 9 复用仓库旧库，作为独立用户 ELF 运行；LVGL 验
 
 ARM、ARM64、RV64 的 Linux personality 解码真实六参数 syscall ABI。内核保留原始 Linux 上下文，文件请求转入独立链接的用户态 gateway，再经 native IPC 调用 VFS；返回时恢复原帧后投递信号。用户态 ld.so 执行动态重定位、构造器及 dlopen，内核不承担文件系统业务或 libc 分配器。
 
-Linux profile 的大定位读使用现有 512 字节 bulk 上限；VFS 对 OFD 副本读取，并向 runtime 的暂存区 STORE。runtime 仅在 RPC 成功且长度合法后复制当前块到调用方，避免 STORE 与回复之间取消时发布失败块；整次调用仍保留先前已完成块的短读语义。小读、pwrite 和默认嵌入式配置保留原协议，文件偏移不变。
+Linux profile 的大定位读使用独立的 512 字节暂存上限；VFS 对 OFD 副本读取，并向 runtime 的暂存区 STORE。runtime 仅在 RPC 成功且长度合法后复制当前块到调用方，避免 STORE 与回复之间取消时发布失败块；整次调用仍保留先前已完成块的短读语义。小读、pwrite 和默认嵌入式配置保留原协议，文件偏移不变。
 
 fork 复制私有映射并保留共享映射的物理身份；exec 分阶段准备新地址空间，失败保留旧镜像，成功保留进程 PID 并替换上下文。处理器帧、signal mask、pending、sigreturn、TLS、robust futex 和取消机制分别处理。ARM 兼容配置还映射受控只读可执行的 Linux kuser helper 页；不因此允许任意高地址用户访问。
 
@@ -118,3 +118,11 @@ Linux profile 的文件记录锁驻用户态 VFS，以真实 inode 和带 genera
 退出通知按任务槽合并，槽复用可能覆盖旧组的最终通知。受 PROCESS_QUERY capability 限制的 GROUP_ALIVE 返回完整组身份的 live-task 位，以及内核 IPC 中排队/已交付但尚未确认的 fork 引用位。VFS 在服务请求及延迟回复前，用同一内核临界区内的有界批量快照查询所有相关组，再清理无 live task 的锁与等待；仅当 fork 引用也归零时释放 FD 表。批量模式保留逐组查询的 capability、完整 generation 和 fork 引用语义，先复制并验证全部输入，再生成状态并复制结果；失败时 VFS 保留全部现有状态。fork 先继承 FD，下一次合法 RECV 确认已交付通知；无效 RECV 不能提前释放引用。兼容配置为这些有界待继承父组另外预留 FD 表，默认嵌入式配置保持原容量。
 
 该查询提供生命周期机制，不把锁、FD 或文件系统业务放入内核。自测镜像仅允许初始 init 为测试观察者授予查询 capability；正常启动镜像保持原授权策略，普通客户端不能自行获取该权限。
+
+## Linux profile 的原子管道开发批次
+
+两条管道各容纳 4096 字节，scalar write 与总长不超过 PIPE_BUF 的 writev 以单次 bulk 请求发送；writev 先快照最多 1024 项向量并检查范围，使用一个独立 4 KiB 栈帧 gather。较大向量表使用临时用户映射，离开 gateway 前释放；默认配置仍保留原消息与容量。原始总长超过 PIPE_BUF 的请求通过 WRITE_LARGE 标志保留大小类别，非阻塞时可提交可用前缀；不超过 PIPE_BUF 的请求空间不足则 EAGAIN，不能提交前缀。
+
+VFS 对所有正长 pipe 操作保存 OFD pin。写入准备后 FETCH 一次到静态暂存区，token 校验 REPLY 成功后提交 ring；读入先 STORE 到本次绑定的最终目标，REPLY 成功后才消费。STORE 失败或回复取消不能消费 pipe；但 STORE 后、REPLY 前取消可能已经改变调用方缓冲区，两次陷入并非整体内存事务。记录锁、fork 引用与 generation 查询回收规则保留。
+
+写入已有前缀后再遇 EPIPE，用户态仍返回已写计数，同时通过限当前活动 gateway 的 LINUX_RAISE67 排队 SIGPIPE；内核在恢复 Linux 上下文后投递，不把正计数改成错误。原始无读端 EPIPE 的返回时信号与此通知按标准非实时信号合并。该机制只负责自发信号，不在内核添加文件系统业务。

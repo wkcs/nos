@@ -238,13 +238,25 @@ static intptr_t read_mode(int fd, void *buffer, size_t count, unsigned mode)
             .value = mode || done ? NOS_IO_DONTWAIT : 0 };
         size_t requested = count - done < NOS_MSG_DATA ? count - done : NOS_MSG_DATA;
         m.len = requested;
+#ifdef NOS_LINUX_COMPAT
+        /* A pipe stores directly to this final span before its successful
+         * reply commits consumption. Other descriptors still reply inline. */
+        m.bulk_out = (uintptr_t)buffer + done;
+        m.bulk_out_len = requested;
+#endif
         intptr_t n = nos_rpc(&m);
         if (n < 0) return done ? (intptr_t)done : n;
         if (!n) break;
-        if ((size_t)n > requested || (size_t)n > m.len || m.len > NOS_MSG_DATA)
+        if ((size_t)n > requested || m.len > NOS_MSG_DATA)
             return done ? (intptr_t)done : -NOS_EIO;
-        int rc = nos_user_copy((char *)buffer + done, m.data, (size_t)n);
-        if (rc) return done ? (intptr_t)done : rc;
+#ifdef NOS_LINUX_COMPAT
+        if (m.len)
+#endif
+        {
+            if ((size_t)n > m.len) return done ? (intptr_t)done : -NOS_EIO;
+            int rc = nos_user_copy((char *)buffer + done, m.data, (size_t)n);
+            if (rc) return done ? (intptr_t)done : rc;
+        }
         done += (size_t)n;
         if ((size_t)n < requested) break;
     } while (done < count);
@@ -259,12 +271,27 @@ static intptr_t write_mode(int fd, const void *buffer, size_t count, unsigned mo
     size_t done = 0;
     do {
         struct nos_message m = { .op = NOS_VFS_WRITE, .arg = fd,
+#ifdef NOS_LINUX_COMPAT
+            /* A blocking large write must keep waiting after its first chunk.
+             * NONBLOCK is an OFD flag, while mode requests per-call DONTWAIT. */
+            .value = (mode & NOS_IO_DONTWAIT) |
+                (count > NOS_PIPE_BUF || (mode & NOS_IO_WRITE_LARGE) ? NOS_IO_WRITE_LARGE : 0) };
+        size_t requested = count - done < NOS_PIPE_BUF ? count - done : NOS_PIPE_BUF;
+        m.bulk_in = (uintptr_t)buffer + done;
+        m.bulk_in_len = requested;
+#else
             .value = mode || done ? NOS_IO_DONTWAIT : 0 };
         size_t requested = count - done < NOS_MSG_DATA ? count - done : NOS_MSG_DATA;
         m.len = requested;
         int rc = nos_user_copy(m.data, (const char *)buffer + done, requested);
         if (rc) return done ? (intptr_t)done : rc;
+#endif
         intptr_t n = nos_rpc(&m);
+#ifdef NOS_LINUX_COMPAT
+        /* A later chunk can fail after a prefix was committed. Preserve the
+         * byte count while queuing SIGPIPE for delivery at LINUX_RETURN. */
+        if (n == -NOS_EPIPE) (void)nos_syscall(NOS_SYS_LINUX_RAISE, 13, 0, 0);
+#endif
         if (n < 0) return done ? (intptr_t)done : n;
         if (!n) break;
         if ((size_t)n > requested) return done ? (intptr_t)done : -NOS_EIO;
@@ -615,10 +642,10 @@ intptr_t nos_posix_read(int fd, void *buffer, size_t count)
         if (rc < 0) return rc;
     }
 }
-intptr_t nos_posix_write(int fd, const void *buffer, size_t count)
+static intptr_t posix_write_mode(int fd, const void *buffer, size_t count, unsigned mode)
 {
     for (;;) {
-        intptr_t rc = nos_write(fd, buffer, count);
+        intptr_t rc = write_mode(fd, buffer, count, mode);
         if (rc != -NOS_EAGAIN) return rc;
         int flags = nos_getflags(fd);
         if (flags < 0) return flags;
@@ -627,6 +654,14 @@ intptr_t nos_posix_write(int fd, const void *buffer, size_t count)
         if (rc < 0) return rc;
     }
 }
+intptr_t nos_posix_write(int fd, const void *buffer, size_t count)
+{ return posix_write_mode(fd, buffer, count, 0); }
+#ifdef NOS_LINUX_COMPAT
+/* Preserve the original writev size class even when an individual iovec is
+ * smaller than PIPE_BUF. LARGE permits a nonblocking prefix; it is not NOWAIT. */
+intptr_t nos_posix_write_large(int fd, const void *buffer, size_t count)
+{ return posix_write_mode(fd, buffer, count, NOS_IO_WRITE_LARGE); }
+#endif
 
 void nos_time_from_ticks(uint64_t ticks, struct nos_time_value *value)
 {
