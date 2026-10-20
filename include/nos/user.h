@@ -45,6 +45,7 @@ int nos_mount(const char *path, unsigned backend);
 int nos_sync(void);
 #define NOS_AT_FDCWD (-100)
 #define NOS_AT_SYMLINK_NOFOLLOW 0x100
+#define NOS_AT_EACCESS 0x200
 #define NOS_AT_EMPTY_PATH 0x1000
 int nos_openat(int directory, const char *path, unsigned flags);
 int nos_openat_mode(int directory, const char *path, unsigned flags, unsigned mode);
@@ -54,6 +55,11 @@ int nos_truncate(const char *path, int64_t length);
 int nos_umask(unsigned mask);
 int nos_fchmod(int fd, unsigned mode);
 int nos_chmod_at(int directory, const char *path, unsigned mode);
+int nos_access_at(int directory, const char *path, unsigned mode, unsigned flags);
+int nos_chown_at(int directory, const char *path, uint32_t uid, uint32_t gid, unsigned flags);
+int nos_fchown(int fd, uint32_t uid, uint32_t gid);
+int nos_credentials_get(struct nos_credentials *credentials);
+int nos_credentials_set(unsigned command, const struct nos_credential_request *request);
 int nos_symlink_at(const char *target, int directory, const char *path);
 int nos_link_at(int old_directory, const char *old_path, int new_directory, const char *new_path);
 int nos_unlinkat(int directory, const char *path, unsigned flags);
@@ -67,5 +73,7 @@ intptr_t nos_getcwd(char *buffer, size_t capacity);
 int nos_chdir(const char *path);
 int nos_fchdir(int fd);
 intptr_t nos_readlink_at(int directory, const char *path, char *buffer, size_t capacity);
+/* Both require ancestor search; only the exec variant authorizes final execution. */
 intptr_t nos_resolve_at(int directory, const char *path, char *buffer, size_t capacity);
+intptr_t nos_resolve_exec_at(int directory, const char *path, char *buffer, size_t capacity);
 #endif

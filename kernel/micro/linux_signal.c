@@ -212,9 +212,41 @@ void linux_signal_retid(struct task *source, struct task *destination)
     k_memcpy(queues[destination->id % NOS_TASKS], queues[source->id % NOS_TASKS], sizeof(queues[0]));
     k_memset(queues[source->id % NOS_TASKS], 0, sizeof(queues[0]));
 }
-int linux_signal_send(struct task *task, unsigned signal, int code, unsigned sender, uintptr_t value)
+/* Both enqueue and the blocking admission check hold kernel_lock. Keep the
+ * interruption result, restart decision and wait cleanup identical whether a
+ * signal arrives before or after the task publishes its blocked state. */
+static void interrupt_wait(struct task *task)
 {
-    if (!task || task->state == TASK_UNUSED || task->state == TASK_DEAD || task->abi == NOS_ABI_NATIVE) return -NOS_ESRCH;
+    enum task_state previous_state = task->state;
+    if (task->state == TASK_REPLY || task->state == TASK_RECV) ipc_interrupt_task(task, -NOS_EINTR);
+    else if (task->state == TASK_SLEEP || task->state == TASK_FUTEX || task->state == TASK_SIGNAL_WAIT || task->state == TASK_WAIT) {
+        if (task->abi == NOS_ABI_LINUX) linux_signal_interrupted(task);
+        task->linux_wait = 0;
+        if (task->state == TASK_SLEEP && task->linux_sleep_remain) {
+            uint64_t remain = task->wake_tick > kernel_ticks ? task->wake_tick - kernel_ticks : 0;
+            if (task->linux_sleep_wide) {
+                int64_t time[2] = { (int64_t)(remain / 100), (int64_t)(remain % 100) * 10000000 };
+                (void)task_copy_out(task, task->linux_sleep_remain, time, sizeof(time));
+            } else {
+                int32_t time[2] = { (int32_t)(remain / 100), (int32_t)(remain % 100) * 10000000 };
+                (void)task_copy_out(task, task->linux_sleep_remain, time, sizeof(time));
+            }
+            task->linux_sleep_remain = 0;
+        }
+        FRAME_RESULT(&task->frame) = (uintptr_t)-NOS_EINTR; task->state = TASK_READY;
+    }
+    if (previous_state == TASK_FUTEX && task->state != TASK_FUTEX) vm_shared_collect();
+    if (previous_state != task->state) reschedule = 1;
+}
+void linux_signal_interrupt_pending(struct task *task)
+{
+    if ((task->abi == NOS_ABI_LINUX || task->abi == NOS_ABI_GATEWAY) &&
+        task->signal_pending & (~task->signal_mask | (1ull << 8) | (1ull << 18)))
+        interrupt_wait(task);
+}
+static int signal_send_uid(struct task *task, unsigned signal, int code, unsigned sender, uint32_t uid, uintptr_t value)
+{
+    if (!task || task->state == TASK_UNUSED || task->state == TASK_DEAD || task->state == TASK_RETIRED || task->abi == NOS_ABI_NATIVE) return -NOS_ESRCH;
     if (signal > 64) return -NOS_EINVAL;
     if (!signal) return 0;
     if (signal == 18) {
@@ -222,7 +254,6 @@ int linux_signal_send(struct task *task, unsigned signal, int code, unsigned sen
         group_stop(task, 0);
     } else if (signal == 19 || signal == 20 || signal == 21 || signal == 22) discard_group_signals(task, 1ull << 17);
     if (signal == 9) group_stop(task, 0);
-    enum task_state previous_state = task->state;
     struct signal_action *action = &actions[task->space_id][signal - 1];
     if (signal != 9 && signal != 19 && (action->handler == 1 || (!action->handler && ignored_default(signal)))) return 0;
     struct signal_queue *queue = queues[task->id % NOS_TASKS];
@@ -238,7 +269,7 @@ int linux_signal_send(struct task *task, unsigned signal, int code, unsigned sen
         if (sizeof(uintptr_t) == 8) store64(queue[index].info, INFO_PAYLOAD, value);
         else store32(queue[index].info, INFO_PAYLOAD, (uint32_t)value);
     } else {
-        store32(queue[index].info, INFO_PAYLOAD, sender); store32(queue[index].info, INFO_PAYLOAD + 4, 0);
+        store32(queue[index].info, INFO_PAYLOAD, sender); store32(queue[index].info, INFO_PAYLOAD + 4, uid);
         if (sizeof(uintptr_t) == 8) store64(queue[index].info, INFO_PAYLOAD + 8, value);
         else store32(queue[index].info, INFO_PAYLOAD + 8, (uint32_t)value);
     }
@@ -248,26 +279,25 @@ int linux_signal_send(struct task *task, unsigned signal, int code, unsigned sen
         int rc = task->signal_wait_info ? task_copy_out(task, task->signal_wait_info, info, 128) : 0;
         FRAME_RESULT(&task->frame) = (uintptr_t)(rc ? rc : received); task->state = TASK_READY;
     } else if (!(task->signal_mask & (1ull << (signal - 1))) || signal == 9 || signal == 19) {
-        if (task->state == TASK_REPLY || task->state == TASK_RECV) ipc_interrupt_task(task, -NOS_EINTR);
-        else if (task->state == TASK_SLEEP || task->state == TASK_FUTEX || task->state == TASK_SIGNAL_WAIT || task->state == TASK_WAIT) {
-            if (task->abi == NOS_ABI_LINUX) linux_signal_interrupted(task);
-            task->linux_wait = 0;
-            if (task->state == TASK_SLEEP && task->linux_sleep_remain) {
-                uint64_t remain = task->wake_tick > kernel_ticks ? task->wake_tick - kernel_ticks : 0;
-                if (task->linux_sleep_wide) {
-                    int64_t time[2] = { (int64_t)(remain / 100), (int64_t)(remain % 100) * 10000000 };
-                    (void)task_copy_out(task, task->linux_sleep_remain, time, sizeof(time));
-                } else {
-                    int32_t time[2] = { (int32_t)(remain / 100), (int32_t)(remain % 100) * 10000000 };
-                    (void)task_copy_out(task, task->linux_sleep_remain, time, sizeof(time));
-                }
-                task->linux_sleep_remain = 0;
-            }
-            FRAME_RESULT(&task->frame) = (uintptr_t)-NOS_EINTR; task->state = TASK_READY;
-        }
+        interrupt_wait(task);
     }
-    if (previous_state == TASK_FUTEX && task->state != TASK_FUTEX) vm_shared_collect();
     reschedule = 1; return 0;
+}
+/* Trusted kernel events (faults, timers and SIGCHLD) do not require a user
+ * permission check. Capture the sender UID now, before task_reap can free it. */
+int linux_signal_send(struct task *task, unsigned signal, int code, unsigned sender, uintptr_t value)
+{
+    struct task *source = sender ? find_task(sender) : NULL;
+    uint32_t uid = source ? credentials_get(source)->ruid : 0;
+    return signal_send_uid(task, signal, code, sender, uid, value);
+}
+static int user_signal_send(struct task *target, unsigned signal, int code, uintptr_t value)
+{
+    if (signal > 64) return -NOS_EINVAL;
+    if (!target || target->state == TASK_UNUSED || target->state == TASK_DEAD ||
+        target->state == TASK_RETIRED || target->abi == NOS_ABI_NATIVE) return -NOS_ESRCH;
+    if (!credentials_signal_allowed(current_task, target, signal)) return -NOS_EPERM;
+    return signal_send_uid(target, signal, code, current_task->space_owner, credentials_get(current_task)->ruid, value);
 }
 static void fill_context(unsigned char *frame, struct task *task, const struct arch_frame *saved, uint64_t mask)
 {
@@ -425,11 +455,11 @@ static int signal_target(uintptr_t pid, unsigned signal, int code, uintptr_t val
     struct task *selected = NULL;
     for (unsigned i = 2; i < NOS_IDLE_FIRST; i++) {
         struct task *task = &tasks[i];
-        if (task->space_owner != pid || task->abi == NOS_ABI_NATIVE || task->state == TASK_UNUSED || task->state == TASK_DEAD) continue;
+        if (task->space_owner != pid || task->abi == NOS_ABI_NATIVE || task->state == TASK_UNUSED || task->state == TASK_DEAD || task->state == TASK_RETIRED) continue;
         if (!selected || !(task->signal_mask & (1ull << (signal ? signal - 1 : 0)))) selected = task;
         if (signal && !(task->signal_mask & (1ull << (signal - 1)))) break;
     }
-    return linux_signal_send(selected, signal, code, current_task->space_owner, value);
+    return user_signal_send(selected, signal, code, value);
 }
 void linux_signal_tick(void)
 {
@@ -529,12 +559,12 @@ intptr_t linux_signal_syscall(uintptr_t number, const uintptr_t a[6])
     }
     case NR(238, 130): {
         struct task *target = find_task(a[0]);
-        return linux_signal_send(target, (unsigned)a[1], -6, current_task->space_owner, 0);
+        return user_signal_send(target, (unsigned)a[1], -6, 0);
     }
     case NR(268, 131): {
         struct task *target = find_task(a[1]);
         if (!target || target->space_owner != a[0]) return -NOS_ESRCH;
-        return linux_signal_send(target, (unsigned)a[2], -6, current_task->space_owner, 0);
+        return user_signal_send(target, (unsigned)a[2], -6, 0);
     }
     case NR(178, 138): {
         if (a[1] > 64) return -NOS_EINVAL;
@@ -547,7 +577,7 @@ intptr_t linux_signal_syscall(uintptr_t number, const uintptr_t a[6])
         struct task *target = find_task(a[1]); if (!target || target->space_owner != a[0]) return -NOS_ESRCH;
         unsigned char info[128]; if (user_copy_in(info, a[3], sizeof(info))) return -NOS_EFAULT;
         uintptr_t value = sizeof(uintptr_t) == 8 ? (uintptr_t)load64(info, INFO_PAYLOAD + 8) : load32(info, INFO_PAYLOAD + 8);
-        return linux_signal_send(target, (unsigned)a[2], -1, current_task->space_owner, value);
+        return user_signal_send(target, (unsigned)a[2], -1, value);
     }
     case NR(179, 133): {
         if (a[1] != 8) return -NOS_EINVAL;
@@ -599,6 +629,7 @@ void linux_signal_reset(struct task *task) { (void)task; }
 void linux_signal_exec(struct task *task, unsigned old_space) { (void)task; (void)old_space; }
 void linux_signal_retid(struct task *source, struct task *destination) { (void)source; (void)destination; }
 void linux_signal_interrupted(struct task *task) { (void)task; }
+void linux_signal_interrupt_pending(struct task *task) { (void)task; }
 void linux_signal_fork(struct task *child, const struct task *parent) { (void)child; (void)parent; }
 void linux_signal_discard(struct task *task) { (void)task; }
 void linux_signal_deliver(struct task *task) { (void)task; }

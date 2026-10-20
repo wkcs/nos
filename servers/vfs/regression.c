@@ -291,6 +291,14 @@ static void long_path_regression(void)
     ok &= nos_readlink_at(NOS_AT_FDCWD, link, output, sizeof(output)) == (intptr_t)u_strlen(after);
     output[u_strlen(after)] = 0; ok &= u_streq(output, after);
     ok &= nos_resolve_at(NOS_AT_FDCWD, link, output, sizeof(output)) == (intptr_t)(u_strlen(after) + 1) && u_streq(output, after);
+    /* Generic resolution accepts a non-executable final inode. Execution
+     * resolution checks its execute bits, including for root. */
+    ok &= nos_resolve_exec_at(NOS_AT_FDCWD, link, output, sizeof(output)) == -NOS_EACCES;
+    ok &= !nos_chmod_at(NOS_AT_FDCWD, hard, 0700);
+    fd = nos_open(after, 0);
+    ok &= fd >= 0 && !nos_stat64_fd(fd, &st) && (st.mode & 0777) == 0700;
+    if (fd >= 0) nos_close(fd);
+    ok &= nos_resolve_exec_at(NOS_AT_FDCWD, link, output, sizeof(output)) == (intptr_t)(u_strlen(after) + 1) && u_streq(output, after);
     ok &= !nos_chdir(deep) && nos_getcwd(output, sizeof(output)) == (intptr_t)(u_strlen(deep) + 1) && u_streq(output, deep);
     ok &= nos_getcwd(output, 8) == -NOS_ERANGE;
     fd = nos_open("after", 0); ok &= fd >= 0 && nos_read(fd, elf, 4) == 4 && elf[0] == 'l'; if (fd >= 0) nos_close(fd);

@@ -26,7 +26,7 @@ REQUIRED = {
 INPUTS = [
     'tests/host_pipe_atomic.c', 'tests/host_record_locks.c', 'servers/vfs/server.c', 'servers/vfs/record_lock.h',
     'servers/vfs/pipe_wait.h', 'servers/vfs/metadata.h', 'servers/vfs/archive.h',
-    'servers/vfs/path_io.h', 'servers/vfs/file_data.h', 'servers/drivers/devices.h',
+    'servers/vfs/path_io.h', 'servers/vfs/permissions.h', 'servers/vfs/file_data.h', 'servers/drivers/devices.h',
     'servers/fatfs/adapter.h', 'include/nos/abi.h', 'include/nos/poll_abi.h',
 ]
 

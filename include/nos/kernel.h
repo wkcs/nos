@@ -107,6 +107,11 @@ struct task {
     struct nos_message request;
     uint64_t request_order;
     unsigned request_sent;
+#ifdef NOS_LINUX_COMPAT
+    /* One-based pool reference; zero means no owned process credentials. */
+    unsigned credential_ref;
+    struct nos_ipc_subject request_subject;
+#endif
     uintptr_t tls_slot, tls_value;
 #ifdef NOS_MMU
     struct arch_frame linux_frame;
@@ -195,6 +200,14 @@ intptr_t bootfile_operation(uintptr_t operation, uintptr_t request);
 struct task *find_task(uintptr_t pid);
 int create_task(unsigned slot, uintptr_t pc, uintptr_t arg, unsigned priority, unsigned caps, unsigned parent);
 void task_reap(struct task *task);
+int credentials_create(struct task *task, const struct task *parent);
+int credentials_share(struct task *task, const struct task *parent);
+void credentials_release(struct task *task);
+void credentials_exec(struct task *task);
+const struct nos_credentials *credentials_get(const struct task *task);
+intptr_t credentials_operation(uintptr_t command, uintptr_t pointer, uintptr_t flags);
+intptr_t linux_credentials_syscall(uintptr_t number, const uintptr_t arguments[6], unsigned *handled);
+int credentials_signal_allowed(const struct task *sender, const struct task *target, unsigned signal);
 int task_is_waitable(const struct task *task);
 intptr_t task_spawn(uintptr_t pc, uintptr_t arg, uintptr_t priority);
 intptr_t thread_create(uintptr_t args, uintptr_t priority);
@@ -221,6 +234,7 @@ intptr_t ipc_call(uintptr_t endpoint, uintptr_t request, uintptr_t reply, uint64
 intptr_t ipc_recv(uintptr_t endpoint, uintptr_t buffer);
 intptr_t ipc_reply(uintptr_t pid, uintptr_t buffer);
 intptr_t ipc_xfer(uintptr_t request);
+intptr_t ipc_subject(uintptr_t request);
 intptr_t endpoint_create(void);
 intptr_t endpoint_close(uintptr_t handle);
 intptr_t endpoint_grant(uintptr_t pid, uintptr_t handle, uintptr_t rights, int revoke);

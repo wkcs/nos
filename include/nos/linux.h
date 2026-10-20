@@ -45,6 +45,7 @@ void linux_signal_fork(struct task *child, const struct task *parent);
 void linux_signal_exec(struct task *task, unsigned old_space);
 void linux_signal_retid(struct task *source, struct task *destination);
 void linux_signal_interrupted(struct task *task);
+void linux_signal_interrupt_pending(struct task *task);
 void linux_signal_discard(struct task *task);
 int linux_signal_send(struct task *task, unsigned signal, int code, unsigned sender, uintptr_t value);
 #endif

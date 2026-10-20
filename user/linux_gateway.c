@@ -411,7 +411,7 @@ static intptr_t gateway_call(const struct nos_linux_call *call)
     switch (call->number) {
     case SYS_execve: {
         char path[NOS_PATH_MAX];
-        intptr_t resolved = nos_resolve_at(LINUX_AT_FDCWD, (const char *)a[0], path, sizeof(path));
+        intptr_t resolved = nos_resolve_exec_at(LINUX_AT_FDCWD, (const char *)a[0], path, sizeof(path));
         if (resolved < 0) return resolved;
         if (!resolved || (size_t)resolved > sizeof(path) || path[resolved - 1]) return -EIO;
         unsigned char random[16];
@@ -434,6 +434,34 @@ static intptr_t gateway_call(const struct nos_linux_call *call)
     case SYS_mkdir: return nos_mkdirat(LINUX_AT_FDCWD, (const char *)a[0], (unsigned)a[1]);
 #endif
     case SYS_umask: return nos_umask((unsigned)a[0] & 0777u);
+    case SYS_faccessat:
+        return nos_access_at((int)a[0], (const char *)a[1], (unsigned)a[2], 0);
+#ifdef SYS_faccessat2
+    case SYS_faccessat2:
+        return nos_access_at((int)a[0], (const char *)a[1], (unsigned)a[2], (unsigned)a[3]);
+#endif
+#ifdef SYS_access
+    case SYS_access: return nos_access_at(LINUX_AT_FDCWD, (const char *)a[0], (unsigned)a[1], 0);
+#endif
+    case SYS_fchownat:
+        return nos_chown_at((int)a[0], (const char *)a[1], (uint32_t)a[2], (uint32_t)a[3], (unsigned)a[4]);
+#ifdef NOS_ARM
+    /* The original ARM calls carry UID16/GID16. Real glibc uses the
+     * explicitly named UID32 syscalls; leave the old ABI unsupported. */
+    case SYS_chown32:
+        return nos_chown_at(LINUX_AT_FDCWD, (const char *)a[0], (uint32_t)a[1], (uint32_t)a[2], 0);
+    case SYS_lchown32:
+        return nos_chown_at(LINUX_AT_FDCWD, (const char *)a[0], (uint32_t)a[1], (uint32_t)a[2], NOS_AT_SYMLINK_NOFOLLOW);
+    case SYS_fchown32: return nos_fchown((int)a[0], (uint32_t)a[1], (uint32_t)a[2]);
+#else
+    case SYS_fchown: return nos_fchown((int)a[0], (uint32_t)a[1], (uint32_t)a[2]);
+#ifdef SYS_chown
+    case SYS_chown:
+        return nos_chown_at(LINUX_AT_FDCWD, (const char *)a[0], (uint32_t)a[1], (uint32_t)a[2], 0);
+    case SYS_lchown:
+        return nos_chown_at(LINUX_AT_FDCWD, (const char *)a[0], (uint32_t)a[1], (uint32_t)a[2], NOS_AT_SYMLINK_NOFOLLOW);
+#endif
+#endif
     case SYS_fchmod: return nos_fchmod((int)a[0], (unsigned)a[1]);
     case SYS_fchmodat: return nos_chmod_at((int)a[0], (const char *)a[1], (unsigned)a[2]);
 #ifdef SYS_fchmodat2

@@ -83,7 +83,7 @@ COMMONFLAGS += $(EXTRA_CFLAGS)
 ifeq ($(POSIX_SUITE),1)
 COMMONFLAGS += -I$(O)
 endif
-KERNEL_SRC := kernel/micro/core.c kernel/micro/task.c kernel/micro/ipc.c kernel/micro/irq.c kernel/micro/mutex.c kernel/micro/scheduler.c kernel/micro/memory.c kernel/micro/runtime.c kernel/micro/elf.c kernel/micro/linux.c kernel/micro/linux_signal.c kernel/micro/bootfile.c $(ARCH_DIR)/platform.c
+KERNEL_SRC := kernel/micro/core.c kernel/micro/task.c kernel/micro/ipc.c kernel/micro/irq.c kernel/micro/mutex.c kernel/micro/scheduler.c kernel/micro/memory.c kernel/micro/runtime.c kernel/micro/elf.c kernel/micro/linux.c kernel/micro/credentials.c kernel/micro/linux_signal.c kernel/micro/bootfile.c $(ARCH_DIR)/platform.c
 ifeq ($(LINUX_COMPAT),1)
 USER_SRC_LINUX := user/linux_regression.c
 ifeq ($(POSIX_SUITE),1)
@@ -220,6 +220,12 @@ $(O)/apps/glibc_threads.elf: apps/glibc_threads.c $(LINUX_LIBRARIES) $(LINUX_CRT
 $(O)/apps/glibc_poll.elf: apps/glibc_poll.c $(LINUX_LIBRARIES) $(LINUX_CRT_FILES) $(LINUX_MANIFEST) $(BUILD_SIGNATURE)
 	@mkdir -p $(dir $@)
 	$(LINUX_CC) $(LINUX_APP_FLAGS) $< -pthread -ldl -lm -o $@
+$(O)/apps/glibc_credentials.elf: apps/glibc_credentials.c $(LINUX_LIBRARIES) $(LINUX_CRT_FILES) $(LINUX_MANIFEST) $(BUILD_SIGNATURE)
+	@mkdir -p $(dir $@)
+	$(LINUX_CC) $(LINUX_APP_FLAGS) $< -pthread -ldl -lm -o $@
+$(O)/apps/glibc_permissions.elf: apps/glibc_permissions.c $(LINUX_LIBRARIES) $(LINUX_CRT_FILES) $(LINUX_MANIFEST) $(BUILD_SIGNATURE)
+	@mkdir -p $(dir $@)
+	$(LINUX_CC) $(LINUX_APP_FLAGS) $< -pthread -ldl -lm -o $@
 $(O)/apps/glibc_pipe_atomic.elf: apps/glibc_pipe_atomic.c $(LINUX_LIBRARIES) $(LINUX_CRT_FILES) $(LINUX_MANIFEST) $(BUILD_SIGNATURE)
 	@mkdir -p $(dir $@)
 	$(LINUX_CC) $(LINUX_APP_FLAGS) $< -pthread -ldl -lm -o $@
@@ -264,6 +270,10 @@ INITRAMFS_IMAGES += $(O)/apps/glibc_threads.elf
 INITRAMFS_FILES += --file /bin/glibc_threads=$(O)/apps/glibc_threads.elf
 INITRAMFS_IMAGES += $(O)/apps/glibc_poll.elf
 INITRAMFS_FILES += --file /bin/glibc_poll=$(O)/apps/glibc_poll.elf
+INITRAMFS_IMAGES += $(O)/apps/glibc_credentials.elf
+INITRAMFS_FILES += --file /bin/glibc_credentials=$(O)/apps/glibc_credentials.elf
+INITRAMFS_IMAGES += $(O)/apps/glibc_permissions.elf
+INITRAMFS_FILES += --file /bin/glibc_permissions=$(O)/apps/glibc_permissions.elf
 INITRAMFS_IMAGES += $(O)/apps/glibc_pipe_atomic.elf
 INITRAMFS_FILES += --file /bin/glibc_pipe_atomic=$(O)/apps/glibc_pipe_atomic.elf
 INITRAMFS_IMAGES += $(O)/apps/glibc_signals.elf

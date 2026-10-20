@@ -54,14 +54,15 @@ def main():
     good = build.returncode == 0 and code == 0 and 'PASS vfs_stateful_host_fuzz_100000' in text and 'FAIL' not in text
     locks, locks_text = run_sanitizer('tests/host_record_locks.py', out / 'record-locks.log')
     pipes, pipes_text = run_sanitizer('tests/host_pipe_atomic.py', out / 'pipe-atomic.log')
+    credentials, credentials_text = run_sanitizer('tests/host_credentials_vfs.py', out / 'credentials.log')
     inputs = ['tests/host_vfs.c', 'servers/vfs/server.c', 'servers/vfs/pipe_wait.h',
               'servers/vfs/archive.h', 'servers/vfs/regression.c', 'servers/drivers/devices.h',
               'servers/vfs/metadata.h', 'servers/vfs/path_io.h', 'servers/vfs/record_lock.h',
-              'servers/vfs/file_data.h',
+              'servers/vfs/file_data.h', 'servers/vfs/permissions.h',
               'include/nos/abi.h', 'include/nos/user.h', 'include/nos/poll_abi.h']
-    result = {'passed': good and locks['passed'] and pipes['passed'], 'bounds_passed': good,
-              'record_locks': locks, 'pipe_atomic': pipes,
-              'scope': 'VFS bounds, record-lock and pipe state; host RPC/device stubs do not verify kernel IPC or hardware',
+    result = {'passed': good and locks['passed'] and pipes['passed'] and credentials['passed'], 'bounds_passed': good,
+              'record_locks': locks, 'pipe_atomic': pipes, 'credentials': credentials,
+              'scope': 'VFS bounds, record-lock, pipe and permission state; host RPC/device stubs do not verify kernel IPC or hardware',
               'build_returncode': build.returncode, 'returncode': code, 'iterations': 100000,
               'fuzz_seed': 123456789, 'operation_range': [1, 44], 'descriptor_argument_range': [-4, 35],
               'compiler': subprocess.check_output(['gcc', '--version'], text=True).splitlines()[0],
@@ -75,6 +76,8 @@ def main():
         print(locks_text[-5000:])
     if not pipes['passed']:
         print(pipes_text[-5000:])
+    if not credentials['passed']:
+        print(credentials_text[-5000:])
     print(out / 'results.json')
     return 0 if result['passed'] else 1
 

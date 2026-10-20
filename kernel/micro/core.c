@@ -53,6 +53,7 @@ static intptr_t dispatch(uintptr_t nr, uintptr_t a, uintptr_t b, uintptr_t c)
         return (intptr_t)b;
     }
     case NOS_SYS_GETPID: return current_task->id;
+    case NOS_SYS_CREDENTIALS: return credentials_operation(a, b, c);
     case NOS_SYS_GROUP_ALIVE:
         if (!(current_task->caps & NOS_CAP_PROCESS_QUERY)) return -NOS_EACCES;
         if (c == NOS_GROUP_QUERY_BATCH) return group_query_batch(a, b);
@@ -117,6 +118,7 @@ static intptr_t dispatch(uintptr_t nr, uintptr_t a, uintptr_t b, uintptr_t c)
     case NOS_SYS_RECV: return ipc_recv(a, b);
     case NOS_SYS_REPLY: return ipc_reply(a, b);
     case NOS_SYS_IPC_XFER: return b || c ? -NOS_EINVAL : ipc_xfer(a);
+    case NOS_SYS_IPC_SUBJECT: return b || c ? -NOS_EINVAL : ipc_subject(a);
     case NOS_SYS_MMAP: return a > UINT32_MAX ? -NOS_EINVAL : vm_map(current_task, (unsigned)a, b);
     case NOS_SYS_MUNMAP: return vm_unmap(current_task, a, b);
     case NOS_SYS_MPROTECT: return b > UINT32_MAX ? -NOS_EINVAL : vm_protect(current_task, a, (unsigned)b, c);
@@ -291,15 +293,19 @@ static intptr_t dispatch(uintptr_t nr, uintptr_t a, uintptr_t b, uintptr_t c)
         for (unsigned i = 2; i < NOS_IDLE_FIRST; i++) {
             if (tasks[i].state != TASK_UNUSED) continue;
             struct task *t = &tasks[i];
+#ifdef NOS_LINUX_COMPAT
+            if (t->credential_ref) kernel_fail("exec spawn with credentials");
+#endif
             unsigned generation = t->generation; k_memset(t, 0, sizeof(*t));
             t->id = generation * NOS_TASKS + i; t->generation = generation;
             t->space_id = i; t->space_owner = t->id; t->run_cpu = t->pin_cpu = UINT32_MAX;
             t->priority = t->base_priority = request.priority;
             t->parent = current_task->id; t->caps = current_task->caps & ~NOS_CAP_SPAWN;
-            if (space_create_empty(t)) { space_destroy(t); return -NOS_ENOMEM; }
+            rc = credentials_create(t, current_task); if (rc) return rc;
+            if (space_create_empty(t)) { space_destroy(t); credentials_release(t); return -NOS_ENOMEM; }
             struct nos_elf_result result;
             rc = nos_elf_load(t, image, bytes, &args, &result);
-            if (rc) { space_destroy(t); return rc; }
+            if (rc) { space_destroy(t); credentials_release(t); return rc; }
             arch_frame_init(&t->frame, result.entry, result.stack, result.argc, result.argv);
 #if defined(NOS_ARM64)
             t->frame.tls = result.tls;
@@ -392,6 +398,10 @@ struct arch_frame *kernel_trap(struct arch_frame *frame, unsigned event)
 #endif
             FRAME_RESULT(&current_task->frame) = (uintptr_t)dispatch(nr, a, b, c);
     }
+    /* A signal can be queued while this task runs userspace on another CPU.
+     * Recheck after dispatch publishes an interruptible wait, before releasing
+     * kernel_lock or allowing the task to sleep. Nonblocking results stand. */
+    linux_signal_interrupt_pending(current_task);
     struct task *previous = current_task;
     previous->run_cpu = UINT32_MAX;
     struct task *next = current_task;

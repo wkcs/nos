@@ -14,7 +14,12 @@ static int archive_stat(unsigned index, struct nos_stat64 *st)
 {
     struct nos_bootfile_io io = { .index = index, .buffer = (uintptr_t)st, .count = sizeof(*st) };
     intptr_t result = nos_syscall(NOS_SYS_BOOTFILE, NOS_BOOTFILE_STAT, (uintptr_t)&io, 0);
-    return result < 0 ? (int)result : 0;
+    if (result < 0) return (int)result;
+#ifdef NOS_LINUX_COMPAT
+    char path[NOS_PATH_MAX]; int rc = archive_name(index, path); if (rc) return rc;
+    st->mode = permission_archive_mode(path, ARCHIVE_FILE);
+#endif
+    return 0;
 }
 static intptr_t archive_read(unsigned index, uint64_t offset, void *data, size_t count)
 {
@@ -60,10 +65,10 @@ static int resolve_path(struct fd_table *table, intptr_t dirfd, const char *inpu
         if (!description_directory(d)) return -NOS_ENOTDIR;
         int rc = description_path(d, base); if (rc) return rc;
     }
-    size_t n = u_strlen(base), slash = n > 1;
+    size_t n = u_strlen(base), base_bytes = n, slash = n > 1;
     if (n + slash + bytes > sizeof(joined)) return -NOS_ENAMETOOLONG;
     u_memcpy(joined, base, n); if (slash) joined[n++] = '/';
-    u_memcpy(joined + n, input, bytes); return canonical_path(joined, n + bytes, path);
+    u_memcpy(joined + n, input, bytes); return canonical_path_from(joined, n + bytes, path, base_bytes);
 }
 static uint64_t path_inode(const char *path)
 {
@@ -98,7 +103,13 @@ static int full_stat(const struct description *d, struct nos_stat64 *st)
     st->size = d->kind ? 0 : nodes[d->node].size;
     st->blocks = (st->size + 511) / 512;
     st->mode = d->kind == 2 ? MODE_FIFO | 0600 : d->kind == 1 ? MODE_CHAR | 0666 : nodes[d->node].mode;
-    st->nlink = !d->kind ? node_links(d->node) : 1; return 0;
+    st->nlink = !d->kind ? node_links(d->node) : 1;
+#ifdef NOS_LINUX_COMPAT
+    const struct inode_security *metadata = d->kind == 2 ? &pipe_security[d->pipe] : &security[d->node];
+    st->uid = metadata->uid; st->gid = metadata->gid;
+    st->atime_sec = metadata->atime; st->mtime_sec = metadata->mtime; st->ctime_sec = metadata->ctime;
+#endif
+    return 0;
 }
 /* Directory cookies index the union of RAM nodes and unique archive children.
  * A continuation reconstructs one immutable archive name without moving fdpos. */

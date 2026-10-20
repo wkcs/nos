@@ -58,7 +58,7 @@ static void clear_node(unsigned index)
     }
 #endif
 #ifdef NOS_LINUX_COMPAT
-    file_inodes[index] = 0;
+    file_inodes[index] = 0; permission_clear(index);
 #endif
     u_memset(&nodes[index], 0, sizeof(nodes[index]));
 }

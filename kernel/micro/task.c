@@ -10,6 +10,9 @@ struct task *find_task(uintptr_t pid)
 }
 static void task_prepare(struct task *t, unsigned slot, unsigned priority, unsigned caps, unsigned parent)
 {
+#ifdef NOS_LINUX_COMPAT
+    if (t->credential_ref) kernel_fail("task prepare with credentials");
+#endif
     unsigned generation = t->generation;
     k_memset(t, 0, sizeof(*t)); t->generation = generation;
     t->id = generation * NOS_TASKS + slot;
@@ -23,8 +26,14 @@ static void task_prepare(struct task *t, unsigned slot, unsigned priority, unsig
 }
 int create_task(unsigned slot, uintptr_t pc, uintptr_t arg, unsigned priority, unsigned caps, unsigned parent)
 {
+    /* UINT32_MAX is used only by trusted boot/service restart callers. A
+     * vanished ordinary parent must never silently become a root identity. */
+    const struct task *source = parent == UINT32_MAX ? NULL : find_task(parent);
+    if (parent != UINT32_MAX && !source) return -NOS_ESRCH;
     struct task *t = &tasks[slot]; task_prepare(t, slot, priority, caps, parent);
-    if (space_create(t)) { space_destroy(t); return -NOS_ENOMEM; }
+    int rc = credentials_create(t, source);
+    if (rc) return rc;
+    if (space_create(t)) { space_destroy(t); credentials_release(t); return -NOS_ENOMEM; }
 #ifdef NOS_MMU
     uintptr_t stack = USER_DATA + USER_BYTES;
 #else
@@ -35,6 +44,7 @@ int create_task(unsigned slot, uintptr_t pc, uintptr_t arg, unsigned priority, u
 }
 void task_reap(struct task *t)
 {
+    credentials_release(t);
     if (t->generation < ((unsigned)INT32_MAX - t->id % NOS_TASKS) / NOS_TASKS) {
         t->generation++; t->state = TASK_UNUSED;
     } else t->state = TASK_RETIRED;
@@ -67,6 +77,8 @@ intptr_t thread_create(uintptr_t pointer, uintptr_t priority)
         struct task *t = &tasks[i];
         task_prepare(t, i, (unsigned)priority, current_task->caps & ~NOS_CAP_SPAWN, current_task->id);
         if (space_clone(t, current_task, args.stack + args.stack_size)) { space_destroy(t); return -NOS_ENOMEM; }
+        int rc = credentials_share(t, current_task);
+        if (rc) { space_destroy(t); return rc; }
         arch_frame_init(&t->frame, args.entry, args.stack + args.stack_size, args.arg, 0);
 #if defined(NOS_ARM64)
         t->frame.tls = args.tls;
@@ -76,7 +88,7 @@ intptr_t thread_create(uintptr_t pointer, uintptr_t priority)
         if (args.parent_tid) {
             unsigned tid = t->id;
             if (task_copy_out(current_task, args.parent_tid, &tid, sizeof(tid))) {
-                space_destroy(t); return -NOS_EFAULT;
+                space_destroy(t); credentials_release(t); return -NOS_EFAULT;
             }
         }
         t->clear_tid = args.clear_tid; t->is_thread = 1;
@@ -275,7 +287,9 @@ void task_finish(struct task *t, intptr_t status)
                                 report->space_owner, report->linux_exit_signal ? report->linux_exit_signal : (uintptr_t)reported_status);
 #endif
     if (reaped || report->is_thread || !parent || parent->state == TASK_DEAD) task_reap(report);
-    if (report != t) task_reap(t);
+    /* The orphan loop may already have reaped this last thread while
+     * reporting its dead leader. Never consume its generation twice. */
+    if (report != t && t->state != TASK_UNUSED && t->state != TASK_RETIRED) task_reap(t);
     reschedule = 1;
 }
 intptr_t task_exec_linux(uintptr_t pointer, uintptr_t entropy, uintptr_t flags)
@@ -296,14 +310,16 @@ intptr_t task_exec_linux(uintptr_t pointer, uintptr_t entropy, uintptr_t flags)
     for (unsigned i = 2; i < NOS_IDLE_FIRST; i++) {
         struct task *t = &tasks[i]; if (t->state != TASK_UNUSED) continue;
         task_prepare(t, i, request.priority, current_task->caps & ~NOS_CAP_SPAWN, current_task->id);
-        if (space_create_empty(t)) { space_destroy(t); return -NOS_ENOMEM; }
+        rc = credentials_create(t, current_task); if (rc) return rc;
+        if (space_create_empty(t)) { space_destroy(t); credentials_release(t); return -NOS_ENOMEM; }
         struct nos_elf_result result;
-        rc = nos_elf_load_linux(t, image, bytes, &args, &result);
+        rc = nos_elf_load_linux(t, image, bytes, &args, credentials_get(t), &result);
         if (!rc) {
             arch_frame_init(&t->frame, result.entry, result.stack, result.argc, result.argv);
             rc = linux_task_prepare(t, result.gateway_entry);
         }
-        if (rc) { space_destroy(t); return rc; }
+        if (rc) { space_destroy(t); credentials_release(t); return rc; }
+        credentials_exec(t);
         t->linux_pgid = linux_process_group(current_task); t->linux_sid = linux_process_session(current_task);
         ipc_task_inherit(t, current_task); t->state = TASK_READY;
         reschedule = 1; return t->id;

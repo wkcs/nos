@@ -126,3 +126,20 @@ Linux profile 的文件记录锁驻用户态 VFS，以真实 inode 和带 genera
 VFS 对所有正长 pipe 操作保存 OFD pin。写入准备后 FETCH 一次到静态暂存区，token 校验 REPLY 成功后提交 ring；读入先 STORE 到本次绑定的最终目标，REPLY 成功后才消费。STORE 失败或回复取消不能消费 pipe；但 STORE 后、REPLY 前取消可能已经改变调用方缓冲区，两次陷入并非整体内存事务。记录锁、fork 引用与 generation 查询回收规则保留。
 
 写入已有前缀后再遇 EPIPE，用户态仍返回已写计数，同时通过限当前活动 gateway 的 LINUX_RAISE67 排队 SIGPIPE；内核在恢复 Linux 上下文后投递，不把正计数改成错误。原始无读端 EPIPE 的返回时信号与此通知按标准非实时信号合并。该机制只负责自发信号，不在内核添加文件系统业务。
+
+
+## Linux profile 的进程凭据与服务授权
+
+凭据以独立的有界引用对象保存真实/有效/保存 UID、GID 和最多 32 个补充组，不以可复用的 leader 任务槽存储。fork 复制对象，线程共享对象；普通 exec 成功后保留真实/有效身份及补充组，将保存 UID/GID 更新为有效 UID/GID，失败则保留全部旧凭据；僵尸引用在 reap 时释放；初始服务的 UID 0 由可信启动路径赋予。UID 与 NOS capability 分别检查，降权不会自动增减 capability。Linux UID32 系统调用和原生 CREDENTIALS68 使用同一对象；默认配置返回 ENOTSUP，ARM 旧 UID16 和 Linux per-thread setfsuid/setfsgid 明确未支持。
+
+CALL 在内核临界区捕获不可变的 token、完整 sender/process generation 和凭据。IPC_SUBJECT69 仅允许仍持有 RECV 权限的实际端点 owner 查询已递送且尚待回复的请求，并预检整个输出；取消、超时、回复或端点失效后不能继续查询。服务不能以客户端填写的 UID 或请求后可变的 PID 查询结果作授权。内核处理身份和 IPC 机制，VFS 在用户态执行路径搜索、mode、所有者/补充组、sticky 和目录 setgid 等文件策略。
+
+Linux profile 的 RAM inode 保存 UID/GID 和当前 stat64 协议可表示的秒级时间，硬链接共享元数据。access 默认用真实身份，AT_EACCESS 使用有效身份；已打开描述符保留打开时的访问授权。只读 archive 中的程序具有执行权限，普通 exec 的 auxv 返回实际身份和 AT_SECURE。/proc/sys/kernel/ngroups_max 提供实际的 32，供未修改 glibc 查询。普通文件 set-ID 执行、纳秒时间更新和完整持久化所有者格式尚未实现，不能由此宣称完整权限模型或 POSIX 符合性。
+
+路径解析 op45 的 value=0 保留普通解析语义，NOS_RESOLVE_EXEC(1) 才检查末项为普通文件且具有执行权限；两者都检查祖先目录搜索权限。普通解析可解析不可执行文件和目录，未知标志返回 EINVAL；Linux execve 网关使用执行解析接口。匿名 pipe 的 fstat 返回创建者身份和时间，但 pipe/device 的 fchown 明确返回 ENOTSUP。普通文件设置 set-ID mode 也返回 ENOTSUP。
+
+兼容配置的持久挂载采用固定 root 所有、仅 UID 0 可重新解析和打开的访问策略；已有授权 FD 降权后继续有效。原生磁盘 v2 和 FAT 格式不保存完整 UID/GID，FAT 回导入也不保留私有 mode，因此本批不向其他 UID 开放新路径访问。持久 inode 的 chown/chmod 返回明确不支持，不能将 RAM 的所有权承诺套用于磁盘格式；默认 native 配置保持原行为。
+
+Linux 线程可能在另一核排入信号后才执行阻塞 syscall。核心在 syscall 完成、仍持 kernel_lock 且尚未释放 run_cpu 时再次检查未屏蔽 pending；若刚进入可中断等待，复用信号入队时的同一中断清理，返回 EINTR 并保持已有 SA_RESTART、睡眠剩余时间及 futex 引用规则。只改变真正阻塞的结果，不覆盖 EAGAIN、WNOHANG 或已完成操作。否则 READY 时排入的信号可能与随后 TASK_FUTEX 睡眠共存，导致处理函数永远无法运行；该竞争已用旧镜像的实时 QMP 快照与物理 GDB 状态确认。
+
+RV64 的四个无 errno 身份 getter（getuid/geteuid/getgid/getegid）采用 psABI 的规范 32 位寄存器返回：即使类型为 uint32_t，返回寄存器也将低 32 位符号扩展到 XLEN。实际 glibc 2.41 的对应入口只有 ecall/ret，调用者依赖该约定；NOS 在 personality 中适配它。凭据存储、getresuid/getresgid 输出和 auxv 均保留完整的无符号 32 位值。上游 Linux v6.12 的 long 返回路径实际零扩展，不能将本适配说成原始返回字逐位相同。通用 glibc syscall() 会把负 errno 区间解释为错误，因此高 UID 的原始结果存在歧义（ARM32 原本也有相同区间重叠）；完整 ID 查询应使用带类型的 getter、getres* 或原生凭据结构接口。

@@ -9,6 +9,126 @@
 #include <string.h>
 #include <time.h>
 #include <sys/time.h>
+#include <linux/futex.h>
+#include <pthread.h>
+#include <sched.h>
+#include <stdatomic.h>
+#include <sys/syscall.h>
+#include <sys/wait.h>
+
+/* Every round sends exactly one thread-directed signal. A second signal or a
+ * timed futex wait would hide a signal left pending when the target blocks. */
+#define FUTEX_SIGNAL_ROUNDS 128
+static _Atomic int futex_signal_word, futex_signal_gate, futex_signal_ack;
+static _Atomic int futex_signal_count, futex_signal_error;
+_Static_assert(ATOMIC_INT_LOCK_FREE == 2, "signal handler needs lock-free atomics");
+
+static void futex_signal_handler(int signal)
+{
+    int saved_errno = errno;
+    (void)signal;
+    atomic_fetch_add_explicit(&futex_signal_count, 1, memory_order_relaxed);
+    atomic_store_explicit(&futex_signal_word, 1, memory_order_release);
+    (void)syscall(SYS_futex, &futex_signal_word, FUTEX_WAKE_PRIVATE, 1, NULL, NULL, 0);
+    errno = saved_errno;
+}
+
+static void *futex_signal_target(void *unused)
+{
+    sigset_t set;
+    (void)unused;
+    sigemptyset(&set);
+    sigaddset(&set, SIGUSR2);
+    if (pthread_sigmask(SIG_UNBLOCK, &set, NULL)) {
+        atomic_store(&futex_signal_error, 1);
+        return NULL;
+    }
+    for (int round = 1; round <= FUTEX_SIGNAL_ROUNDS; round++) {
+        if (round == 1 || round == FUTEX_SIGNAL_ROUNDS / 2 + 1) {
+            struct sigaction action;
+            memset(&action, 0, sizeof(action));
+            sigemptyset(&action.sa_mask);
+            action.sa_handler = futex_signal_handler;
+            action.sa_flags = round == 1 ? 0 : SA_RESTART;
+            if (sigaction(SIGUSR2, &action, NULL)) {
+                atomic_store(&futex_signal_error, 2);
+                return NULL;
+            }
+        }
+        atomic_store_explicit(&futex_signal_word, 0, memory_order_relaxed);
+        atomic_store_explicit(&futex_signal_gate, round, memory_order_release);
+        errno = 0;
+        long result = syscall(SYS_futex, &futex_signal_word,
+                              FUTEX_WAIT_PRIVATE, 0, NULL, NULL, 0);
+        int error = errno;
+        /* An already handled signal changes the word before admission, while
+         * a signal interrupting the wait may return EINTR or restart into
+         * EAGAIN. The handler's wake may also complete the original wait. */
+        if ((result != 0 && (result != -1 || (error != EINTR && error != EAGAIN))) ||
+            atomic_load_explicit(&futex_signal_word, memory_order_acquire) != 1 ||
+            atomic_load_explicit(&futex_signal_count, memory_order_relaxed) != round) {
+            fprintf(stderr, "FAIL signal futex round=%d result=%ld errno=%d count=%d word=%d\n",
+                    round, result, error, atomic_load(&futex_signal_count),
+                    atomic_load(&futex_signal_word));
+            atomic_store(&futex_signal_error, 3);
+            return NULL;
+        }
+        atomic_store_explicit(&futex_signal_ack, round, memory_order_release);
+    }
+    return NULL;
+}
+
+static int futex_signal_child(void)
+{
+    sigset_t set;
+    sigemptyset(&set);
+    sigaddset(&set, SIGUSR2);
+    if (pthread_sigmask(SIG_BLOCK, &set, NULL)) return 1;
+    pthread_t target;
+    if (pthread_create(&target, NULL, futex_signal_target, NULL)) return 2;
+    for (int round = 1; round <= FUTEX_SIGNAL_ROUNDS; round++) {
+        while (atomic_load_explicit(&futex_signal_gate, memory_order_acquire) < round) {
+            if (atomic_load(&futex_signal_error)) return 3;
+            sched_yield();
+        }
+        if (pthread_kill(target, SIGUSR2)) return 4;
+        while (atomic_load_explicit(&futex_signal_ack, memory_order_acquire) < round) {
+            if (atomic_load(&futex_signal_error)) return 5;
+            sched_yield();
+        }
+    }
+    return pthread_join(target, NULL) || atomic_load(&futex_signal_error) ||
+           atomic_load(&futex_signal_count) != FUTEX_SIGNAL_ROUNDS ? 6 : 0;
+}
+
+static int futex_signal_admission(void)
+{
+    struct timespec start, now, pause = {0, 1000000};
+    if (clock_gettime(CLOCK_MONOTONIC, &start)) return 0;
+    fflush(NULL);
+    pid_t child = fork();
+    if (!child) _exit(futex_signal_child());
+    if (child < 0) return 0;
+    for (;;) {
+        int status;
+        pid_t result = waitpid(child, &status, WNOHANG);
+        if (result == child) {
+            int passed = WIFEXITED(status) && WEXITSTATUS(status) == 0;
+            if (!passed) fprintf(stderr, "FAIL signal futex child status=%d\n", status);
+            return passed;
+        }
+        if ((result < 0 && errno != EINTR) || clock_gettime(CLOCK_MONOTONIC, &now) ||
+            now.tv_sec - start.tv_sec > 10 ||
+            (now.tv_sec - start.tv_sec == 10 && now.tv_nsec >= start.tv_nsec)) {
+            (void)kill(child, SIGKILL);
+            do result = waitpid(child, &status, 0); while (result < 0 && errno == EINTR);
+            fputs("FAIL signal futex parent_wait_or_deadline_10s\n", stderr);
+            return 0;
+        }
+        (void)nanosleep(&pause, NULL);
+    }
+}
+
 static volatile sig_atomic_t received, queued_value, used_altstack;
 static volatile sig_atomic_t alarms;
 static uintptr_t alternate_begin, alternate_end;
@@ -77,5 +197,6 @@ int main(void)
     if (!check(sleeping == -1 && sleep_error == EINTR && alarms == 1 &&
                getitimer(ITIMER_REAL, &timer) == 0 && !timer.it_value.tv_sec && !timer.it_value.tv_usec,
                "glibc_signal_realtime_interval_timer")) return 116;
+    if (!check(futex_signal_admission(), "glibc_signal_futex_admission_single_delivery")) return 117;
     puts("PASS glibc_posix_signals"); return 0;
 }

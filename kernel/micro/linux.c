@@ -77,6 +77,7 @@ static int exec_commit(struct task *task)
     unsigned pgid = linux_process_group(task), sid = linux_process_session(task);
     unsigned old_space = task->space_id;
     int rc = space_commit_exec(task, &exec_image); if (rc) return rc;
+    credentials_exec(task);
     linux_signal_exec(task, old_space);
     task->frame = exec_image.frame; task->abi = NOS_ABI_LINUX;
     task->linux_gateway_entry = exec_image.linux_gateway_entry;
@@ -88,6 +89,10 @@ static int exec_commit(struct task *task)
     if (task->id != task->space_owner) {
         struct task *leader = find_task(task->space_owner);
         if (!leader || leader->state != TASK_DEAD) kernel_fail("exec missing process leader");
+#ifdef NOS_LINUX_COMPAT
+        if (!task->credential_ref || leader->credential_ref != task->credential_ref)
+            kernel_fail("exec credential ownership");
+#endif
         unsigned generation = leader->generation, parent = leader->parent, process = task->space_owner;
         linux_signal_retid(task, leader);
         k_memcpy(leader, task, sizeof(*leader));
@@ -131,7 +136,7 @@ intptr_t linux_exec_current(uintptr_t pointer, uintptr_t entropy, uintptr_t flag
     k_memset(&exec_image, 0, sizeof(exec_image)); exec_image.id = task->space_owner;
     rc = space_create_empty(&exec_image); if (rc) return rc;
     struct nos_elf_result result;
-    rc = nos_elf_load_linux(&exec_image, image, bytes, &args, &result);
+    rc = nos_elf_load_linux(&exec_image, image, bytes, &args, credentials_get(task), &result);
     if (!rc) {
         uintptr_t base = NOS_LINUX_GATEWAY_STACK_BASE + (task->space_owner % NOS_TASKS) * NOS_LINUX_GATEWAY_STACK_STRIDE + NOS_PAGE_SIZE;
         rc = vm_gateway_map(&exec_image, base, NOS_LINUX_GATEWAY_STACK_BYTES, NOS_PROT_READ | NOS_PROT_WRITE);
@@ -314,6 +319,7 @@ static intptr_t linux_fork(const uintptr_t arguments[6])
     if ((flags & (CLONE_CHILD_SETTID | CLONE_CHILD_CLEARTID)) && !user_access(current_task, arguments[4], 4, 1)) return -NOS_EFAULT;
     for (unsigned i = 2; i < NOS_IDLE_FIRST; i++) {
         struct task *child = &tasks[i]; if (child->state != TASK_UNUSED) continue;
+        if (child->credential_ref) kernel_fail("fork with credentials");
         unsigned generation = child->generation; k_memset(child, 0, sizeof(*child));
         child->generation = generation; child->id = generation * NOS_TASKS + i;
         child->parent = current_task->space_owner;
@@ -321,6 +327,8 @@ static intptr_t linux_fork(const uintptr_t arguments[6])
         child->caps = current_task->caps; child->run_cpu = child->pin_cpu = UINT32_MAX;
         child->linux_pgid = linux_process_group(current_task); child->linux_sid = linux_process_session(current_task);
         int rc = space_fork(child, current_task); if (rc) return rc;
+        rc = credentials_create(child, current_task);
+        if (rc) { space_destroy(child); return rc; }
         child->frame = current_task->frame; FRAME_RESULT(&child->frame) = 0;
         child->linux_stack_soft = current_task->linux_stack_soft; child->linux_stack_hard = current_task->linux_stack_hard;
         child->linux_nofile_soft = current_task->linux_nofile_soft; child->linux_nofile_hard = current_task->linux_nofile_hard;
@@ -329,7 +337,7 @@ static intptr_t linux_fork(const uintptr_t arguments[6])
         if (!rc && (flags & CLONE_CHILD_SETTID)) rc = task_copy_out(child, arguments[4], &tid, sizeof(tid));
         if (!rc && (flags & CLONE_PARENT_SETTID)) rc = task_copy_out(current_task, arguments[2], &tid, sizeof(tid));
         if (!rc) rc = ipc_process_notice(NOS_IPC_PROCESS_FORK, current_task->space_owner, child->space_owner);
-        if (rc) { space_destroy(child); return rc; }
+        if (rc) { space_destroy(child); credentials_release(child); return rc; }
         linux_signal_fork(child, current_task);
         if (flags & CLONE_CHILD_CLEARTID) child->clear_tid = arguments[4];
         child->mutex_caps = current_task->mutex_caps; ipc_task_inherit(child, current_task);
@@ -388,6 +396,7 @@ static intptr_t linux_clone(const uintptr_t a[6])
     if ((flags & (CLONE_CHILD_CLEARTID | CLONE_CHILD_SETTID)) && !user_access(current_task, a[4], 4, 1)) return -NOS_EFAULT;
     for (unsigned i = 2; i < NOS_IDLE_FIRST; i++) {
         struct task *child = &tasks[i]; if (child->state != TASK_UNUSED) continue;
+        if (child->credential_ref) kernel_fail("clone with credentials");
         unsigned generation = child->generation; k_memset(child, 0, sizeof(*child));
         child->generation = generation; child->id = generation * NOS_TASKS + i;
         child->parent = current_task->id; child->is_thread = 1;
@@ -396,17 +405,19 @@ static intptr_t linux_clone(const uintptr_t a[6])
         child->linux_pgid = linux_process_group(current_task); child->linux_sid = linux_process_session(current_task);
         child->run_cpu = child->pin_cpu = UINT32_MAX;
         int rc = space_clone(child, current_task, stack); if (rc) return rc;
+        rc = credentials_share(child, current_task);
+        if (rc) { space_destroy(child); return rc; }
         k_memcpy(&child->frame, &current_task->frame, sizeof(child->frame)); frame_set_sp(&child->frame, stack);
         FRAME_RESULT(&child->frame) = 0;
         if (flags & CLONE_SETTLS) frame_set_tls(&child->frame, a[3]);
         rc = linux_gateway_clone(child, current_task);
-        if (rc) { space_destroy(child); return rc; }
+        if (rc) { space_destroy(child); credentials_release(child); return rc; }
         child->signal_mask = current_task->signal_mask;
         if (flags & CLONE_CHILD_CLEARTID) child->clear_tid = a[4];
         unsigned tid = child->id;
         if (((flags & CLONE_PARENT_SETTID) && task_copy_out(current_task, a[2], &tid, 4)) ||
             ((flags & CLONE_CHILD_SETTID) && task_copy_out(child, a[4], &tid, 4))) {
-            space_destroy(child); return -NOS_EFAULT;
+            space_destroy(child); credentials_release(child); return -NOS_EFAULT;
         }
         child->mutex_caps = current_task->mutex_caps; ipc_task_inherit(child, current_task);
         child->state = TASK_READY; reschedule = 1; return child->id;
@@ -495,6 +506,9 @@ void linux_task_exit(struct task *task)
 }
 intptr_t linux_dispatch(uintptr_t number, const uintptr_t a[6])
 {
+    unsigned credentials_handled;
+    intptr_t credentials_result = linux_credentials_syscall(number, a, &credentials_handled);
+    if (credentials_handled) return credentials_result;
     intptr_t signal_result = linux_signal_syscall(number, a);
     if (signal_result != NOS_LINUX_NOT_HANDLED) return signal_result;
 #ifdef NOS_ARM
@@ -566,9 +580,7 @@ intptr_t linux_dispatch(uintptr_t number, const uintptr_t a[6])
 #endif
         return user_copy_out(a[0], identity, sizeof(identity));
     }
-    case LNR(24, 174): case LNR(49, 175): case LNR(47, 176): case LNR(50, 177): return 0;
 #ifdef NOS_ARM
-    case 199: case 200: case 201: case 202: return 0;
     case 0xf0005: frame_set_tls(&current_task->frame, a[0]); return 0;
     case 403: case 406:
 #endif

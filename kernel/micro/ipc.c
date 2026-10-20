@@ -203,6 +203,12 @@ intptr_t ipc_call(uintptr_t handle, uintptr_t request, uintptr_t reply, uint64_t
     current_task->request.process = current_task->space_owner;
     current_task->request_order = ++request_sequence;
     current_task->request.token = request_sequence;
+#ifdef NOS_LINUX_COMPAT
+    current_task->request_subject.token = request_sequence;
+    current_task->request_subject.sender = current_task->id;
+    current_task->request_subject.process = current_task->space_owner;
+    current_task->request_subject.credentials = *credentials_get(current_task);
+#endif
     current_task->request_sent = 0; current_task->pending = reply;
     current_task->endpoint_handle = (unsigned)handle;
     current_task->wake_tick = timeout ? kernel_ticks + timeout : 0;
@@ -296,6 +302,24 @@ intptr_t ipc_xfer(uintptr_t pointer)
         copied += count;
     }
     return 0;
+#else
+    (void)pointer; return -NOS_ENOTSUP;
+#endif
+}
+intptr_t ipc_subject(uintptr_t pointer)
+{
+#ifdef NOS_LINUX_COMPAT
+    struct nos_ipc_subject_query query;
+    if (user_copy_in(&query, pointer, sizeof(query))) return -NOS_EFAULT;
+    if (query.reserved) return -NOS_EINVAL;
+    struct task *client = find_task(query.sender);
+    if (!client || client->state != TASK_REPLY || !client->request_sent || client->reply_from != current_task->id ||
+        query.token != client->request.token) return -NOS_EPERM;
+    unsigned index; struct endpoint *endpoint = lookup(client->endpoint_handle, &index);
+    if (!endpoint || endpoint->owner != current_task->id || !(current_task->endpoint_rights[index] & NOS_RIGHT_RECV)) return -NOS_EPERM;
+    if (query.output > UINTPTR_MAX || !user_access(current_task, (uintptr_t)query.output, sizeof(struct nos_ipc_subject), 1))
+        return -NOS_EFAULT;
+    return user_copy_out((uintptr_t)query.output, &client->request_subject, sizeof(client->request_subject));
 #else
     (void)pointer; return -NOS_ENOTSUP;
 #endif

@@ -1,7 +1,7 @@
 /* Copyright (C) 2026 NOS contributors. Bounded paths stay in one IPC call. */
 #ifndef NOS_VFS_PATH_IO_H
 #define NOS_VFS_PATH_IO_H
-struct path_payload { char bytes[PATH_DATA_MAX]; size_t len; };
+struct path_payload { char bytes[PATH_DATA_MAX]; size_t len; unsigned resolved; };
 static int path_operation(unsigned op)
 {
     switch (op) {
@@ -12,7 +12,7 @@ static int path_operation(unsigned op)
     case NOS_VFS_LINK: case NOS_VFS_MKDIRAT: case NOS_VFS_TRUNCATE:
     case NOS_VFS_UNLINKAT: case NOS_VFS_RENAMEAT:
 #ifdef NOS_LINUX_COMPAT
-    case NOS_VFS_RESOLVE_PATH:
+    case NOS_VFS_RESOLVE_PATH: case NOS_VFS_ACCESS: case NOS_VFS_CHOWN:
 #endif
         return 1;
     default: return 0;
@@ -28,7 +28,7 @@ static int path_transfer(struct nos_message *message, void *buffer, size_t count
 #endif
 static int path_input(struct nos_message *message, struct path_payload *payload)
 {
-    payload->len = message->len;
+    payload->len = message->len; payload->resolved = 0;
     if (!path_operation(message->op)) return 0;
 #ifdef NOS_LINUX_COMPAT
     if (message->bulk_in_len) {

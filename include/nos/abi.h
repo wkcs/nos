@@ -193,6 +193,8 @@ enum nos_syscall {
     NOS_SYS_GROUP_ALIVE = 66,
     /* Queue a self-signal from an active Linux gateway; deliver after RETURN. */
     NOS_SYS_LINUX_RAISE = 67,
+    NOS_SYS_CREDENTIALS = 68,
+    NOS_SYS_IPC_SUBJECT = 69,
 };
 enum nos_vfs_op {
     NOS_VFS_OPEN = 1, NOS_VFS_CLOSE, NOS_VFS_READ, NOS_VFS_WRITE,
@@ -207,8 +209,11 @@ enum nos_vfs_op {
     NOS_VFS_CHMOD = 36, NOS_VFS_SYMLINK = 37, NOS_VFS_LINK = 38,
     NOS_VFS_OPENAT_MODE = 39, NOS_VFS_MKDIRAT = 40, NOS_VFS_TRUNCATE = 41,
     NOS_VFS_UNLINKAT = 42, NOS_VFS_RENAMEAT = 43, NOS_VFS_SHARED_FILE = 44,
-    NOS_VFS_RESOLVE_PATH = 45, NOS_VFS_RECORD_LOCK = 46
+    NOS_VFS_RESOLVE_PATH = 45, NOS_VFS_RECORD_LOCK = 46,
+    NOS_VFS_ACCESS = 47, NOS_VFS_CHOWN = 48, NOS_VFS_FCHOWN = 49
 };
+/* RESOLVE_PATH: value=0 resolves a path; EXEC also checks final execute permission. */
+#define NOS_RESOLVE_EXEC 1u
 struct nos_message {
     intptr_t sender, op, value, arg;
     size_t len;
@@ -234,6 +239,42 @@ struct nos_call_args { uintptr_t endpoint, request, reply; uint64_t timeout_tick
 #define NOS_IPC_FETCH 0u
 #define NOS_IPC_STORE 1u
 struct nos_ipc_xfer { intptr_t sender; uint64_t token; size_t offset; uintptr_t buffer; size_t count; unsigned direction; };
+#define NOS_NGROUPS_MAX 32u
+#define NOS_CRED_GET 0u
+#define NOS_CRED_SETUID 1u
+#define NOS_CRED_SETEUID 2u
+#define NOS_CRED_SETREUID 3u
+#define NOS_CRED_SETRESUID 4u
+#define NOS_CRED_SETGID 5u
+#define NOS_CRED_SETEGID 6u
+#define NOS_CRED_SETREGID 7u
+#define NOS_CRED_SETRESGID 8u
+#define NOS_CRED_SETGROUPS 9u
+/* Identity belongs to a process, independently of NOS capability rights.
+ * CREDENTIALS(command, pointer, 0): GET writes credentials; setters read request.
+ * UINT32_MAX means unchanged only for SETRE[UG]ID and SETRES[UG]ID. */
+struct nos_credentials {
+    uint32_t ruid, euid, suid, rgid, egid, sgid;
+    uint32_t ngroups, reserved;
+    uint32_t groups[NOS_NGROUPS_MAX];
+};
+struct nos_credential_request {
+    uint32_t ids[3], count;
+    uint32_t groups[NOS_NGROUPS_MAX];
+};
+/* Captured by CALL, never reconstructed from current mutable credentials.
+ * IPC_SUBJECT(&query, 0, 0) requires the active delivered request's server.
+ * output is a uint64_t user address, including on ARM (reject high bits). */
+struct nos_ipc_subject {
+    uint64_t token;
+    uint32_t sender, process;
+    struct nos_credentials credentials;
+};
+struct nos_ipc_subject_query { uint32_t sender, reserved; uint64_t token, output; };
+_Static_assert(sizeof(struct nos_credentials) == 160, "credentials wire size");
+_Static_assert(sizeof(struct nos_credential_request) == 144, "credential request wire size");
+_Static_assert(sizeof(struct nos_ipc_subject) == 176, "IPC subject wire size");
+_Static_assert(sizeof(struct nos_ipc_subject_query) == 24, "IPC subject query wire size");
 struct nos_futex_requeue { uintptr_t source, target; uint32_t wake_count, requeue_count, compare, flags; };
 struct nos_thread_args { uintptr_t entry, arg, stack, stack_size, tls, clear_tid, parent_tid; };
 struct nos_object_stats { uint32_t tasks, mutexes, endpoints, free_pages; };

@@ -587,7 +587,8 @@ static int linux_map_image(struct task *task, const void *data, const struct lin
     return 0;
 }
 static int linux_stack(struct task *task, const struct nos_exec_args *args, uintptr_t entry, uintptr_t phdr,
-                        unsigned phnum, uintptr_t interpreter, struct nos_elf_result *result)
+                        unsigned phnum, uintptr_t interpreter, const struct nos_credentials *credentials,
+                        struct nos_elf_result *result)
 {
     uintptr_t bottom = LINUX_STACK_TOP - LINUX_STACK_BYTES, stack = LINUX_STACK_TOP;
     int rc = vm_image_map(task, bottom, LINUX_STACK_BYTES, NOS_PROT_READ | NOS_PROT_WRITE);
@@ -598,13 +599,16 @@ static int linux_stack(struct task *task, const struct nos_exec_args *args, uint
     uintptr_t execfn = stack;
     const uintptr_t aux[] = {3, phdr, 4, sizeof(struct elf_segment), 5, phnum,
         6, NOS_PAGE_SIZE, 7, interpreter, 8, 0, 9, entry,
-        11, 0, 12, 0, 13, 0, 14, 0, 17, 100, 23, 0, 25, random_address, 31, execfn, 0, 0};
+        11, credentials->ruid, 12, credentials->euid, 13, credentials->rgid, 14, credentials->egid,
+        17, 100, 23, credentials->ruid != credentials->euid || credentials->rgid != credentials->egid,
+        25, random_address, 31, execfn, 0, 0};
     return stack_arguments(task, args, stack, bottom, aux, sizeof(aux) / sizeof(aux[0]), result);
 }
 int nos_elf_load_linux(struct task *task, const void *image, size_t bytes,
-                      const struct nos_exec_args *args, struct nos_elf_result *result)
+                      const struct nos_exec_args *args, const struct nos_credentials *credentials,
+                      struct nos_elf_result *result)
 {
-    if (!valid_arguments(args) || !result || !args->random_valid)
+    if (!valid_arguments(args) || !result || !credentials || !args->random_valid)
         return -NOS_EAGAIN;
     struct linux_image parsed;
     int rc = linux_parse_image(image, bytes, LINUX_MAIN_BASE, 0, &parsed);
@@ -627,10 +631,11 @@ int nos_elf_load_linux(struct task *task, const void *image, size_t bytes,
     rc = linux_parse_image(gateway, gateway_bytes, 0, 2, &parsed); if (rc) return rc;
     rc = linux_map_image(task, gateway, &parsed, 1); if (rc) return rc;
     result->gateway_entry = parsed.entry;
-    return linux_stack(task, args, main_entry, phdr, phnum, interpreter_base, result);
+    return linux_stack(task, args, main_entry, phdr, phnum, interpreter_base, credentials, result);
 }
 #else
 int nos_elf_load_linux(struct task *task, const void *image, size_t bytes,
-                      const struct nos_exec_args *args, struct nos_elf_result *result)
-{ (void)task; (void)image; (void)bytes; (void)args; (void)result; return -NOS_ENOTSUP; }
+                      const struct nos_exec_args *args, const struct nos_credentials *credentials,
+                      struct nos_elf_result *result)
+{ (void)task; (void)image; (void)bytes; (void)args; (void)credentials; (void)result; return -NOS_ENOTSUP; }
 #endif

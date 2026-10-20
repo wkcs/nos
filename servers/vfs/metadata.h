@@ -2,14 +2,15 @@
 #ifndef NOS_VFS_METADATA_H
 #define NOS_VFS_METADATA_H
 /* Walk intermediate links before applying a later '..' component. */
-static int canonical_path(const char *input, size_t bytes, char path[NOS_PATH_MAX])
+static int canonical_path_from(const char *input, size_t bytes, char path[NOS_PATH_MAX], size_t base)
 {
     if (!bytes || bytes > JOINED_PATH_MAX || input[0] != '/' || input[bytes - 1] || u_strlen(input) + 1 != bytes) return -NOS_EINVAL;
     char pending[JOINED_PATH_MAX]; u_memcpy(pending, input, bytes);
-    size_t at = 1, end = 1; unsigned links = 0; path[0] = '/'; path[1] = 0;
+    size_t at = base, end = base; unsigned links = 0; u_memcpy(path, input, base); path[base] = 0;
     for (;;) {
         while (pending[at] == '/') at++;
         if (!pending[at]) break;
+        int search = permission_search(path); if (search) return search;
         size_t start = at; while (pending[at] && pending[at] != '/') at++;
         size_t length = at - start, next = at; while (pending[next] == '/') next++;
         if (length == 1 && pending[start] == '.') continue;
@@ -30,16 +31,21 @@ static int canonical_path(const char *input, size_t bytes, char path[NOS_PATH_MA
             if (link->bytes[0] != '/') { base = parent; u_memcpy(joined, path, base); if (base > 1) joined[base++] = '/'; }
             if (base + link->size + suffix >= JOINED_PATH_MAX) return -NOS_ENAMETOOLONG;
             u_memcpy(joined + base, link->bytes, link->size); u_memcpy(joined + base + link->size, pending + at, suffix + 1);
-            u_memcpy(pending, joined, base + link->size + suffix + 1); at = 1; end = 1; path[1] = 0; continue;
+            u_memcpy(pending, joined, base + link->size + suffix + 1); at = link->bytes[0] == '/' ? 1 : parent; end = at; path[end] = 0; continue;
         }
         if (node >= 0) { if (NODE_TYPE(&nodes[node]) != MODE_DIR) return -NOS_ENOTDIR; }
         else { unsigned kind; uint64_t size; int rc = archive_lookup(path, &kind, &size); if (rc < 0) return rc; if (kind != ARCHIVE_DIRECTORY) return -NOS_ENOTDIR; }
     }
+    if (input[bytes - 2] == '/' || bytes == 2) { int search = permission_search(path); if (search) return search; }
+    int mounted = permission_mount(path); if (mounted) return mounted;
     if (!links && backend(input) != backend(path)) return -NOS_EACCES;
     if (fat_mounted && child_path(path, fat_path))
         for (size_t i = u_strlen(fat_path); path[i]; i++) if (path[i] >= 'a' && path[i] <= 'z') path[i] -= 32;
     return 0;
 }
+
+static int canonical_path(const char *input, size_t bytes, char path[NOS_PATH_MAX])
+{ return canonical_path_from(input, bytes, path, 1); }
 
 static int inherit_files(intptr_t parent, intptr_t child)
 {
@@ -80,7 +86,7 @@ static int follow_links(char path[NOS_PATH_MAX], int final)
                 if (base + link->size + suffix >= JOINED_PATH_MAX) return -NOS_ENAMETOOLONG;
                 u_memcpy(joined, path, base); u_memcpy(joined + base, link->bytes, link->size);
                 u_memcpy(joined + base + link->size, path + end, suffix + 1);
-                int rc = canonical_path(joined, base + link->size + suffix + 1, resolved); if (rc) return rc;
+                int rc = canonical_path_from(joined, base + link->size + suffix + 1, resolved, link->bytes[0] == '/' ? 1 : base > 1 ? base - 1 : 1); if (rc) return rc;
                 u_memcpy(path, resolved, u_strlen(resolved) + 1); changed = 1; break;
             }
             if (!last) {
@@ -114,6 +120,9 @@ static int resize_node(unsigned index, uint64_t length)
     if (NODE_TYPE(node) != MODE_FILE) return -NOS_EINVAL;
     if (backend(node->name)) return -NOS_EACCES;
     if (length > SIZE_MAX) return -27;
+#ifdef NOS_LINUX_COMPAT
+    int64_t now; int clock = permission_clock(&now); if (clock) return clock;
+#endif
     int reserve = node_reserve(node, (size_t)length); if (reserve) return reserve;
     if (node->persistent == 2 && node->linked) {
         char data[INLINE_BYTES]; size_t retained = node->size < length ? node->size : (size_t)length;
@@ -122,12 +131,27 @@ static int resize_node(unsigned index, uint64_t length)
     }
     if (length < node->size) u_memset(node_bytes(node) + (size_t)length, 0, node->size - (size_t)length);
     else if (length > node->size) u_memset(node_bytes(node) + node->size, 0, (size_t)length - node->size);
-    node->size = (size_t)length; return 0;
+    node->size = (size_t)length;
+#ifdef NOS_LINUX_COMPAT
+    permission_touch(index, 6, now); if (subject.credentials.euid) node->mode &= ~06000u;
+#endif
+    return 0;
 }
 static int change_mode(unsigned index, unsigned mode)
 {
+#ifdef NOS_LINUX_COMPAT
+    if (nodes[index].persistent) return -NOS_ENOTSUP;
+#else
     if (nodes[index].persistent == 2) return -NOS_ENOTSUP;
+#endif
     if (backend(nodes[index].name)) return -NOS_EACCES;
+#ifdef NOS_LINUX_COMPAT
+    int rc = permission_owner(index); if (rc) return rc;
+    if (NODE_TYPE(&nodes[index]) != MODE_DIR && (mode & 06000u)) return -NOS_ENOTSUP;
+    if (subject.credentials.euid && (mode & 02000u) && !permission_group(security[index].gid)) mode &= ~02000u;
+    int64_t now; rc = permission_clock(&now); if (rc) return rc;
+    permission_touch(index, 4, now);
+#endif
     nodes[index].mode = NODE_TYPE(&nodes[index]) | (mode & 07777u); return 0;
 }
 static int split_paths(const struct path_payload *payload, size_t *first)
@@ -138,6 +162,38 @@ static int split_paths(const struct path_payload *payload, size_t *first)
     if (*first > NOS_PATH_MAX || payload->len - *first > NOS_PATH_MAX) return -NOS_ENAMETOOLONG;
     return 0;
 }
+#ifdef NOS_LINUX_COMPAT
+static int credential_service(struct nos_message *m, struct fd_table *table, struct path_payload *payload)
+{
+    if (m->op < NOS_VFS_ACCESS || m->op > NOS_VFS_FCHOWN) return 0;
+    if (m->op == NOS_VFS_ACCESS) {
+        uintptr_t value = (uintptr_t)m->value;
+        unsigned mode = value & 7u, flags = value >> 8;
+        if (value & ~(7u | ((uintptr_t)0x300u << 8))) { m->value = -NOS_EINVAL; return 1; }
+        permission_real_ids = !(flags & 0x200u);
+        char path[NOS_PATH_MAX];
+        int rc = metadata_path(table, m->arg, payload->bytes, payload->len, path, !(flags & 0x100u));
+        if (!rc) rc = permission_path(path, mode);
+        permission_real_ids = 0; m->value = rc; return 1;
+    }
+    uint32_t ids[2];
+    if (m->len != sizeof(ids)) { m->value = -NOS_EINVAL; return 1; }
+    u_memcpy(ids, m->data, sizeof(ids));
+    if (m->op == NOS_VFS_FCHOWN) {
+        if (m->value) { m->value = -NOS_EINVAL; return 1; }
+        if (m->arg < 0 || (uintptr_t)m->arg >= FDS || !table->fd[m->arg]) { m->value = -NOS_EBADF; return 1; }
+        struct description *d = &opened[table->fd[m->arg] - 1];
+        m->value = d->kind >= ARCHIVE_FILE ? -30 : d->kind ? -NOS_ENOTSUP : permission_chown(d->node, ids[0], ids[1]);
+        return 1;
+    }
+    if (!m->bulk_in_len || m->value < 0 || ((uintptr_t)m->value & ~0x100u)) { m->value = -NOS_EINVAL; return 1; }
+    char path[NOS_PATH_MAX];
+    int rc = metadata_path(table, m->arg, payload->bytes, payload->len, path, !(m->value & 0x100u));
+    int node = rc ? rc : metadata_node(path);
+    m->value = node < 0 ? node : permission_chown((unsigned)node, ids[0], ids[1]);
+    return 1;
+}
+#endif
 static int metadata_service(struct nos_message *m, struct fd_table *table, struct path_payload *payload)
 {
     unsigned op = m->op;
@@ -176,7 +232,7 @@ static int metadata_service(struct nos_message *m, struct fd_table *table, struc
         if (op == 43) {
             size_t a = u_strlen(path) + 1, b = u_strlen(dest) + 1;
             if (a + b > sizeof(payload->bytes)) { m->value = -NOS_ENAMETOOLONG; return 1; }
-            u_memcpy(payload->bytes, path, a); u_memcpy(payload->bytes + a, dest, b); payload->len = a + b; m->op = NOS_VFS_RENAME; return 0;
+            u_memcpy(payload->bytes, path, a); u_memcpy(payload->bytes + a, dest, b); payload->len = a + b; payload->resolved = 1; m->op = NOS_VFS_RENAME; return 0;
         }
         int node = metadata_node(path);
         if (node < 0) { m->value = node; return 1; }
@@ -184,9 +240,14 @@ static int metadata_service(struct nos_message *m, struct fd_table *table, struc
         if (metadata_node(dest) != -NOS_ENOENT) { m->value = -NOS_EEXIST; return 1; }
         int parent = parent_of(dest);
         if (parent < 0) { m->value = parent; return 1; }
+        rc = permission_node((unsigned)parent, 3); if (rc) { m->value = rc; return 1; }
         if (nodes[parent].persistent != nodes[node].persistent) { m->value = -18; return 1; }
         if (nodes[node].persistent || backend(path) || backend(dest)) { m->value = -NOS_ENOTSUP; return 1; }
         for (unsigned i = 0; i < NODE_COUNT; i++) if (!nodes[i].used) {
+#ifdef NOS_LINUX_COMPAT
+            int64_t now; rc = permission_clock(&now); if (rc) { m->value = rc; return 1; }
+            permission_touch((unsigned)parent, 6, now); permission_touch((unsigned)node, 4, now);
+#endif
             clear_node(i); nodes[i].used = 2; nodes[i].linked = 1; nodes[i].size = (size_t)node;
             u_memcpy(nodes[i].name, dest, u_strlen(dest) + 1); m->value = 0; return 1;
         }
@@ -206,7 +267,7 @@ static int metadata_service(struct nos_message *m, struct fd_table *table, struc
         else { node = create(path, MODE_DIR | ((unsigned)m->value & 07777u & ~table->mask)); m->value = node < 0 ? node : 0; }
     } else if (node < 0) m->value = node;
     else if (op == NOS_VFS_CHMOD) m->value = change_mode((unsigned)node, (unsigned)m->value);
-    else if (op == NOS_VFS_TRUNCATE) m->value = m->arg < 0 ? -NOS_EINVAL : resize_node((unsigned)node, (uint64_t)m->arg);
+    else if (op == NOS_VFS_TRUNCATE) { int permitted = permission_node((unsigned)node, 2); m->value = permitted ? permitted : m->arg < 0 ? -NOS_EINVAL : resize_node((unsigned)node, (uint64_t)m->arg); }
     else m->value = -NOS_ENOTSUP;
     return 1;
 }

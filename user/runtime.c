@@ -182,6 +182,69 @@ int nos_chmod_at(int directory, const char *path, unsigned mode)
     struct nos_message m = { .op = NOS_VFS_CHMOD, .arg = directory, .value = mode & 07777u };
     return (int)path_call(&m, path);
 }
+int nos_access_at(int directory, const char *path, unsigned mode, unsigned flags)
+{
+#ifdef NOS_LINUX_COMPAT
+    if (mode & ~7u || flags & ~(NOS_AT_EACCESS | NOS_AT_SYMLINK_NOFOLLOW)) return -NOS_EINVAL;
+    struct nos_message m = { .op = NOS_VFS_ACCESS, .arg = directory,
+        .value = mode | (flags << 8) };
+    return (int)path_call(&m, path);
+#else
+    (void)directory; (void)path; (void)mode; (void)flags;
+    return -NOS_ENOTSUP;
+#endif
+}
+int nos_chown_at(int directory, const char *path, uint32_t uid, uint32_t gid, unsigned flags)
+{
+#ifdef NOS_LINUX_COMPAT
+    if (flags & ~NOS_AT_SYMLINK_NOFOLLOW) return -NOS_EINVAL;
+    char safe_path[NOS_PATH_MAX];
+    size_t bytes;
+    int rc = copy_path(safe_path, path, &bytes);
+    if (rc) return rc;
+    uint32_t ids[2] = {uid, gid};
+    /* Ownership metadata occupies the inline payload. The path always uses
+     * a token-bound input span, including short paths. */
+    struct nos_message m = { .op = NOS_VFS_CHOWN, .arg = directory, .value = flags,
+        .len = sizeof(ids), .bulk_in = (uintptr_t)safe_path, .bulk_in_len = bytes };
+    u_memcpy(m.data, ids, sizeof(ids));
+    return (int)nos_rpc(&m);
+#else
+    (void)directory; (void)path; (void)uid; (void)gid; (void)flags;
+    return -NOS_ENOTSUP;
+#endif
+}
+int nos_fchown(int fd, uint32_t uid, uint32_t gid)
+{
+#ifdef NOS_LINUX_COMPAT
+    uint32_t ids[2] = {uid, gid};
+    struct nos_message m = { .op = NOS_VFS_FCHOWN, .arg = fd, .len = sizeof(ids) };
+    u_memcpy(m.data, ids, sizeof(ids));
+    return (int)nos_rpc(&m);
+#else
+    (void)fd; (void)uid; (void)gid;
+    return -NOS_ENOTSUP;
+#endif
+}
+int nos_credentials_get(struct nos_credentials *credentials)
+{
+#ifdef NOS_LINUX_COMPAT
+    return (int)nos_syscall(NOS_SYS_CREDENTIALS, NOS_CRED_GET, (uintptr_t)credentials, 0);
+#else
+    (void)credentials;
+    return -NOS_ENOTSUP;
+#endif
+}
+int nos_credentials_set(unsigned command, const struct nos_credential_request *request)
+{
+#ifdef NOS_LINUX_COMPAT
+    if (command == NOS_CRED_GET || command > NOS_CRED_SETGROUPS) return -NOS_EINVAL;
+    return (int)nos_syscall(NOS_SYS_CREDENTIALS, command, (uintptr_t)request, 0);
+#else
+    (void)command; (void)request;
+    return -NOS_ENOTSUP;
+#endif
+}
 static int path_pair(struct nos_message *m, const char *first, const char *second)
 {
     char paths[2 * NOS_PATH_MAX];
@@ -513,12 +576,12 @@ intptr_t nos_readlink_at(int directory, const char *path, char *buffer, size_t c
     return rc ? rc : (intptr_t)copied;
 #endif
 }
-intptr_t nos_resolve_at(int directory, const char *path, char *buffer, size_t capacity)
+static intptr_t resolve_at(int directory, const char *path, char *buffer, size_t capacity, unsigned flags)
 {
 #ifdef NOS_LINUX_COMPAT
     if (!capacity) return -NOS_ERANGE;
     size_t span = capacity < NOS_PATH_MAX ? capacity : NOS_PATH_MAX;
-    struct nos_message m = { .op = NOS_VFS_RESOLVE_PATH, .arg = directory,
+    struct nos_message m = { .op = NOS_VFS_RESOLVE_PATH, .arg = directory, .value = flags,
         .bulk_out = (uintptr_t)buffer, .bulk_out_len = span };
     intptr_t count = path_call(&m, path);
     if (count < 0) return count;
@@ -527,10 +590,15 @@ intptr_t nos_resolve_at(int directory, const char *path, char *buffer, size_t ca
     int rc = nos_user_copy(&terminator, buffer + count - 1, 1);
     return rc ? rc : terminator ? -NOS_EIO : count;
 #else
-    (void)directory; (void)path; (void)buffer; (void)capacity;
+    (void)directory; (void)path; (void)buffer; (void)capacity; (void)flags;
     return -NOS_ENOTSUP;
 #endif
 }
+
+intptr_t nos_resolve_at(int directory, const char *path, char *buffer, size_t capacity)
+{ return resolve_at(directory, path, buffer, capacity, 0); }
+intptr_t nos_resolve_exec_at(int directory, const char *path, char *buffer, size_t capacity)
+{ return resolve_at(directory, path, buffer, capacity, NOS_RESOLVE_EXEC); }
 
 int nos_rmdir(const char *path) { return path_request(NOS_VFS_RMDIR, path, 0); }
 int nos_mount(const char *path, unsigned backend) { return path_request(NOS_VFS_MOUNT, path, backend); }

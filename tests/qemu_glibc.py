@@ -52,6 +52,10 @@ LINUX_KERNEL |= {'group_query_capability', 'group_query_dead_zombie',
                  'group_query_observer_cleanup', 'group_query_batch_snapshot'}
 LINUX_KERNEL |= {'ipc_bulk_4096_fixture', 'ipc_bulk_4096_pages_canaries',
                  'ipc_bulk_4096_limits_zero', 'ipc_bulk_4096_permissions_revocation'}
+LINUX_KERNEL |= {'ipc_subject_authority_preflight', 'ipc_subject_server_authority',
+                 'ipc_subject_call_snapshot', 'ipc_subject_revoked_lifetime',
+                 'credentials_leader_slot_lifetime', 'credentials_native_cleanup',
+                 'credentials_native_atomicity'}
 LINUX_GC_KERNEL = {'record_lock_exit_slot_reuse_gc', 'record_lock_pending_fork_fd_inheritance'}
 LINUX_SINGLE_CPU_KERNEL = {'pipe_pending_owner_exit_slot_reuse'}
 # Native regression supplies the helper's owner/observer modes; it is not a standalone case.
@@ -125,6 +129,42 @@ PIPE_ATOMIC_CHECKS = {
 }
 LINUX |= PIPE_ATOMIC_CHECKS | {'glibc_pipe_atomic_application'}
 APP_CHECKS['glibc_pipe_atomic'] = PIPE_ATOMIC_CHECKS
+LINUX |= {'glibc_signal_futex_admission_single_delivery'}
+APP_CHECKS['glibc_signals'] |= {'glibc_signal_futex_admission_single_delivery'}
+CREDENTIAL_CHECKS = {
+    'glibc_credentials_exec_identity',
+    'glibc_credentials_fault_rollback',
+    'glibc_credentials_fork_independent',
+    'glibc_credentials_groups_limit_atomic',
+    'glibc_credentials_id_width',
+    'glibc_credentials_initial_auxv',
+    'glibc_credentials_leader_exit',
+    'glibc_credentials_nonleader_exec',
+    'glibc_credentials_nptl_setxid',
+    'glibc_credentials_saved_uid_gid',
+    'glibc_credentials_unsupported_fsids',
+    'glibc_posix_credentials',
+}
+LINUX |= CREDENTIAL_CHECKS | {'glibc_credentials_application'}
+APP_CHECKS['glibc_credentials'] = CREDENTIAL_CHECKS
+PERMISSION_CHECKS = {
+    'glibc_permissions_access_real_effective_root_execute',
+    'glibc_permissions_all',
+    'glibc_permissions_component_search_dot_parent_symlink_slash',
+    'glibc_permissions_denied_chown_preserves_metadata',
+    'glibc_permissions_hardlink_chmod_chown_ids_ctime_seconds',
+    'glibc_permissions_open_descriptor_survives_drop',
+    'glibc_permissions_owner_group_supplementary_other_umask',
+    'glibc_permissions_setgid_directory_group_umask_inheritance',
+    'glibc_permissions_siginfo_actual_real_uid_frozen',
+    'glibc_permissions_signal_continue_session_scope',
+    'glibc_permissions_signal_real_effective_saved_uid_matches',
+    'glibc_permissions_signal_zero_identity_and_forgery',
+    'glibc_permissions_sticky_rename_source_destination_replacement',
+    'glibc_permissions_sticky_unlink_file_directory_owner',
+}
+LINUX |= PERMISSION_CHECKS | {'glibc_permissions_application'}
+APP_CHECKS['glibc_permissions'] = PERMISSION_CHECKS
 POSIX_VFS = {'page_allocator', 'mapping_transaction_rollback', 'timer_preemption', 'vfs_archive_large_readonly',
              'vfs_openat_cwd_stat', 'vfs_archive_getdents_fragment', 'vfs_positional_io_offsets',
              'vfs_descriptor_cloexec', 'vfs_getrandom_device', 'vfs_mode_umask_truncate',
@@ -258,6 +298,8 @@ def main(mode='glibc'):
             required |= {'riscv_halfword_thread_entry'}
         if mode == 'glibc' and platform == 'arm_virt':
             required |= {'arm_linux_kuser_helpers'}
+            if args.app in (None, 'glibc_credentials'):
+                required |= {'glibc_credentials_arm_old16_explicit'}
             if args.app in (None, 'glibc_record_locks'):
                 required |= {'glibc_record_lock_arm_old_wide_layout'}
         if mode == 'glibc' and platform != 'arm_virt':

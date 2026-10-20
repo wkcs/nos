@@ -4,10 +4,14 @@
 #include <string.h>
 #include "../servers/vfs/server.c"
 #define HOST_PENDING (-1000000)
-struct host_call { uint64_t token; intptr_t sender, result; unsigned active, completed; struct nos_message request, reply; };
+struct host_call { uint64_t token; intptr_t sender, result; unsigned active, completed; struct nos_message request, reply; struct nos_credentials credentials; };
 static struct host_call calls[NOS_TASKS];
 static uint64_t sequence, fail_reply;
 static unsigned failures, batch_queries, scalar_queries;
+static struct nos_credentials host_credentials;
+static intptr_t subject_error, clock_error;
+static int64_t host_seconds = 1700000000;
+static unsigned host_fat_fixture, host_fat_list_secret;
 static intptr_t batch_error;
 static intptr_t store_error;
 static unsigned store_cancel, store_calls, cancel_after_store;
@@ -31,6 +35,22 @@ int u_streq(const char *a, const char *b) { return !strcmp(a, b); }
 intptr_t nos_syscall(uintptr_t number, uintptr_t a, uintptr_t b, uintptr_t c)
 {
     (void)c;
+    if (number == NOS_SYS_IPC_SUBJECT) {
+        const struct nos_ipc_subject_query *query = (void *)a;
+        if (subject_error) return subject_error;
+        if (query->reserved || b || c) return -NOS_EINVAL;
+        struct host_call *call = &calls[query->sender % NOS_TASKS];
+        if (!call->active || call->sender != query->sender || call->token != query->token) return -NOS_EPERM;
+        struct nos_ipc_subject snapshot = { .token = query->token, .sender = query->sender,
+            .process = call->request.process, .credentials = call->credentials };
+        memcpy((void *)(uintptr_t)query->output, &snapshot, sizeof(snapshot)); return 0;
+    }
+    if (number == NOS_SYS_CLOCK_GET64) {
+        if (clock_error) return clock_error;
+        if (a || c) return -NOS_EINVAL;
+        struct nos_clock_value now = { .seconds = host_seconds };
+        memcpy((void *)b, &now, sizeof(now)); return 0;
+    }
     if (number == NOS_SYS_GROUP_ALIVE) {
         if (c == NOS_GROUP_QUERY_BATCH) {
             batch_queries++;
@@ -105,10 +125,15 @@ int nos_block_init(void) { return -NOS_ENOTSUP; }
 int nos_block_read(unsigned n,void *b) { (void)n;(void)b;return -NOS_ENOTSUP; }
 int nos_block_write(unsigned n,const void *b) { (void)n;(void)b;return -NOS_ENOTSUP; }
 int nos_block_flush(void) { return -NOS_ENOTSUP; }
-int nos_fat_mount(int n) { (void)n;return -NOS_ENOTSUP; }
-int nos_fat_list(const char *p,unsigned i,char *n,unsigned *m,size_t *s) { (void)p;(void)i;(void)n;(void)m;(void)s;return -NOS_ENOTSUP; }
-int nos_fat_read(const char *p,void *b,size_t n) { (void)p;(void)b;(void)n;return -NOS_ENOTSUP; }
-int nos_fat_write(const char *p,const void *b,size_t n) { (void)p;(void)b;(void)n;return -NOS_ENOTSUP; }
+int nos_fat_mount(int n) { (void)n;return host_fat_fixture ? 0 : -NOS_ENOTSUP; }
+int nos_fat_list(const char *p,unsigned i,char *n,unsigned *m,size_t *s)
+{
+    if (!host_fat_fixture) return -NOS_ENOTSUP;
+    if (!host_fat_list_secret || strcmp(p, "/") || i) return 0;
+    strcpy(n, "SECRET"); *m = MODE_FILE; *s = 1; return 1;
+}
+int nos_fat_read(const char *p,void *b,size_t n) { (void)p;if (!host_fat_fixture) return -NOS_ENOTSUP;if (n) *(char *)b = 'S';return (int)n; }
+int nos_fat_write(const char *p,const void *b,size_t n) { (void)p;(void)b;(void)n;return host_fat_fixture ? 0 : -NOS_ENOTSUP; }
 int nos_fat_mkdir(const char *p) { (void)p;return -NOS_ENOTSUP; }
 int nos_fat_unlink(const char *p) { (void)p;return -NOS_ENOTSUP; }
 int nos_fat_rename(const char *p,const char *n) { (void)p;(void)n;return -NOS_ENOTSUP; }
@@ -119,7 +144,7 @@ static intptr_t invoke(unsigned owner, unsigned sender, struct nos_message *mess
 {
     message->sender = sender; message->process = owner; message->token = ++sequence;
     struct host_call *call = &calls[sender % NOS_TASKS];
-    *call = (struct host_call){ .sender = sender, .token = sequence, .active = 1, .request = *message };
+    *call = (struct host_call){ .sender = sender, .token = sequence, .active = 1, .request = *message, .credentials = host_credentials };
     defer_reply = 0; service(message);
     if (!defer_reply) { call->active = 0; call->completed = 1; call->result = message->value; call->reply = *message; }
     if (finish) service_complete();
@@ -154,12 +179,7 @@ static unsigned waits(void)
 static void cancel(unsigned sender, uint64_t token)
 { calls[sender % NOS_TASKS].active = 0; pipe_cancel(sender, token, 1); service_complete(); }
 static void initialize(void)
-{
-    const char *names[] = { "/", "/tmp", "/dev", "/proc", "/dev/console", "/proc/version", "/dev/shm" };
-    for (unsigned i = 0; i < 7; i++) { strcpy(nodes[i].name, names[i]); nodes[i].used = nodes[i].linked = 1; nodes[i].mode = i < 4 || i == 6 ? MODE_DIR | 0777 : i == 4 ? MODE_CHAR | 0666 : MODE_FILE | 0444; }
-    for (unsigned i = 0; i < 3; i++) opened[i] = (struct description){ .node = 4, .kind = 1, .flags = i ? NOS_O_WRONLY : 0 };
-    for (unsigned i = 0; i < FD_TABLE_COUNT; i++) fds[i].pid = -1;
-}
+{ initialize_namespace(); }
 static intptr_t bulk_pread(int fd, uint64_t offset, void *buffer, size_t count, size_t metadata)
 {
     struct nos_message message = { .op = NOS_VFS_PREAD, .arg = fd, .len = metadata,
