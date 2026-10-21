@@ -108,7 +108,13 @@ void linux_exec_progress(void)
         if (peer != task && peer->space_owner == task->space_owner && peer->state != TASK_UNUSED &&
             peer->state != TASK_DEAD && peer->state != TASK_RETIRED) return;
     }
-    int rc = ipc_process_notice(NOS_IPC_PROCESS_EXEC, task->space_owner, 0);
+    uint64_t limits[2];
+    process_as_limits(task, limits);
+    int rc = vm_as_usage(&exec_image) > limits[0] ? -NOS_ENOMEM : 0;
+    if (!rc) {
+        vm_as_limit_set(&exec_image, limits[0]);
+        rc = ipc_process_notice(NOS_IPC_PROCESS_EXEC, task->space_owner, 0);
+    }
     if (rc == -NOS_EAGAIN) return;
     if (!rc) rc = exec_commit(task);
     if (rc) {
@@ -131,6 +137,9 @@ intptr_t linux_exec_current(uintptr_t pointer, uintptr_t entropy, uintptr_t flag
     size_t bytes; const void *image = nos_initramfs_find(args.path, &bytes); if (!image) return -NOS_ENOENT;
     k_memset(&exec_image, 0, sizeof(exec_image)); exec_image.id = task->space_owner;
     rc = space_create_empty(&exec_image); if (rc) return rc;
+    uint64_t limits[2];
+    process_as_limits(task, limits);
+    vm_as_limit_set(&exec_image, limits[0]);
     struct nos_elf_result result;
     rc = nos_elf_load_linux(&exec_image, image, bytes, &args, credentials_get(task), &result);
     if (!rc) {
@@ -327,6 +336,11 @@ static intptr_t linux_fork(const uintptr_t arguments[6])
         if (rc) { space_destroy(child); return rc; }
         child->frame = current_task->frame; FRAME_RESULT(&child->frame) = 0;
         rc = linux_gateway_clone(child, current_task);
+        /* Fork duplicates existing mappings even if the parent lowered its
+         * limit below current usage. Only subsequent growth is limited. */
+        uint64_t limits[2];
+        process_as_limits(child, limits);
+        vm_as_limit_set(child, limits[0]);
         unsigned tid = child->id;
         if (!rc && (flags & CLONE_CHILD_SETTID)) rc = task_copy_out(child, arguments[4], &tid, sizeof(tid));
         if (!rc && (flags & CLONE_PARENT_SETTID)) rc = task_copy_out(current_task, arguments[2], &tid, sizeof(tid));
@@ -516,16 +530,7 @@ intptr_t linux_dispatch(uintptr_t number, const uintptr_t a[6])
 #endif
     case LNR(114, 260): return linux_wait4(a);
     case LNR(1, 93): task_finish(current_task, (intptr_t)a[0]); return 0;
-    case LNR(248, 94): {
-        unsigned group = current_task->space_owner;
-        for (unsigned i = 2; i < NOS_IDLE_FIRST; i++) {
-            struct task *peer = &tasks[i];
-            if (peer == current_task || peer->space_owner != group || peer->state == TASK_UNUSED || peer->state == TASK_DEAD) continue;
-            if (peer->run_cpu != UINT32_MAX && peer->run_cpu != arch_cpu_id()) peer->cancel_pending = 1;
-            else task_finish(peer, (intptr_t)a[0]);
-        }
-        task_finish(current_task, (intptr_t)a[0]); return 0;
-    }
+    case LNR(248, 94): task_exit_group(current_task, (intptr_t)a[0]); return 0;
     case LNR(345, 168): {
         unsigned cpu = arch_cpu_id(), node = 0;
         if (a[0] && user_copy_out(a[0], &cpu, sizeof(cpu))) return -NOS_EFAULT;

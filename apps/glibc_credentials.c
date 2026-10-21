@@ -3,6 +3,7 @@
 #include <errno.h>
 #include <grp.h>
 #include <pthread.h>
+#include <sched.h>
 #include <signal.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -13,6 +14,7 @@
 #include <sys/syscall.h>
 #include <sys/types.h>
 #include <sys/wait.h>
+#include <time.h>
 #include <unistd.h>
 
 /* This is the implemented NOS bound, independently checked through the real
@@ -526,6 +528,20 @@ static int exec_case(const char *program, int nonleader, uid_t effective)
     return child < 0 ? die("exec_case_fork") : wait_ok(child, nonleader ? "nonleader_exec_status" : "exec_status");
 }
 
+static void child_notification(int number)
+{ (void)number; }
+static int leader_exit_signal_mode;
+static sig_atomic_t exit_peer_ready;
+
+static void *exit_group_peer(void *argument)
+{
+    (void)argument;
+    __atomic_store_n(&exit_peer_ready, 1, __ATOMIC_RELEASE);
+    /* Remain in user space so SMP termination can cancel a running peer. */
+    for (;;) __asm__ volatile("" ::: "memory");
+    return NULL;
+}
+
 static void *after_leader_exit(void *argument)
 {
     pthread_t leader = *(pthread_t *)argument;
@@ -535,10 +551,49 @@ static void *after_leader_exit(void *argument)
         errno = result;
         _exit(die("leader_exit_preserves_thread_identity"));
     }
+    /* Wait for the kernel's exit notification before entering waitpid.
+     * Unlike a sleep or a user-space ready flag, this proves the child has
+     * exited while its surviving parent thread has not started a wait. */
+    struct sigaction action;
+    memset(&action, 0, sizeof(action));
+    action.sa_handler = child_notification;
+    sigemptyset(&action.sa_mask);
+    sigset_t children;
+    sigemptyset(&children);
+    sigaddset(&children, SIGCHLD);
+    result = pthread_sigmask(SIG_BLOCK, &children, NULL);
+    if (result || sigaction(SIGCHLD, &action, NULL)) {
+        if (result) errno = result;
+        _exit(die("leader_exit_worker_child_signal_setup"));
+    }
     pid_t child = fork();
     if (!child) _exit(prepared_identity(TEST_UID + 1, TEST_UID + 2) ? 0 :
                       die("leader_exit_worker_fork_inherits_identity"));
-    _exit(child < 0 ? die("leader_exit_worker_fork") : wait_ok(child, "leader_exit_worker_child"));
+    if (child < 0) _exit(die("leader_exit_worker_fork"));
+    siginfo_t notification;
+    struct timespec timeout = {5, 0};
+    memset(&notification, 0, sizeof(notification));
+    if (sigtimedwait(&children, &notification, &timeout) != SIGCHLD ||
+        notification.si_pid != child || notification.si_code != CLD_EXITED ||
+        notification.si_status != 0)
+        _exit(die("leader_exit_worker_child_exited_before_wait"));
+    if (wait_ok(child, "leader_exit_worker_child")) _exit(97);
+    pthread_t peer;
+    __atomic_store_n(&exit_peer_ready, 0, __ATOMIC_RELAXED);
+    result = pthread_create(&peer, NULL, exit_group_peer, NULL);
+    if (result) {
+        errno = result;
+        _exit(die("leader_exit_group_peer_create"));
+    }
+    while (!__atomic_load_n(&exit_peer_ready, __ATOMIC_ACQUIRE)) (void)sched_yield();
+    /* The leader's earlier pthread_exit must not hide a later worker's
+     * exit_group status, including a failing assertion in this test. The
+     * group also has a live peer whose remote cancellation may finish later. */
+    if (leader_exit_signal_mode) {
+        (void)raise(SIGTERM);
+        _exit(die("leader_exit_worker_fatal_signal_returned"));
+    }
+    _exit(37);
 }
 
 static int leader_exit_child(void)
@@ -552,6 +607,164 @@ static int leader_exit_child(void)
     int result = pthread_create(&worker, NULL, after_leader_exit, &leader);
     if (result) { errno = result; return die("leader_exit_create_worker"); }
     pthread_exit((void *)(uintptr_t)0x51);
+}
+
+static int leader_exit_case(int signal_exit)
+{
+    fflush(NULL);
+    pid_t child = fork();
+    if (!child) {
+        if (arm_deadline()) _exit(97);
+        leader_exit_signal_mode = signal_exit;
+        _exit(leader_exit_child());
+    }
+    if (child < 0) return die("leader_exit_case_fork");
+    int status;
+    pid_t result;
+    do result = waitpid(child, &status, 0); while (result < 0 && errno == EINTR);
+    if (result == child && (signal_exit ? WIFSIGNALED(status) && WTERMSIG(status) == SIGTERM :
+                            WIFEXITED(status) && WEXITSTATUS(status) == 37)) return 0;
+    if (result == child) fprintf(stderr, "credentials leader-exit status=%d\n", status);
+    return die(signal_exit ? "leader_exit_worker_fatal_signal_status" : "leader_exit_worker_exit_group_status");
+}
+
+struct orphan_control {
+    uint32_t ready, release, done, result, exit_gate;
+    pid_t pid, pgid;
+};
+struct orphan_worker_args {
+    pthread_t leader;
+    struct orphan_control *control;
+    uint64_t deadline;
+};
+static uint64_t orphan_monotonic(void)
+{
+    struct timespec now;
+    if (clock_gettime(CLOCK_MONOTONIC, &now)) return UINT64_MAX;
+    return (uint64_t)now.tv_sec * UINT64_C(1000000000) + (uint64_t)now.tv_nsec;
+}
+static int orphan_wait_flag(uint32_t *flag, uint64_t end)
+{
+    while (!__atomic_load_n(flag, __ATOMIC_ACQUIRE)) {
+        if (orphan_monotonic() >= end) return -1;
+        (void)sched_yield();
+    }
+    return 0;
+}
+static int orphan_wait_child(pid_t child, uint64_t end)
+{
+    for (;;) {
+        int status;
+        pid_t result = waitpid(child, &status, WNOHANG);
+        if (result == child) return WIFEXITED(status) && !WEXITSTATUS(status) ? 0 : -1;
+        if ((result < 0 && errno != EINTR) || orphan_monotonic() >= end) return -1;
+        (void)sched_yield();
+    }
+}
+static void *orphan_worker(void *argument)
+{
+    struct orphan_worker_args *args = argument;
+    struct orphan_control *control = args->control;
+    void *value = NULL;
+    int result = pthread_join(args->leader, &value);
+    if (result || value != (void *)(uintptr_t)0x61) {
+        if (result) errno = result;
+        result = die("orphan_worker_join_leader");
+    }
+    /* B exits only after C's leader is dead and its worker has joined it. */
+    __atomic_store_n(&control->ready, 1, __ATOMIC_RELEASE);
+    if (!result && orphan_wait_flag(&control->release, args->deadline))
+        result = die("orphan_worker_release_deadline");
+    if (!result && (getpid() != __atomic_load_n(&control->pid, __ATOMIC_ACQUIRE) ||
+                    getpgid(getpid()) != control->pgid ||
+                    !prepared_identity(TEST_UID + 1, TEST_UID + 2)))
+        result = die("orphan_worker_identity_after_parent_exit");
+    if (!result) {
+        pid_t child = fork();
+        if (!child) _exit(prepared_identity(TEST_UID + 1, TEST_UID + 2) ? 0 :
+                          die("orphan_worker_child_identity"));
+        if (child < 0 || orphan_wait_child(child, args->deadline))
+            result = die("orphan_worker_fork_and_wait");
+    }
+    __atomic_store_n(&control->result, (uint32_t)result, __ATOMIC_RELAXED);
+    __atomic_store_n(&control->done, 1, __ATOMIC_RELEASE);
+    /* This group has no parent left to reap it. A clock bound prevents a
+     * failed observer from leaving the orphan worker alive indefinitely. */
+    if (orphan_wait_flag(&control->exit_gate, args->deadline) && !result)
+        result = die("orphan_worker_exit_gate_deadline");
+    _exit(result);
+}
+static int orphan_process(struct orphan_control *control)
+{
+    static struct orphan_worker_args args;
+    args.leader = pthread_self(); args.control = control;
+    uint64_t now = orphan_monotonic();
+    if (now == UINT64_MAX) return die("orphan_worker_clock");
+    args.deadline = now + UINT64_C(6000000000);
+    pthread_t worker;
+    int result = pthread_create(&worker, NULL, orphan_worker, &args);
+    if (result) { errno = result; return die("orphan_create_worker"); }
+    pthread_exit((void *)(uintptr_t)0x61);
+}
+static int orphan_wait_reaped(struct orphan_control *control, uint64_t end)
+{
+    pid_t pid = __atomic_load_n(&control->pid, __ATOMIC_ACQUIRE);
+    if (pid <= 0) return 0;
+    for (;;) {
+        errno = 0;
+        if (getpgid(pid) == -1) return errno == ESRCH ? 0 : -1;
+        if (orphan_monotonic() >= end) return -1;
+        (void)sched_yield();
+    }
+}
+static int orphan_live_thread_child(void)
+{
+    if (prepare_exec(TEST_UID + 1, TEST_UID + 2)) return 97;
+    struct orphan_control *control = mmap(NULL, 4096, PROT_READ | PROT_WRITE,
+                                          MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+    if (control == MAP_FAILED) return die("orphan_control_mapping");
+    memset(control, 0, sizeof(*control));
+    control->pgid = getpgid(0);
+    uint64_t now = orphan_monotonic();
+    if (control->pgid < 0 || now == UINT64_MAX) {
+        (void)munmap(control, 4096);
+        return die("orphan_observer_identity_clock");
+    }
+    uint64_t end = now + UINT64_C(8000000000);
+    int failure = 0;
+    pid_t intermediary = fork();
+    if (!intermediary) {
+        pid_t child = fork();
+        if (!child) _exit(orphan_process(control));
+        if (child < 0) _exit(die("orphan_intermediary_fork"));
+        __atomic_store_n(&control->pid, child, __ATOMIC_RELEASE);
+        if (orphan_wait_flag(&control->ready, now + UINT64_C(4000000000)))
+            _exit(die("orphan_intermediary_ready_deadline"));
+        _exit(0);
+    }
+    /* Reaping B proves that its orphan sweep ran before C may continue. */
+    if (intermediary < 0 || orphan_wait_child(intermediary, end)) {
+        failure = die("orphan_intermediary_status");
+        goto release;
+    }
+    pid_t orphan = __atomic_load_n(&control->pid, __ATOMIC_ACQUIRE);
+    if (!__atomic_load_n(&control->ready, __ATOMIC_ACQUIRE) || orphan <= 0 ||
+        getpgid(orphan) != control->pgid) {
+        failure = die("orphan_dead_leader_retained_while_worker_live");
+        goto release;
+    }
+    __atomic_store_n(&control->release, 1, __ATOMIC_RELEASE);
+    if (orphan_wait_flag(&control->done, end) ||
+        __atomic_load_n(&control->result, __ATOMIC_RELAXED) ||
+        getpgid(orphan) != control->pgid)
+        failure = die("orphan_live_thread_identity_and_child_wait");
+release:
+    __atomic_store_n(&control->release, 1, __ATOMIC_RELEASE);
+    __atomic_store_n(&control->exit_gate, 1, __ATOMIC_RELEASE);
+    if (orphan_wait_reaped(control, end) && !failure)
+        failure = die("orphan_whole_group_reap_deadline");
+    if (munmap(control, 4096) && !failure) failure = die("orphan_control_unmap");
+    return failure;
 }
 
 #define SETXID_STAGES 6
@@ -693,8 +906,13 @@ int main(int argc, char **argv)
     puts("PASS glibc_credentials_exec_identity");
     if (exec_case(argv[0], 1, TEST_UID + 1) || exec_case(argv[0], 1, 0)) return 97;
     puts("PASS glibc_credentials_nonleader_exec");
-    if (isolated(leader_exit_child, "leader_exit_status")) return 97;
+    if (leader_exit_case(0)) return 97;
     puts("PASS glibc_credentials_leader_exit");
+    puts("PASS glibc_credentials_dead_leader_zombie_and_group_status");
+    if (leader_exit_case(1)) return 97;
+    puts("PASS glibc_credentials_dead_leader_signal_status");
+    if (isolated(orphan_live_thread_child, "orphan_live_thread_status")) return 97;
+    puts("PASS glibc_credentials_orphan_live_thread_identity");
     if (isolated(setxid_child, "nptl_setxid_status")) return 97;
     puts("PASS glibc_credentials_nptl_setxid");
     if (snapshot(&after) || !same_identity(&original, &after)) return die("root_orchestrator_identity_preserved");

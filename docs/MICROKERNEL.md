@@ -147,11 +147,11 @@ RV64 的四个无 errno 身份 getter（getuid/geteuid/getgid/getegid）采用 p
 
 ## Linux profile 的进程资源限额
 
-Linux profile 将 STACK/NOFILE 限额与稳定进程对象一起引用，线程共享、fork 复制、exec 保留。NOFILE 接受结构容量 32 内的软/硬限制，非 root 不能提高硬限制；soft>hard 返回 EINVAL，超出实际容量返回 EPERM。STACK 暂仅查询与相同值请求，未实现的已知资源返回 ENOTSUP，无效资源编号返回 EINVAL。ARM ugetrlimit191 返回两个 u32，prlimit64 返回两个 u64；旧 ARM signed ABI 与直接 generic get/setrlimit 入口明确 ENOSYS，实际 glibc 路由单独验证。
+Linux profile 将 STACK/NOFILE/AS 限额与稳定进程对象一起引用，线程共享、fork 复制、exec 保留。NOFILE 接受结构容量 32 内的软/硬限制，非 root 不能提高硬限制；soft>hard 返回 EINVAL，超出实际容量返回 EPERM。STACK 暂仅查询与相同值请求，未实现的已知资源返回 ENOTSUP，无效资源编号返回 EINVAL。ARM ugetrlimit191 返回两个 u32，prlimit64 返回两个 u64；旧 ARM signed ABI 与直接 generic get/setrlimit 入口明确 ENOSYS，实际 glibc 路由单独验证。
 
 IPC_LIMITS70 复用 IPC_SUBJECT 的活动请求授权与 24 字节 query，输出 32 字节 token/sender/process/NOFILE 软硬限额。身份仍为 CALL 时不可变快照；资源查询读取当前值，作为 VFS 的新 FD 分配准入点。后续降低限额不关闭已授权 FD，后续准入读取新值。内核提供可信限额机制，用户态 VFS 保留 FD 编号和分配策略；只在 open/dup/pipe 入口增加限额查询。默认 native 配置返回 ENOTSUP，不增加其任务或用户模板预算。
 
-prlimit64 在完整候选和旧值输出预检、复制完成后才提交限额，支持新旧指针别名；坏旧输出不改变限额。这是 NOS 的事务承诺，上游 Linux 的 do_prlimit/copyout 顺序不同，不能据此宣称所有原始错误路径逐位等同。上述子集已通过三架构单核/四核真实 glibc 和新完整 68 组冻结验收；本批不增加任务容量、地址空间上限、完整 STACK/AS/NPROC 等限制，也不满足全部 POSIX 最小资源容量。
+prlimit64 在完整候选和旧值输出预检、复制完成后才提交限额，支持新旧指针别名；坏旧输出不改变限额。这是 NOS 的事务承诺，上游 Linux 的 do_prlimit/copyout 顺序不同，不能据此宣称所有原始错误路径逐位等同。上述子集已通过三架构单核/四核真实 glibc 和新完整 68 组冻结验收；该 NOFILE 批次不增加任务容量、地址空间上限、完整 STACK/AS/NPROC 等限制，也不满足全部 POSIX 最小资源容量。
 
 
 ## RAM PATH4096 与稳定目录引用
@@ -163,3 +163,19 @@ IPC_VECTOR71以固定72字节参数提供至多两个独立READ spans，各最�
 运行库保留短路径栈快照，长路径使用操作内临时映射，在成功/失败返回时释放；逐页分块复制不越过guard，也不读取第4097字节。getcwd/readlink先在私有区接收，再完整预检并复制实际返回字节，避免大capacity误拒绝guard前可容纳的短结果；gateway执行路径缓冲独立映射；长符号链接复用有界文件backing，目录记录仍最多280字节。原生磁盘/FAT格式路径继续64字节，archive/内核bootfile名称继续256字节，未声称可以执行任意RAM或磁盘文件。真实glibc的PATH_MAX查询来自构建常量4096，NAME_MAX在statfs未实现时使用其255回退；RAM与本批实现相符，后端仍有显式短路径限制，不伪造statfs容量。
 
 开发编译证据 `out/microkernel/path-vfs-build/1792567542752686627/results.json`：ARM/A64/RV64模板分别54736/56112/56080字节，均低于既有131072上限；不把独立192KiB映射算成模板节省。宿主8项长路径检查 `1792567629679485038` 实际退出0，测得临时区峰值36864/65536字节，每次退出归零。这些宿主/编译证据与最终真实QEMU分列；最终冻结验收 `1792569009279952329` 已完成68/68组并退出0，详见验证报告。
+
+
+### 地址空间限额机制
+
+Linux profile 新增 RLIMIT_AS，默认软/硬限额均为 1 GiB。它是进程共享的准入策略，fork 复制，线程共享，exec 保留；非 root 不能提高硬限额。允许设置低于当前用量，已有映射仍可访问，后续增长返回 ENOMEM。infinity 仅解除此策略限额，不扩大有效用户地址范围、不保证物理内存或页表容量。
+
+用量从已提交的地址空间元数据重算：固定用户数据区扣除未映射 guard、内建文本的整页大小，以及全部 VMA；包括 PROT_NONE、共享页的每个虚拟别名和运行库 gateway。架构 helper 和仅设备服务可使用的保留 MMIO 窗口不在普通 VMA 计费内；普通 Linux mmap 入口仍受限额检查。地址空间初始化统一读取已有进程对象的 AS 限额，先检查固定映射额度再分配，覆盖内建任务、原生 ELF spawn 与 Linux ELF spawn，避免分散入口漏接。mmap、镜像装载、共享映射和 Linux brk 增长统一准入；MAP_FIXED 按覆盖区间中的新增虚拟字节检查，先检查后修改，mprotect 不重复收费，munmap 释放额度。native brk 只调整已映射固定数据区内的指针。
+
+fork 可复制已超出新软限额的现有映射，替换子进程 gateway 后再启用继承的增长限额。exec 在独立地址空间按继承软限额装载，并在 VFS exec 通知前重新检查当前进程限额；失败释放候选映像，保留旧映像。默认非 Linux/嵌入式地址空间不增加限额字段。mremap、可变 STACK、NPROC 与 POSIX 最小任务容量仍未实现；本机制的实际验收另列于验证报告。
+
+
+### 进程退出与孤儿身份
+
+Linux 父子关系使用完整 TGID。主线程已退出但仍有工作线程时，子进程保持可回收状态，SIGCHLD 投递给存活线程；孤儿扫描以整个进程是否可回收为准，避免提前复用仍在使用的主线程 ID。exit_group 用绑定完整进程 ID 的独立记录保留首个退出状态，供远端取消完成时使用；最后线程的致命信号也同步到进程报告，避免旧主线程的状态掩盖实际失败。默认原生任务的父子规则保留。
+
+本批 AS 与生命周期机制已通过三架构的六个 AS 专项、六个生命周期专项和完整 68 组冻结验收 `1792591938965616587`。孤儿向 init/subreaper 重新归属、完整 wait 选项和资源最小容量仍待实现。

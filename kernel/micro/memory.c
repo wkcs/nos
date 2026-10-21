@@ -59,6 +59,9 @@ struct memory_space {
     uintptr_t memory, heap, heap_limit, brk;
     struct vma vma[VMA_SLOTS];
     uintptr_t linux_brk;
+#ifdef NOS_LINUX_COMPAT
+    uint64_t as_limit;
+#endif
 };
 static struct memory_space memory_spaces[NOS_TASKS];
 /* Physical pages are page aligned.  Odd values mark an unbacked virtual
@@ -175,6 +178,49 @@ static struct memory_space *task_space(struct task *task)
     return task->space_id < NOS_TASKS && memory_spaces[task->space_id].refs ?
         &memory_spaces[task->space_id] : NULL;
 }
+/* Count virtual reservations, not physical backing. In particular a shared
+ * page is charged in each space and PROT_NONE still reserves address space.
+ * Recompute from committed metadata so failed mapping transactions cannot
+ * leave a stale counter behind. The caller holds the kernel lock. */
+static uint64_t space_usage(const struct memory_space *s)
+{
+    uint64_t bytes = USER_BYTES;
+#ifdef NOS_MMU
+    bytes -= NOS_PAGE_SIZE; /* The fixed heap/stack guard is never mapped. */
+    if (s->template_text) {
+        size_t text = (size_t)(__user_text_end - __user_text_start);
+        bytes += (text + NOS_PAGE_SIZE - 1) & ~(size_t)(NOS_PAGE_SIZE - 1);
+    }
+#endif
+    for (unsigned i = 0; i < VMA_SLOTS; i++) if (s->vma[i].pa) bytes += s->vma[i].size;
+    return bytes;
+}
+uint64_t vm_as_usage(struct task *task)
+{
+    struct memory_space *s = task_space(task);
+    return s ? space_usage(s) : 0;
+}
+void vm_as_limit_set(struct task *task, uint64_t limit)
+{
+#ifdef NOS_LINUX_COMPAT
+    struct memory_space *s = task_space(task);
+    if (!s) kernel_fail("address-space limit without space");
+    s->as_limit = limit;
+#else
+    (void)task; (void)limit;
+#endif
+}
+static int space_may_grow(const struct memory_space *s, size_t bytes)
+{
+#ifdef NOS_LINUX_COMPAT
+    uint64_t used = space_usage(s);
+    /* Lowering a limit does not revoke existing mappings. A replacement
+     * with no net growth remains possible even above the new limit. */
+    return !bytes || (used <= s->as_limit && bytes <= s->as_limit - used);
+#else
+    (void)s; (void)bytes; return 1;
+#endif
+}
 static void sync_space(struct task *task, struct memory_space *s)
 {
     task->memory = s->memory; task->heap = s->heap;
@@ -188,6 +234,20 @@ static int space_init(struct task *task, int builtin)
     if (id == NOS_TASKS) return -NOS_ENOMEM;
     struct memory_space *s = &memory_spaces[id];
     k_memset(s, 0, sizeof(*s));
+#ifdef NOS_LINUX_COMPAT
+    s->as_limit = UINT64_MAX;
+    if (task->credential_ref) {
+        uint64_t limits[2];
+        process_as_limits(task, limits);
+        s->as_limit = limits[0];
+    }
+    /* Native and Linux ELF spawn both install credentials before creating
+     * their space. Admit the fixed mappings before allocating any backing,
+     * so neither entry point can silently retain unlimited admission.
+     * Fork and in-place exec use credential-less staging explicitly. */
+    s->template_text = builtin;
+    if (space_usage(s) > s->as_limit) return -NOS_ENOMEM;
+#endif
     s->memory = page_alloc(USER_BYTES / NOS_PAGE_SIZE);
     if (!s->memory) return -NOS_ENOMEM;
     s->refs = 1; s->owner = task->id; s->template_text = builtin;
@@ -484,6 +544,7 @@ static intptr_t map_backing(struct task *task, uintptr_t va, unsigned prot, size
     if (slot == VMA_SLOTS) return -NOS_ENOMEM;
     for (unsigned i = 0; i < VMA_SLOTS; i++) if (s->vma[i].pa &&
         overlap(va, bytes, s->vma[i].va, s->vma[i].size)) return -NOS_EINVAL;
+    if (!space_may_grow(s, bytes)) return -NOS_ENOMEM;
     uintptr_t pa;
 #ifdef NOS_MMU
     pa = provided ? provided : (!prot ? 1 : page_alloc((unsigned)(bytes / NOS_PAGE_SIZE)));
@@ -840,6 +901,72 @@ unsigned task_mpu_regions(struct task *task, uintptr_t *bases, size_t *sizes, un
 #endif
 
 #ifdef NOS_SELFTEST
+#if defined(NOS_MMU) && defined(NOS_LINUX_COMPAT)
+static int memory_limit_inheritance_selftest(struct task *parent)
+{
+    struct task *previous = current_task;
+    uint64_t saved_limit = task_space(parent)->as_limit;
+    uint64_t saved_data[2];
+    if (task_copy_in(parent, saved_data, USER_DATA, sizeof(saved_data))) return 0;
+    if (credentials_create(parent, NULL)) return 0;
+    current_task = parent;
+    int ok = 1;
+    for (unsigned builtin = 0; builtin < 2; builtin++) {
+        size_t text = (size_t)(__user_text_end - __user_text_start);
+        uint64_t fixed = USER_BYTES - NOS_PAGE_SIZE;
+        if (builtin) fixed += (text + NOS_PAGE_SIZE - 1) & ~(size_t)(NOS_PAGE_SIZE - 1);
+        uint64_t limits[2] = {fixed + NOS_PAGE_SIZE, UINT64_C(0x40000000)};
+        ok &= !task_copy_out(parent, USER_DATA, limits, sizeof(limits));
+        ok &= !process_limit_operation(9, USER_DATA, 0, 1);
+        struct task child;
+        k_memset(&child, 0, sizeof(child));
+        child.id = child.space_owner = UINT32_MAX - 1;
+        unsigned before = page_available();
+        int made_credentials = credentials_create(&child, parent);
+        ok &= !made_credentials;
+        if (!made_credentials) {
+            uint64_t inherited[2];
+            process_as_limits(&child, inherited);
+            ok &= inherited[0] == limits[0] && inherited[1] == limits[1];
+            int made_space = builtin ? space_create(&child) : space_create_empty(&child);
+            ok &= !made_space;
+            if (!made_space) {
+                ok &= vm_as_usage(&child) == fixed;
+                intptr_t mapped = vm_map(&child, 3, NOS_PAGE_SIZE);
+                ok &= (uintptr_t)mapped < (uintptr_t)-4095;
+                ok &= vm_as_usage(&child) == fixed + NOS_PAGE_SIZE;
+                ok &= vm_map(&child, 3, NOS_PAGE_SIZE) == -NOS_ENOMEM;
+                ok &= vm_as_usage(&child) == fixed + NOS_PAGE_SIZE;
+            }
+            space_destroy(&child);
+            credentials_release(&child);
+        }
+        ok &= page_available() == before;
+        for (unsigned zero = 0; zero < 2; zero++) {
+            limits[0] = zero ? 0 : fixed - 1;
+            ok &= !task_copy_out(parent, USER_DATA, limits, sizeof(limits));
+            ok &= !process_limit_operation(9, USER_DATA, 0, 1);
+            k_memset(&child, 0, sizeof(child));
+            child.id = child.space_owner = UINT32_MAX - 1;
+            made_credentials = credentials_create(&child, parent);
+            ok &= !made_credentials;
+            if (!made_credentials) {
+                int result = builtin ? space_create(&child) : space_create_empty(&child);
+                ok &= result == -NOS_ENOMEM && !child.memory;
+                space_destroy(&child);
+                credentials_release(&child);
+            }
+            ok &= page_available() == before;
+        }
+    }
+    credentials_release(parent);
+    vm_as_limit_set(parent, saved_limit);
+    ok &= !task_copy_out(parent, USER_DATA, saved_data, sizeof(saved_data));
+    current_task = previous;
+    if (ok) kernel_print("PASS address_space_inherited_admission\n");
+    return ok;
+}
+#endif
 int memory_transaction_selftest(void)
 {
     unsigned initial = page_available();
@@ -847,9 +974,15 @@ int memory_transaction_selftest(void)
     k_memset(&temporary, 0, sizeof(temporary)); temporary.id = UINT32_MAX;
     if (space_create_empty(&temporary)) return 0;
     unsigned allocated = page_available();
+#if defined(NOS_MMU) && defined(NOS_LINUX_COMPAT)
+    int inherited_limits_ok = memory_limit_inheritance_selftest(&temporary);
+#endif
     map_fail_after = 1;
     intptr_t mapped = vm_map(&temporary, 3, 2 * NOS_PAGE_SIZE);
     int ok = mapped == -NOS_ENOMEM && page_available() == allocated;
+#if defined(NOS_MMU) && defined(NOS_LINUX_COMPAT)
+    ok &= inherited_limits_ok;
+#endif
 #ifdef NOS_MMU
     ok &= !arch_mapping_flags(temporary.space_id, 0x02000000u);
 #endif
@@ -914,6 +1047,52 @@ int memory_transaction_selftest(void)
         ok &= vm_linux_brk(&temporary, start + i * NOS_PAGE_SIZE) == (intptr_t)(start + i * NOS_PAGE_SIZE);
     ok &= vm_linux_brk(&temporary, start) == (intptr_t)start;
 #ifdef NOS_LINUX_COMPAT
+    /* An address-space limit reserves virtual bytes, including untouched
+     * PROT_NONE pages. Permission changes preserve that charge, while fixed
+     * replacement only pays for holes and a failed mutation pays nothing. */
+    uint64_t base_usage = vm_as_usage(&temporary);
+    unsigned base_pages = page_available();
+    vm_as_limit_set(&temporary, base_usage + 2 * NOS_PAGE_SIZE);
+    ok &= vm_map_linux(&temporary, image, 3 * NOS_PAGE_SIZE, 0,
+                       private_anon | noreplace) == -NOS_ENOMEM;
+    ok &= vm_as_usage(&temporary) == base_usage && page_available() == base_pages;
+    ok &= vm_map_linux(&temporary, image, 2 * NOS_PAGE_SIZE, 0,
+                       private_anon | noreplace) == (intptr_t)image;
+    ok &= vm_as_usage(&temporary) == base_usage + 2 * NOS_PAGE_SIZE && page_available() == base_pages;
+    ok &= !vm_protect(&temporary, image, 3, NOS_PAGE_SIZE);
+    ok &= vm_as_usage(&temporary) == base_usage + 2 * NOS_PAGE_SIZE;
+    ok &= !task_copy_out(&temporary, image, &word, sizeof(word));
+    vm_as_limit_set(&temporary, 0);
+    ok &= !vm_protect(&temporary, image + NOS_PAGE_SIZE, 3, NOS_PAGE_SIZE);
+    ok &= !vm_protect(&temporary, image + NOS_PAGE_SIZE, 0, NOS_PAGE_SIZE);
+    ok &= vm_as_usage(&temporary) == base_usage + 2 * NOS_PAGE_SIZE;
+    ok &= vm_map(&temporary, 3, NOS_PAGE_SIZE) == -NOS_ENOMEM;
+    ok &= vm_image_map(&temporary, image + 0x400000u, NOS_PAGE_SIZE, 3) == -NOS_ENOMEM;
+    ok &= vm_gateway_map(&temporary, 0x01901000u, NOS_PAGE_SIZE, 3) == -NOS_ENOMEM;
+    ok &= vm_map_linux(&temporary, image, 3 * NOS_PAGE_SIZE, 3,
+                       private_anon | fixed) == -NOS_ENOMEM;
+    ok &= !task_copy_in(&temporary, &readback, image, sizeof(readback)) && readback == word;
+    ok &= vm_as_usage(&temporary) == base_usage + 2 * NOS_PAGE_SIZE;
+    unsigned before_failed_replace = page_available();
+    map_fail_after = 1;
+    ok &= vm_map_linux(&temporary, image, 2 * NOS_PAGE_SIZE, 3,
+                       private_anon | fixed) == -NOS_ENOMEM;
+    ok &= vm_as_usage(&temporary) == base_usage + 2 * NOS_PAGE_SIZE &&
+        page_available() == before_failed_replace;
+    ok &= !task_copy_in(&temporary, &readback, image, sizeof(readback)) && readback == word;
+    ok &= vm_map_linux(&temporary, image, 2 * NOS_PAGE_SIZE, 3,
+                       private_anon | fixed) == (intptr_t)image;
+    ok &= vm_as_usage(&temporary) == base_usage + 2 * NOS_PAGE_SIZE;
+    ok &= !vm_linux_unmap(&temporary, image, NOS_PAGE_SIZE);
+    ok &= vm_as_usage(&temporary) == base_usage + NOS_PAGE_SIZE;
+    ok &= vm_map_linux(&temporary, image, NOS_PAGE_SIZE, 0,
+                       private_anon | noreplace) == -NOS_ENOMEM;
+    vm_as_limit_set(&temporary, base_usage + 2 * NOS_PAGE_SIZE);
+    ok &= vm_map_linux(&temporary, image, NOS_PAGE_SIZE, 0,
+                       private_anon | noreplace) == (intptr_t)image;
+    ok &= !vm_linux_unmap(&temporary, image, 2 * NOS_PAGE_SIZE);
+    ok &= vm_as_usage(&temporary) == base_usage && page_available() == base_pages;
+    vm_as_limit_set(&temporary, UINT64_MAX);
     unsigned before_reservation = page_available();
     intptr_t large_result = vm_map_linux(&temporary, 0, 128u * 1024u * 1024u, 0, private_anon | 0x4000u);
     uintptr_t large = (uintptr_t)large_result;
@@ -1093,6 +1272,15 @@ static intptr_t fixed_backing(struct task *task, uintptr_t va, size_t bytes, uns
     if (!collided) return map_backing(task, va, prot, bytes, 0, provided);
     if (!replace) return -NOS_EEXIST;
     uintptr_t end = va + bytes;
+    size_t replaced = 0;
+    for (unsigned i = 0; i < VMA_SLOTS; i++) {
+        const struct vma *old = &s->vma[i];
+        if (!old->pa || !overlap(va, bytes, old->va, old->size)) continue;
+        uintptr_t first = va > old->va ? va : old->va;
+        uintptr_t last = end < old->va + old->size ? end : old->va + old->size;
+        replaced += last - first;
+    }
+    if (!space_may_grow(s, bytes - replaced)) return -NOS_ENOMEM;
     struct vma replacement[VMA_SLOTS]; unsigned used = 0;
     k_memset(replacement, 0, sizeof(replacement));
     for (unsigned i = 0; i < VMA_SLOTS; i++) {

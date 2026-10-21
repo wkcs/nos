@@ -2,6 +2,16 @@
 #include "kernel.h"
 #include "elf.h"
 struct task tasks[NOS_TASKS];
+#ifdef NOS_MMU
+/* A group exit can outlive its initiating thread while another CPU returns
+ * through cancellation. Keep its status independently of any thread's local
+ * exit status, and bind it to the full, generation-bearing process ID. */
+struct group_exit {
+    unsigned active, owner;
+    intptr_t status;
+};
+static struct group_exit group_exits[NOS_TASKS];
+#endif
 struct task *find_task(uintptr_t pid)
 {
     if (pid > INT32_MAX) return NULL;
@@ -44,6 +54,12 @@ int create_task(unsigned slot, uintptr_t pc, uintptr_t arg, unsigned priority, u
 }
 void task_reap(struct task *t)
 {
+#ifdef NOS_MMU
+    if (t->id == t->space_owner) {
+        struct group_exit *exit = &group_exits[t->id % NOS_TASKS];
+        if (exit->active && exit->owner == t->id) exit->active = 0;
+    }
+#endif
     credentials_release(t);
     if (t->generation < ((unsigned)INT32_MAX - t->id % NOS_TASKS) / NOS_TASKS) {
         t->generation++; t->state = TASK_UNUSED;
@@ -107,7 +123,35 @@ static unsigned group_live(unsigned group)
             tasks[i].state != TASK_DEAD && tasks[i].state != TASK_RETIRED) live++;
     return live;
 }
-
+static struct task *live_parent(const struct task *child)
+{
+    struct task *parent = find_task(child->parent);
+    if (!parent || parent->state != TASK_DEAD) return parent;
+    /* Linux parenthood names a process. A dead leader remains its identity
+     * while another thread can receive SIGCHLD and reap that process's
+     * children. Native task parenthood retains its existing task semantics. */
+    if (parent->abi != NOS_ABI_NATIVE) for (unsigned i = 0; i < NOS_TASKS; i++) {
+        struct task *peer = &tasks[i];
+        if (peer->space_owner == parent->space_owner && peer->state != TASK_UNUSED &&
+            peer->state != TASK_DEAD && peer->state != TASK_RETIRED) return peer;
+    }
+    return NULL;
+}
+void task_exit_group(struct task *task, intptr_t status)
+{
+    struct group_exit *exit = &group_exits[task->space_owner % NOS_TASKS];
+    if (!exit->active || exit->owner != task->space_owner) {
+        exit->active = 1; exit->owner = task->space_owner; exit->status = status;
+    }
+    for (unsigned i = 2; i < NOS_IDLE_FIRST; i++) {
+        struct task *peer = &tasks[i];
+        if (peer == task || peer->space_owner != task->space_owner || peer->state == TASK_UNUSED ||
+            peer->state == TASK_DEAD || peer->state == TASK_RETIRED) continue;
+        if (peer->run_cpu != UINT32_MAX && peer->run_cpu != arch_cpu_id()) peer->cancel_pending = 1;
+        else task_finish(peer, exit->status);
+    }
+    task_finish(task, exit->status);
+}
 #endif
 int task_is_waitable(const struct task *task)
 {
@@ -228,6 +272,12 @@ void futex_task_exit(struct task *t)
 void task_finish(struct task *t, intptr_t status)
 {
     if (t->id % NOS_TASKS >= NOS_IDLE_FIRST) kernel_fail("idle task terminated");
+#ifdef NOS_MMU
+    struct group_exit *exit = &group_exits[t->space_owner % NOS_TASKS];
+    if (t->abi != NOS_ABI_NATIVE && exit->active && exit->owner == t->space_owner) {
+        status = exit->status; t->linux_exit_signal = 0;
+    }
+#endif
     linux_task_exit(t);
     futex_task_exit(t); t->state = TASK_DEAD; mutex_task_exit(t); ipc_task_exit(t);
     if (t->id % NOS_TASKS == 0) {
@@ -255,8 +305,14 @@ void task_finish(struct task *t, intptr_t status)
         if (t->id == t->space_owner && group_alive) { reschedule = 1; return; }
         if (t->id != t->space_owner) {
             struct task *leader = find_task(t->space_owner);
-            if (!group_alive && leader && leader->state == TASK_DEAD) report = leader;
-            else { task_reap(t); reschedule = 1; return; }
+            if (!group_alive && leader && leader->state == TASK_DEAD) {
+                report = leader;
+                if (exit->active && exit->owner == t->space_owner) {
+                    report->exit_status = exit->status; report->linux_exit_signal = 0;
+                } else if (t->linux_exit_signal) {
+                    report->exit_status = status; report->linux_exit_signal = t->linux_exit_signal;
+                }
+            } else { task_reap(t); reschedule = 1; return; }
         }
     }
 #endif
@@ -268,8 +324,7 @@ void task_finish(struct task *t, intptr_t status)
         if (w->state == TASK_WAIT && w->linux_wait) {
             int result = reaped ? 0 : linux_wait_wake(w, report);
             if (result > 0) reaped = 1;
-            continue;
-        }
+        } else
 #endif
         if (w->state == TASK_WAIT && w->wait_for == report->id) {
             int rc = task_copy_out(w, w->pending, &reported_status, sizeof(reported_status));
@@ -277,10 +332,15 @@ void task_finish(struct task *t, intptr_t status)
         }
         if (w != report && w->parent == report->id) {
             w->parent = UINT32_MAX;
-            if (w->state == TASK_DEAD) task_reap(w);
+            if (task_is_waitable(w)) task_reap(w);
         }
     }
-    struct task *parent = find_task(report->parent);
+    struct task *parent;
+#ifdef NOS_MMU
+    parent = live_parent(report);
+#else
+    parent = find_task(report->parent);
+#endif
 #ifdef NOS_MMU
     if (report->abi != NOS_ABI_NATIVE && parent && parent->abi != NOS_ABI_NATIVE)
         (void)linux_signal_send(parent, 17, report->linux_exit_signal ? 2 : 1,

@@ -63,6 +63,9 @@ void nos_linux_regression(void)
     result = run_linux("/bin/glibc_resources");
     failed("/bin/glibc_resources", result);
     nos_check(result == 0, "glibc_resources_application");
+    result = run_linux("/bin/glibc_address_space");
+    failed("/bin/glibc_address_space", result);
+    nos_check(result == 0, "glibc_address_space_application");
     result = run_linux("/bin/glibc_permissions");
     failed("/bin/glibc_permissions", result);
     nos_check(result == 0, "glibc_permissions_application");

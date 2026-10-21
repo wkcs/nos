@@ -47,6 +47,7 @@ LINUX |= {'glibc_execve_failed_preserves_image', 'glibc_signal_restart_blocking_
           'glibc_signal_default_termination_status', 'glibc_execve_nonleader_thread'}
 LINUX |= {'glibc_time_gettimeofday_uname', 'glibc_process_session_group_signals', 'glibc_execve_relative_symlink'}
 LINUX_KERNEL = {'ipc_bulk_token_bounds', 'ipc_bulk_cancel_revocation'}
+LINUX_KERNEL |= {'address_space_inherited_admission'}
 LINUX_KERNEL |= {'group_query_capability', 'group_query_dead_zombie',
                  'group_query_leader_exit_thread_live', 'group_query_generation_slot_reuse',
                  'group_query_observer_cleanup', 'group_query_batch_snapshot'}
@@ -141,6 +142,9 @@ CREDENTIAL_CHECKS = {
     'glibc_credentials_id_width',
     'glibc_credentials_initial_auxv',
     'glibc_credentials_leader_exit',
+    'glibc_credentials_dead_leader_zombie_and_group_status',
+    'glibc_credentials_dead_leader_signal_status',
+    'glibc_credentials_orphan_live_thread_identity',
     'glibc_credentials_nonleader_exec',
     'glibc_credentials_nptl_setxid',
     'glibc_credentials_saved_uid_gid',
@@ -182,6 +186,21 @@ RESOURCE_CHECKS = {
 }
 LINUX |= RESOURCE_CHECKS | {'glibc_resources_application'}
 APP_CHECKS['glibc_resources'] = RESOURCE_CHECKS
+ADDRESS_SPACE_CHECKS = {
+    'glibc_as_query_privilege',
+    'glibc_as_pointer_rollback',
+    'glibc_as_rounding_mprotect_reclaim',
+    'glibc_as_prot_none_split',
+    'glibc_as_fixed_net_transaction',
+    'glibc_as_shared_mapping_charge',
+    'glibc_as_brk_admission',
+    'glibc_as_thread_shared_fork_copy',
+    'glibc_as_exec_admission_preserve',
+    'glibc_as_nonleader_exec',
+    'glibc_posix_address_space',
+}
+LINUX |= ADDRESS_SPACE_CHECKS | {'glibc_address_space_application'}
+APP_CHECKS['glibc_address_space'] = ADDRESS_SPACE_CHECKS
 PERMISSION_CHECKS = {
     'glibc_permissions_access_real_effective_root_execute',
     'glibc_permissions_all',

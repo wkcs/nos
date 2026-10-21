@@ -24,9 +24,9 @@ glibc 工具与库由 `scripts/setup_glibc_env.sh` 安装，`/workspace/.nos-env
 |---|---|---|
 | 动态加载 | ET_DYN/PT_INTERP、auxv、真实随机 AT_RANDOM、DT_NEEDED、构造器、dlopen/dlsym/dlclose | 不是全部 Linux ABI；启动成功不能代替其他接口验收 |
 | C 库与线程 | malloc/stdio/errno/C TLS，真实 NPTL create/join、detach/TSD、robust owner death、延迟/异步取消 | 其他属性、优先级协议和全部取消点需逐项验收 |
-| 进程与信号 | 独立地址空间 fork、同 PID exec、共享 OFD/cwd/umask 与 CLOEXEC、waitpid 状态；真实处理器帧、sigreturn、mask/pending、altstack、RT FIFO、SIGPIPE、EINTR 与部分 SA_RESTART | 完整 wait 选项/rusage、完整会话和作业控制等仍有缺口 |
+| 进程与信号 | 独立地址空间 fork、同 PID exec、共享 OFD/cwd/umask 与 CLOEXEC、waitpid 状态；真实处理器帧、sigreturn、mask/pending、altstack、RT FIFO、SIGPIPE、EINTR 与部分 SA_RESTART | 完整 wait 选项/rusage、孤儿向 init 重新归属、完整会话和作业控制等仍有缺口 |
 | 身份与权限（已验收子集） | 实际 real/effective/saved UID/GID、32 补充组；线程共享、fork 独立；成功 exec 保存 ID 更新为有效 ID，失败保留旧凭据，auxv 返回实际身份；可信 CALL subject，RAM DAC/access/chown、sticky 与目录 setgid；宿主 sanitizers、三 MMU 单核/四核真实 glibc 及完整 68 组验收通过 | RV64 无 errno 身份 getter 使用 psABI 规范 32 位寄存器返回，原始 syscall() 的高 UID 结果存在 errno 区间歧义；ARM UID16、Linux per-thread fsuid/fsgid、set-ID ELF、regular-file set-ID mode 未支持；持久挂载仅 root 可新解析/打开，时间仅秒级 |
-| 资源限额（已验收子集） | 进程共享 RLIMIT_NOFILE、ARM ugetrlimit 与实际 libc 查询一致；VFS 以 token 绑定的实时限额限制新 FD 分配，保留已打开高 FD；三 MMU 单核/四核及完整 68 组验收通过 | 结构上限仍为 32 FD；STACK 仅查询/相同值，其他限额、64 线程/25 进程最小容量未实现 |
+| 资源限额（已验收子集） | 进程共享 RLIMIT_NOFILE/AS、ARM ugetrlimit 与实际 libc 查询一致；VFS 限制新 FD 分配，内核按实际虚拟映射执行 AS 限额，覆盖 PROT_NONE、MAP_FIXED 净增长、brk、fork/线程/exec 和失败回滚；三 MMU 单核/四核及完整 68 组验收通过 | 结构上限仍为 32 FD、12 任务槽；AS 默认软/硬 1 GiB，infinity 不保证物理内存或扩大用户窗口；prlimit 仅自身，STACK 仅查询/相同值，NPROC 等限额与 64 线程/25 进程最小容量未实现 |
 | 文件与目录 | stat64、pread/pwrite、getdents64、标准目录接口、常用 *at、RAM mode/umask/truncate/hardlink/symlink；兼容配置 RAM PATH4096/NAME255、稳定cwd引用与双READ span传输；三架构单核/四核与完整68组验收通过 | 纳秒时间更新、持久 inode 身份、资源最小限值和跨后端完整语义仍需完善；持久后端仍有64字节路径限制，archive名称256字节；已删除目录的完整相对解析和超出有界绝对表示的寻址仍缺 |
 | 进程记录锁 | Linux profile 的 F_GETLK/F_SETLK/F_SETLKW，按 inode + 进程持有；区间拆分合并、阻塞、EINTR/SA_RESTART、EDEADLK、取消与退出清理，ARM old/wide flock 转换 | 64 个有界锁区间，容量不足返回 ENOLCK；默认 native 配置明确 ENOTSUP，其他 fcntl 扩展未齐 |
 | 管道与向量 I/O | Linux profile 实装 4096 字节 PIPE_BUF/缓冲与 1024 项 iovec；不超过 PIPE_BUF 的写入原子性、较大请求的非阻塞前缀、取消后不消费/注入，部分写入后仍投递 SIGPIPE；本批三架构单核/四核及完整冻结验收通过 | 有界 2 条管道及 pending 队列；默认 native 容量单列，未声明完整 FIFO/TTY |
@@ -75,3 +75,5 @@ futex 比较使用对齐的 32 位原子读，保留负锁字位模式；WAIT �
 SMP、MPU、非 MMU 和不同 C 库必须分别执行对应验证。某个最小库或单核测试通过，不能代替另一种 C 库的跨核结果。
 
 完整兼容回归使用 `python3 tests/acceptance.py --include-posix --require-frozen-source`。完整 glibc 程序组的默认宿主预算为 420 秒，单应用 focused 和原生专项为 180 秒；`--timeout` 可显式覆盖。预算是软件模拟的防挂上限，不是延迟承诺，也不免除缺失标记、非零退出或应用内断言失败。
+
+本批地址空间与进程退出修复已通过完整验收 `1792591938965616587`。leader 退出后保留可回收的子僵尸并向存活线程投递 SIGCHLD；exit_group 和致命信号状态不再被旧 leader 状态覆盖；孤儿仍有工作线程时保留其进程身份。三架构六个生命周期专项、六个 AS 专项及完整 68 组均实际退出 0；这些修复不代替完整孤儿重新归属、资源最小容量或完整 POSIX 符合性。

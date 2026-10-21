@@ -6,7 +6,7 @@
 struct credential_object {
     unsigned owner, references;
     struct nos_credentials value;
-    uint64_t stack[2], nofile[2];
+    uint64_t stack[2], nofile[2], address_space[2];
 };
 static struct credential_object credential_objects[NOS_TASKS];
 static struct credential_object *process_object(const struct task *task)
@@ -32,9 +32,11 @@ int credentials_create(struct task *task, const struct task *parent)
             object->value = source->value;
             k_memcpy(object->stack, source->stack, sizeof(object->stack));
             k_memcpy(object->nofile, source->nofile, sizeof(object->nofile));
+            k_memcpy(object->address_space, source->address_space, sizeof(object->address_space));
         } else {
             object->stack[0] = object->stack[1] = 256u * 1024u;
             object->nofile[0] = object->nofile[1] = NOS_FD_LIMIT;
+            object->address_space[0] = object->address_space[1] = UINT64_C(0x40000000);
         }
         object->owner = task->space_owner; object->references = 1;
         task->credential_ref = i + 1; return 0;
@@ -70,6 +72,8 @@ void credentials_exec(struct task *task)
 }
 void process_nofile_limits(const struct task *task, uint64_t limits[2])
 { k_memcpy(limits, process_object(task)->nofile, sizeof(uint64_t) * 2); }
+void process_as_limits(const struct task *task, uint64_t limits[2])
+{ k_memcpy(limits, process_object(task)->address_space, sizeof(uint64_t) * 2); }
 intptr_t process_limit_operation(unsigned resource, uintptr_t new_limit, uintptr_t old_limit, unsigned wide)
 {
     /* All three Linux target ABIs define RLIM_NLIMITS as 16. Known but
@@ -79,6 +83,7 @@ intptr_t process_limit_operation(unsigned resource, uintptr_t new_limit, uintptr
     uint64_t *limits;
     if (resource == 3) limits = object->stack;
     else if (resource == 7) limits = object->nofile;
+    else if (resource == 9) limits = object->address_space;
     else return -NOS_ENOTSUP;
     uint64_t old[2] = { limits[0], limits[1] }, replacement[2];
     if (new_limit) {
@@ -95,8 +100,13 @@ intptr_t process_limit_operation(unsigned resource, uintptr_t new_limit, uintptr
              * service's real structural capacity. No infinity is accepted. */
             if (replacement[1] > NOS_FD_LIMIT ||
                 (replacement[1] > old[1] && object->value.euid)) return -NOS_EPERM;
+        } else if (resource == 9) {
+            /* An AS policy limit does not promise physical backing or alter
+             * the architecture's valid user range. Infinity disables only
+             * this admission bound, retaining every structural VM check. */
+            if (replacement[1] > old[1] && object->value.euid) return -NOS_EPERM;
         } else if (replacement[0] != old[0] || replacement[1] != old[1]) {
-            /* Stack admission/growth is separate from this NOFILE slice. */
+            /* Main-stack admission and growth remain unsupported. */
             return -NOS_ENOTSUP;
         }
     }
@@ -113,7 +123,10 @@ intptr_t process_limit_operation(unsigned resource, uintptr_t new_limit, uintptr
     }
     /* Both the complete candidate and the old-value output precede commit,
      * so new/old aliasing returns the old pair without losing the candidate. */
-    if (new_limit) k_memcpy(limits, replacement, sizeof(replacement));
+    if (new_limit) {
+        k_memcpy(limits, replacement, sizeof(replacement));
+        if (resource == 9) vm_as_limit_set(current_task, replacement[0]);
+    }
     return 0;
 }
 static int is_id(uint32_t id, uint32_t real, uint32_t effective, uint32_t saved)
@@ -269,6 +282,8 @@ void credentials_release(struct task *task) { (void)task; }
 void credentials_exec(struct task *task) { (void)task; }
 void process_nofile_limits(const struct task *task, uint64_t limits[2])
 { (void)task; (void)limits; }
+void process_as_limits(const struct task *task, uint64_t limits[2])
+{ (void)task; limits[0] = limits[1] = UINT64_MAX; }
 intptr_t process_limit_operation(unsigned resource, uintptr_t new_limit, uintptr_t old_limit, unsigned wide)
 { (void)resource; (void)new_limit; (void)old_limit; (void)wide; return -NOS_ENOTSUP; }
 const struct nos_credentials *credentials_get(const struct task *task) { (void)task; return NULL; }
