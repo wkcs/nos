@@ -119,6 +119,7 @@ static intptr_t dispatch(uintptr_t nr, uintptr_t a, uintptr_t b, uintptr_t c)
     case NOS_SYS_REPLY: return ipc_reply(a, b);
     case NOS_SYS_IPC_XFER: return b || c ? -NOS_EINVAL : ipc_xfer(a);
     case NOS_SYS_IPC_SUBJECT: return b || c ? -NOS_EINVAL : ipc_subject(a);
+    case NOS_SYS_IPC_LIMITS: return b || c ? -NOS_EINVAL : ipc_limits(a);
     case NOS_SYS_MMAP: return a > UINT32_MAX ? -NOS_EINVAL : vm_map(current_task, (unsigned)a, b);
     case NOS_SYS_MUNMAP: return vm_unmap(current_task, a, b);
     case NOS_SYS_MPROTECT: return b > UINT32_MAX ? -NOS_EINVAL : vm_protect(current_task, a, (unsigned)b, c);

@@ -5,7 +5,7 @@
 struct inode_security { uint32_t uid, gid; int64_t atime, mtime, ctime; };
 static struct inode_security security[NODE_COUNT], pipe_security[PIPE_COUNT];
 static struct nos_ipc_subject subject;
-static unsigned permission_real_ids;
+static unsigned permission_real_ids, descriptor_limit = FDS;
 static int permission_subject(struct nos_message *message)
 {
     struct nos_ipc_subject snapshot;
@@ -16,6 +16,20 @@ static int permission_subject(struct nos_message *message)
     if (snapshot.token != message->token || snapshot.sender != (uintptr_t)message->sender ||
         snapshot.process != message->process || snapshot.credentials.ngroups > NOS_NGROUPS_MAX ||
         snapshot.credentials.reserved) return -NOS_EPERM;
+    descriptor_limit = FDS;
+    if (message->op == NOS_VFS_OPEN || message->op == NOS_VFS_OPENAT ||
+        message->op == NOS_VFS_PIPE || message->op == NOS_VFS_DUP) {
+        /* This live, token-bound query is the allocation admission point.
+         * Existing descriptor I/O does not depend on the current soft limit. */
+        struct nos_ipc_limits limits;
+        query.output = (uintptr_t)&limits;
+        rc = (int)nos_syscall(NOS_SYS_IPC_LIMITS, (uintptr_t)&query, 0, 0);
+        if (rc) return rc;
+        if (limits.token != message->token || limits.sender != (uintptr_t)message->sender ||
+            limits.process != message->process || limits.nofile_soft > limits.nofile_hard ||
+            limits.nofile_hard > FDS) return -NOS_EPERM;
+        descriptor_limit = (unsigned)limits.nofile_soft;
+    }
     subject = snapshot; permission_real_ids = 0; return 0;
 }
 static uint32_t permission_uid(void)
@@ -103,6 +117,7 @@ static int permission_chown(unsigned node, uint32_t uid, uint32_t gid)
     permission_touch(node, 4, now); return 0;
 }
 #else
+#define descriptor_limit FDS
 #define permission_search(path) ((void)(path), 0)
 #define permission_mount(path) ((void)(path), 0)
 #define permission_parent(path) ((void)(path), 0)

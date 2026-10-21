@@ -143,3 +143,12 @@ Linux profile 的 RAM inode 保存 UID/GID 和当前 stat64 协议可表示的�
 Linux 线程可能在另一核排入信号后才执行阻塞 syscall。核心在 syscall 完成、仍持 kernel_lock 且尚未释放 run_cpu 时再次检查未屏蔽 pending；若刚进入可中断等待，复用信号入队时的同一中断清理，返回 EINTR 并保持已有 SA_RESTART、睡眠剩余时间及 futex 引用规则。只改变真正阻塞的结果，不覆盖 EAGAIN、WNOHANG 或已完成操作。否则 READY 时排入的信号可能与随后 TASK_FUTEX 睡眠共存，导致处理函数永远无法运行；该竞争已用旧镜像的实时 QMP 快照与物理 GDB 状态确认。
 
 RV64 的四个无 errno 身份 getter（getuid/geteuid/getgid/getegid）采用 psABI 的规范 32 位寄存器返回：即使类型为 uint32_t，返回寄存器也将低 32 位符号扩展到 XLEN。实际 glibc 2.41 的对应入口只有 ecall/ret，调用者依赖该约定；NOS 在 personality 中适配它。凭据存储、getresuid/getresgid 输出和 auxv 均保留完整的无符号 32 位值。上游 Linux v6.12 的 long 返回路径实际零扩展，不能将本适配说成原始返回字逐位相同。通用 glibc syscall() 会把负 errno 区间解释为错误，因此高 UID 的原始结果存在歧义（ARM32 原本也有相同区间重叠）；完整 ID 查询应使用带类型的 getter、getres* 或原生凭据结构接口。
+
+
+## Linux profile 的进程资源限额
+
+Linux profile 将 STACK/NOFILE 限额与稳定进程对象一起引用，线程共享、fork 复制、exec 保留。NOFILE 接受结构容量 32 内的软/硬限制，非 root 不能提高硬限制；soft>hard 返回 EINVAL，超出实际容量返回 EPERM。STACK 暂仅查询与相同值请求，未实现的已知资源返回 ENOTSUP，无效资源编号返回 EINVAL。ARM ugetrlimit191 返回两个 u32，prlimit64 返回两个 u64；旧 ARM signed ABI 与直接 generic get/setrlimit 入口明确 ENOSYS，实际 glibc 路由单独验证。
+
+IPC_LIMITS70 复用 IPC_SUBJECT 的活动请求授权与 24 字节 query，输出 32 字节 token/sender/process/NOFILE 软硬限额。身份仍为 CALL 时不可变快照；资源查询读取当前值，作为 VFS 的新 FD 分配准入点。后续降低限额不关闭已授权 FD，后续准入读取新值。内核提供可信限额机制，用户态 VFS 保留 FD 编号和分配策略；只在 open/dup/pipe 入口增加限额查询。默认 native 配置返回 ENOTSUP，不增加其任务或用户模板预算。
+
+prlimit64 在完整候选和旧值输出预检、复制完成后才提交限额，支持新旧指针别名；坏旧输出不改变限额。这是 NOS 的事务承诺，上游 Linux 的 do_prlimit/copyout 顺序不同，不能据此宣称所有原始错误路径逐位等同。上述子集已通过三架构单核/四核真实 glibc 和新完整 68 组冻结验收；本批不增加任务容量、地址空间上限、完整 STACK/AS/NPROC 等限制，也不满足全部 POSIX 最小资源容量。

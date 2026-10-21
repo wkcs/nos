@@ -6,26 +6,36 @@
 struct credential_object {
     unsigned owner, references;
     struct nos_credentials value;
+    uint64_t stack[2], nofile[2];
 };
 static struct credential_object credential_objects[NOS_TASKS];
-const struct nos_credentials *credentials_get(const struct task *task)
+static struct credential_object *process_object(const struct task *task)
 {
     if (!task || !task->credential_ref || task->credential_ref > NOS_TASKS)
         kernel_fail("missing process credentials");
     struct credential_object *object = &credential_objects[task->credential_ref - 1];
     if (!object->references || object->owner != task->space_owner)
         kernel_fail("stale process credentials");
-    return &object->value;
+    return object;
 }
+const struct nos_credentials *credentials_get(const struct task *task)
+{ return &process_object(task)->value; }
 int credentials_create(struct task *task, const struct task *parent)
 {
     if (task->credential_ref) kernel_fail("credential reference overwritten");
-    const struct nos_credentials *source = parent ? credentials_get(parent) : NULL;
+    const struct credential_object *source = parent ? process_object(parent) : NULL;
     for (unsigned i = 0; i < NOS_TASKS; i++) {
         struct credential_object *object = &credential_objects[i];
         if (object->references) continue;
         k_memset(object, 0, sizeof(*object));
-        if (source) object->value = *source;
+        if (source) {
+            object->value = source->value;
+            k_memcpy(object->stack, source->stack, sizeof(object->stack));
+            k_memcpy(object->nofile, source->nofile, sizeof(object->nofile));
+        } else {
+            object->stack[0] = object->stack[1] = 256u * 1024u;
+            object->nofile[0] = object->nofile[1] = NOS_FD_LIMIT;
+        }
         object->owner = task->space_owner; object->references = 1;
         task->credential_ref = i + 1; return 0;
     }
@@ -57,6 +67,54 @@ void credentials_exec(struct task *task)
      * only after the image commits, preserving all IDs on an exec failure.
      * The surviving process keeps its existing object and references. */
     value->suid = value->euid; value->sgid = value->egid;
+}
+void process_nofile_limits(const struct task *task, uint64_t limits[2])
+{ k_memcpy(limits, process_object(task)->nofile, sizeof(uint64_t) * 2); }
+intptr_t process_limit_operation(unsigned resource, uintptr_t new_limit, uintptr_t old_limit, unsigned wide)
+{
+    /* All three Linux target ABIs define RLIM_NLIMITS as 16. Known but
+     * unimplemented resources differ from an invalid resource number. */
+    if (resource >= 16u) return -NOS_EINVAL;
+    struct credential_object *object = process_object(current_task);
+    uint64_t *limits;
+    if (resource == 3) limits = object->stack;
+    else if (resource == 7) limits = object->nofile;
+    else return -NOS_ENOTSUP;
+    uint64_t old[2] = { limits[0], limits[1] }, replacement[2];
+    if (new_limit) {
+        if (wide) {
+            if (user_copy_in(replacement, new_limit, sizeof(replacement))) return -NOS_EFAULT;
+        } else {
+            uint32_t narrow[2];
+            if (user_copy_in(narrow, new_limit, sizeof(narrow))) return -NOS_EFAULT;
+            for (unsigned i = 0; i < 2; i++) replacement[i] = narrow[i] == UINT32_MAX ? UINT64_MAX : narrow[i];
+        }
+        if (replacement[0] > replacement[1]) return -NOS_EINVAL;
+        if (resource == 7) {
+            /* UID privilege cannot create descriptor numbers beyond the
+             * service's real structural capacity. No infinity is accepted. */
+            if (replacement[1] > NOS_FD_LIMIT ||
+                (replacement[1] > old[1] && object->value.euid)) return -NOS_EPERM;
+        } else if (replacement[0] != old[0] || replacement[1] != old[1]) {
+            /* Stack admission/growth is separate from this NOFILE slice. */
+            return -NOS_ENOTSUP;
+        }
+    }
+    size_t bytes = wide ? sizeof(old) : sizeof(uint32_t) * 2;
+    if (old_limit && !user_access(current_task, old_limit, bytes, 1)) return -NOS_EFAULT;
+    if (old_limit) {
+        if (wide) {
+            if (user_copy_out(old_limit, old, sizeof(old))) return -NOS_EFAULT;
+        } else {
+            uint32_t narrow[2];
+            for (unsigned i = 0; i < 2; i++) narrow[i] = old[i] > UINT32_MAX ? UINT32_MAX : (uint32_t)old[i];
+            if (user_copy_out(old_limit, narrow, sizeof(narrow))) return -NOS_EFAULT;
+        }
+    }
+    /* Both the complete candidate and the old-value output precede commit,
+     * so new/old aliasing returns the old pair without losing the candidate. */
+    if (new_limit) k_memcpy(limits, replacement, sizeof(replacement));
+    return 0;
 }
 static int is_id(uint32_t id, uint32_t real, uint32_t effective, uint32_t saved)
 { return id == real || id == effective || id == saved; }
@@ -209,6 +267,10 @@ int credentials_create(struct task *task, const struct task *parent) { (void)tas
 int credentials_share(struct task *task, const struct task *parent) { (void)task; (void)parent; return 0; }
 void credentials_release(struct task *task) { (void)task; }
 void credentials_exec(struct task *task) { (void)task; }
+void process_nofile_limits(const struct task *task, uint64_t limits[2])
+{ (void)task; (void)limits; }
+intptr_t process_limit_operation(unsigned resource, uintptr_t new_limit, uintptr_t old_limit, unsigned wide)
+{ (void)resource; (void)new_limit; (void)old_limit; (void)wide; return -NOS_ENOTSUP; }
 const struct nos_credentials *credentials_get(const struct task *task) { (void)task; return NULL; }
 intptr_t credentials_operation(uintptr_t command, uintptr_t pointer, uintptr_t flags)
 { (void)command; (void)pointer; (void)flags; return -NOS_ENOTSUP; }

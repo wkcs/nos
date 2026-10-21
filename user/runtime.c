@@ -637,12 +637,14 @@ int nos_readdir(int fd, size_t index, char *name, size_t size)
 }
 int nos_dup2(int fd, int target)
 {
+    if (target < 0) return -NOS_EBADF;
     struct nos_message m = { .op = NOS_VFS_DUP, .arg = fd, .value = target };
     return (int)nos_rpc(&m);
 }
 int nos_dup3(int fd, int target, unsigned flags)
 {
     if (fd == target || (flags & ~NOS_O_CLOEXEC)) return -NOS_EINVAL;
+    if (target < 0) return -NOS_EBADF;
     struct nos_message m = { .op = NOS_VFS_DUP, .arg = fd, .value = target };
     m.data[0] = flags & NOS_O_CLOEXEC ? 1 : 0;
     return (int)nos_rpc(&m);
@@ -652,7 +654,16 @@ int nos_dup_min(int fd, unsigned minimum)
     struct nos_message m = { .op = NOS_VFS_DUP, .arg = fd, .value = -1, .len = minimum };
     return (int)nos_rpc(&m);
 }
-int nos_dup(int fd) { return nos_dup_min(fd, 0); }
+int nos_dup(int fd)
+{
+#ifdef NOS_LINUX_COMPAT
+    /* Plain dup and F_DUPFD(0) differ when the soft limit is zero. */
+    struct nos_message m = { .op = NOS_VFS_DUP, .arg = fd, .value = -2 };
+    return (int)nos_rpc(&m);
+#else
+    return nos_dup_min(fd, 0);
+#endif
+}
 int nos_dup_cloexec(int fd, unsigned minimum)
 {
     struct nos_message m = { .op = NOS_VFS_DUP, .arg = fd, .value = -1, .len = minimum };

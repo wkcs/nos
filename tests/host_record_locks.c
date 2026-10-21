@@ -10,6 +10,9 @@ static uint64_t sequence, fail_reply;
 static unsigned failures, batch_queries, scalar_queries;
 static struct nos_credentials host_credentials;
 static intptr_t subject_error, clock_error;
+static uint64_t host_nofile_soft = NOS_FD_LIMIT, host_nofile_hard = NOS_FD_LIMIT;
+static intptr_t limits_error;
+static unsigned limits_mismatch, limits_cancel;
 static int64_t host_seconds = 1700000000;
 static unsigned host_fat_fixture, host_fat_list_secret;
 static intptr_t batch_error;
@@ -44,6 +47,20 @@ intptr_t nos_syscall(uintptr_t number, uintptr_t a, uintptr_t b, uintptr_t c)
         struct nos_ipc_subject snapshot = { .token = query->token, .sender = query->sender,
             .process = call->request.process, .credentials = call->credentials };
         memcpy((void *)(uintptr_t)query->output, &snapshot, sizeof(snapshot)); return 0;
+    }
+    if (number == NOS_SYS_IPC_LIMITS) {
+        const struct nos_ipc_subject_query *query = (void *)a;
+        if (limits_error) return limits_error;
+        if (query->reserved || b || c) return -NOS_EINVAL;
+        struct host_call *call = &calls[query->sender % NOS_TASKS];
+        if (limits_cancel) call->active = 0;
+        if (!call->active || call->sender != query->sender || call->token != query->token) return -NOS_EPERM;
+        struct nos_ipc_limits value = { .token = query->token, .sender = query->sender,
+            .process = call->request.process, .nofile_soft = host_nofile_soft, .nofile_hard = host_nofile_hard };
+        if (limits_mismatch == 1) value.token++;
+        if (limits_mismatch == 2) value.sender++;
+        if (limits_mismatch == 3) value.process++;
+        memcpy((void *)(uintptr_t)query->output, &value, sizeof(value)); return 0;
     }
     if (number == NOS_SYS_CLOCK_GET64) {
         if (clock_error) return clock_error;

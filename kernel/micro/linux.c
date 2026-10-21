@@ -61,10 +61,6 @@ int linux_task_prepare(struct task *task, uintptr_t entry)
     task->abi = NOS_ABI_LINUX; task->linux_gateway_entry = entry;
     task->linux_gateway_stack = base + NOS_LINUX_GATEWAY_STACK_BYTES;
     task->linux_gateway_active = 0;
-    if (!task->linux_stack_hard) {
-        task->linux_stack_soft = task->linux_stack_hard = 256u * 1024u;
-        task->linux_nofile_soft = task->linux_nofile_hard = NOS_FD_LIMIT;
-    }
     linux_signal_reset(task);
     return 0;
 }
@@ -330,8 +326,6 @@ static intptr_t linux_fork(const uintptr_t arguments[6])
         rc = credentials_create(child, current_task);
         if (rc) { space_destroy(child); return rc; }
         child->frame = current_task->frame; FRAME_RESULT(&child->frame) = 0;
-        child->linux_stack_soft = current_task->linux_stack_soft; child->linux_stack_hard = current_task->linux_stack_hard;
-        child->linux_nofile_soft = current_task->linux_nofile_soft; child->linux_nofile_hard = current_task->linux_nofile_hard;
         rc = linux_gateway_clone(child, current_task);
         unsigned tid = child->id;
         if (!rc && (flags & CLONE_CHILD_SETTID)) rc = task_copy_out(child, arguments[4], &tid, sizeof(tid));
@@ -650,20 +644,16 @@ intptr_t linux_dispatch(uintptr_t number, const uintptr_t a[6])
         current_task->linux_robust_list = a[0]; return 0;
     case LNR(120, 220): return linux_clone(a);
     case LNR(369, 261): {
-        if (a[0] && a[0] != current_task->space_owner) return -NOS_ESRCH;
-        uint64_t *soft, *hard;
-        if (a[1] == 3) { soft = &current_task->linux_stack_soft; hard = &current_task->linux_stack_hard; }
-        else if (a[1] == 7) { soft = &current_task->linux_nofile_soft; hard = &current_task->linux_nofile_hard; }
-        else return -NOS_ENOTSUP;
-        uint64_t old[2] = { *soft, *hard }, replacement[2];
-        if (a[2]) {
-            if (user_copy_in(replacement, a[2], sizeof(replacement))) return -NOS_EFAULT;
-            if (replacement[0] > replacement[1] || replacement[1] > *hard) return -NOS_EPERM;
-            /* Lower limits require VFS/stack admission enforcement, not just a reported value. */
-            if (replacement[0] != *soft || replacement[1] != *hard) return -NOS_ENOTSUP;
-        }
-        return a[3] ? user_copy_out(a[3], old, sizeof(old)) : 0;
+        int32_t pid = (int32_t)a[0];
+        if (pid && (uint32_t)pid != current_task->space_owner) return -NOS_ESRCH;
+        return process_limit_operation((unsigned)a[1], a[2], a[3], 1);
     }
+#ifdef NOS_ARM
+    case 191: return a[1] ? process_limit_operation((unsigned)a[0], 0, a[1], 0) : -NOS_EFAULT; /* ugetrlimit */
+    case 75: case 76: return -NOS_ENOSYS; /* Legacy signed 32-bit rlimit ABI. */
+#else
+    case 163: case 164: return -NOS_ENOSYS; /* Use the implemented prlimit64 ABI. */
+#endif
     case LNR(158, 124): reschedule = 1; return 0; /* sched_yield: no state change beyond rescheduling. */
     case LNR(398, 293): case 435: return -NOS_ENOSYS; /* rseq / clone3 have specified fallback paths. */
     default: return gateway_enter(number, a);

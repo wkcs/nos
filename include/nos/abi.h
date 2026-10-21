@@ -195,6 +195,7 @@ enum nos_syscall {
     NOS_SYS_LINUX_RAISE = 67,
     NOS_SYS_CREDENTIALS = 68,
     NOS_SYS_IPC_SUBJECT = 69,
+    NOS_SYS_IPC_LIMITS = 70,
 };
 enum nos_vfs_op {
     NOS_VFS_OPEN = 1, NOS_VFS_CLOSE, NOS_VFS_READ, NOS_VFS_WRITE,
@@ -271,10 +272,18 @@ struct nos_ipc_subject {
     struct nos_credentials credentials;
 };
 struct nos_ipc_subject_query { uint32_t sender, reserved; uint64_t token, output; };
+/* IPC_LIMITS uses the same active CALL query authority as IPC_SUBJECT, but
+ * reads current process limits at server admission, not the identity snapshot. */
+struct nos_ipc_limits {
+    uint64_t token;
+    uint32_t sender, process;
+    uint64_t nofile_soft, nofile_hard;
+};
 _Static_assert(sizeof(struct nos_credentials) == 160, "credentials wire size");
 _Static_assert(sizeof(struct nos_credential_request) == 144, "credential request wire size");
 _Static_assert(sizeof(struct nos_ipc_subject) == 176, "IPC subject wire size");
 _Static_assert(sizeof(struct nos_ipc_subject_query) == 24, "IPC subject query wire size");
+_Static_assert(sizeof(struct nos_ipc_limits) == 32, "IPC limits wire size");
 struct nos_futex_requeue { uintptr_t source, target; uint32_t wake_count, requeue_count, compare, flags; };
 struct nos_thread_args { uintptr_t entry, arg, stack, stack_size, tls, clear_tid, parent_tid; };
 struct nos_object_stats { uint32_t tasks, mutexes, endpoints, free_pages; };

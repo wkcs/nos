@@ -565,8 +565,9 @@ static intptr_t gateway_call(const struct nos_linux_call *call)
     case SYS_dup2: return nos_dup2((int)a[0], (int)a[1]);
 #endif
     case SYS_dup3:
-        if (a[0] == a[1]) return -EINVAL;
+        if ((int)a[0] == (int)a[1]) return -EINVAL;
         if (a[2] & ~O_CLOEXEC) return -EINVAL;
+        if ((int)a[1] < 0) return -EBADF;
         {
             struct nos_message message = { .op = NOS_VFS_DUP, .arg = (int)a[0], .value = (int)a[1],
                 .data = { (a[2] & O_CLOEXEC) ? NOS_FD_CLOEXEC : 0 } };

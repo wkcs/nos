@@ -23,7 +23,7 @@
 | 网络：socket/bind/listen/accept/connect/send/recv/getsockopt/getaddrinfo | 协议栈、socket OFD、阻塞/非阻塞、解析服务 | 尚无完整网络服务，glibc 的网络函数导出不代表可用 |
 | 映射：mmap/munmap/mprotect/msync、shm_open/shm_unlink | 文件映射、共享一致性、偏移/保护、写回、生命周期 | Linux profile 的 RAM 文件采用同一真实背页，glibc 三 MMU SMP2 已验证 pwrite/pread 与 MAP_SHARED 相互可见、msync、只读 FD 映射禁止写升级、unlink 后旧映射存活和同名重建独立。不能泛化为 FatFs/磁盘 mmap 或所有持久化写回语义 |
 | 同步与 IPC：sem*、mq*、shm* | 命名对象、生存期、进程共享、阻塞/优先级/超时 | glibc 三 MMU SMP2 已验证 unnamed private 信号量阻塞/超时、shm_open 上 pshared=1 信号量跨 fork 不同 VA 等待唤醒、named sem 经 exec 在不同 VA 打开及 unlink/重建身份。mq、所有 named 对象权限/资源竞态和持久化恢复仍不能由这些程序推断支持 |
-| 资源/调度：getrlimit/setrlimit/getrusage/sched*/nice | 实际限制执行、统计、优先级策略和权限 | 单纯返回数值不够；需按 NOS 调度器和资源配额逐项实现 |
+| 资源/调度：getrlimit/setrlimit/getrusage/sched*/nice | 实际限制执行、统计、优先级策略和权限 | 进程共享且由 VFS 实际执行的 RLIMIT_NOFILE、ARM191 与三架构 libc 查询已通过单核/四核及完整冻结验收。STACK 仅查询/相同值，其他限制、统计、调度与最小容量仍需实现 |
 | 纯库扩展：regex/glob/fnmatch/iconv/locale/strftime | 库实现和 locale/时区/文件依赖可获得 | 真实 libc 可提供大量算法；glob 仍依赖目录，locale/iconv/时区数据必须打包并实际测试 |
 | 系统信息：sysconf/pathconf/confstr/uname | 返回与执行的 limits/options 一致 | 有界 NOS 配额应真实报告；不能直接继承 Linux 主机配置 |
 

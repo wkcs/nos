@@ -306,20 +306,49 @@ intptr_t ipc_xfer(uintptr_t pointer)
     (void)pointer; return -NOS_ENOTSUP;
 #endif
 }
+#ifdef NOS_LINUX_COMPAT
+static struct task *subject_client(const struct nos_ipc_subject_query *query)
+{
+    struct task *client = find_task(query->sender);
+    if (!client || client->state != TASK_REPLY || !client->request_sent || client->reply_from != current_task->id ||
+        query->token != client->request.token) return NULL;
+    unsigned index; struct endpoint *endpoint = lookup(client->endpoint_handle, &index);
+    if (!endpoint || endpoint->owner != current_task->id || !(current_task->endpoint_rights[index] & NOS_RIGHT_RECV)) return NULL;
+    return client;
+}
+#endif
 intptr_t ipc_subject(uintptr_t pointer)
 {
 #ifdef NOS_LINUX_COMPAT
     struct nos_ipc_subject_query query;
     if (user_copy_in(&query, pointer, sizeof(query))) return -NOS_EFAULT;
     if (query.reserved) return -NOS_EINVAL;
-    struct task *client = find_task(query.sender);
-    if (!client || client->state != TASK_REPLY || !client->request_sent || client->reply_from != current_task->id ||
-        query.token != client->request.token) return -NOS_EPERM;
-    unsigned index; struct endpoint *endpoint = lookup(client->endpoint_handle, &index);
-    if (!endpoint || endpoint->owner != current_task->id || !(current_task->endpoint_rights[index] & NOS_RIGHT_RECV)) return -NOS_EPERM;
+    struct task *client = subject_client(&query);
+    if (!client) return -NOS_EPERM;
     if (query.output > UINTPTR_MAX || !user_access(current_task, (uintptr_t)query.output, sizeof(struct nos_ipc_subject), 1))
         return -NOS_EFAULT;
     return user_copy_out((uintptr_t)query.output, &client->request_subject, sizeof(client->request_subject));
+#else
+    (void)pointer; return -NOS_ENOTSUP;
+#endif
+}
+intptr_t ipc_limits(uintptr_t pointer)
+{
+#ifdef NOS_LINUX_COMPAT
+    struct nos_ipc_subject_query query;
+    if (user_copy_in(&query, pointer, sizeof(query))) return -NOS_EFAULT;
+    if (query.reserved) return -NOS_EINVAL;
+    struct task *client = subject_client(&query);
+    if (!client) return -NOS_EPERM;
+    if (query.output > UINTPTR_MAX || !user_access(current_task, (uintptr_t)query.output, sizeof(struct nos_ipc_limits), 1))
+        return -NOS_EFAULT;
+    uint64_t limits[2]; process_nofile_limits(client, limits);
+    /* Unlike immutable CALL credentials, this live query is the service's
+     * resource admission point. Later queries observe later limit changes. */
+    struct nos_ipc_limits value = { .token = client->request.token,
+        .sender = client->id, .process = client->space_owner,
+        .nofile_soft = limits[0], .nofile_hard = limits[1] };
+    return user_copy_out((uintptr_t)query.output, &value, sizeof(value));
 #else
     (void)pointer; return -NOS_ENOTSUP;
 #endif

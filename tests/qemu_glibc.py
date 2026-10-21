@@ -56,6 +56,8 @@ LINUX_KERNEL |= {'ipc_subject_authority_preflight', 'ipc_subject_server_authorit
                  'ipc_subject_call_snapshot', 'ipc_subject_revoked_lifetime',
                  'credentials_leader_slot_lifetime', 'credentials_native_cleanup',
                  'credentials_native_atomicity'}
+LINUX_KERNEL |= {'ipc_limits_authority_preflight', 'ipc_limits_server_authority',
+                 'ipc_limits_replied_and_canceled_lifetime', 'ipc_limits_native_cleanup'}
 LINUX_GC_KERNEL = {'record_lock_exit_slot_reuse_gc', 'record_lock_pending_fork_fd_inheritance'}
 LINUX_SINGLE_CPU_KERNEL = {'pipe_pending_owner_exit_slot_reuse'}
 # Native regression supplies the helper's owner/observer modes; it is not a standalone case.
@@ -147,6 +149,22 @@ CREDENTIAL_CHECKS = {
 }
 LINUX |= CREDENTIAL_CHECKS | {'glibc_credentials_application'}
 APP_CHECKS['glibc_credentials'] = CREDENTIAL_CHECKS
+RESOURCE_CHECKS = {
+    'glibc_resources_query_routes',
+    'glibc_resources_nofile_atomic_errors',
+    'glibc_resources_pointer_rollback',
+    'glibc_resources_open_dup_boundaries',
+    'glibc_resources_pipe_pair_atomicity',
+    'glibc_resources_thread_shared_fork_independent',
+    'glibc_resources_exec_preserves_limits',
+    'glibc_resources_nonleader_exec',
+    'glibc_resources_leader_exit',
+    'glibc_resources_unprivileged_hard_raise',
+    'glibc_resources_stack_unsupported',
+    'glibc_posix_resources',
+}
+LINUX |= RESOURCE_CHECKS | {'glibc_resources_application'}
+APP_CHECKS['glibc_resources'] = RESOURCE_CHECKS
 PERMISSION_CHECKS = {
     'glibc_permissions_access_real_effective_root_execute',
     'glibc_permissions_all',
@@ -300,6 +318,8 @@ def main(mode='glibc'):
             required |= {'arm_linux_kuser_helpers'}
             if args.app in (None, 'glibc_credentials'):
                 required |= {'glibc_credentials_arm_old16_explicit'}
+            if args.app in (None, 'glibc_resources'):
+                required |= {'glibc_resources_arm_ugetrlimit'}
             if args.app in (None, 'glibc_record_locks'):
                 required |= {'glibc_record_lock_arm_old_wide_layout'}
         if mode == 'glibc' and platform != 'arm_virt':

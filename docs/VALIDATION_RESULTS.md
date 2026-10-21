@@ -170,3 +170,16 @@ musl 验收包含负值 futex 锁字、原子 REQUEUE/CMP_REQUEUE 的两等待�
 测试时 HEAD 为 `ccd5660f04db8a5443b894465f636761174b2bed`，tracked diff SHA256 为 `176e635795ec96f8911900ba6a54ccb22e81d48770d16b2e861eef78a60b32d5`；新文件逐一 SHA256 与各层报告一致。独立复核的证据为 `out/microkernel/credentials-final-evidence.json`，提交前完整文件哈希为 `out/microkernel/credentials-tested-inputs.json`。复核后仅更新结果文档，非文档输入保持测试快照不变。
 
 本批完成所列凭据/权限子集及实际发现的竞争修复，**完整 POSIX.1-2017 仍未完成**。资源限额执行和最小容量、4096 字节路径、TTY/作业控制、网络、映射边界等继续开发；set-ID ELF、fsuid/fsgid、完整持久化所有权、纳秒时间接口及真实硬件/远端 CI 仍不能由本次软件验收推断支持。
+
+
+## 进程共享 NOFILE：最终冻结验收通过
+
+实现进程共享、fork 复制和 exec 保留的 NOFILE 限额，补齐真实 ARM ugetrlimit191 查询。VFS 通过 IPC_LIMITS70 查询活动请求的实时可信限额，实际限制 open/dup/pipe 的新 FD 编号；旧高 FD、失败 dup2 的目标与记录锁、pipe 双 FD 原子失败均有回归。普通 dup 与 F_DUPFD 的 soft=0 错误区分，以及负 dup2/dup3 目标的桥接歧义已修复。
+
+冻结队列 `out/microkernel/resources-final-queue/1792546443792975770/results.json` 全部完成，宿主检查、六个专项和完整验收各层实际退出均为 0。宿主 `1792546444013824914` 包括 100000 次有界输入及原有 23 项记录锁、13 项管道、13 项权限和新增 6 项资源分配 ASan/UBSan 检查；模拟 IPC/限额不冒充内核验证。六个真实 glibc 资源专项的单核/四核检查数为 ARM 134/137、ARM64 134/137、RV64 135/137，包含 12 项应用标记、ARM 额外191标记和4项 IPC 限额查询授权/输出预检/生命周期/清理标记，缺失均为空。
+
+完整验收 `out/microkernel/acceptance/1792546638466611109/results.json` **完成 68/68 组，全部通过，实际退出 0，source_changed_during_run=false**。六组完整 glibc 单核/四核分别通过 ARM 259/262、ARM64 257/260、RV64 258/261 项检查，实际退出0、无缺失标记。原有八平台、真实未修改 glibc、选定上游用例、SMP、持久化、stock netduinoplus2 STM32/MPU、RV32 非 MMU、时钟/异常及应用组均在矩阵内。
+
+测试时 HEAD 为 `98a0775c5e4a92885eb1e8ca603151d9b0ebc257`，tracked diff SHA256 为 `1d5ae760e6f026b2d7699b58d5aa2c73a6c17e0ddb80db2017895eeba5d4d262`。独立复核 `out/microkernel/resources-final-evidence.json` 核对每层真实退出、全部必需标记与开始/结束源码身份，并保存全部输入文件哈希；复核后仅更新结果文档，非文档输入保持测试快照不变。
+
+该批只完成 NOFILE 的声明子集。结构 FD 上限仍为32，STACK 仅查询/相同值；完整 AS/NPROC/CPU/FSIZE 等限制、POSIX 最小线程/进程容量、4096 字节路径、TTY/作业控制、网络及映射边界仍未完成。prlimit 坏旧输出先预检再提交是已测试的 NOS 事务承诺，不宣称其错误路径与上游 Linux 顺序完全相同。**完整 POSIX.1-2017 仍未完成**；真实硬件与远端 CI 的未执行边界不变。

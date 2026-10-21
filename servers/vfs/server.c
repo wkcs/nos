@@ -244,7 +244,7 @@ static struct fd_table *table_for(intptr_t pid)
     return t;
 }
 static int free_fd(struct fd_table *t)
-{ for (unsigned i = 0; i < FDS; i++) if (!t->fd[i]) return (int)i; return -NOS_EMFILE; }
+{ for (unsigned i = 0; i < descriptor_limit; i++) if (!t->fd[i]) return (int)i; return -NOS_EMFILE; }
 static int free_description(void)
 { for (unsigned i = 3; i < OPEN_COUNT; i++) if (!opened[i].refs) return (int)i; return -NOS_EMFILE; }
 #include "archive.h"
@@ -615,7 +615,7 @@ static void service(struct nos_message *m)
         int64_t now; int clock = permission_clock(&now); if (clock) { m->value = clock; return; }
 #endif
         int fd0 = free_fd(t), fd1 = -1, d0 = free_description(), d1 = -1, pipe = -1;
-        if (fd0 >= 0) for (unsigned i = fd0 + 1; i < FDS; i++) if (!t->fd[i]) { fd1 = (int)i; break; }
+        if (fd0 >= 0) for (unsigned i = fd0 + 1; i < descriptor_limit; i++) if (!t->fd[i]) { fd1 = (int)i; break; }
         if (d0 >= 0) for (unsigned i = d0 + 1; i < OPEN_COUNT; i++) if (!opened[i].refs) { d1 = (int)i; break; }
         for (unsigned i = 0; i < PIPE_COUNT; i++) if (!pipes[i].readers && !pipes[i].writers) { pipe = (int)i; break; }
         if (fd0 < 0 || fd1 < 0 || d0 < 0 || d1 < 0) { m->value = -NOS_EMFILE; return; }
@@ -760,12 +760,22 @@ static void service(struct nos_message *m)
         if (close_on_exec > 1) { m->value = -NOS_EINVAL; break; }
         intptr_t target = m->value;
         if (target < 0) {
-            if (m->len >= FDS) { m->value = -NOS_EINVAL; break; }
+#ifdef NOS_LINUX_COMPAT
+            /* Plain dup and F_DUPFD differ when the soft limit is zero:
+             * dup exhausts the table; F_DUPFD rejects its minimum. */
+            if ((target != -1 && target != -2) || (target == -2 && m->len) ||
+                (target == -1 && m->len >= descriptor_limit)) { m->value = -NOS_EINVAL; break; }
+#else
+            if (m->len >= descriptor_limit) { m->value = -NOS_EINVAL; break; }
+#endif
             target = -NOS_EMFILE;
-            for (unsigned i = (unsigned)m->len; i < FDS; i++) if (!t->fd[i]) { target = (intptr_t)i; break; }
+            for (unsigned i = (unsigned)m->len; i < descriptor_limit; i++) if (!t->fd[i]) { target = (intptr_t)i; break; }
         }
         if (target < 0 || (uintptr_t)target >= FDS) { m->value = target < 0 ? target : -NOS_EBADF; break; }
         if ((unsigned)target == fd && close_on_exec) { m->value = -NOS_EINVAL; break; }
+        /* An existing high descriptor survives a lowered soft limit, including
+         * dup2(fd, fd). A real replacement checks admission before any close. */
+        if ((unsigned)target != fd && (uintptr_t)target >= descriptor_limit) { m->value = -NOS_EBADF; break; }
         if ((unsigned)target != fd) { if (t->fd[target]) close_descriptor(t, (unsigned)target); t->fd[target] = desc + 1; t->fd_flags = (t->fd_flags & ~(1u << target)) | (close_on_exec << target); d->refs++; }
         m->value = target; break;
     }
