@@ -5,7 +5,9 @@
 static int canonical_path_from(const char *input, size_t bytes, char path[NOS_PATH_MAX], size_t base)
 {
     if (!bytes || bytes > JOINED_PATH_MAX || input[0] != '/' || input[bytes - 1] || u_strlen(input) + 1 != bytes) return -NOS_EINVAL;
-    char pending[JOINED_PATH_MAX]; u_memcpy(pending, input, bytes);
+    PATH_SCOPE;
+    PATH_BUFFER(pending, JOINED_PATH_MAX); if (PATH_MISSING(pending)) return -NOS_ENOMEM;
+    u_memcpy(pending, input, bytes);
     size_t at = base, end = base; unsigned links = 0; u_memcpy(path, input, base); path[base] = 0;
     for (;;) {
         while (pending[at] == '/') at++;
@@ -13,6 +15,9 @@ static int canonical_path_from(const char *input, size_t bytes, char path[NOS_PA
         int search = permission_search(path); if (search) return search;
         size_t start = at; while (pending[at] && pending[at] != '/') at++;
         size_t length = at - start, next = at; while (pending[next] == '/') next++;
+#ifdef NOS_LINUX_COMPAT
+        if (length > NOS_NAME_MAX) return -NOS_ENAMETOOLONG;
+#endif
         if (length == 1 && pending[start] == '.') continue;
         if (length == 2 && pending[start] == '.' && pending[start + 1] == '.') {
             if (end > 1) { while (end > 1 && path[end - 1] != '/') end--; if (end > 1) end--; }
@@ -26,12 +31,15 @@ static int canonical_path_from(const char *input, size_t bytes, char path[NOS_PA
         int node = lookup(path);
         if (node >= 0 && NODE_TYPE(&nodes[node]) == MODE_LINK) {
             if (links++ >= 8) return -40;
-            struct vnode *link = &nodes[node]; char joined[JOINED_PATH_MAX]; size_t base = 0, suffix = u_strlen(pending + at);
+            PATH_SCOPE;
+            PATH_BUFFER(joined, JOINED_PATH_MAX); if (PATH_MISSING(joined)) return -NOS_ENOMEM;
+            struct vnode *link = &nodes[node]; const char *target = node_bytes(link);
+            size_t base = 0, suffix = u_strlen(pending + at);
             if (!link->size) return -NOS_ENOENT;
-            if (link->bytes[0] != '/') { base = parent; u_memcpy(joined, path, base); if (base > 1) joined[base++] = '/'; }
+            if (target[0] != '/') { base = parent; u_memcpy(joined, path, base); if (base > 1) joined[base++] = '/'; }
             if (base + link->size + suffix >= JOINED_PATH_MAX) return -NOS_ENAMETOOLONG;
-            u_memcpy(joined + base, link->bytes, link->size); u_memcpy(joined + base + link->size, pending + at, suffix + 1);
-            u_memcpy(pending, joined, base + link->size + suffix + 1); at = link->bytes[0] == '/' ? 1 : parent; end = at; path[end] = 0; continue;
+            u_memcpy(joined + base, target, link->size); u_memcpy(joined + base + link->size, pending + at, suffix + 1);
+            u_memcpy(pending, joined, base + link->size + suffix + 1); at = target[0] == '/' ? 1 : parent; end = at; path[end] = 0; continue;
         }
         if (node >= 0) { if (NODE_TYPE(&nodes[node]) != MODE_DIR) return -NOS_ENOTDIR; }
         else { unsigned kind; uint64_t size; int rc = archive_lookup(path, &kind, &size); if (rc < 0) return rc; if (kind != ARCHIVE_DIRECTORY) return -NOS_ENOTDIR; }
@@ -52,6 +60,9 @@ static int inherit_files(intptr_t parent, intptr_t child)
     if (parent == child) return 0;
     struct fd_table *source = table_for(parent), *target = table_for(child);
     if (!source || !target) return -NOS_ENOSPC;
+#ifdef NOS_LINUX_COMPAT
+    int held = directory_ref_hold(&source->cwd); if (held) return held;
+#endif
     release_table(target);
     *target = *source; target->pid = child;
     for (unsigned fd = 0; fd < FDS; fd++) if (target->fd[fd]) opened[target->fd[fd] - 1].refs++;
@@ -74,19 +85,23 @@ static int follow_links(char path[NOS_PATH_MAX], int final)
     for (unsigned followed = 0;;) {
         unsigned changed = 0;
         for (size_t end = 1;; end++) if (!path[end] || path[end] == '/') {
-            unsigned last = !path[end]; char component[NOS_PATH_MAX];
+            PATH_SCOPE;
+            PATH_BUFFER(component, NOS_PATH_MAX); if (PATH_MISSING(component)) return -NOS_ENOMEM;
+            unsigned last = !path[end];
             u_memcpy(component, path, end); component[end] = 0;
             int node = lookup(component);
             if (node >= 0 && NODE_TYPE(&nodes[node]) == MODE_LINK && (!last || final)) {
                 if (followed++ >= 8) return -40;
-                struct vnode *link = &nodes[node]; char joined[JOINED_PATH_MAX], resolved[NOS_PATH_MAX]; size_t base = 0;
+                PATH_BUFFER(joined, JOINED_PATH_MAX); PATH_BUFFER(resolved, NOS_PATH_MAX);
+                if (PATH_MISSING(joined) || PATH_MISSING(resolved)) return -NOS_ENOMEM;
+                struct vnode *link = &nodes[node]; const char *target = node_bytes(link); size_t base = 0;
                 if (!link->size || link->size >= NOS_PATH_MAX) return -NOS_ENOENT;
-                if (link->bytes[0] != '/') { base = end; while (base > 1 && path[base - 1] != '/') base--; }
+                if (target[0] != '/') { base = end; while (base > 1 && path[base - 1] != '/') base--; }
                 size_t suffix = u_strlen(path + end);
                 if (base + link->size + suffix >= JOINED_PATH_MAX) return -NOS_ENAMETOOLONG;
-                u_memcpy(joined, path, base); u_memcpy(joined + base, link->bytes, link->size);
+                u_memcpy(joined, path, base); u_memcpy(joined + base, target, link->size);
                 u_memcpy(joined + base + link->size, path + end, suffix + 1);
-                int rc = canonical_path_from(joined, base + link->size + suffix + 1, resolved, link->bytes[0] == '/' ? 1 : base > 1 ? base - 1 : 1); if (rc) return rc;
+                int rc = canonical_path_from(joined, base + link->size + suffix + 1, resolved, target[0] == '/' ? 1 : base > 1 ? base - 1 : 1); if (rc) return rc;
                 u_memcpy(path, resolved, u_strlen(resolved) + 1); changed = 1; break;
             }
             if (!last) {
@@ -165,13 +180,14 @@ static int split_paths(const struct path_payload *payload, size_t *first)
 #ifdef NOS_LINUX_COMPAT
 static int credential_service(struct nos_message *m, struct fd_table *table, struct path_payload *payload)
 {
+    PATH_SCOPE;
     if (m->op < NOS_VFS_ACCESS || m->op > NOS_VFS_FCHOWN) return 0;
     if (m->op == NOS_VFS_ACCESS) {
         uintptr_t value = (uintptr_t)m->value;
         unsigned mode = value & 7u, flags = value >> 8;
         if (value & ~(7u | ((uintptr_t)0x300u << 8))) { m->value = -NOS_EINVAL; return 1; }
         permission_real_ids = !(flags & 0x200u);
-        char path[NOS_PATH_MAX];
+        PATH_BUFFER(path, NOS_PATH_MAX); if (PATH_MISSING(path)) { m->value = -NOS_ENOMEM; return 1; }
         int rc = metadata_path(table, m->arg, payload->bytes, payload->len, path, !(flags & 0x100u));
         if (!rc) rc = permission_path(path, mode);
         permission_real_ids = 0; m->value = rc; return 1;
@@ -187,7 +203,7 @@ static int credential_service(struct nos_message *m, struct fd_table *table, str
         return 1;
     }
     if (!m->bulk_in_len || m->value < 0 || ((uintptr_t)m->value & ~0x100u)) { m->value = -NOS_EINVAL; return 1; }
-    char path[NOS_PATH_MAX];
+    PATH_BUFFER(path, NOS_PATH_MAX); if (PATH_MISSING(path)) { m->value = -NOS_ENOMEM; return 1; }
     int rc = metadata_path(table, m->arg, payload->bytes, payload->len, path, !(m->value & 0x100u));
     int node = rc ? rc : metadata_node(path);
     m->value = node < 0 ? node : permission_chown((unsigned)node, ids[0], ids[1]);
@@ -196,6 +212,7 @@ static int credential_service(struct nos_message *m, struct fd_table *table, str
 #endif
 static int metadata_service(struct nos_message *m, struct fd_table *table, struct path_payload *payload)
 {
+    PATH_SCOPE;
     unsigned op = m->op;
     if (op < NOS_VFS_FTRUNCATE || op > 43 || op == NOS_VFS_OPENAT_MODE) return 0;
     if (op == NOS_VFS_UMASK) { unsigned old = table->mask; table->mask = (unsigned)m->value & 0777u; m->value = old; return 1; }
@@ -210,11 +227,12 @@ static int metadata_service(struct nos_message *m, struct fd_table *table, struc
         else { uint64_t length; u_memcpy(&length, m->data, 8); m->value = length > INT64_MAX ? -NOS_EINVAL : resize_node(d->node, length); }
         return 1;
     }
-    char path[NOS_PATH_MAX]; int rc;
+    PATH_BUFFER(path, NOS_PATH_MAX); if (PATH_MISSING(path)) { m->value = -NOS_ENOMEM; return 1; }
+    int rc;
     if (op == NOS_VFS_SYMLINK || op == NOS_VFS_LINK || op == 43) {
         size_t first; rc = split_paths(payload, &first);
         if (rc) { m->value = rc; return 1; }
-        char dest[NOS_PATH_MAX];
+        PATH_BUFFER(dest, NOS_PATH_MAX); if (PATH_MISSING(dest)) { m->value = -NOS_ENOMEM; return 1; }
         rc = metadata_path(table, op == NOS_VFS_SYMLINK ? m->arg : m->value, payload->bytes + first, payload->len - first, dest, 0);
         if (rc) { m->value = rc; return 1; }
         if (op == NOS_VFS_SYMLINK) {
@@ -223,15 +241,15 @@ static int metadata_service(struct nos_message *m, struct fd_table *table, struc
             int parent = parent_of(dest);
             if (parent < 0) { m->value = parent; return 1; }
             if (nodes[parent].persistent) { m->value = -NOS_ENOTSUP; return 1; }
-            int node = create(dest, MODE_LINK | 0777);
-            if (node >= 0) { nodes[node].size = first - 1; u_memcpy(nodes[node].bytes, payload->bytes, first); }
+            int node = create_sized(dest, MODE_LINK | 0777, first);
+            if (node >= 0) { nodes[node].size = first - 1; u_memcpy(node_bytes(&nodes[node]), payload->bytes, first); }
             m->value = node < 0 ? node : 0; return 1;
         }
         rc = metadata_path(table, m->arg, payload->bytes, first, path, 0);
         if (rc) { m->value = rc; return 1; }
         if (op == 43) {
             size_t a = u_strlen(path) + 1, b = u_strlen(dest) + 1;
-            if (a + b > sizeof(payload->bytes)) { m->value = -NOS_ENAMETOOLONG; return 1; }
+            if (a + b > PATH_DATA_MAX) { m->value = -NOS_ENAMETOOLONG; return 1; }
             u_memcpy(payload->bytes, path, a); u_memcpy(payload->bytes + a, dest, b); payload->len = a + b; payload->resolved = 1; m->op = NOS_VFS_RENAME; return 0;
         }
         int node = metadata_node(path);

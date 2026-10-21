@@ -1,7 +1,14 @@
 /* Copyright (C) 2026 NOS contributors. Bounded paths stay in one IPC call. */
 #ifndef NOS_VFS_PATH_IO_H
 #define NOS_VFS_PATH_IO_H
-struct path_payload { char bytes[PATH_DATA_MAX]; size_t len; unsigned resolved; };
+struct path_payload {
+#ifdef NOS_LINUX_COMPAT
+    char *bytes;
+#else
+    char bytes[PATH_DATA_MAX];
+#endif
+    size_t len; unsigned resolved;
+};
 static int path_operation(unsigned op)
 {
     switch (op) {
@@ -31,8 +38,23 @@ static int path_input(struct nos_message *message, struct path_payload *payload)
     payload->len = message->len; payload->resolved = 0;
     if (!path_operation(message->op)) return 0;
 #ifdef NOS_LINUX_COMPAT
+    if (!payload->bytes) return -NOS_ENOMEM;
     if (message->bulk_in_len) {
-        if (message->bulk_in_len > sizeof(payload->bytes)) return -NOS_ENAMETOOLONG;
+        unsigned pair = message->op == NOS_VFS_RENAME || message->op == NOS_VFS_RENAMEAT ||
+            message->op == NOS_VFS_LINK || message->op == NOS_VFS_SYMLINK;
+        if (pair && message->len == 8) {
+            uint32_t lengths[2]; u_memcpy(lengths, message->data, sizeof(lengths));
+            if (!lengths[0] || !lengths[1] || lengths[0] != message->bulk_in_len) return -NOS_EINVAL;
+            if (lengths[0] > NOS_PATH_MAX || lengths[1] > NOS_PATH_MAX) return -NOS_ENAMETOOLONG;
+            int rc = path_transfer(message, payload->bytes, lengths[0], NOS_IPC_FETCH);
+            if (!rc) rc = path_transfer(message, payload->bytes + lengths[0], lengths[1], NOS_IPC_FETCH_SECOND);
+            if (rc) return rc;
+            if (payload->bytes[lengths[0] - 1] || payload->bytes[lengths[0] + lengths[1] - 1] ||
+                u_strlen(payload->bytes) + 1 != lengths[0] ||
+                u_strlen(payload->bytes + lengths[0]) + 1 != lengths[1]) return -NOS_EINVAL;
+            payload->len = (size_t)lengths[0] + lengths[1]; return 0;
+        }
+        if (message->bulk_in_len > PATH_DATA_MAX) return -NOS_ENAMETOOLONG;
         payload->len = message->bulk_in_len;
         return path_transfer(message, payload->bytes, payload->len, NOS_IPC_FETCH);
     }

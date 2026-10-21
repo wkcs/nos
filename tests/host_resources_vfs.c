@@ -112,8 +112,10 @@ int main(void)
     ok = resources_write(fd, 'K') == 1;
     static struct description saved_opened[OPEN_COUNT];
     static struct vnode saved_nodes[NODE_COUNT];
+    static char saved_names[NODE_COUNT][NOS_PATH_MAX];
     static struct fd_table saved_fds[FD_TABLE_COUNT];
     memcpy(saved_opened, opened, sizeof(opened)); memcpy(saved_nodes, nodes, sizeof(nodes)); memcpy(saved_fds, fds, sizeof(fds));
+    for (unsigned i = 0; i < NODE_COUNT; i++) memcpy(saved_names[i], nodes[i].name, NOS_PATH_MAX);
     for (unsigned failure = 0; failure < 7; failure++) {
         limits_error = failure == 0 ? -NOS_ENOTSUP : failure == 1 ? -NOS_EPERM : 0;
         limits_mismatch = failure >= 2 && failure <= 4 ? failure - 1 : 0;
@@ -122,6 +124,7 @@ int main(void)
         intptr_t expected = failure == 0 ? -NOS_ENOTSUP : -NOS_EPERM;
         ok &= open_file(1, "/tmp/fail_closed", NOS_O_CREAT | NOS_O_TRUNC | NOS_O_RDWR) == expected &&
             !memcmp(saved_opened, opened, sizeof(opened)) && !memcmp(saved_nodes, nodes, sizeof(nodes)) && !memcmp(saved_fds, fds, sizeof(fds));
+        for (unsigned i = 0; i < NODE_COUNT; i++) ok &= !memcmp(saved_names[i], nodes[i].name, NOS_PATH_MAX);
     }
     limits_error = -NOS_ENOTSUP; limits_mismatch = 0;
     ok &= resources_read_at(fd, &byte) == 1 && byte == 'K';

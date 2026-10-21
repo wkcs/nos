@@ -61,6 +61,10 @@ static void clear_node(unsigned index)
     file_inodes[index] = 0; permission_clear(index);
 #endif
     u_memset(&nodes[index], 0, sizeof(nodes[index]));
+#ifdef NOS_LINUX_COMPAT
+    nodes[index].name = path_storage ? path_storage + index * NOS_PATH_MAX : NULL;
+    if (nodes[index].name) nodes[index].name[0] = 0;
+#endif
 }
 static int shared_file(struct nos_message *message, struct fd_table *table)
 {

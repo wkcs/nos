@@ -50,8 +50,10 @@ int main(void)
     memcpy(boundary, first, PATH_BYTES);
     fd = open(boundary, O_RDONLY);
     if (fd < 0 || close(fd)) return failed("nul_at_guard_boundary");
-    memset(boundary, 'q', PATH_BYTES); errno = 0;
-    if (open(boundary, O_RDONLY) != -1 || errno != ENAMETOOLONG) return failed("unterminated_path_bound");
+    memset(pages, 'q', PAGE_BYTES); errno = 0;
+    if (open(pages, O_RDONLY) != -1 || errno != ENAMETOOLONG) return failed("unterminated_path_bound");
+    errno = 0;
+    if (open(boundary, O_RDONLY) != -1 || errno != EFAULT) return failed("short_unterminated_path_guard");
     errno = 0;
     if (open(boundary + 1, O_RDONLY) != -1 || errno != EFAULT) return failed("path_guard_fault");
     if (rename(first, second) || link(second, alias)) return failed("two_maximum_paths");
@@ -62,6 +64,15 @@ int main(void)
     char target[PATH_BYTES];
     if (readlink("/path-link", target, sizeof(target)) != PATH_BYTES - 1 || memcmp(target, second, PATH_BYTES - 1))
         return failed("long_readlink");
+    memset(boundary, 'q', PATH_BYTES);
+    if (readlink("/path-link", boundary, 1024 * 1024) != PATH_BYTES - 1 ||
+        memcmp(boundary, second, PATH_BYTES - 1) || boundary[PATH_BYTES - 1] != 'q')
+        return failed("readlink_actual_output_before_guard");
+    memset(boundary, 'q', PATH_BYTES); errno = 0;
+    if (readlink("/path-link", boundary + 2, 1024 * 1024) != -1 || errno != EFAULT)
+        return failed("readlink_actual_output_crosses_guard");
+    for (unsigned i = 0; i < PATH_BYTES; i++)
+        if (boundary[i] != 'q') return failed("readlink_guard_output_preflight");
     puts("PASS glibc_path_bulk_guard_and_pairs");
     DIR *stream = opendir("/");
     if (!stream) return failed("long_directory_open");
@@ -72,6 +83,11 @@ int main(void)
     if (errno || found != 1 || closedir(stream) || raw_long_entry(alias + 1) != 1)
         return failed("long_directory_record_280");
     if (mkdir(directory, 0700) || chdir(directory)) return failed("long_chdir");
+    memset(boundary, 'q', PATH_BYTES); errno = 0;
+    if (getcwd(boundary + 1, 1024 * 1024) || errno != EFAULT)
+        return failed("getcwd_actual_output_crosses_guard");
+    for (unsigned i = 0; i < PATH_BYTES; i++)
+        if (boundary[i] != 'q') return failed("getcwd_guard_output_preflight");
     if (getcwd(boundary, 1024 * 1024) != boundary || strcmp(boundary, directory))
         return failed("getcwd_bounded_output_span");
     errno = 0;

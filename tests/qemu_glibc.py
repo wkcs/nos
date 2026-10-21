@@ -149,6 +149,23 @@ CREDENTIAL_CHECKS = {
 }
 LINUX |= CREDENTIAL_CHECKS | {'glibc_credentials_application'}
 APP_CHECKS['glibc_credentials'] = CREDENTIAL_CHECKS
+PATH4096_CHECKS = {
+    'glibc_path4096_limits_name255',
+    'glibc_path4096_guard_boundary',
+    'glibc_path4096_two_paths_atomic',
+    'glibc_path4096_symlink_readlink',
+    'glibc_path4096_cwd_rename_identity',
+    'glibc_path4096_unlinked_directory_identity',
+    'glibc_path4096_relative_search_permissions',
+    'glibc_path4096_directory_records',
+    'glibc_path4096_cleanup',
+    'glibc_posix_path4096',
+}
+LINUX |= PATH4096_CHECKS | {'glibc_path4096_application'}
+APP_CHECKS['glibc_path4096'] = PATH4096_CHECKS
+LINUX_KERNEL |= {'ipc_vector_query_and_preflight', 'ipc_vector_two_spans_guard_permissions',
+                 'ipc_vector_zero_and_legacy_separation', 'ipc_vector_authority_lifetime',
+                 'ipc_vector_cleanup'}
 RESOURCE_CHECKS = {
     'glibc_resources_query_routes',
     'glibc_resources_nofile_atomic_errors',

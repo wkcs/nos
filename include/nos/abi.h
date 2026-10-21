@@ -6,11 +6,15 @@
 #define NOS_PAGE_SIZE 4096u
 #define NOS_MSG_DATA 64u
 #ifdef NOS_LINUX_COMPAT
-#define NOS_PATH_MAX 256u
+#define NOS_PATH_MAX 4096u
+#define NOS_NAME_MAX 255u
+#define NOS_BOOTFILE_PATH_MAX 256u
 #define NOS_PIPE_BUF 4096u
 #define NOS_IPC_BULK_MAX 4096u
 #else
 #define NOS_PATH_MAX 64u
+#define NOS_NAME_MAX 63u
+#define NOS_BOOTFILE_PATH_MAX 64u
 #define NOS_PIPE_BUF NOS_MSG_DATA
 #define NOS_IPC_BULK_MAX 512u
 #endif
@@ -196,6 +200,7 @@ enum nos_syscall {
     NOS_SYS_CREDENTIALS = 68,
     NOS_SYS_IPC_SUBJECT = 69,
     NOS_SYS_IPC_LIMITS = 70,
+    NOS_SYS_IPC_VECTOR = 71,
 };
 enum nos_vfs_op {
     NOS_VFS_OPEN = 1, NOS_VFS_CLOSE, NOS_VFS_READ, NOS_VFS_WRITE,
@@ -237,7 +242,21 @@ struct nos_message {
 /* ABI uses native pointers; ABI_QUERY exposes version and word width. */
 struct nos_abi_info { uint32_t version, word_bits, message_bytes, page_bytes; };
 struct nos_call_args { uintptr_t endpoint, request, reply; uint64_t timeout_ticks; };
+#define NOS_IPC_VECTOR_QUERY 0u
+#define NOS_IPC_VECTOR_CALL 1u
+/* Generic CALL extension: at most two independently bounded READ spans.
+ * The message's existing WRITE span remains unchanged. All addresses and
+ * lengths use the same fixed-width wire representation on ARM32 and LP64. */
+struct nos_ipc_span { uint64_t address, length; };
+struct nos_callv_args {
+    uint64_t endpoint, request, reply, timeout_ticks;
+    struct nos_ipc_span inputs[2];
+    uint32_t input_count, reserved;
+};
+_Static_assert(sizeof(struct nos_ipc_span) == 16, "IPC input span wire size");
+_Static_assert(sizeof(struct nos_callv_args) == 72, "vector CALL wire size");
 #define NOS_IPC_FETCH 0u
+#define NOS_IPC_FETCH_SECOND 2u
 #define NOS_IPC_STORE 1u
 struct nos_ipc_xfer { intptr_t sender; uint64_t token; size_t offset; uintptr_t buffer; size_t count; unsigned direction; };
 #define NOS_NGROUPS_MAX 32u

@@ -4,7 +4,7 @@
 #include <string.h>
 #include "../servers/vfs/server.c"
 #define HOST_PENDING (-1000000)
-struct host_call { uint64_t token; intptr_t sender, result; unsigned active, completed; struct nos_message request, reply; struct nos_credentials credentials; };
+struct host_call { uint64_t token; intptr_t sender, result; unsigned active, completed; struct nos_message request, reply; struct nos_credentials credentials; uintptr_t second_input; size_t second_length; unsigned input_count; };
 static struct host_call calls[NOS_TASKS];
 static uint64_t sequence, fail_reply;
 static unsigned failures, batch_queries, scalar_queries;
@@ -20,6 +20,11 @@ static intptr_t store_error;
 static unsigned store_cancel, store_calls, cancel_after_store;
 static intptr_t fetch_error;
 static unsigned fetch_cancel, fetch_calls;
+static intptr_t fetch_second_error;
+static unsigned fetch_second_cancel, fetch_second_calls;
+static void *host_mappings[16];
+static struct { uintptr_t handle; void *address; size_t length; } host_shared[32];
+static uintptr_t host_shared_sequence;
 static size_t uart_bytes, uart_calls, uart_max;
 static unsigned char archive_image[1536];
 static struct { uintptr_t owner; intptr_t state; unsigned used; } host_groups[NOS_TASKS + 4];
@@ -37,7 +42,33 @@ size_t u_strlen(const char *text) { return strlen(text); }
 int u_streq(const char *a, const char *b) { return !strcmp(a, b); }
 intptr_t nos_syscall(uintptr_t number, uintptr_t a, uintptr_t b, uintptr_t c)
 {
-    (void)c;
+    if (number == NOS_SYS_MMAP) {
+        if (a != 3 || !b || c) return -NOS_EINVAL;
+        for (unsigned i = 0; i < sizeof(host_mappings) / sizeof(host_mappings[0]); i++) if (!host_mappings[i]) {
+            void *memory = calloc(1, b); if (!memory) return -NOS_ENOMEM;
+            host_mappings[i] = memory; return (intptr_t)memory;
+        }
+        return -NOS_ENOMEM;
+    }
+    if (number == NOS_SYS_MUNMAP) return 0;
+    if (number == NOS_SYS_SHARED) {
+        struct nos_shared_request *request = (void *)b;
+        if (a == NOS_SHARED_CREATE) {
+            for (unsigned i = 0; i < sizeof(host_shared) / sizeof(host_shared[0]); i++) if (!host_shared[i].handle) {
+                void *memory = calloc(1, request->length); if (!memory) return -NOS_ENOMEM;
+                uintptr_t handle = ++host_shared_sequence;
+                host_shared[i].handle = handle; host_shared[i].address = memory; host_shared[i].length = request->length;
+                return (intptr_t)handle;
+            }
+            return -NOS_ENOMEM;
+        }
+        for (unsigned i = 0; i < sizeof(host_shared) / sizeof(host_shared[0]); i++) if (host_shared[i].handle == request->handle) {
+            if (a == NOS_SHARED_MAP) return (intptr_t)host_shared[i].address;
+            if (a == NOS_SHARED_RELEASE) { free(host_shared[i].address); memset(&host_shared[i], 0, sizeof(host_shared[i])); return 0; }
+            if (a == NOS_SHARED_GRANT) return 0;
+        }
+        return -NOS_EINVAL;
+    }
     if (number == NOS_SYS_IPC_SUBJECT) {
         const struct nos_ipc_subject_query *query = (void *)a;
         if (subject_error) return subject_error;
@@ -95,19 +126,22 @@ intptr_t nos_syscall(uintptr_t number, uintptr_t a, uintptr_t b, uintptr_t c)
     if (number == NOS_SYS_IPC_XFER) {
         const struct nos_ipc_xfer *transfer = (void *)a;
         struct host_call *call = &calls[(uintptr_t)transfer->sender % NOS_TASKS];
-        if (transfer->direction > NOS_IPC_STORE) return -NOS_EINVAL;
+        if (transfer->direction > NOS_IPC_FETCH_SECOND) return -NOS_EINVAL;
         int store = transfer->direction == NOS_IPC_STORE;
-        if (store ? store_cancel : fetch_cancel) call->active = 0;
+        int second = transfer->direction == NOS_IPC_FETCH_SECOND;
+        if (second && call->input_count < 2) return -NOS_EINVAL;
+        if (store ? store_cancel : second ? fetch_second_cancel : fetch_cancel) call->active = 0;
         if (!call->active || call->sender != transfer->sender || call->token != transfer->token) return -NOS_EPERM;
-        size_t length = store ? call->request.bulk_out_len : call->request.bulk_in_len;
-        uintptr_t base = store ? call->request.bulk_out : call->request.bulk_in;
+        size_t length = store ? call->request.bulk_out_len : second ? call->second_length : call->request.bulk_in_len;
+        uintptr_t base = store ? call->request.bulk_out : second ? call->second_input : call->request.bulk_in;
         if (transfer->offset > length || transfer->count > length - transfer->offset) return -NOS_EINVAL;
         if (store) {
             store_calls++; if (store_error) return store_error;
             memcpy((void *)(base + transfer->offset), (void *)transfer->buffer, transfer->count);
             if (cancel_after_store) call->active = 0;
         } else {
-            fetch_calls++; if (fetch_error) return fetch_error;
+            if (second) { fetch_second_calls++; if (fetch_second_error) return fetch_second_error; }
+            else { fetch_calls++; if (fetch_error) return fetch_error; }
             memcpy((void *)transfer->buffer, (void *)(base + transfer->offset), transfer->count);
         }
         return 0;
@@ -157,21 +191,25 @@ int nos_fat_rename(const char *p,const char *n) { (void)p;(void)n;return -NOS_EN
 int nos_fat_sync(void) { return -NOS_ENOTSUP; }
 static void check(int condition, const char *name)
 { printf("%s %s\n", condition ? "PASS" : "FAIL", name); failures += !condition; }
-static intptr_t invoke(unsigned owner, unsigned sender, struct nos_message *message, int finish)
+static intptr_t invoke_inputs(unsigned owner, unsigned sender, struct nos_message *message, int finish, uintptr_t second, size_t second_length, unsigned input_count)
 {
     message->sender = sender; message->process = owner; message->token = ++sequence;
     struct host_call *call = &calls[sender % NOS_TASKS];
-    *call = (struct host_call){ .sender = sender, .token = sequence, .active = 1, .request = *message, .credentials = host_credentials };
+    *call = (struct host_call){ .sender = sender, .token = sequence, .active = 1, .request = *message, .credentials = host_credentials, .second_input = second, .second_length = second_length, .input_count = input_count };
     defer_reply = 0; service(message);
     if (!defer_reply) { call->active = 0; call->completed = 1; call->result = message->value; call->reply = *message; }
     if (finish) service_complete();
     if (call->completed) { *message = call->reply; return call->result; }
     return HOST_PENDING;
 }
+static intptr_t invoke(unsigned owner, unsigned sender, struct nos_message *message, int finish)
+{ return invoke_inputs(owner, sender, message, finish, 0, 0, 1); }
 static int open_file_as(unsigned owner, unsigned sender, const char *name, unsigned flags)
 {
     struct nos_message message = { .op = NOS_VFS_OPEN, .arg = flags, .len = strlen(name) + 1 };
-    strcpy(message.data, name); return (int)invoke(owner, sender, &message, 1);
+    if (message.len <= NOS_MSG_DATA) strcpy(message.data, name);
+    else { message.bulk_in = (uintptr_t)name; message.bulk_in_len = message.len; message.len = 0; }
+    return (int)invoke(owner, sender, &message, 1);
 }
 static int open_file(unsigned owner, const char *name, unsigned flags)
 { return open_file_as(owner, owner, name, flags); }

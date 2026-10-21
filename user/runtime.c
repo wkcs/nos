@@ -101,6 +101,67 @@ intptr_t nos_rpc(struct nos_message *m)
     intptr_t rc = nos_syscall(NOS_SYS_CALL, 0, (uintptr_t)m, (uintptr_t)m);
     return rc < 0 ? rc : m->value;
 }
+#ifdef NOS_LINUX_COMPAT
+/* Keep the common short pathname on the stack; long snapshots have private,
+ * operation-scoped mappings rather than PATH_MAX-sized gateway frames. */
+struct path_snapshot {
+    char initial[NOS_MSG_DATA];
+    char *data;
+    size_t length;
+    uintptr_t allocation;
+};
+static void path_snapshot_release(struct path_snapshot *snapshot)
+{
+    if (snapshot->allocation)
+        (void)nos_syscall(NOS_SYS_MUNMAP, snapshot->allocation, NOS_PATH_MAX, 0);
+}
+/* A chunk never crosses a source page, so a NUL immediately before a guard
+ * is accepted without touching the guard. No call reads byte PATH_MAX + 1. */
+static int copy_path_part(char *destination, uintptr_t source, size_t start,
+                          size_t capacity, size_t *length)
+{
+    for (size_t at = start; at < capacity;) {
+        if (at > UINTPTR_MAX - source) return -NOS_EFAULT;
+        uintptr_t address = source + at;
+        size_t chunk = NOS_PAGE_SIZE - (address & (NOS_PAGE_SIZE - 1u));
+        if (chunk > 256u) chunk = 256u;
+        if (chunk > capacity - at) chunk = capacity - at;
+        int rc = nos_user_copy(destination + at, (const void *)address, chunk);
+        if (rc) return rc;
+        for (size_t i = 0; i < chunk; i++) if (!destination[at + i]) {
+            *length = at + i + 1; return 0;
+        }
+        at += chunk;
+    }
+    return -NOS_ENAMETOOLONG;
+}
+static int path_snapshot_copy(struct path_snapshot *snapshot, const char *path)
+{
+    if (!path) return -NOS_EFAULT;
+    snapshot->data = snapshot->initial;
+    int rc = copy_path_part(snapshot->initial, (uintptr_t)path, 0,
+                            sizeof(snapshot->initial), &snapshot->length);
+    if (rc != -NOS_ENAMETOOLONG) return rc;
+    intptr_t allocation = nos_syscall(NOS_SYS_MMAP, NOS_PROT_READ | NOS_PROT_WRITE, NOS_PATH_MAX, 0);
+    if (nos_pointer_is_error(allocation)) return (int)allocation;
+    snapshot->allocation = (uintptr_t)allocation;
+    snapshot->data = (char *)(uintptr_t)allocation;
+    u_memcpy(snapshot->data, snapshot->initial, sizeof(snapshot->initial));
+    return copy_path_part(snapshot->data, (uintptr_t)path, sizeof(snapshot->initial),
+                          NOS_PATH_MAX, &snapshot->length);
+}
+#define PATH_SNAPSHOT(name) struct path_snapshot name __attribute__((cleanup(path_snapshot_release))) = {0}
+static int path_output_prepare(struct path_snapshot *snapshot, size_t capacity)
+{
+    snapshot->data = snapshot->initial;
+    if (capacity <= sizeof(snapshot->initial)) return 0;
+    intptr_t allocation = nos_syscall(NOS_SYS_MMAP, NOS_PROT_READ | NOS_PROT_WRITE, NOS_PATH_MAX, 0);
+    if (nos_pointer_is_error(allocation)) return (int)allocation;
+    snapshot->allocation = (uintptr_t)allocation;
+    snapshot->data = (char *)(uintptr_t)allocation;
+    return 0;
+}
+#else
 static int copy_path(char *destination, const char *path, size_t *length)
 {
     if (!path) return -NOS_EFAULT;
@@ -111,12 +172,21 @@ static int copy_path(char *destination, const char *path, size_t *length)
     }
     return -NOS_ENAMETOOLONG;
 }
+#endif
 static intptr_t path_call(struct nos_message *message, const char *path)
 {
+#ifdef NOS_LINUX_COMPAT
+    PATH_SNAPSHOT(snapshot);
+    int rc = path_snapshot_copy(&snapshot, path);
+    if (rc) return rc;
+    size_t bytes = snapshot.length;
+    const char *safe_path = snapshot.data;
+#else
     char safe_path[NOS_PATH_MAX];
     size_t bytes;
     int rc = copy_path(safe_path, path, &bytes);
     if (rc) return rc;
+#endif
 #ifdef NOS_LINUX_COMPAT
     if (bytes > NOS_MSG_DATA) {
         message->bulk_in = (uintptr_t)safe_path;
@@ -198,15 +268,14 @@ int nos_chown_at(int directory, const char *path, uint32_t uid, uint32_t gid, un
 {
 #ifdef NOS_LINUX_COMPAT
     if (flags & ~NOS_AT_SYMLINK_NOFOLLOW) return -NOS_EINVAL;
-    char safe_path[NOS_PATH_MAX];
-    size_t bytes;
-    int rc = copy_path(safe_path, path, &bytes);
+    PATH_SNAPSHOT(snapshot);
+    int rc = path_snapshot_copy(&snapshot, path);
     if (rc) return rc;
     uint32_t ids[2] = {uid, gid};
     /* Ownership metadata occupies the inline payload. The path always uses
      * a token-bound input span, including short paths. */
     struct nos_message m = { .op = NOS_VFS_CHOWN, .arg = directory, .value = flags,
-        .len = sizeof(ids), .bulk_in = (uintptr_t)safe_path, .bulk_in_len = bytes };
+        .len = sizeof(ids), .bulk_in = (uintptr_t)snapshot.data, .bulk_in_len = snapshot.length };
     u_memcpy(m.data, ids, sizeof(ids));
     return (int)nos_rpc(&m);
 #else
@@ -247,6 +316,28 @@ int nos_credentials_set(unsigned command, const struct nos_credential_request *r
 }
 static int path_pair(struct nos_message *m, const char *first, const char *second)
 {
+#ifdef NOS_LINUX_COMPAT
+    PATH_SNAPSHOT(a);
+    PATH_SNAPSHOT(b);
+    int rc = path_snapshot_copy(&a, first);
+    if (rc) return rc;
+    rc = path_snapshot_copy(&b, second);
+    if (rc) return rc;
+    if (a.length + b.length <= NOS_MSG_DATA) {
+        u_memcpy(m->data, a.data, a.length);
+        u_memcpy(m->data + a.length, b.data, b.length);
+        m->len = a.length + b.length;
+        return (int)nos_rpc(m);
+    }
+    uint32_t lengths[2] = {(uint32_t)a.length, (uint32_t)b.length};
+    u_memcpy(m->data, lengths, sizeof(lengths)); m->len = sizeof(lengths);
+    m->bulk_in = (uintptr_t)a.data; m->bulk_in_len = a.length;
+    struct nos_callv_args args = { .request = (uintptr_t)m, .reply = (uintptr_t)m,
+        .inputs = {{(uintptr_t)a.data, a.length}, {(uintptr_t)b.data, b.length}},
+        .input_count = 2 };
+    intptr_t result = nos_syscall(NOS_SYS_IPC_VECTOR, NOS_IPC_VECTOR_CALL, (uintptr_t)&args, 0);
+    return (int)(result < 0 ? result : m->value);
+#else
     char paths[2 * NOS_PATH_MAX];
     size_t first_size, second_size;
     int rc = copy_path(paths, first, &first_size);
@@ -254,15 +345,10 @@ static int path_pair(struct nos_message *m, const char *first, const char *secon
     rc = copy_path(paths + first_size, second, &second_size);
     if (rc) return rc;
     size_t total = first_size + second_size;
-#ifdef NOS_LINUX_COMPAT
-    if (total > NOS_MSG_DATA) {
-        m->bulk_in = (uintptr_t)paths; m->bulk_in_len = total; m->len = 0;
-    } else
-#else
     if (total > NOS_MSG_DATA) return -NOS_ENAMETOOLONG;
-#endif
-    { u_memcpy(m->data, paths, total); m->len = total; }
+    u_memcpy(m->data, paths, total); m->len = total;
     return (int)nos_rpc(m);
+#endif
 }
 int nos_symlink_at(const char *target, int directory, const char *path)
 {
@@ -529,19 +615,26 @@ intptr_t nos_getcwd(char *buffer, size_t capacity)
 {
     if (!capacity) return -NOS_ERANGE;
     size_t span = capacity < NOS_PATH_MAX ? capacity : NOS_PATH_MAX;
+#ifdef NOS_LINUX_COMPAT
+    PATH_SNAPSHOT(output);
+    int rc = path_output_prepare(&output, span);
+#else
     int rc = nos_user_check(buffer, span, NOS_PROT_WRITE);
+#endif
     if (rc) return rc;
     struct nos_message m = { .op = NOS_VFS_GETCWD };
 #ifdef NOS_LINUX_COMPAT
-    m.bulk_out = (uintptr_t)buffer; m.bulk_out_len = span;
+    m.bulk_out = (uintptr_t)output.data; m.bulk_out_len = span;
 #endif
     intptr_t result = nos_rpc(&m);
     if (result < 0) return result;
 #ifdef NOS_LINUX_COMPAT
     if (!result || (size_t)result > span || m.len) return -NOS_EIO;
-    char terminator;
-    rc = nos_user_copy(&terminator, buffer + result - 1, 1);
-    return rc ? rc : terminator ? -NOS_EIO : result;
+    if (output.data[result - 1]) return -NOS_EIO;
+    /* Only the actual result must be writable, even when capacity extends
+     * past a guard. The private IPC span satisfies whole-span preflight. */
+    rc = nos_user_copy(buffer, output.data, (size_t)result);
+    return rc ? rc : result;
 #else
     if (!m.len || m.len > NOS_MSG_DATA || m.data[m.len - 1]) return -NOS_EIO;
     if (m.len > capacity) return -NOS_ERANGE;
@@ -559,16 +652,23 @@ intptr_t nos_readlink_at(int directory, const char *path, char *buffer, size_t c
 {
     if (!capacity) return -NOS_EINVAL;
     size_t span = capacity < NOS_PATH_MAX ? capacity : NOS_PATH_MAX;
+#ifdef NOS_LINUX_COMPAT
+    PATH_SNAPSHOT(output);
+    int rc = path_output_prepare(&output, span);
+#else
     int rc = nos_user_check(buffer, span, NOS_PROT_WRITE);
+#endif
     if (rc) return rc;
     struct nos_message m = { .op = NOS_VFS_READLINK, .arg = directory };
 #ifdef NOS_LINUX_COMPAT
-    m.bulk_out = (uintptr_t)buffer; m.bulk_out_len = span;
+    m.bulk_out = (uintptr_t)output.data; m.bulk_out_len = span;
 #endif
     intptr_t n = path_call(&m, path);
     if (n < 0) return n;
 #ifdef NOS_LINUX_COMPAT
-    return (size_t)n > span || m.len ? -NOS_EIO : n;
+    if ((size_t)n > span || m.len) return -NOS_EIO;
+    rc = nos_user_copy(buffer, output.data, (size_t)n);
+    return rc ? rc : n;
 #else
     if ((size_t)n > m.len || m.len > NOS_MSG_DATA) return -NOS_EIO;
     size_t copied = (size_t)n < capacity ? (size_t)n : capacity;

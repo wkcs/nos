@@ -35,7 +35,9 @@ static intptr_t dispatch(uintptr_t nr, uintptr_t a, uintptr_t b, uintptr_t c)
 {
 #if defined(NOS_MMU) && defined(NOS_LINUX_COMPAT)
     if (current_task->abi == NOS_ABI_GATEWAY && current_task->signal_pending & ~current_task->signal_mask &&
-        (nr == NOS_SYS_CALL || nr == NOS_SYS_CALL_EX || nr == NOS_SYS_SLEEP || nr == NOS_SYS_FUTEX_WAIT))
+        (nr == NOS_SYS_CALL || nr == NOS_SYS_CALL_EX ||
+         (nr == NOS_SYS_IPC_VECTOR && a == NOS_IPC_VECTOR_CALL) ||
+         nr == NOS_SYS_SLEEP || nr == NOS_SYS_FUTEX_WAIT))
         return -NOS_EINTR;
 #endif
     switch (nr) {
@@ -115,6 +117,7 @@ static intptr_t dispatch(uintptr_t nr, uintptr_t a, uintptr_t b, uintptr_t c)
 #endif
     }
     case NOS_SYS_CALL: return ipc_call(a, b, c, 0);
+    case NOS_SYS_IPC_VECTOR: return ipc_vector(a, b, c);
     case NOS_SYS_RECV: return ipc_recv(a, b);
     case NOS_SYS_REPLY: return ipc_reply(a, b);
     case NOS_SYS_IPC_XFER: return b || c ? -NOS_EINVAL : ipc_xfer(a);

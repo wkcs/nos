@@ -57,6 +57,9 @@ void nos_linux_regression(void)
     result = run_linux("/bin/glibc_credentials");
     failed("/bin/glibc_credentials", result);
     nos_check(result == 0, "glibc_credentials_application");
+    result = run_linux("/bin/glibc_path4096");
+    failed("/bin/glibc_path4096", result);
+    nos_check(result == 0, "glibc_path4096_application");
     result = run_linux("/bin/glibc_resources");
     failed("/bin/glibc_resources", result);
     nos_check(result == 0, "glibc_resources_application");

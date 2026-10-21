@@ -10,7 +10,7 @@
 #define _POSIX_MONOTONIC_CLOCK 1
 #endif
 struct nos_time_value { int64_t seconds; uint32_t nanoseconds; };
-#define NOS_DIRENT_RECORD_MAX ((19u + NOS_PATH_MAX + 7u) & ~7u)
+#define NOS_DIRENT_RECORD_MAX ((19u + NOS_NAME_MAX + 1u + 7u) & ~7u)
 void nos_time_from_ticks(uint64_t ticks, struct nos_time_value *value);
 int nos_clock_snapshot(struct nos_time_value *value);
 int nos_clock_read(unsigned clock, struct nos_time_value *value);

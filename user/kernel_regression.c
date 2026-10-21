@@ -11,6 +11,7 @@ static int wait_for(intptr_t pid, intptr_t expected)
 #include "record_lock_gc_regression.h"
 #include "credentials_regression.h"
 #include "resources_regression.h"
+#include "path_span_regression.h"
 static void endpoint_service(uintptr_t endpoint)
 {
     nos_syscall(NOS_SYS_SLEEP, 1, 0, 0);
@@ -417,6 +418,7 @@ void nos_kernel_regression(void)
     nos_record_gc_regression();
     nos_credentials_regression();
     nos_resources_regression();
+    nos_path_span_regression();
     struct nos_abi_info abi;
     nos_check(!nos_syscall(NOS_SYS_ABI_QUERY, (uintptr_t)&abi, 0, 0) &&
         abi.version == NOS_ABI_VERSION && abi.word_bits == sizeof(uintptr_t) * 8 &&

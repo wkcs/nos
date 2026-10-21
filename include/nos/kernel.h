@@ -111,6 +111,9 @@ struct task {
     /* One-based pool reference; zero means no owned process credentials. */
     unsigned credential_ref;
     struct nos_ipc_subject request_subject;
+    /* Fixed READ-vector descriptors belong to this outstanding CALL only. */
+    struct nos_ipc_span request_second_input;
+    unsigned request_input_count;
 #endif
     uintptr_t tls_slot, tls_value;
 #ifdef NOS_MMU
@@ -232,6 +235,7 @@ void ipc_init(void);
 void ipc_task_exit(struct task *task);
 void ipc_task_inherit(struct task *task, const struct task *parent);
 intptr_t ipc_call(uintptr_t endpoint, uintptr_t request, uintptr_t reply, uint64_t timeout);
+intptr_t ipc_vector(uintptr_t action, uintptr_t arguments, uintptr_t reserved);
 intptr_t ipc_recv(uintptr_t endpoint, uintptr_t buffer);
 intptr_t ipc_reply(uintptr_t pid, uintptr_t buffer);
 intptr_t ipc_xfer(uintptr_t request);

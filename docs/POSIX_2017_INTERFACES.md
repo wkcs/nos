@@ -10,8 +10,8 @@
 | 定位 I/O：pread/pwrite | 64 位消息偏移、不改变 OFD 偏移、错误/短 I/O | native wrapper 使用 64 位偏移；Linux profile 的大 pread 使用 512 字节 bulk 中转，成功回复后再发布当前块，取消失败不发布该块；Newlib 的 off_t 仍受其真实 ABI 宽度限制 |
 | 文件信息：stat/lstat/fstat/fstatat | 实际 inode、类型/大小、链接数、所有者和时间；不能截断不可表示的数据 | 新 stat64 IPC；Newlib 的 ino_t/off_t/time_t 宽度需要溢出处理；权限和时间更新仍不完整 |
 | 目录：opendir/fdopendir/readdir/readdir_r/dirfd/rewinddir/telldir/seekdir/closedir | 每 OFD cursor、点目录、EOF 与 errno、长目录项、cookie 定位 | 新 getdents64 分片、Newlib DIR 实现、musl 真实目录实现桥接；新增独立 markers 验证 |
-| 路径：getcwd/chdir/fchdir、*at | 进程共享 cwd、dirfd 相对解析、绝对路径忽略 dirfd、空路径和 flags 校验 | 用户态 VFS 解析；Linux profile 输入路径含 NUL 上限 256 字节，双路径 512 字节经 token 绑定 bulk IPC 复制，默认仍 64 字节。三 MMU SMP2 的真实 glibc 已通过 guard 末尾 NUL、跨 guard EFAULT、最长双路径、280 字节目录项、getcwd 有界输出和最长 cwd 返回上级；相对执行另由进程程序验收，不宣称无限路径 |
-| 文件修改：mkdir/rmdir/unlink/rename/link/symlink/readlink/chmod/chown/utimensat/truncate/umask | 链接身份、权限检查、创建 mode、时间变更和原子 rename | RAM 后端新增真实 mode/umask、截断补零、硬链接身份和符号链接解析；ARM Newlib 已通过新增回归；Linux profile 已接入 RAM chown/access 与 DAC；本批真实 QEMU 验收尚在推进。秒级时间不等于完整 utimensat，持久格式与跨后端完整语义仍未齐 |
+| 路径：getcwd/chdir/fchdir、*at | 进程共享 cwd、dirfd 相对解析、绝对路径忽略 dirfd、空路径和 flags 校验 | 用户态 VFS 解析；Linux profile RAM路径含NUL上限4096、组件255，两个独立READ spans各最多4096并绑定同一token，默认仍64字节。三MMU单核/四核及完整冻结验收通过guard末尾NUL、跨guard EFAULT、双长路径、280字节目录项、getcwd/readlink实际输出预检与cwd身份；相对执行另由进程程序验收，不宣称无限路径 |
+| 文件修改：mkdir/rmdir/unlink/rename/link/symlink/readlink/chmod/chown/utimensat/truncate/umask | 链接身份、权限检查、创建 mode、时间变更和原子 rename | RAM 后端新增真实 mode/umask、截断补零、硬链接身份和符号链接解析；ARM Newlib 已通过新增回归；Linux profile 已接入 RAM chown/access 与 DAC；对应凭据/权限和PATH4096批次均有三架构真实QEMU及完整冻结验收。秒级时间不等于完整 utimensat，持久格式与跨后端完整语义仍未齐 |
 | 进程：fork/exec*/wait*/_exit/exit/atexit/getpid | 地址空间复制、子进程继承、CLOEXEC、生存期和 wait 状态 | Linux personality 已有真实 fork、同 PID exec 替换、wait 状态以及 OFD/cwd/umask 继承和 CLOEXEC；ARM SMP2 glibc 进程程序已通过。native Newlib/musl 不因 Linux personality 通过而自动获得这些接口 |
 | 身份、会话、作业控制：getuid/setuid/getgroups/setsid/setpgid/tcsetpgrp | 权限凭据、会话和进程组、控制终端 | Linux profile 已实现独立凭据引用对象、real/effective/saved UID/GID、32 补充组，CALL 时捕获身份供 VFS 授权，用户信号按实际身份检查；成功 exec 将保存 ID 更新为有效 ID，失败保持旧凭据；三 MMU 单核/四核真实 glibc 和完整 68 组验收通过。glibc 的 ngroups_max 查询对应实际 proc 节点。set-ID ELF、fsuid/fsgid、完整控制终端及作业控制仍缺；默认 native 不自动获得这些接口 |
 | 信号：sigaction/sigprocmask/sigsuspend/sigwait/kill/raise | 每线程 mask、进程 pending、处理器帧/返回、默认动作、EINTR/restart | native musl port 只有线程 mask 状态；Linux personality 已新增真实投递/返回，glibc 信号及 NPTL 取消必须按各架构独立报告 |
@@ -32,3 +32,6 @@ POSIX 的可选功能需要按规范的 option 标识分别选择和记录，例
 本轮新增 libc 检查标记为 `posix_openat_positioned_io_stat`、`posix_cwd_relative_paths`、`posix_directory_iteration_seek`、`posix_directory_long_record`、`posix_poll_select_readiness`、`posix_poll_timeout_eof_invalid`、`posix_metadata_modes_truncate`、`posix_metadata_links_symlinks`。只有对应架构实际运行和严格报告通过后，才能将本表中的新增实现写入已验证能力表。详细运行身份以报告保存的源码、配置、镜像和工具摘要为准。
 
 长路径应用的独立三架构 SMP2 报告为 `out/microkernel/glibc-reports/1792131012152301653/results.json`，ARM/A64/RV64 分别通过 103/104/105 项检查并退出 0。这是 focused 开发验证；最终统一验收必须重新执行包含全部应用的冻结源码矩阵。
+
+
+PATH4096批次已验收：RAM总路径4095个非NUL字符、组件255、同次调用的两个4096字节输入、长符号链接、cwd改名及删除后旧引用身份。旧256路径回归仍保留；本批宿主8项、三架构六个新应用专项及完整68组均通过，报告 `1792569009279952329`。持久化64、archive256和已删除目录的完整相对解析边界仍单列。

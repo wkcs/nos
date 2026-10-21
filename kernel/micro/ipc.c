@@ -177,7 +177,8 @@ static struct task *oldest_request(unsigned handle)
     }
     return selected;
 }
-intptr_t ipc_call(uintptr_t handle, uintptr_t request, uintptr_t reply, uint64_t timeout)
+static intptr_t call_begin(uintptr_t handle, uintptr_t request, uintptr_t reply, uint64_t timeout,
+                           const struct nos_callv_args *vector)
 {
     unsigned i; struct endpoint *ep = lookup(handle, &i);
     if (!(current_task->caps & NOS_CAP_IPC) || !ep || !(current_task->endpoint_rights[i] & NOS_RIGHT_CALL)) return -NOS_EACCES;
@@ -193,9 +194,20 @@ intptr_t ipc_call(uintptr_t handle, uintptr_t request, uintptr_t reply, uint64_t
         user_copy_in(&current_task->request, request, sizeof(struct nos_message))) return -NOS_EFAULT;
     if (current_task->request.len > NOS_MSG_DATA) return -NOS_EINVAL;
 #ifdef NOS_LINUX_COMPAT
+    if (vector) {
+        current_task->request.bulk_in = vector->input_count ? (uintptr_t)vector->inputs[0].address : 0;
+        current_task->request.bulk_in_len = vector->input_count ? (size_t)vector->inputs[0].length : 0;
+    }
     if (current_task->request.bulk_in_len > NOS_IPC_BULK_MAX || current_task->request.bulk_out_len > NOS_IPC_BULK_MAX) return -NOS_EINVAL;
     if ((current_task->request.bulk_in_len && !user_access(current_task, current_task->request.bulk_in, current_task->request.bulk_in_len, 0)) ||
         (current_task->request.bulk_out_len && !user_access(current_task, current_task->request.bulk_out, current_task->request.bulk_out_len, 1))) return -NOS_EFAULT;
+    if (vector && vector->input_count == 2 && vector->inputs[1].length &&
+        !user_access(current_task, (uintptr_t)vector->inputs[1].address, (size_t)vector->inputs[1].length, 0)) return -NOS_EFAULT;
+    current_task->request_input_count = vector ? vector->input_count : 1;
+    current_task->request_second_input = vector && vector->input_count == 2 ?
+        vector->inputs[1] : (struct nos_ipc_span){0, 0};
+#else
+    (void)vector;
 #endif
     if (current_task->request.op < 0) return -NOS_EPERM;
     if (request_sequence == UINT64_MAX) return -NOS_EOVERFLOW;
@@ -220,6 +232,34 @@ intptr_t ipc_call(uintptr_t handle, uintptr_t request, uintptr_t reply, uint64_t
         current_task->request_sent = 1; server->state = TASK_READY;
     }
     mutex_recompute(); reschedule = 1; return 0;
+}
+intptr_t ipc_call(uintptr_t handle, uintptr_t request, uintptr_t reply, uint64_t timeout)
+{ return call_begin(handle, request, reply, timeout, NULL); }
+intptr_t ipc_vector(uintptr_t action, uintptr_t pointer, uintptr_t reserved)
+{
+#ifdef NOS_LINUX_COMPAT
+    if (reserved) return -NOS_EINVAL;
+    if (action == NOS_IPC_VECTOR_QUERY) return pointer ? -NOS_EINVAL : 2;
+    if (action != NOS_IPC_VECTOR_CALL) return -NOS_EINVAL;
+    struct nos_callv_args args;
+    if (user_copy_in(&args, pointer, sizeof(args))) return -NOS_EFAULT;
+    if (args.reserved || args.input_count > 2 || args.endpoint > UINTPTR_MAX) return -NOS_EINVAL;
+    if (args.request > UINTPTR_MAX || args.reply > UINTPTR_MAX) return -NOS_EFAULT;
+    for (unsigned i = 0; i < 2; i++) {
+        if (i >= args.input_count) {
+            if (args.inputs[i].address || args.inputs[i].length) return -NOS_EINVAL;
+        } else {
+            if (args.inputs[i].length > NOS_IPC_BULK_MAX) return -NOS_EINVAL;
+            if (args.inputs[i].address > UINTPTR_MAX) return -NOS_EFAULT;
+        }
+    }
+    /* Descriptor copies are immutable before publishing the request. The
+     * normal CALL path preflights all READ inputs and the existing WRITE span. */
+    return call_begin((uintptr_t)args.endpoint, (uintptr_t)args.request, (uintptr_t)args.reply,
+                      args.timeout_ticks, &args);
+#else
+    (void)action; (void)pointer; (void)reserved; return -NOS_ENOTSUP;
+#endif
 }
 intptr_t ipc_recv(uintptr_t handle, uintptr_t buffer)
 {
@@ -280,18 +320,23 @@ intptr_t ipc_xfer(uintptr_t pointer)
         args.token != client->request.token) return -NOS_EPERM;
     unsigned index; struct endpoint *endpoint = lookup(client->endpoint_handle, &index);
     if (!endpoint || endpoint->owner != current_task->id || !(current_task->endpoint_rights[index] & NOS_RIGHT_RECV)) return -NOS_EPERM;
-    if (args.direction > NOS_IPC_STORE || args.count > NOS_IPC_BULK_MAX) return -NOS_EINVAL;
-    uintptr_t base = args.direction == NOS_IPC_FETCH ? client->request.bulk_in : client->request.bulk_out;
-    size_t length = args.direction == NOS_IPC_FETCH ? client->request.bulk_in_len : client->request.bulk_out_len;
+    if (args.direction > NOS_IPC_FETCH_SECOND || args.count > NOS_IPC_BULK_MAX ||
+        (args.direction == NOS_IPC_FETCH && !client->request_input_count) ||
+        (args.direction == NOS_IPC_FETCH_SECOND && client->request_input_count < 2)) return -NOS_EINVAL;
+    unsigned fetch = args.direction != NOS_IPC_STORE;
+    uintptr_t base = args.direction == NOS_IPC_FETCH_SECOND ? (uintptr_t)client->request_second_input.address :
+        fetch ? client->request.bulk_in : client->request.bulk_out;
+    size_t length = args.direction == NOS_IPC_FETCH_SECOND ? (size_t)client->request_second_input.length :
+        fetch ? client->request.bulk_in_len : client->request.bulk_out_len;
     if (args.offset > length || args.count > length - args.offset || base > UINTPTR_MAX - args.offset) return -NOS_EINVAL;
     uintptr_t remote = base + args.offset;
-    if (!user_access(client, remote, args.count, args.direction == NOS_IPC_STORE) ||
-        !user_access(current_task, args.buffer, args.count, args.direction == NOS_IPC_FETCH)) return -NOS_EFAULT;
+    if (!user_access(client, remote, args.count, !fetch) ||
+        !user_access(current_task, args.buffer, args.count, fetch)) return -NOS_EFAULT;
     unsigned char chunk[128]; size_t copied = 0;
     while (copied < args.count) {
         size_t count = args.count - copied; if (count > sizeof(chunk)) count = sizeof(chunk);
         int rc;
-        if (args.direction == NOS_IPC_FETCH) {
+        if (fetch) {
             rc = task_copy_in(client, chunk, remote + copied, count);
             if (!rc) rc = user_copy_out(args.buffer + copied, chunk, count);
         } else {

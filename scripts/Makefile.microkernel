@@ -220,6 +220,9 @@ $(O)/apps/glibc_threads.elf: apps/glibc_threads.c $(LINUX_LIBRARIES) $(LINUX_CRT
 $(O)/apps/glibc_poll.elf: apps/glibc_poll.c $(LINUX_LIBRARIES) $(LINUX_CRT_FILES) $(LINUX_MANIFEST) $(BUILD_SIGNATURE)
 	@mkdir -p $(dir $@)
 	$(LINUX_CC) $(LINUX_APP_FLAGS) $< -pthread -ldl -lm -o $@
+$(O)/apps/glibc_path4096.elf: apps/glibc_path4096.c $(LINUX_LIBRARIES) $(LINUX_CRT_FILES) $(LINUX_MANIFEST) $(BUILD_SIGNATURE)
+	@mkdir -p $(dir $@)
+	$(LINUX_CC) $(LINUX_APP_FLAGS) $< -pthread -ldl -lm -o $@
 $(O)/apps/glibc_resources.elf: apps/glibc_resources.c $(LINUX_LIBRARIES) $(LINUX_CRT_FILES) $(LINUX_MANIFEST) $(BUILD_SIGNATURE)
 	@mkdir -p $(dir $@)
 	$(LINUX_CC) $(LINUX_APP_FLAGS) $< -pthread -ldl -lm -o $@
@@ -277,6 +280,8 @@ INITRAMFS_IMAGES += $(O)/apps/glibc_credentials.elf
 INITRAMFS_FILES += --file /bin/glibc_credentials=$(O)/apps/glibc_credentials.elf
 INITRAMFS_IMAGES += $(O)/apps/glibc_resources.elf
 INITRAMFS_FILES += --file /bin/glibc_resources=$(O)/apps/glibc_resources.elf
+INITRAMFS_IMAGES += $(O)/apps/glibc_path4096.elf
+INITRAMFS_FILES += --file /bin/glibc_path4096=$(O)/apps/glibc_path4096.elf
 INITRAMFS_IMAGES += $(O)/apps/glibc_permissions.elf
 INITRAMFS_FILES += --file /bin/glibc_permissions=$(O)/apps/glibc_permissions.elf
 INITRAMFS_IMAGES += $(O)/apps/glibc_pipe_atomic.elf

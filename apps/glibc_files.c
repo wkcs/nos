@@ -105,7 +105,10 @@ static int long_paths(void)
     errno = 0;
     if (stat(symbol, &b) != -1 || errno != ENOENT || unlink(symbol) || unlink(second) ||
         pread(fd, data, 4, 0) != 4 || memcmp(data, "long", 4) || close(fd)) return failed("long_lifetime");
-    char too_long[257]; memset(too_long, 'x', sizeof(too_long)); too_long[0] = '/'; too_long[256] = 0;
+    char too_long[258]; memset(too_long, 'x', sizeof(too_long)); too_long[0] = '/'; too_long[256] = 0;
+    errno = 0;
+    if (open(too_long, O_RDONLY) != -1 || errno != ENOENT) return failed("name255_missing");
+    too_long[256] = 'x'; too_long[257] = 0;
     errno = 0;
     if (open(too_long, O_RDONLY) != -1 || errno != ENAMETOOLONG) return failed("path_limit");
     puts("PASS glibc_path_255_double_path_cwd");

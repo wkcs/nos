@@ -405,24 +405,35 @@ static intptr_t gateway_pselect(const uintptr_t a[6], int wide)
     rc = (int)nos_syscall(NOS_SYS_LINUX_WAITCONTROL, 0, mask[0], 8);
     return rc ? rc : nos_select_gateway((int)a[0], a[1], a[2], a[3], seconds, nanos);
 }
+/* The resolved pathname outlives the runtime input snapshot while exec copies
+ * its arguments. Keep both private path buffers off the 8 KiB gateway stack. */
+static __attribute__((noinline)) intptr_t gateway_execve(const uintptr_t arguments[6])
+{
+    intptr_t allocation = nos_syscall(NOS_SYS_MMAP, NOS_PROT_READ | NOS_PROT_WRITE, NOS_PATH_MAX, 0);
+    if (pointer_error(allocation)) return allocation;
+    char *path = (char *)(uintptr_t)allocation;
+    intptr_t result = nos_resolve_exec_at(LINUX_AT_FDCWD, (const char *)arguments[0], path, NOS_PATH_MAX);
+    if (result < 0) goto out;
+    if (!result || (size_t)result > NOS_PATH_MAX || path[result - 1]) { result = -EIO; goto out; }
+    unsigned char random[16];
+    result = gateway_getrandom((uintptr_t)random, sizeof(random), 0);
+    if (result < 0) goto out;
+    if (result != sizeof(random)) { result = -EIO; goto out; }
+    struct nos_exec_request request = { path,
+        (const char *const *)arguments[1], (const char *const *)arguments[2], 0 };
+    /* Successful replacement destroys the old mapping with its address space;
+     * failed replacement returns here and releases the mapping explicitly. */
+    result = nos_syscall(NOS_SYS_LINUX_EXEC, (uintptr_t)&request,
+        (uintptr_t)random, NOS_EXEC_RANDOM_VALID);
+out:
+    (void)nos_syscall(NOS_SYS_MUNMAP, (uintptr_t)allocation, NOS_PATH_MAX, 0);
+    return result;
+}
 static intptr_t gateway_call(const struct nos_linux_call *call)
 {
     const uintptr_t *a = call->args;
     switch (call->number) {
-    case SYS_execve: {
-        char path[NOS_PATH_MAX];
-        intptr_t resolved = nos_resolve_exec_at(LINUX_AT_FDCWD, (const char *)a[0], path, sizeof(path));
-        if (resolved < 0) return resolved;
-        if (!resolved || (size_t)resolved > sizeof(path) || path[resolved - 1]) return -EIO;
-        unsigned char random[16];
-        intptr_t count = gateway_getrandom((uintptr_t)random, sizeof(random), 0);
-        if (count < 0) return count;
-        if (count != sizeof(random)) return -EIO;
-        struct nos_exec_request request = { path,
-            (const char *const *)a[1], (const char *const *)a[2], 0 };
-        return nos_syscall(NOS_SYS_LINUX_EXEC, (uintptr_t)&request,
-            (uintptr_t)random, NOS_EXEC_RANDOM_VALID);
-    }
+    case SYS_execve: return gateway_execve(a);
 #ifdef SYS_open
     case SYS_open: return gateway_openat(LINUX_AT_FDCWD, a[0], a[1], (unsigned)a[2]);
 #endif

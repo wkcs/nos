@@ -13,7 +13,7 @@ intptr_t bootfile_operation(uintptr_t operation, uintptr_t pointer)
     if (user_copy_in(&request, pointer, sizeof(request))) return -NOS_EFAULT;
     if (request.flags) return -NOS_EINVAL;
     if (operation == NOS_BOOTFILE_LOOKUP) {
-        char path[NOS_PATH_MAX]; unsigned length;
+        char path[NOS_BOOTFILE_PATH_MAX]; unsigned length;
         for (length = 0; length < sizeof(path); length++) {
             if (request.buffer > UINTPTR_MAX - length) return -NOS_EFAULT;
             if (user_copy_in(path + length, request.buffer + length, 1)) return -NOS_EFAULT;
@@ -30,7 +30,7 @@ intptr_t bootfile_operation(uintptr_t operation, uintptr_t pointer)
     if (!name) return -NOS_ENOENT;
     if (operation == NOS_BOOTFILE_ENUM) {
         size_t length = 0; while (name[length]) length++;
-        if (length >= NOS_PATH_MAX) return -NOS_ENAMETOOLONG;
+        if (length >= NOS_BOOTFILE_PATH_MAX) return -NOS_ENAMETOOLONG;
         if (length + 1 > request.count) return -NOS_ERANGE;
         int rc = user_copy_out(request.buffer, name, length + 1);
         return rc ? rc : (intptr_t)(length + 1);

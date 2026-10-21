@@ -246,7 +246,10 @@ static void shared_regression(void)
 #endif
 
 #ifdef NOS_LINUX_COMPAT
-struct long_path_worker { char path[NOS_PATH_MAX]; char marker; };
+/* Keep the established 256-byte fixture bounded; the separate glibc
+ * namespace program exercises full PATH4096 and independent IPC spans. */
+#define LONG_PATH_FIXTURE_MAX 256u
+struct long_path_worker { char path[LONG_PATH_FIXTURE_MAX]; char marker; };
 static void *long_path_worker(void *argument)
 {
     struct long_path_worker *worker = argument;
@@ -258,14 +261,14 @@ static void *long_path_worker(void *argument)
     }
     return 0;
 }
-static void path_suffix(char output[NOS_PATH_MAX], const char *parent, const char *name)
+static void path_suffix(char *output, const char *parent, const char *name)
 {
     size_t count = u_strlen(parent); u_memcpy(output, parent, count); output[count++] = '/';
     u_memcpy(output + count, name, u_strlen(name) + 1);
 }
 static void long_path_regression(void)
 {
-    char archive[NOS_PATH_MAX], deep[NOS_PATH_MAX] = "/tmp", parents[4][NOS_PATH_MAX];
+    char archive[LONG_PATH_FIXTURE_MAX], deep[LONG_PATH_FIXTURE_MAX] = "/tmp", parents[4][LONG_PATH_FIXTURE_MAX];
     size_t at = 0;
     for (unsigned component = 0; component < 4; component++) {
         archive[at++] = '/'; for (unsigned i = 0; i < 50; i++) archive[at++] = (char)('a' + component);
@@ -284,7 +287,7 @@ static void long_path_regression(void)
     fd = nos_openat_mode(directory, "before", NOS_O_CREAT | NOS_O_RDWR, 0600);
     ok &= directory >= 0 && fd >= 0 && nos_write(fd, "long", 4) == 4; if (fd >= 0) nos_close(fd);
     nos_check(ok, "vfs_long_path_openat_archive");
-    char before[NOS_PATH_MAX], after[NOS_PATH_MAX], hard[NOS_PATH_MAX], link[NOS_PATH_MAX], output[NOS_PATH_MAX];
+    char before[LONG_PATH_FIXTURE_MAX], after[LONG_PATH_FIXTURE_MAX], hard[LONG_PATH_FIXTURE_MAX], link[LONG_PATH_FIXTURE_MAX], output[LONG_PATH_FIXTURE_MAX];
     path_suffix(before, deep, "before"); path_suffix(after, deep, "after"); path_suffix(hard, deep, "hard"); path_suffix(link, deep, "symbolic");
     ok = !nos_renameat(NOS_AT_FDCWD, before, NOS_AT_FDCWD, after) && !nos_link_at(NOS_AT_FDCWD, after, NOS_AT_FDCWD, hard);
     ok &= !nos_symlink_at(after, NOS_AT_FDCWD, link);
@@ -305,9 +308,9 @@ static void long_path_regression(void)
     ok &= !nos_chdir("/");
     ok &= !nos_unlinkat(directory, "symbolic", 0) && !nos_unlinkat(NOS_AT_FDCWD, hard, 0) && !nos_unlinkat(NOS_AT_FDCWD, after, 0);
     nos_check(ok, "vfs_long_path_pair_cwd_resolve");
-    char maximum[NOS_PATH_MAX + 1]; maximum[0] = '/';
-    for (unsigned i = 1; i < NOS_PATH_MAX - 1; i++) maximum[i] = 'z';
-    maximum[NOS_PATH_MAX - 1] = 0;
+    char maximum[NOS_NAME_MAX + 3]; maximum[0] = '/';
+    for (unsigned i = 1; i <= NOS_NAME_MAX; i++) maximum[i] = 'z';
+    maximum[NOS_NAME_MAX + 1] = 0;
     fd = nos_open(maximum, NOS_O_CREAT | NOS_O_RDWR); ok = fd >= 0; if (fd >= 0) nos_close(fd);
     int root = nos_open("/", NOS_O_DIRECTORY); unsigned seen = 0;
     unsigned char record[NOS_DIRENT_RECORD_MAX];
@@ -323,7 +326,7 @@ static void long_path_regression(void)
         }
     }
     ok &= seen; if (root >= 0) nos_close(root); ok &= !nos_unlink(maximum);
-    maximum[NOS_PATH_MAX - 1] = 'z'; maximum[NOS_PATH_MAX] = 0;
+    maximum[NOS_NAME_MAX + 1] = 'z'; maximum[NOS_NAME_MAX + 2] = 0;
     ok &= nos_open(maximum, NOS_O_CREAT | NOS_O_RDWR) == -NOS_ENAMETOOLONG;
     nos_check(ok, "vfs_long_dirent_boundary");
     struct long_path_worker work[2]; struct nos_thread threads[2];
