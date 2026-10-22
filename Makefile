@@ -5,6 +5,3 @@ LIBC ?= minimal
 O ?= out/microkernel/$(PLATFORM)/$(LIBC)
 -include out/microkernel/config.mk
 include scripts/Makefile.microkernel
-.PHONY: legacy
-legacy:
-	$(MAKE) -f scripts/Makefile.legacy $(LEGACY_TARGET)

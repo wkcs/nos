@@ -14,7 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--section', action='append', choices=('baseline', 'build', 'normal', 'storage', 'smp', 'mpu', 'rv32', 'applications', 'faults', 'clock', 'glibc', 'posix-vfs', 'posix-path', 'posix-suite', 'posix-suite-expanded', 'shared-files'))
-    parser.add_argument('--include-posix', action='store_true', help='Add the 18 POSIX/glibc groups to the default 50 groups')
+    parser.add_argument('--include-posix', action='store_true', help='Add the 18 POSIX/glibc groups to the default 54 groups')
     parser.add_argument('--dry-run', action='store_true', help='Print the exact command plan without running checks or claiming results')
     parser.add_argument('--require-frozen-source', action='store_true', help='Fail final acceptance if repository source identity changes during the run')
     args = parser.parse_args()
@@ -30,6 +30,7 @@ def main():
     add('baseline', 'eight_platform_libc_combinations', 'tests/qemu_matrix.py')
     add('build', 'incremental_configuration', 'tests/build_configuration.py', '--platform', 'arm64_virt', '--libc', 'musl')
     add('build', 'vfs_host_sanitizers', 'tests/host_vfs.py')
+    add('build', 'nshell_host_sanitizers', 'tests/host_shell.py')
     for platform in ('arm_virt', 'arm64_virt', 'riscv_virt'):
         add('shared-files', f'{platform}_shared_file_pages', 'tests/qemu_shared_files.py', '--platform', platform,
             '--output-root', out / 'shared-files')
@@ -59,6 +60,9 @@ def main():
             add('smp', f'{platform}_{library}_{cpus}_cores', 'tests/qemu_matrix.py', '--platform', platform,
                 '--libc', library, '--cpus', cpus, '--output-root', out / ('smp-libc-' + str(cpus)))
     add('normal', 'stm32_normal_boot', 'tests/qemu_normal.py', '--platform', 'stm32', '--boot-only')
+    for platform in ('riscv_virt', 'riscv32_virt', 'riscv32_nommu'):
+        add('normal', f'{platform}_uart_pending_rearm', 'tests/qemu_uart_rearm.py',
+            '--platform', platform, '--output-root', out / 'uart-rearm')
     for filesystem in ('native', 'fat', 'native-rollback'):
         add('storage', f'arm64_modern_{filesystem}', 'tests/qemu_persistence.py', '--platform', 'arm64_virt',
             '--filesystem', filesystem, '--virtio-version', 'modern')

@@ -199,3 +199,14 @@ AS 限额见下方已完成批次；下一批优先完善稳定进程/地址空�
 4. 后续完善 inode/dentry 命名空间、可执行文件来源、TTY/PTY 和网络服务/真实虚拟 NIC 验证。
 
 当前达到所测 64 worker 与 25 子进程并发，有界配置仍为 80 任务、40 空间/进程对象、32 FD 和 32 MiB 页池；完整 POSIX.1-2017 尚未完成。
+
+## nshell 与源码结构整理
+
+- [x] 将普通启动与 nshell 解析、编辑、命令和交互循环分离；增加引号/转义、严格参数检查、cd/pwd/echo/history、光标和历史编辑、CRLF 去重与输入取消；文件写入处理短写及正确字节数。
+- [x] 内核按 core/sched/ipc/mm/exec/compat 分组，架构目录去除重复 micro 层；运行库拆成独立编译单元，来宾回归与测试 ELF 移到 tests/guest。构建、链接段和当前文档引用同步更新。
+- [x] 清理旧 RTOS、旧板级/配置/调试工具、旧 shell、历史补丁机型和磁盘镜像；保留使用中的 Lua/LVGL 于 third_party，并保留许可证。
+- [x] 修正增量构建测试复用旧对象目录的问题，以及 SMP 远端取消后重启测试未等待合法 EBUSY 的竞态。
+- [x] 修复原版 QEMU PLIC 下 RISC-V UART pending 重新使能丢通知；新增真实 ACK 窗口测试，旧镜像失败对照与 RV64/RV32 MMU/非 MMU 正向验证成立。
+- [x] 最终冻结源码完整验收 72/72、退出 0；1435 个文件及 Git 索引核对一致。报告 `out/microkernel/acceptance/1792678382066433286/results.json`，独立核对 `out/microkernel/shell-final-evidence.json`。
+
+使用说明见 [NSHELL.md](NSHELL.md)，目录职责见 [SOURCE_LAYOUT.md](SOURCE_LAYOUT.md)。完整 POSIX.1-2017 与原有后续生命周期/TTY/网络任务继续按支持范围与未完成清单推进。

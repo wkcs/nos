@@ -2,7 +2,7 @@
 
 <!-- Copyright (C) 2026 NOS contributors -->
 
-默认构建使用跨架构微内核。旧 RTOS 源码与板级实现保留在原目录，经 `make legacy` 调用；旧平台不属于微内核验证结果。实现与验收的执行清单见 [EXECUTION_PLAN.md](EXECUTION_PLAN.md)，命令见 [QEMU_VALIDATION.md](QEMU_VALIDATION.md)。
+默认构建使用跨架构微内核。旧 RTOS 源码、旧板级构建和补丁机型已清理；当前目录见 [SOURCE_LAYOUT.md](SOURCE_LAYOUT.md)。实现与验收的执行清单见 [EXECUTION_PLAN.md](EXECUTION_PLAN.md)，命令见 [QEMU_VALIDATION.md](QEMU_VALIDATION.md)。
 
 ## 特权边界
 
@@ -34,9 +34,11 @@ flowchart LR
 | `irq.c` | 同地址空间授权的 IRQ 对象、绑定、计数、单等待者、超时、屏蔽/确认和退出撤销 |
 | `memory.c` | 清零物理页分配、地址空间引用计数、安全用户复制、映射事务回滚、VMA 范围变更、权限与配额 |
 | `elf.c` | 有界静态 ELF/PIE 装载、段与入口校验、参数/环境/auxv/TLS、失败清理 |
-| `arch/*/micro/` | 启动/异常上下文、MMU/MPU、UART/GIC/PLIC、缓存和 TLB 同步、SMP 引导 |
+| `arch/{arm,arm64,riscv,riscv32}/` | 启动/异常上下文、MMU/MPU、UART/GIC/PLIC、缓存和 TLB 同步、SMP 引导 |
 
 内核进入采用粗粒度全局锁，各 CPU 的用户任务能够并发执行。运行中的任务不能同时被另一 CPU 调度；异核取消延迟到目标 CPU 的安全入口处理。当前没有每 CPU 运行队列或负载均衡策略，不宣称具备大型 SMP 系统的扩展性。
+
+RISC-V `virt` 的 IRQ 重新使能保持 hart 0 supervisor context 的阈值不变并写回，确保重新评估屏蔽期间到达的 pending 源。原版 QEMU 10.0.13 的 [PLIC enable 写入实现](https://github.com/qemu/qemu/blob/v10.0.13/hw/intc/sifive_plic.c) 不主动刷新中断线；该处理避免 UART 有数据却无法唤醒接收线程。RV64、RV32 MMU/非 MMU 的受控 pending 窗口回归由实际 NOS ACK 路径完成恢复，测试只读控制器状态。QEMU 保持原版。
 
 ## 对象与 ABI
 
@@ -89,7 +91,7 @@ Newlib 使用校验过的 4.5.0 源码构建动态重入与 retargetable locking
 
 用户态 VFS 支持目录与路径规范化、独立 open description、dup、unlink-open 生命周期、管道与挂载。virtio-blk 提供 legacy/modern MMIO、DMA、FLUSH 与 IRQ 完成通知；双 bank 后端使用 CRC 和代际提交，FatFs 使用仓库实现的用户态适配。详见 [设备与存储](../servers/drivers/README.md)。没有 IOMMU、热插拔或设备故障的透明事务恢复保证。
 
-Lua 5.4 与 LVGL 9 复用仓库旧库，作为独立用户 ELF 运行；LVGL 验证真实软件渲染和像素变化。软件帧缓冲通过不等于 LCD、USB、GPIO 或真实开发板验证。旧专用 USB、显示、键盘板级代码仍需对应控制器/板卡的服务适配与硬件回归，不参与无模型平台的通过结论。
+Lua 5.4 与 LVGL 9 使用 `third_party/` 中的源码，作为独立用户 ELF 运行；LVGL 验证真实软件渲染和像素变化。软件帧缓冲通过不等于 LCD、USB、GPIO 或真实开发板验证。USB、显示、键盘板级支持仍需对应控制器/板卡的服务适配与硬件回归，不参与无模型平台的通过结论。
 
 ## Linux personality 与共享对象
 

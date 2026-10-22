@@ -83,6 +83,6 @@ python3 tests/qemu_shared_files.py
 python3 tests/qemu_long_paths.py
 ```
 
-`user/libc_regression.c` 的 `vfs_pipe_blocking_read`、`vfs_pipe_blocking_write`、`vfs_pipe_nonblocking` 和 `vfs_pipe_timeout_cancel_reclaims` 验证线程阻塞唤醒、状态标志与取消后的 OFD 引用回收。完整 QEMU 矩阵将这些标记以及内核取消通知、坏回复缓冲区的检查列为必需项。存储开发验收记录在 `out/microkernel/storage-irq-results.json`，包含 13 项、26 次真实启动；最终集成状态以完整验收报告为准。
+`tests/guest/libc_regression.c` 的 `vfs_pipe_blocking_read`、`vfs_pipe_blocking_write`、`vfs_pipe_nonblocking` 和 `vfs_pipe_timeout_cancel_reclaims` 验证线程阻塞唤醒、状态标志与取消后的 OFD 引用回收。完整 QEMU 矩阵将这些标记以及内核取消通知、坏回复缓冲区的检查列为必需项。存储开发验收记录在 `out/microkernel/storage-irq-results.json`，包含 13 项、26 次真实启动；最终集成状态以完整验收报告为准。
 
 UART 输入输出和存储必须通过真实 QEMU 启动验证；宿主替换传输的回归不能替代设备验证。USB、真实 STM32 SD/LCD 控制器、真实开发板的时钟/引脚/电气行为尚未验证；不能将无模型的外设称为已迁移硬件。Lua/LVGL 的独立应用与软件显示迁移由 `apps/` 承载。

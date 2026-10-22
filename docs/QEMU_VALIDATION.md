@@ -33,7 +33,7 @@ make qemu-test
 python3 tests/acceptance.py
 ```
 
-`make qemu-test` 是原有四个平台 × 两种运行库，共八个基础组合。`tests/acceptance.py` 默认运行阶段 0–5 的完整软件验收；可用重复的 `--section` 做开发期间的局部检查。普通系统使用 `BUILD_MODE=normal`，运行独立 ELF 后提供持续存活的 init/UART shell；自测模式才使用测试专用结束接口。
+`make qemu-test` 是原有四个平台 × 两种运行库，共八个基础组合。`tests/acceptance.py` 默认运行阶段 0–5 的基础软件验收；可用重复的 `--section` 做开发期间的局部检查。普通系统使用 `BUILD_MODE=normal`，运行独立 ELF 后提供持续存活的 init/UART shell；自测模式才使用测试专用结束接口。
 
 ```sh
 python3 tests/qemu_matrix.py --platform stm32 --libc all --mpu
@@ -51,7 +51,7 @@ Newlib 默认使用源码构建的动态重入端口，支持 retargetable locks
 |---|---|
 | 基础矩阵 | 八组合；1000 轮资源/端点回收、IPC/锁/权限、线程、C 库、ELF、内存与错误路径 |
 | 构建 | 配置变化、无变化增量、真实静态库更新；VFS 宿主 ASAN/UBSAN 与有界随机输入 |
-| 正常启动 | 三个主架构 UART 输入、独立程序退出后 init 存活、两次 VFS/UART 重启及资源基线；STM32 默认只验证启动 |
+| 正常启动 | 三个主架构 UART 输入、独立程序退出后 init 存活、引号、行编辑、历史、错误输入、两次 VFS/UART 重启及资源基线；STM32 默认只验证启动 |
 | 持久化 | 三架构 × native/FAT × legacy/modern 共 12 组合，加 native 损坏回退；每项两次真实启动、真实 virtio IRQ |
 | SMP | 三主架构 × minimal/真实 libc × 2/4 CPU，共 12 组合；实际用户态并行、锁、TLS、stdio、TLB 同步及宿主时钟核对 |
 | MPU / RV32 | STM32 minimal/Newlib MPU 权限故障；RV32 Sv32 和非 MMU minimal |
@@ -59,7 +59,7 @@ Newlib 默认使用源码构建的动态重入端口，支持 retargetable locks
 | 特权异常 | 六平台故障注入，必须匹配指定 panic、FAIL 和预期 QEMU 退出码；超时不是通过 |
 | 应用 | ARM64/RV64 musl 实际执行独立 Lua/LVGL、TLS；LVGL 为内存渲染验证 |
 
-完整验收为 50 个命令组、66 次 QEMU 启动。宿主 VFS 检查不替代实际 IPC/硬件来宾验证。STM32 非 MPU 和 RV32 非 MMU 不执行 MMU 进程隔离检查；可选 MPU 也不等于 MMU 的任意进程地址空间。
+基础验收为 54 个命令组；加上 `--include-posix` 共 72 组，包含 nshell 宿主消毒器与三架构交互验证，以及 RV64/RV32 两种内存模式的 UART pending 重使能回归。最终完整验收命令为 `python3 tests/acceptance.py --include-posix --require-frozen-source`。宿主 VFS 检查不替代实际 IPC/硬件来宾验证。STM32 非 MPU 和 RV32 非 MMU 不执行 MMU 进程隔离检查；可选 MPU 也不等于 MMU 的任意进程地址空间。
 
 ## 证据与判定
 

@@ -295,3 +295,26 @@ ELF SHA-256 和 `-fstack-usage` 明细 `out/microkernel/process-final-budgets/re
 同轮完整矩阵同时保留六个全量 glibc 中的原有 64 worker 数值验证、默认八组合、stock netduinoplus2 STM32/MPU、RV32 MMU/非 MMU、存储、时钟/故障及独立库应用。未宣称物理板或远端 CI 已通过。
 
 剩余边界：80 任务槽、40 空间/进程对象、32 FD 和 32 MiB 页池仍有界；init/subreaper、完整 wait/会话、可变 STACK、完整命名空间、TTY/作业控制及网络尚未完成，完整 POSIX.1-2017 仍未完成。
+
+## nshell、源码整理与 RISC-V IRQ 重使能
+
+最终命令 `python3 tests/acceptance.py --include-posix --require-frozen-source`：**72/72 组通过，实际验收退出 0**。报告 `out/microkernel/acceptance/1792678382066433286/results.json`；外层退出回执 `out/microkernel/shell-final-exit.json`；独立汇总 `out/microkernel/shell-final-evidence.json`。
+
+验收期间源码与 Git 索引保持不变，1435 个文件逐一核对 SHA256。测试基点 HEAD 为 `4c31189ffe24278449a12d7fd1dad11b03c98f09`，冻结差异 SHA256 为 `f1d0ed29bdd7a473d73980bb35da579e98db5abbc3c462b86b5e46c1bd7fcfca`。验收后仅补写本节与执行清单，非文档文件继续按冻结快照核对。
+
+| glibc 配置 | 通过检查 | 来宾退出 |
+|---|---|---|
+| arm_virt_glibc_1_cores | 331 | 0 |
+| arm_virt_glibc_4_cores | 334 | 0 |
+| arm64_virt_glibc_1_cores | 329 | 0 |
+| arm64_virt_glibc_4_cores | 332 | 0 |
+| riscv_virt_glibc_1_cores | 330 | 0 |
+| riscv_virt_glibc_4_cores | 332 | 0 |
+
+三种 MMU 主架构各完成 35 条 UART shell 交互，覆盖引用与转义、相对路径、错误输入无副作用、编辑/历史/CRLF、独立 ELF、两次服务重启和资源基线。STM32 普通模式验证原版 `netduinoplus2` 启动；MPU 两库与 RV32 MMU/非 MMU、SMP、持久化、时钟边界、特权异常、Lua/LVGL 仍全部通过。nshell 宿主 ASan/UBSan/LSan 检查包含 10 万次解析、1 万次参数往返、10 万次编辑随机输入与边界用例。该结果覆盖有界 nshell，支持范围见 [NSHELL.md](NSHELL.md)。
+
+RISC-V UART 的一次真实停顿由 GDB 确认：ring 为空、接收线程等待 IRQ、UART LSR=`0x61`/IER=`1`，PLIC pending 与 enable 均为 `0x400`，但 sip=`0`；未补发输入，仅写回阈值原值即恢复。证据 `out/microkernel/shell-uart-diagnostic/1792677863540668155/1/`。NOS 在解除屏蔽后保持阈值不变并写回，使原版 QEMU 10.0.13 重新评估 pending。QEMU 本身未修改。
+
+新增受控回归在真实 NOS ACK 处暂停，注入静默触发字符及屏蔽期间输入，随后只恢复 NOS 代码；测试不写控制器寄存器。旧 RV64 镜像 SHA256 `e85e1e467c63ba5a9918f8f10df4635970d702c45ff57bd4da6c44b233caf301` 正确失败，GDB/窗口检查成功但 pending 命令未执行，报告 `out/microkernel/uart-rearm/1792678250156875125/riscv_virt/results.json`。修复后的 RV64、RV32 MMU、RV32 非 MMU 三项均通过，且在最终 72 组再次通过。
+
+开发期间保留的失败记录：`out/microkernel/acceptance/1792675107193889589/results.json` 为远端服务取消后立即重启的旧测试竞态；`out/microkernel/acceptance/1792676448571282442/results.json` 为 UART 丢通知。增量检查首次遇到旧对象残留后中止的记录位于 `out/microkernel/shell-first-exit.json`。这些记录均未作为最终通过证据。当前源结构与清理边界见 [SOURCE_LAYOUT.md](SOURCE_LAYOUT.md)。

@@ -16,13 +16,15 @@ def main():
     parser.add_argument('--platform', default='arm64_virt')
     parser.add_argument('--libc', choices=('minimal', 'musl'), default='musl')
     args = parser.parse_args()
-    out = ROOT / 'out/microkernel/build-configuration' / args.platform / args.libc
+    # Each run owns its object tree; removed sources from earlier revisions must
+    # not participate in this configuration's rebuild assertions.
+    out = ROOT / 'out/microkernel/build-configuration' / args.platform / args.libc / str(time.time_ns())
     command = ['make', '-j5', f'PLATFORM={args.platform}', f'LIBC={args.libc}', f'O={out}',
                'BUILD_MODE=selftest']
     private_archive = None
     if args.libc == 'musl':
         original = ROOT / 'out/microkernel/musl' / args.platform / 'install'
-        private = out.parent / 'private-musl'
+        private = out / 'private-musl'
         private.mkdir(parents=True, exist_ok=True)
         include = private / 'include'
         if not include.exists():

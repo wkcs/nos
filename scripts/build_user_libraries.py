@@ -34,13 +34,13 @@ def build(name, platform, destination, musl_root, jobs):
     if not (musl_root / "include" / "stdio.h").is_file():
         raise RuntimeError("Build the corresponding musl port first")
     if name == "lua":
-        library_root = ROOT / "app/lua/lib"
+        library_root = ROOT / "third_party/lua"
         omitted = {"lua.c", "luac.c", "linit.c", "liolib.c", "loslib.c", "loadlib.c", "ldblib.c", "lcorolib.c"}
         sources = sorted(p for p in library_root.glob("*.c") if p.name not in omitted)
         options = ["-I" + str(library_root)]
         configuration = []
     else:
-        library_root = ROOT / "app/lvgl/lib"
+        library_root = ROOT / "third_party/lvgl"
         sources = sorted((library_root / "src").rglob("*.c"))
         options = ["-DLV_CONF_INCLUDE_SIMPLE", "-I" + str(ROOT / "apps/lvgl"), "-I" + str(library_root)]
         configuration = [ROOT / "apps/lvgl/lv_conf.h"]

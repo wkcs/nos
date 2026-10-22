@@ -60,7 +60,7 @@ def main():
     capacity, capacity_text = run_sanitizer('tests/host_capacity_vfs.py', out / 'capacity.log')
     process, process_text = run_sanitizer('tests/host_process_vfs.py', out / 'process.log')
     inputs = ['tests/host_vfs.c', 'servers/vfs/server.c', 'servers/vfs/pipe_wait.h',
-              'servers/vfs/archive.h', 'servers/vfs/regression.c', 'servers/drivers/devices.h',
+              'servers/vfs/archive.h', 'tests/guest/vfs_regression.c', 'servers/drivers/devices.h',
               'servers/vfs/metadata.h', 'servers/vfs/path_io.h', 'servers/vfs/path_storage.h', 'servers/vfs/record_lock.h',
               'servers/vfs/file_data.h', 'servers/vfs/permissions.h',
               'include/nos/abi.h', 'include/nos/user.h', 'include/nos/poll_abi.h']

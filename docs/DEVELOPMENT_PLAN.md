@@ -1,5 +1,7 @@
 # NOS 原始审查与开发计划
 
+> 历史审查记录：旧路径和行号对应审查时版本；当前目录见 [SOURCE_LAYOUT.md](SOURCE_LAYOUT.md)，后续修复与验收以执行清单和验证结果为准。
+
 <!-- Copyright (C) 2026 NOS contributors -->
 
 本文件保留重构前的审查证据与阶段 0–5 原始计划，以下“当前/尚未/下一轮”均指审查时的历史基线，行号亦为历史位置。后续实现已大幅变化；当前执行状态见 [执行清单](EXECUTION_PLAN.md)，实际最终结果见 [验证报告](VALIDATION_RESULTS.md)，支持边界见 [架构说明](MICROKERNEL.md) 和 [POSIX 范围](POSIX_SUPPORT.md)。

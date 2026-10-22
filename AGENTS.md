@@ -1,22 +1,21 @@
 # NOS 开发指南
 
-默认内核是跨架构微内核，旧 RTOS 保留为 legacy 构建。先阅读 `Makefile`、`scripts/Makefile.microkernel`、`include/nos/` 与 `docs/MICROKERNEL.md`。原始审查在 `docs/DEVELOPMENT_PLAN.md`；当前状态以 `docs/EXECUTION_PLAN.md`、`docs/VALIDATION_RESULTS.md` 为准。
+默认内核是跨架构微内核，旧 RTOS 已清理。先阅读 `Makefile`、`scripts/Makefile.microkernel`、`include/nos/` 与 `docs/MICROKERNEL.md`。原始审查在 `docs/DEVELOPMENT_PLAN.md`；当前状态以 `docs/EXECUTION_PLAN.md`、`docs/VALIDATION_RESULTS.md` 为准。
 
 ## 构建与验证
 
 - 云环境：`bash scripts/setup_microkernel_env.sh`，然后 `source /workspace/.nos-env/activate.sh`。
 - 构建：`make PLATFORM=arm_virt|arm64_virt|riscv_virt|stm32|riscv32_virt|riscv32_nommu LIBC=minimal|newlib|musl -j5`。只使用文档支持的组合。
 - 基础验证：`make qemu-test`，执行原有八个真实 QEMU 组合。
-- 完整软件验收：`python3 tests/acceptance.py`；开发时按平台或 section 做局部检查。
+- 完整软件验收：`python3 tests/acceptance.py --include-posix --require-frozen-source`；开发时按平台或 section 做局部检查。
 - STM32 必须使用原版 QEMU 的 `netduinoplus2`；禁止用历史 `nos_stm32` 补丁机型替代。
-- `scripts/Makefile.legacy` 保留旧板级命令，不属于当前能力验证。
 
 ## 模块与权限
 
-- `kernel/micro/`：调度、内存、IPC、能力、同步。文件系统业务和 C 库分配器留在用户态。
-- `arch/*/micro/`：启动、异常、定时器、上下文、MMU/MPU。汇编与 `arch_frame` 偏移及编译期断言保持一致。
+- `kernel/{core,sched,ipc,mm,exec,compat}/`：调度、内存、IPC、能力、同步。文件系统业务和 C 库分配器留在用户态。
+- `arch/{arm,arm64,riscv,riscv32}/`：启动、异常、定时器、上下文、MMU/MPU。汇编与 `arch_frame` 偏移及编译期断言保持一致。
 - `servers/`：用户态 VFS、后端和设备服务；服务调用使用 IPC，设备权限经能力控制。
-- `user/`：用户 ABI、运行库、init 与回归；`apps/` 为独立链接 ELF。
+- `user/`：用户运行库、init、nshell 与 Linux gateway；回归源码在 `tests/guest/`；`apps/` 为独立链接 ELF。
 - `libc/port/`：真实 C 库 OS 钩子；未支持操作返回错误，不使用伪成功。
 - 内核数据访问必须经过用户范围/权限检查和复制接口。MMU、MPU 与无保护共享内存分别描述，不能混称隔离。
 - SMP 当前串行执行内核临界区，用户任务实际并发；不要把这一实现描述成多核同时执行内核。

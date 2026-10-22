@@ -3,7 +3,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "../servers/vfs/server.c"
-#include "../servers/vfs/regression.c"
+#include "guest/vfs_regression.c"
 static unsigned failed;
 static struct nos_message *host_reply;
 static uint64_t host_token;

@@ -6,7 +6,7 @@
 bash scripts/setup_microkernel_env.sh
 source /workspace/.nos-env/activate.sh
 make qemu-test
-python3 tests/acceptance.py
+python3 tests/acceptance.py --include-posix --require-frozen-source
 ```
 
 原版 QEMU 验证覆盖 ARMv7、ARM64、RV64 MMU，STM32F405 `netduinoplus2` 非 MMU/可选 MPU，以及 RV32 Sv32/非 MMU。Newlib 和 musl 使用实际源码构建；三个主架构支持 2/4 核验收。完整软件验收还包括持久化、服务恢复、故障注入和独立 Lua/LVGL 应用。
@@ -18,4 +18,6 @@ python3 tests/acceptance.py
 - [C 库与 POSIX 支持范围](docs/POSIX_SUPPORT.md)
 - [独立应用 ABI](docs/ELF_ABI.md)
 
-默认构建入口为微内核，旧 RTOS 命令保留在 `scripts/Makefile.legacy`。当前是有界嵌入式实现；动态链接、glibc、完整信号/fork、网络和真实板级 USB/显示/输入迁移不在已验证能力内。LVGL 的内存渲染通过不代表物理 LCD 通过。
+目录按内核机制、架构、用户服务、运行库、应用和测试划分，见 [源码结构](docs/SOURCE_LAYOUT.md)。旧 RTOS、旧板级配置与补丁机型已清理；Lua/LVGL 源码位于 `third_party/`。
+
+普通启动使用 `make PLATFORM=arm64_virt BUILD_MODE=normal qemu-run`，nshell 支持文件操作、目录切换、引号/转义、历史和行编辑，见 [nshell 使用说明](docs/NSHELL.md)。三个 MMU 主架构的 Linux 兼容配置已验证真实 glibc、动态链接和部分 POSIX 接口；完整 POSIX.1-2017、网络与真实板级外设仍未完成。详细范围以支持文档为准。

@@ -17,38 +17,38 @@ RISCV_PREFIX ?= riscv64-linux-gnu-
 RISCV32_PREFIX ?= riscv64-unknown-elf-
 ifeq ($(PLATFORM),arm_virt)
 CROSS := $(ARM_PREFIX)
-ARCH_DIR := arch/arm/micro
+ARCH_DIR := arch/arm
 CPUFLAGS := -mcpu=cortex-a15 -marm -mfloat-abi=soft
 DEFS := -DNOS_ARM -DNOS_MMU
 LINKER := $(ARCH_DIR)/virt.ld
 else ifeq ($(PLATFORM),stm32)
 CROSS := $(ARM_PREFIX)
-ARCH_DIR := arch/arm/micro
+ARCH_DIR := arch/arm
 CPUFLAGS := -mcpu=cortex-m4 -mthumb -mfloat-abi=soft
 DEFS := -DNOS_ARM_M
 LINKER := $(ARCH_DIR)/stm32.ld
 else ifeq ($(PLATFORM),arm64_virt)
 CROSS := $(ARM64_PREFIX)
-ARCH_DIR := arch/arm64/micro
+ARCH_DIR := arch/arm64
 CPUFLAGS := -mcpu=cortex-a53 -mno-outline-atomics
 KERNELFLAGS := -mgeneral-regs-only
 DEFS := -DNOS_ARM64 -DNOS_MMU
 LINKER := $(ARCH_DIR)/virt.ld
 else ifeq ($(PLATFORM),riscv_virt)
 CROSS := $(RISCV_PREFIX)
-ARCH_DIR := arch/riscv/micro
+ARCH_DIR := arch/riscv
 CPUFLAGS := -march=rv64gc -mabi=lp64d -mcmodel=medany -mno-relax -msmall-data-limit=0
 DEFS := -DNOS_RISCV -DNOS_MMU
 LINKER := $(ARCH_DIR)/virt.ld
 else ifeq ($(PLATFORM),riscv32_virt)
 CROSS := $(RISCV32_PREFIX)
-ARCH_DIR := arch/riscv32/micro
+ARCH_DIR := arch/riscv32
 CPUFLAGS := -march=rv32gc -mabi=ilp32d -mcmodel=medany -mno-relax -msmall-data-limit=0
 DEFS := -DNOS_RISCV -DNOS_RISCV32 -DNOS_MMU
 LINKER := $(ARCH_DIR)/virt.ld
 else ifeq ($(PLATFORM),riscv32_nommu)
 CROSS := $(RISCV32_PREFIX)
-ARCH_DIR := arch/riscv32/micro
+ARCH_DIR := arch/riscv32
 CPUFLAGS := -march=rv32gc -mabi=ilp32d -mcmodel=medany -mno-relax -msmall-data-limit=0
 DEFS := -DNOS_RISCV -DNOS_RISCV32
 LINKER := $(ARCH_DIR)/virt_nommu.ld
@@ -83,24 +83,34 @@ COMMONFLAGS += $(EXTRA_CFLAGS)
 ifeq ($(POSIX_SUITE),1)
 COMMONFLAGS += -I$(O)
 endif
-KERNEL_SRC := kernel/micro/core.c kernel/micro/task.c kernel/micro/ipc.c kernel/micro/irq.c kernel/micro/mutex.c kernel/micro/scheduler.c kernel/micro/memory.c kernel/micro/runtime.c kernel/micro/elf.c kernel/micro/linux.c kernel/micro/credentials.c kernel/micro/linux_signal.c kernel/micro/bootfile.c $(ARCH_DIR)/platform.c
+KERNEL_SRC := kernel/core/core.c kernel/core/runtime.c kernel/core/credentials.c
+KERNEL_SRC += kernel/sched/task.c kernel/sched/scheduler.c
+KERNEL_SRC += kernel/ipc/ipc.c kernel/ipc/irq.c kernel/ipc/mutex.c
+KERNEL_SRC += kernel/mm/memory.c kernel/exec/elf.c kernel/exec/bootfile.c
+KERNEL_SRC += kernel/compat/linux/linux.c kernel/compat/linux/linux_signal.c
+KERNEL_SRC += $(ARCH_DIR)/platform.c
 ifeq ($(LINUX_COMPAT),1)
-USER_SRC_LINUX := user/linux_regression.c
+USER_SRC_LINUX := tests/guest/linux_regression.c
 ifeq ($(POSIX_SUITE),1)
-USER_SRC_LINUX += user/posix_suite.c
+USER_SRC_LINUX += tests/guest/posix_suite.c
 endif
 endif
-USER_SRC := user/runtime.c user/thread.c user/posix_poll.c user/init.c servers/vfs/server.c servers/drivers/virtio_blk.c servers/drivers/virtio_rng.c servers/drivers/uart.c
+RUNTIME_SRC := user/lib/syscall.c user/lib/string.c user/lib/process.c user/lib/ipc.c
+RUNTIME_SRC += user/lib/fs_path.c user/lib/fs_io.c user/lib/credentials.c user/lib/clock.c
+SHELL_SRC := user/shell/parser.c user/shell/editor.c user/shell/commands.c user/shell/shell.c
+USER_SRC := $(RUNTIME_SRC) user/lib/thread.c user/lib/posix_poll.c user/init/main.c $(SHELL_SRC)
+USER_SRC += servers/vfs/server.c servers/drivers/virtio_blk.c
+USER_SRC += servers/drivers/virtio_rng.c servers/drivers/uart.c
 USER_SRC += $(USER_SRC_LINUX)
 USER_SRC += servers/fatfs/adapter.c
 ifneq ($(PLATFORM),stm32)
 USER_SRC += servers/fatfs/ff.c
 endif
 ifeq ($(BUILD_MODE),selftest)
-USER_SRC += user/validation.c user/libc_regression.c user/kernel_regression.c user/arch_regression.c user/elf_regression.c servers/vfs/regression.c
+USER_SRC += tests/guest/validation.c tests/guest/libc_regression.c tests/guest/kernel_regression.c tests/guest/arch_regression.c tests/guest/elf_regression.c tests/guest/vfs_regression.c
 endif
 ifeq ($(PLATFORM),stm32)
-ASM_SRC := arch/arm/micro/cortex_m.S
+ASM_SRC := arch/arm/cortex_m.S
 else
 ASM_SRC := $(ARCH_DIR)/entry.S
 endif
@@ -142,7 +152,7 @@ LIBC_ARCHIVE := $(MUSL_ROOT)/lib/libc.a
 else ifneq ($(LIBC),minimal)
 $(error LIBC must be minimal, newlib or musl)
 endif
-ASM_SRC += user/$(if $(filter riscv32_virt riscv32_nommu,$(PLATFORM)),rv32_context_probe,context_probe).S
+ASM_SRC += tests/guest/$(if $(filter riscv32_virt riscv32_nommu,$(PLATFORM)),rv32_context_probe,context_probe).S
 OBJECTS := $(addprefix $(O)/,$(KERNEL_SRC:.c=.o) $(USER_SRC:.c=.o) $(ASM_SRC:.S=.o))
 OBJECTS += $(O)/initramfs.o
 LIBGCC_ARCHIVE := $(shell $(CC) $(CPUFLAGS) -print-libgcc-file-name)
@@ -208,81 +218,81 @@ LINUX_CFLAGS := $(CPUFLAGS) --sysroot=$(LINUX_SYSROOT) -isystem $(LINUX_SYSROOT)
 LINUX_APP_FLAGS := $(LINUX_CFLAGS) -fPIE -pie -Wl,--build-id=none,--dynamic-linker=/lib/$(LINUX_INTERPRETER)
 LINUX_CRT_FILES := $(wildcard $(LINUX_LIBRARY_ROOT)/*crt*.o)
 LINUX_SIGNATURE = --value $(call make_quote,linux_flags=$(LINUX_APP_FLAGS)) --rule $(LINUX_MANIFEST) --rule $(shell command -v $(LINUX_CC))
-$(O)/apps/nos-linux-gateway.elf: user/linux_gateway.c user/runtime.c user/posix_poll.c apps/linux_gateway.ld $(wildcard include/nos/*.h include/nos/sys/*.h) $(LIBGCC_ARCHIVE) $(BUILD_SIGNATURE)
+$(O)/apps/nos-linux-gateway.elf: user/compat/linux/gateway.c $(RUNTIME_SRC) user/lib/posix_poll.c apps/linux_gateway.ld $(wildcard include/nos/*.h include/nos/sys/*.h) $(LIBGCC_ARCHIVE) $(BUILD_SIGNATURE)
 	@mkdir -p $(dir $@)
-	$(LINUX_CC) $(LINUX_CFLAGS) $(if $(filter arm_virt,$(PLATFORM)),-fshort-enums,) $(DEFS) -Iinclude/nos -ffreestanding -fno-builtin -fno-stack-protector -fno-pie -fno-pic -ffunction-sections -fdata-sections -nostdlib -static -no-pie -Wl,--build-id=none,--gc-sections -Tapps/linux_gateway.ld user/linux_gateway.c user/runtime.c user/posix_poll.c $(LIBGCC_ARCHIVE) -o $@
-$(O)/apps/glibc_check.elf: apps/glibc_check.c $(LINUX_LIBRARIES) $(LINUX_CRT_FILES) $(LINUX_MANIFEST) $(BUILD_SIGNATURE)
-	@mkdir -p $(dir $@)
-	$(LINUX_CC) $(LINUX_APP_FLAGS) $< -pthread -ldl -lm -o $@
-$(O)/apps/glibc_threads.elf: apps/glibc_threads.c $(LINUX_LIBRARIES) $(LINUX_CRT_FILES) $(LINUX_MANIFEST) $(BUILD_SIGNATURE)
+	$(LINUX_CC) $(LINUX_CFLAGS) $(if $(filter arm_virt,$(PLATFORM)),-fshort-enums,) $(DEFS) -Iinclude/nos -ffreestanding -fno-builtin -fno-stack-protector -fno-pie -fno-pic -ffunction-sections -fdata-sections -nostdlib -static -no-pie -Wl,--build-id=none,--gc-sections -Tapps/linux_gateway.ld user/compat/linux/gateway.c $(RUNTIME_SRC) user/lib/posix_poll.c $(LIBGCC_ARCHIVE) -o $@
+$(O)/apps/glibc_check.elf: tests/guest/apps/glibc_check.c $(LINUX_LIBRARIES) $(LINUX_CRT_FILES) $(LINUX_MANIFEST) $(BUILD_SIGNATURE)
 	@mkdir -p $(dir $@)
 	$(LINUX_CC) $(LINUX_APP_FLAGS) $< -pthread -ldl -lm -o $@
-$(O)/apps/glibc_poll.elf: apps/glibc_poll.c $(LINUX_LIBRARIES) $(LINUX_CRT_FILES) $(LINUX_MANIFEST) $(BUILD_SIGNATURE)
+$(O)/apps/glibc_threads.elf: tests/guest/apps/glibc_threads.c $(LINUX_LIBRARIES) $(LINUX_CRT_FILES) $(LINUX_MANIFEST) $(BUILD_SIGNATURE)
 	@mkdir -p $(dir $@)
 	$(LINUX_CC) $(LINUX_APP_FLAGS) $< -pthread -ldl -lm -o $@
-$(O)/apps/glibc_path4096.elf: apps/glibc_path4096.c $(LINUX_LIBRARIES) $(LINUX_CRT_FILES) $(LINUX_MANIFEST) $(BUILD_SIGNATURE)
+$(O)/apps/glibc_poll.elf: tests/guest/apps/glibc_poll.c $(LINUX_LIBRARIES) $(LINUX_CRT_FILES) $(LINUX_MANIFEST) $(BUILD_SIGNATURE)
 	@mkdir -p $(dir $@)
 	$(LINUX_CC) $(LINUX_APP_FLAGS) $< -pthread -ldl -lm -o $@
-$(O)/apps/glibc_resources.elf: apps/glibc_resources.c $(LINUX_LIBRARIES) $(LINUX_CRT_FILES) $(LINUX_MANIFEST) $(BUILD_SIGNATURE)
+$(O)/apps/glibc_path4096.elf: tests/guest/apps/glibc_path4096.c $(LINUX_LIBRARIES) $(LINUX_CRT_FILES) $(LINUX_MANIFEST) $(BUILD_SIGNATURE)
 	@mkdir -p $(dir $@)
 	$(LINUX_CC) $(LINUX_APP_FLAGS) $< -pthread -ldl -lm -o $@
-$(O)/apps/glibc_address_space.elf: apps/glibc_address_space.c $(LINUX_LIBRARIES) $(LINUX_CRT_FILES) $(LINUX_MANIFEST) $(BUILD_SIGNATURE)
+$(O)/apps/glibc_resources.elf: tests/guest/apps/glibc_resources.c $(LINUX_LIBRARIES) $(LINUX_CRT_FILES) $(LINUX_MANIFEST) $(BUILD_SIGNATURE)
 	@mkdir -p $(dir $@)
 	$(LINUX_CC) $(LINUX_APP_FLAGS) $< -pthread -ldl -lm -o $@
-$(O)/apps/glibc_capacity.elf: apps/glibc_capacity.c $(LINUX_LIBRARIES) $(LINUX_CRT_FILES) $(LINUX_MANIFEST) $(BUILD_SIGNATURE)
+$(O)/apps/glibc_address_space.elf: tests/guest/apps/glibc_address_space.c $(LINUX_LIBRARIES) $(LINUX_CRT_FILES) $(LINUX_MANIFEST) $(BUILD_SIGNATURE)
 	@mkdir -p $(dir $@)
 	$(LINUX_CC) $(LINUX_APP_FLAGS) $< -pthread -ldl -lm -o $@
-$(O)/apps/glibc_nproc.elf: apps/glibc_nproc.c $(LINUX_LIBRARIES) $(LINUX_CRT_FILES) $(LINUX_MANIFEST) $(BUILD_SIGNATURE)
+$(O)/apps/glibc_capacity.elf: tests/guest/apps/glibc_capacity.c $(LINUX_LIBRARIES) $(LINUX_CRT_FILES) $(LINUX_MANIFEST) $(BUILD_SIGNATURE)
 	@mkdir -p $(dir $@)
 	$(LINUX_CC) $(LINUX_APP_FLAGS) $< -pthread -ldl -lm -o $@
-$(O)/apps/glibc_process_capacity.elf: apps/glibc_process_capacity.c $(LINUX_LIBRARIES) $(LINUX_CRT_FILES) $(LINUX_MANIFEST) $(BUILD_SIGNATURE)
+$(O)/apps/glibc_nproc.elf: tests/guest/apps/glibc_nproc.c $(LINUX_LIBRARIES) $(LINUX_CRT_FILES) $(LINUX_MANIFEST) $(BUILD_SIGNATURE)
 	@mkdir -p $(dir $@)
 	$(LINUX_CC) $(LINUX_APP_FLAGS) $< -pthread -ldl -lm -o $@
-$(O)/apps/glibc_credentials.elf: apps/glibc_credentials.c $(LINUX_LIBRARIES) $(LINUX_CRT_FILES) $(LINUX_MANIFEST) $(BUILD_SIGNATURE)
+$(O)/apps/glibc_process_capacity.elf: tests/guest/apps/glibc_process_capacity.c $(LINUX_LIBRARIES) $(LINUX_CRT_FILES) $(LINUX_MANIFEST) $(BUILD_SIGNATURE)
 	@mkdir -p $(dir $@)
 	$(LINUX_CC) $(LINUX_APP_FLAGS) $< -pthread -ldl -lm -o $@
-$(O)/apps/glibc_permissions.elf: apps/glibc_permissions.c $(LINUX_LIBRARIES) $(LINUX_CRT_FILES) $(LINUX_MANIFEST) $(BUILD_SIGNATURE)
+$(O)/apps/glibc_credentials.elf: tests/guest/apps/glibc_credentials.c $(LINUX_LIBRARIES) $(LINUX_CRT_FILES) $(LINUX_MANIFEST) $(BUILD_SIGNATURE)
 	@mkdir -p $(dir $@)
 	$(LINUX_CC) $(LINUX_APP_FLAGS) $< -pthread -ldl -lm -o $@
-$(O)/apps/glibc_pipe_atomic.elf: apps/glibc_pipe_atomic.c $(LINUX_LIBRARIES) $(LINUX_CRT_FILES) $(LINUX_MANIFEST) $(BUILD_SIGNATURE)
+$(O)/apps/glibc_permissions.elf: tests/guest/apps/glibc_permissions.c $(LINUX_LIBRARIES) $(LINUX_CRT_FILES) $(LINUX_MANIFEST) $(BUILD_SIGNATURE)
 	@mkdir -p $(dir $@)
 	$(LINUX_CC) $(LINUX_APP_FLAGS) $< -pthread -ldl -lm -o $@
-$(O)/apps/glibc_signals.elf: apps/glibc_signals.c $(LINUX_LIBRARIES) $(LINUX_CRT_FILES) $(LINUX_MANIFEST) $(BUILD_SIGNATURE)
+$(O)/apps/glibc_pipe_atomic.elf: tests/guest/apps/glibc_pipe_atomic.c $(LINUX_LIBRARIES) $(LINUX_CRT_FILES) $(LINUX_MANIFEST) $(BUILD_SIGNATURE)
 	@mkdir -p $(dir $@)
 	$(LINUX_CC) $(LINUX_APP_FLAGS) $< -pthread -ldl -lm -o $@
-$(O)/apps/glibc_process.elf: apps/glibc_process.c $(LINUX_LIBRARIES) $(LINUX_CRT_FILES) $(LINUX_MANIFEST) $(BUILD_SIGNATURE)
+$(O)/apps/glibc_signals.elf: tests/guest/apps/glibc_signals.c $(LINUX_LIBRARIES) $(LINUX_CRT_FILES) $(LINUX_MANIFEST) $(BUILD_SIGNATURE)
 	@mkdir -p $(dir $@)
 	$(LINUX_CC) $(LINUX_APP_FLAGS) $< -pthread -ldl -lm -o $@
-$(O)/apps/glibc_sync.elf: apps/glibc_sync.c $(LINUX_LIBRARIES) $(LINUX_CRT_FILES) $(LINUX_MANIFEST) $(BUILD_SIGNATURE)
+$(O)/apps/glibc_process.elf: tests/guest/apps/glibc_process.c $(LINUX_LIBRARIES) $(LINUX_CRT_FILES) $(LINUX_MANIFEST) $(BUILD_SIGNATURE)
 	@mkdir -p $(dir $@)
 	$(LINUX_CC) $(LINUX_APP_FLAGS) $< -pthread -ldl -lm -o $@
-$(O)/apps/glibc_files.elf: apps/glibc_files.c $(LINUX_LIBRARIES) $(LINUX_CRT_FILES) $(LINUX_MANIFEST) $(BUILD_SIGNATURE)
+$(O)/apps/glibc_sync.elf: tests/guest/apps/glibc_sync.c $(LINUX_LIBRARIES) $(LINUX_CRT_FILES) $(LINUX_MANIFEST) $(BUILD_SIGNATURE)
 	@mkdir -p $(dir $@)
 	$(LINUX_CC) $(LINUX_APP_FLAGS) $< -pthread -ldl -lm -o $@
-$(O)/apps/glibc_futex_shared.elf: apps/glibc_futex_shared.c $(LINUX_LIBRARIES) $(LINUX_CRT_FILES) $(LINUX_MANIFEST) $(BUILD_SIGNATURE)
+$(O)/apps/glibc_files.elf: tests/guest/apps/glibc_files.c $(LINUX_LIBRARIES) $(LINUX_CRT_FILES) $(LINUX_MANIFEST) $(BUILD_SIGNATURE)
 	@mkdir -p $(dir $@)
 	$(LINUX_CC) $(LINUX_APP_FLAGS) $< -pthread -ldl -lm -o $@
-$(O)/apps/glibc_shared_sync.elf: apps/glibc_shared_sync.c $(LINUX_LIBRARIES) $(LINUX_CRT_FILES) $(LINUX_MANIFEST) $(BUILD_SIGNATURE)
+$(O)/apps/glibc_futex_shared.elf: tests/guest/apps/glibc_futex_shared.c $(LINUX_LIBRARIES) $(LINUX_CRT_FILES) $(LINUX_MANIFEST) $(BUILD_SIGNATURE)
 	@mkdir -p $(dir $@)
 	$(LINUX_CC) $(LINUX_APP_FLAGS) $< -pthread -ldl -lm -o $@
-$(O)/apps/glibc_paths.elf: apps/glibc_paths.c $(LINUX_LIBRARIES) $(LINUX_CRT_FILES) $(LINUX_MANIFEST) $(BUILD_SIGNATURE)
+$(O)/apps/glibc_shared_sync.elf: tests/guest/apps/glibc_shared_sync.c $(LINUX_LIBRARIES) $(LINUX_CRT_FILES) $(LINUX_MANIFEST) $(BUILD_SIGNATURE)
 	@mkdir -p $(dir $@)
 	$(LINUX_CC) $(LINUX_APP_FLAGS) $< -pthread -ldl -lm -o $@
-$(O)/apps/glibc_record_locks.elf: apps/glibc_record_locks.c $(LINUX_LIBRARIES) $(LINUX_CRT_FILES) $(LINUX_MANIFEST) $(BUILD_SIGNATURE)
+$(O)/apps/glibc_paths.elf: tests/guest/apps/glibc_paths.c $(LINUX_LIBRARIES) $(LINUX_CRT_FILES) $(LINUX_MANIFEST) $(BUILD_SIGNATURE)
 	@mkdir -p $(dir $@)
 	$(LINUX_CC) $(LINUX_APP_FLAGS) $< -pthread -ldl -lm -o $@
-$(O)/apps/glibc_record_lock_lifecycle.elf: apps/glibc_record_lock_lifecycle.c $(LINUX_LIBRARIES) $(LINUX_CRT_FILES) $(LINUX_MANIFEST) $(BUILD_SIGNATURE)
+$(O)/apps/glibc_record_locks.elf: tests/guest/apps/glibc_record_locks.c $(LINUX_LIBRARIES) $(LINUX_CRT_FILES) $(LINUX_MANIFEST) $(BUILD_SIGNATURE)
 	@mkdir -p $(dir $@)
 	$(LINUX_CC) $(LINUX_APP_FLAGS) $< -pthread -ldl -lm -o $@
-$(O)/apps/glibc_record_gc.elf: apps/glibc_record_gc.c $(LINUX_LIBRARIES) $(LINUX_CRT_FILES) $(LINUX_MANIFEST) $(BUILD_SIGNATURE)
+$(O)/apps/glibc_record_lock_lifecycle.elf: tests/guest/apps/glibc_record_lock_lifecycle.c $(LINUX_LIBRARIES) $(LINUX_CRT_FILES) $(LINUX_MANIFEST) $(BUILD_SIGNATURE)
 	@mkdir -p $(dir $@)
 	$(LINUX_CC) $(LINUX_APP_FLAGS) $< -pthread -ldl -lm -o $@
-$(O)/apps/libnos_probe.so: apps/dynamic/library.c $(LINUX_LIBRARIES) $(LINUX_MANIFEST) $(BUILD_SIGNATURE)
+$(O)/apps/glibc_record_gc.elf: tests/guest/apps/glibc_record_gc.c $(LINUX_LIBRARIES) $(LINUX_CRT_FILES) $(LINUX_MANIFEST) $(BUILD_SIGNATURE)
+	@mkdir -p $(dir $@)
+	$(LINUX_CC) $(LINUX_APP_FLAGS) $< -pthread -ldl -lm -o $@
+$(O)/apps/libnos_probe.so: tests/guest/apps/dynamic/library.c $(LINUX_LIBRARIES) $(LINUX_MANIFEST) $(BUILD_SIGNATURE)
 	@mkdir -p $(dir $@)
 	$(LINUX_CC) $(LINUX_CFLAGS) -fPIC -shared -nostdlib -Wl,--build-id=none,-soname,libnos_probe.so $< -o $@
-$(O)/apps/dynamic_check.elf: apps/dynamic/main.c apps/dynamic/start.S $(O)/apps/libnos_probe.so $(LINUX_LIBRARIES) $(LINUX_MANIFEST) $(BUILD_SIGNATURE)
+$(O)/apps/dynamic_check.elf: tests/guest/apps/dynamic/main.c tests/guest/apps/dynamic/start.S $(O)/apps/libnos_probe.so $(LINUX_LIBRARIES) $(LINUX_MANIFEST) $(BUILD_SIGNATURE)
 	@mkdir -p $(dir $@)
-	$(LINUX_CC) $(LINUX_APP_FLAGS) -ffreestanding -fno-builtin -fno-stack-protector -nostdlib -Wl,-e,_start,--no-as-needed,-rpath,/lib apps/dynamic/start.S apps/dynamic/main.c -L$(O)/apps -lnos_probe -o $@
+	$(LINUX_CC) $(LINUX_APP_FLAGS) -ffreestanding -fno-builtin -fno-stack-protector -nostdlib -Wl,-e,_start,--no-as-needed,-rpath,/lib tests/guest/apps/dynamic/start.S tests/guest/apps/dynamic/main.c -L$(O)/apps -lnos_probe -o $@
 INITRAMFS_IMAGES += $(O)/apps/nos-linux-gateway.elf $(O)/apps/glibc_check.elf $(O)/apps/dynamic_check.elf $(O)/apps/libnos_probe.so $(LINUX_LIBRARIES)
 INITRAMFS_IMAGES += $(O)/apps/glibc_threads.elf
 INITRAMFS_FILES += --file /bin/glibc_threads=$(O)/apps/glibc_threads.elf
@@ -335,13 +345,13 @@ INITRAMFS_FILES += $(POSIX_SUITE_FILES)
 LINUX_SIGNATURE += --rule $(O)/posix_cases.h --rule $(O)/manifest.json
 endif
 endif
-APP_LIBC_SOURCES := apps/start.c apps/libc_start.c user/runtime.c user/thread.c user/posix_poll.c libc/port/$(LIBC).c
+APP_LIBC_SOURCES := apps/start.c apps/libc_start.c $(RUNTIME_SRC) user/lib/thread.c user/lib/posix_poll.c libc/port/$(LIBC).c
 APP_LIBC_FLAGS := $(COMMONFLAGS) $(USERFLAGS) -nostdlib -static -no-pie -Wl,--gc-sections,--build-id=none,-z,max-page-size=4096 -T apps/app.ld
 ifneq ($(LIBC),minimal)
 ifneq ($(PLATFORM),stm32)
-$(O)/apps/libc_check.elf: $(APP_LIBC_SOURCES) apps/libc_check.c $(LIBC_ARCHIVE) apps/app.ld $(APP_PUBLIC_HEADERS) $(BUILD_SIGNATURE)
+$(O)/apps/libc_check.elf: $(APP_LIBC_SOURCES) tests/guest/apps/libc_check.c $(LIBC_ARCHIVE) apps/app.ld $(APP_PUBLIC_HEADERS) $(BUILD_SIGNATURE)
 	@mkdir -p $(dir $@)
-	$(CC) $(APP_LIBC_FLAGS) $(APP_LIBC_SOURCES) apps/libc_check.c $(USER_LIBS) -lgcc -o $@
+	$(CC) $(APP_LIBC_FLAGS) $(APP_LIBC_SOURCES) tests/guest/apps/libc_check.c $(USER_LIBS) -lgcc -o $@
 INITRAMFS_FILES += --file /bin/libc_check=$(O)/apps/libc_check.elf
 INITRAMFS_IMAGES += $(O)/apps/libc_check.elf
 endif
@@ -353,10 +363,10 @@ endif
 USERLIB_ROOT := out/microkernel/userlibs/$(PLATFORM)
 $(O)/apps/lua.elf: $(APP_LIBC_SOURCES) apps/lua/main.c $(USERLIB_ROOT)/lua/liblua.a $(LIBC_ARCHIVE) apps/app.ld $(APP_PUBLIC_HEADERS) $(BUILD_SIGNATURE)
 	@mkdir -p $(dir $@)
-	$(CC) $(APP_LIBC_FLAGS) -Iapp/lua/lib $(APP_LIBC_SOURCES) apps/lua/main.c $(USERLIB_ROOT)/lua/liblua.a $(USER_LIBS) -lgcc -o $@
+	$(CC) $(APP_LIBC_FLAGS) -Ithird_party/lua $(APP_LIBC_SOURCES) apps/lua/main.c $(USERLIB_ROOT)/lua/liblua.a $(USER_LIBS) -lgcc -o $@
 $(O)/apps/lvgl.elf: $(APP_LIBC_SOURCES) apps/lvgl/main.c apps/lvgl/lv_conf.h $(USERLIB_ROOT)/lvgl/liblvgl.a $(LIBC_ARCHIVE) apps/app.ld $(APP_PUBLIC_HEADERS) $(BUILD_SIGNATURE)
 	@mkdir -p $(dir $@)
-	$(CC) $(APP_LIBC_FLAGS) -DLV_CONF_INCLUDE_SIMPLE -Iapps/lvgl -Iapp/lvgl/lib $(APP_LIBC_SOURCES) apps/lvgl/main.c $(USERLIB_ROOT)/lvgl/liblvgl.a $(USER_LIBS) -lgcc -o $@
+	$(CC) $(APP_LIBC_FLAGS) -DLV_CONF_INCLUDE_SIMPLE -Iapps/lvgl -Ithird_party/lvgl $(APP_LIBC_SOURCES) apps/lvgl/main.c $(USERLIB_ROOT)/lvgl/liblvgl.a $(USER_LIBS) -lgcc -o $@
 INITRAMFS_FILES += --file /bin/lua=$(O)/apps/lua.elf --file /bin/lvgl=$(O)/apps/lvgl.elf
 INITRAMFS_IMAGES += $(O)/apps/lua.elf $(O)/apps/lvgl.elf
 endif
