@@ -136,6 +136,7 @@ intptr_t linux_exec_current(uintptr_t pointer, uintptr_t entropy, uintptr_t flag
     args.random_valid = 1;
     size_t bytes; const void *image = nos_initramfs_find(args.path, &bytes); if (!image) return -NOS_ENOENT;
     k_memset(&exec_image, 0, sizeof(exec_image)); exec_image.id = task->space_owner;
+    exec_image.space_id = NOS_SPACES;
     rc = space_create_empty(&exec_image); if (rc) return rc;
     uint64_t limits[2];
     process_as_limits(task, limits);
@@ -325,8 +326,11 @@ static intptr_t linux_fork(const uintptr_t arguments[6])
     for (unsigned i = 2; i < NOS_IDLE_FIRST; i++) {
         struct task *child = &tasks[i]; if (child->state != TASK_UNUSED) continue;
         if (child->credential_ref) kernel_fail("fork with credentials");
-        unsigned generation = child->generation; k_memset(child, 0, sizeof(*child));
+        unsigned generation = child->generation;
+        if (generation > (NOS_TID_MAX - i) / NOS_TASKS) kernel_fail("fork identity overflow");
+        k_memset(child, 0, sizeof(*child));
         child->generation = generation; child->id = generation * NOS_TASKS + i;
+        child->space_id = NOS_SPACES;
         child->parent = current_task->space_owner;
         child->priority = child->base_priority = current_task->base_priority;
         child->caps = current_task->caps; child->run_cpu = child->pin_cpu = UINT32_MAX;
@@ -405,8 +409,11 @@ static intptr_t linux_clone(const uintptr_t a[6])
     for (unsigned i = 2; i < NOS_IDLE_FIRST; i++) {
         struct task *child = &tasks[i]; if (child->state != TASK_UNUSED) continue;
         if (child->credential_ref) kernel_fail("clone with credentials");
-        unsigned generation = child->generation; k_memset(child, 0, sizeof(*child));
+        unsigned generation = child->generation;
+        if (generation > (NOS_TID_MAX - i) / NOS_TASKS) kernel_fail("clone identity overflow");
+        k_memset(child, 0, sizeof(*child));
         child->generation = generation; child->id = generation * NOS_TASKS + i;
+        child->space_id = NOS_SPACES;
         child->parent = current_task->id; child->is_thread = 1;
         child->priority = child->base_priority = current_task->base_priority;
         child->caps = current_task->caps & ~NOS_CAP_SPAWN;

@@ -48,6 +48,8 @@ LINUX |= {'glibc_execve_failed_preserves_image', 'glibc_signal_restart_blocking_
 LINUX |= {'glibc_time_gettimeofday_uname', 'glibc_process_session_group_signals', 'glibc_execve_relative_symlink'}
 LINUX_KERNEL = {'ipc_bulk_token_bounds', 'ipc_bulk_cancel_revocation'}
 LINUX_KERNEL |= {'address_space_inherited_admission'}
+LINUX_KERNEL |= {'independent_address_space_capacity', 'gateway_high_task_slot',
+                 'expanded_vma_transactions', 'ipc_capacity_high_slots'}
 LINUX_KERNEL |= {'group_query_capability', 'group_query_dead_zombie',
                  'group_query_leader_exit_thread_live', 'group_query_generation_slot_reuse',
                  'group_query_observer_cleanup', 'group_query_batch_snapshot'}
@@ -201,6 +203,54 @@ ADDRESS_SPACE_CHECKS = {
 }
 LINUX |= ADDRESS_SPACE_CHECKS | {'glibc_address_space_application'}
 APP_CHECKS['glibc_address_space'] = ADDRESS_SPACE_CHECKS
+CAPACITY_CHECKS = {
+    'glibc_capacity_default_stack',
+    'glibc_capacity_first_64_live',
+    'glibc_capacity_second_64_live',
+    'glibc_capacity_default_stack_cache_reuse',
+    'glibc_capacity_high_slot_signal_futex_vfs',
+    'glibc_capacity_tls_errno_malloc_stdio',
+    'glibc_capacity_tsd_join_reclaim',
+    'glibc_capacity_complete',
+    'glibc_capacity_native_peak_sample',
+    'glibc_capacity_process_exit_page_baseline',
+}
+LINUX |= CAPACITY_CHECKS | {'glibc_capacity_application'}
+APP_CHECKS['glibc_capacity'] = CAPACITY_CHECKS
+
+
+def inspect_capacity(text, cpus):
+    """Keep actual cohort and native physical-page samples in the evidence."""
+    wave_keys = ('wave', 'live', 'stack_bytes', 'reused')
+    waves = [dict(zip(wave_keys, map(int, values))) for values in re.findall(
+        r'^glibc_capacity_wave=(\d+) live=(\d+) stack_bytes=(\d+) reused=(\d+)\r?$',
+        text, re.MULTILINE)]
+    resource_keys = ('free_before', 'free_min', 'free_after', 'tasks_before',
+                     'tasks_peak', 'tasks_after', 'monitor_stack_bytes')
+    resources = [dict(zip(resource_keys, map(int, values))) for values in re.findall(
+        r'^glibc_capacity_resources free_before=(\d+) free_min=(\d+) free_after=(\d+) '
+        r'tasks_before=(\d+) tasks_peak=(\d+) tasks_after=(\d+) monitor_stack_bytes=(\d+)\r?$',
+        text, re.MULTILINE)]
+    masks = [int(value, 16) for value in re.findall(
+        r'^glibc_capacity_cpu_mask=([0-9a-f]+)\r?$', text, re.MULTILINE)]
+    cpu_ok = (len(masks) == 1 and masks[0] != 0 and
+              not (masks[0] & ~((1 << cpus) - 1)) and
+              (cpus == 1 or bool(masks[0] & (masks[0] - 1))))
+    waves_ok = (len(waves) == 2 and [wave['wave'] for wave in waves] == [1, 2] and
+                all(wave['live'] == 65 and wave['stack_bytes'] == 262144 for wave in waves) and
+                waves[0]['reused'] == 0 and 1 <= waves[1]['reused'] <= 64)
+    resources_ok = False
+    if len(resources) == 1:
+        sample = resources[0]
+        resources_ok = (sample['free_before'] == sample['free_after'] and
+                        0 <= sample['free_min'] < sample['free_before'] and
+                        sample['tasks_before'] == sample['tasks_after'] and
+                        sample['tasks_before'] + 66 <= sample['tasks_peak'] <= 80 and
+                        sample['monitor_stack_bytes'] == 8192)
+    return {'waves': waves, 'resources': resources, 'cpu_masks': masks,
+            'cross_cpu_verified': cpu_ok, 'verified': bool(waves_ok and resources_ok and cpu_ok)}
+
+
 PERMISSION_CHECKS = {
     'glibc_permissions_access_real_effective_root_execute',
     'glibc_permissions_all',
@@ -339,6 +389,9 @@ def main(mode='glibc'):
         pthread_cpus_ok = not check_threads or (len(pthread_masks) == 1 and pthread_masks[0] and
                           not (pthread_masks[0] & ~((1 << args.cpus) - 1)) and
                           (args.cpus == 1 or bool(pthread_masks[0] & (pthread_masks[0] - 1))))
+        check_capacity = mode == 'glibc' and args.app in (None, 'glibc_capacity')
+        capacity_metrics = inspect_capacity(text, args.cpus) if check_capacity else None
+        capacity_ok = not check_capacity or capacity_metrics['verified']
         checks = {line[5:] for line in text.splitlines() if line.startswith('PASS ')}
         linux_required = LINUX if not args.app else APP_CHECKS[args.app] | {'linux_focused_application'}
         native_required = {'posix-shared': SHARED_FILES, 'posix-long-path': LONG_PATHS, 'posix-vfs': POSIX_VFS}
@@ -371,8 +424,9 @@ def main(mode='glibc'):
                     realtime_verified=realtime_ok if check_realtime else None,
                     glibc_pthread_cpu_masks=pthread_masks,
                     glibc_pthread_cross_cpu_verified=pthread_cpus_ok if check_threads else None,
+                    capacity_metrics=capacity_metrics,
                     clock_rate_verified=clock_ok if args.cpus > 1 and mode == 'glibc' else None,
-                    passed=code == 0 and 'NOS TEST PASS' in text and 'FAIL' not in text and not missing and clock_ok and realtime_ok and pthread_cpus_ok)
+                    passed=code == 0 and 'NOS TEST PASS' in text and 'FAIL' not in text and not missing and clock_ok and realtime_ok and pthread_cpus_ok and capacity_ok)
         if manifest:
             checked_artifacts(manifest, platform)
         print(f'{mode}/{platform}: {"PASS" if item["passed"] else "FAIL"} ({len(checks)} checks, exit={code})', flush=True)

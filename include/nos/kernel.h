@@ -54,7 +54,7 @@
 #endif
 #ifndef VMA_SLOTS
 #ifdef NOS_LINUX_COMPAT
-#define VMA_SLOTS 128u
+#define VMA_SLOTS 384u
 #else
 #define VMA_SLOTS 16u
 #endif
@@ -84,6 +84,8 @@
 #define VM_USER_END 0x10000000u
 #endif
 _Static_assert(NOS_SMP >= 1 && NOS_SMP <= NOS_CPUS && NOS_IDLE_FIRST > 2, "CPU/task configuration");
+_Static_assert(NOS_SPACES <= NOS_TASKS && NOS_PROCESSES <= NOS_TASKS, "independent pool bounds");
+_Static_assert(NOS_TID_MAX <= INT32_MAX && NOS_TID_MAX >= NOS_TASKS, "task identity bound");
 _Static_assert(!(USER_BYTES % NOS_PAGE_SIZE), "task memory page alignment");
 #ifdef NOS_MMU
 _Static_assert(HEAP_END + NOS_PAGE_SIZE < USER_BYTES, "user stack and heap guard");
@@ -236,6 +238,9 @@ intptr_t mutex_operation(unsigned number, uintptr_t handle);
 unsigned mutex_count(void);
 intptr_t mutex_grant(uintptr_t pid, uintptr_t handle, uintptr_t rights, int revoke);
 void ipc_init(void);
+#if defined(NOS_SELFTEST) && defined(NOS_LINUX_COMPAT)
+int ipc_capacity_selftest(void);
+#endif
 void ipc_task_exit(struct task *task);
 void ipc_task_inherit(struct task *task, const struct task *parent);
 intptr_t ipc_call(uintptr_t endpoint, uintptr_t request, uintptr_t reply, uint64_t timeout);

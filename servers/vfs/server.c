@@ -29,15 +29,15 @@
 #define FILE_BYTES INLINE_BYTES
 #endif
 #define FDS NOS_FD_LIMIT
-#define OPEN_COUNT (NOS_TASKS * FDS)
+#define OPEN_COUNT (NOS_PROCESSES * FDS)
 #ifdef NOS_LINUX_COMPAT
 #ifndef NOS_IPC_PROCESS_NOTICE_LIMIT
-#define NOS_IPC_PROCESS_NOTICE_LIMIT (4u * NOS_TASKS)
+#define NOS_IPC_PROCESS_NOTICE_LIMIT (4u * NOS_PROCESSES)
 #endif
 /* Live groups, queued parent references, delivered fork and transient copies. */
-#define FD_TABLE_COUNT (NOS_TASKS + NOS_IPC_PROCESS_NOTICE_LIMIT + 3u)
+#define FD_TABLE_COUNT (NOS_PROCESSES + NOS_IPC_PROCESS_NOTICE_LIMIT + 3u)
 #else
-#define FD_TABLE_COUNT NOS_TASKS
+#define FD_TABLE_COUNT NOS_PROCESSES
 #endif
 #define PIPE_COUNT 2u
 #ifdef NOS_LINUX_COMPAT
@@ -68,7 +68,10 @@ struct vnode {
     char bytes[INLINE_BYTES]; size_t size; unsigned mode; uint16_t used, linked, refs, persistent;
 };
 struct description { uint64_t offset, size; uint32_t flags; uint16_t node, refs, kind, pipe; };
+/* Every table may alias one OFD in every FD, with one extra pin per blocked
+ * task. Process capacity bounds tables; task capacity bounds syscall pins. */
 _Static_assert(FD_TABLE_COUNT * FDS + NOS_TASKS < UINT16_MAX, "OFD references fit in 16 bits");
+_Static_assert(OPEN_COUNT <= UINT16_MAX, "OFD indices fit in FD entries");
 _Static_assert(sizeof(struct description) == 32, "compact OFD layout");
 #ifdef NOS_LINUX_COMPAT
 struct directory_ref { uint16_t node, kind; uint32_t size; };
@@ -1029,7 +1032,7 @@ void nos_vfs_server(uintptr_t unused)
         if (message.op == NOS_IPC_PEER_EXIT) {
             pipe_cancel(message.sender, 0, 0);
 #ifndef NOS_LINUX_COMPAT
-            if (!message.value) for (unsigned i = 0; i < NOS_TASKS; i++)
+            if (!message.value) for (unsigned i = 0; i < FD_TABLE_COUNT; i++)
                 if (fds[i].pid == (intptr_t)message.process) release_table(&fds[i]);
 #endif
             service_complete(); continue;

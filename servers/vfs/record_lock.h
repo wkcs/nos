@@ -121,24 +121,31 @@ static int record_transform(const struct record_range *request, struct record_ra
     if (compact > RECORD_LOCK_LIMIT) return -NOS_ENOLCK;
     *count = compact; return 0;
 }
-/* The graph contains process owners, not threads: any thread can hold/release
- * its process locks. Edges cover all blocked record-lock calls and inodes. */
-static int record_reaches(uint32_t owner, uint32_t target, uint32_t *visited, unsigned depth)
+/* The serial service loop traverses process owners, not threads. Every edge
+ * targets a held lock, so there are at most RECORD_LOCK_LIMIT distinct owners.
+ * Keep this bounded scratch off the stack rather than recursing per task. */
+static uint32_t record_owner_queue[RECORD_LOCK_LIMIT];
+static int record_owner_add(uint32_t owner, uint32_t target, unsigned *count)
 {
-    if (owner == target) return 1;
-    for (unsigned i = 0; i < depth; i++) if (visited[i] == owner) return 0;
-    if (depth == NOS_TASKS) return 0;
-    visited[depth++] = owner;
-    for (unsigned i = 0; i < NOS_TASKS; i++) if (pending_io[i].used == RECORD_WAIT_KIND && record_waits[i].range.owner == owner)
-        for (unsigned j = 0; j < record_lock_count; j++) if (record_conflict(&record_waits[i].range, &record_locks[j]) &&
-            record_reaches(record_locks[j].owner, target, visited, depth)) return 1;
-    return 0;
+    if (owner == target) return -NOS_EDEADLK;
+    for (unsigned i = 0; i < *count; i++) if (record_owner_queue[i] == owner) return 0;
+    if (*count == RECORD_LOCK_LIMIT) return -NOS_ENOLCK;
+    record_owner_queue[(*count)++] = owner; return 0;
 }
 static int record_deadlock(const struct record_range *request)
 {
-    uint32_t visited[NOS_TASKS];
-    for (unsigned i = 0; i < record_lock_count; i++) if (record_conflict(request, &record_locks[i]) &&
-        record_reaches(record_locks[i].owner, request->owner, visited, 0)) return 1;
+    unsigned count = 0;
+    for (unsigned i = 0; i < record_lock_count; i++) if (record_conflict(request, &record_locks[i])) {
+        int rc = record_owner_add(record_locks[i].owner, request->owner, &count);
+        if (rc) return rc;
+    }
+    for (unsigned next = 0; next < count; next++)
+        for (unsigned i = 0; i < NOS_TASKS; i++) if (pending_io[i].used == RECORD_WAIT_KIND &&
+            record_waits[i].range.owner == record_owner_queue[next])
+            for (unsigned j = 0; j < record_lock_count; j++) if (record_conflict(&record_waits[i].range, &record_locks[j])) {
+                int rc = record_owner_add(record_locks[j].owner, request->owner, &count);
+                if (rc) return rc;
+            }
     return 0;
 }
 static int record_fd_current(const struct pending_io *pending, const struct record_wait *wait)
@@ -175,7 +182,10 @@ static void record_lock_service(struct nos_message *message, struct fd_table *ta
         u_memcpy(message->data, &wire, sizeof(wire)); message->value = 0; return;
     }
     if (conflicting >= 0 && command == NOS_LOCK_SET) { message->value = -NOS_EAGAIN; return; }
-    if (conflicting >= 0 && record_deadlock(&range)) { message->value = -NOS_EDEADLK; return; }
+    if (conflicting >= 0) {
+        int rc = record_deadlock(&range);
+        if (rc) { message->value = rc; return; }
+    }
     for (unsigned i = 0; i < NOS_TASKS; i++) if (!pending_io[i].used) {
         pending_io[i].message = *message; pending_io[i].description = description; pending_io[i].used = RECORD_WAIT_KIND;
         record_waits[i] = (struct record_wait){ .range = range, .fd = fd, .command = command };

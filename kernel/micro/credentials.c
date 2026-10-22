@@ -8,10 +8,10 @@ struct credential_object {
     struct nos_credentials value;
     uint64_t stack[2], nofile[2], address_space[2];
 };
-static struct credential_object credential_objects[NOS_TASKS];
+static struct credential_object credential_objects[NOS_PROCESSES];
 static struct credential_object *process_object(const struct task *task)
 {
-    if (!task || !task->credential_ref || task->credential_ref > NOS_TASKS)
+    if (!task || !task->credential_ref || task->credential_ref > NOS_PROCESSES)
         kernel_fail("missing process credentials");
     struct credential_object *object = &credential_objects[task->credential_ref - 1];
     if (!object->references || object->owner != task->space_owner)
@@ -24,7 +24,7 @@ int credentials_create(struct task *task, const struct task *parent)
 {
     if (task->credential_ref) kernel_fail("credential reference overwritten");
     const struct credential_object *source = parent ? process_object(parent) : NULL;
-    for (unsigned i = 0; i < NOS_TASKS; i++) {
+    for (unsigned i = 0; i < NOS_PROCESSES; i++) {
         struct credential_object *object = &credential_objects[i];
         if (object->references) continue;
         k_memset(object, 0, sizeof(*object));

@@ -14,7 +14,7 @@ static struct group_exit group_exits[NOS_TASKS];
 #endif
 struct task *find_task(uintptr_t pid)
 {
-    if (pid > INT32_MAX) return NULL;
+    if (pid > NOS_TID_MAX) return NULL;
     struct task *t = &tasks[pid % NOS_TASKS];
     return t->id == pid && t->state != TASK_UNUSED && t->state != TASK_RETIRED ? t : NULL;
 }
@@ -24,9 +24,11 @@ static void task_prepare(struct task *t, unsigned slot, unsigned priority, unsig
     if (t->credential_ref) kernel_fail("task prepare with credentials");
 #endif
     unsigned generation = t->generation;
+    if (slot >= NOS_TASKS || generation > (NOS_TID_MAX - slot) / NOS_TASKS)
+        kernel_fail("task identity overflow");
     k_memset(t, 0, sizeof(*t)); t->generation = generation;
     t->id = generation * NOS_TASKS + slot;
-    t->space_id = slot; t->space_owner = t->id;
+    t->space_id = NOS_SPACES; t->space_owner = t->id;
     t->run_cpu = t->pin_cpu = UINT32_MAX;
     t->priority = t->base_priority = priority; t->caps = caps; t->parent = parent;
 #ifndef NOS_MMU
@@ -61,7 +63,7 @@ void task_reap(struct task *t)
     }
 #endif
     credentials_release(t);
-    if (t->generation < ((unsigned)INT32_MAX - t->id % NOS_TASKS) / NOS_TASKS) {
+    if (t->generation < (NOS_TID_MAX - t->id % NOS_TASKS) / NOS_TASKS) {
         t->generation++; t->state = TASK_UNUSED;
     } else t->state = TASK_RETIRED;
 }

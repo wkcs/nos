@@ -512,7 +512,7 @@ int main(void)
     check(ok, "record_locks_group_gc_last_fork_ack_pipe_eof");
     unsigned tables = 0;
     for (unsigned i = 0; i < FD_TABLE_COUNT; i++) tables += fds[i].pid >= 0;
-    for (unsigned owner = 100; tables < NOS_TASKS - 1; owner++, tables++) ok &= table_for(owner) != NULL;
+    for (unsigned owner = 100; tables < NOS_PROCESSES - 1; owner++, tables++) ok &= table_for(owner) != NULL;
     int capacity_parent = open_file(200, "/tmp/capacity", NOS_O_CREAT | NOS_O_RDWR);
     ok = capacity_parent >= 3 && !lock_set(200, capacity_parent, NOS_LOCK_WRITE, 0, 0);
     unsigned inherited_description = table_for(200)->fd[capacity_parent] - 1;

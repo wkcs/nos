@@ -26,7 +26,7 @@ glibc 工具与库由 `scripts/setup_glibc_env.sh` 安装，`/workspace/.nos-env
 | C 库与线程 | malloc/stdio/errno/C TLS，真实 NPTL create/join、detach/TSD、robust owner death、延迟/异步取消 | 其他属性、优先级协议和全部取消点需逐项验收 |
 | 进程与信号 | 独立地址空间 fork、同 PID exec、共享 OFD/cwd/umask 与 CLOEXEC、waitpid 状态；真实处理器帧、sigreturn、mask/pending、altstack、RT FIFO、SIGPIPE、EINTR 与部分 SA_RESTART | 完整 wait 选项/rusage、孤儿向 init 重新归属、完整会话和作业控制等仍有缺口 |
 | 身份与权限（已验收子集） | 实际 real/effective/saved UID/GID、32 补充组；线程共享、fork 独立；成功 exec 保存 ID 更新为有效 ID，失败保留旧凭据，auxv 返回实际身份；可信 CALL subject，RAM DAC/access/chown、sticky 与目录 setgid；宿主 sanitizers、三 MMU 单核/四核真实 glibc 及完整 68 组验收通过 | RV64 无 errno 身份 getter 使用 psABI 规范 32 位寄存器返回，原始 syscall() 的高 UID 结果存在 errno 区间歧义；ARM UID16、Linux per-thread fsuid/fsgid、set-ID ELF、regular-file set-ID mode 未支持；持久挂载仅 root 可新解析/打开，时间仅秒级 |
-| 资源限额（已验收子集） | 进程共享 RLIMIT_NOFILE/AS、ARM ugetrlimit 与实际 libc 查询一致；VFS 限制新 FD 分配，内核按实际虚拟映射执行 AS 限额，覆盖 PROT_NONE、MAP_FIXED 净增长、brk、fork/线程/exec 和失败回滚；三 MMU 单核/四核及完整 68 组验收通过 | 结构上限仍为 32 FD、12 任务槽；AS 默认软/硬 1 GiB，infinity 不保证物理内存或扩大用户窗口；prlimit 仅自身，STACK 仅查询/相同值，NPROC 等限额与 64 线程/25 进程最小容量未实现 |
+| 资源限额（已验收子集） | 进程共享 RLIMIT_NOFILE/AS、ARM ugetrlimit 与实际 libc 查询一致；VFS 限制新 FD 分配，内核按实际虚拟映射执行 AS 限额，覆盖 PROT_NONE、MAP_FIXED 净增长、brk、fork/线程/exec 和失败回滚；三 MMU 单核/四核及完整 68 组验收通过 | 结构上限为 32 FD、80 任务槽、12 地址空间/进程对象；AS 默认软/硬 1 GiB，infinity 不保证物理内存或扩大用户窗口；prlimit 仅自身，STACK 仅查询/相同值，NPROC 等限额与 25 个并发子进程容量仍未实现；64 个默认属性工作线程并发已单独验证 |
 | 文件与目录 | stat64、pread/pwrite、getdents64、标准目录接口、常用 *at、RAM mode/umask/truncate/hardlink/symlink；兼容配置 RAM PATH4096/NAME255、稳定cwd引用与双READ span传输；三架构单核/四核与完整68组验收通过 | 纳秒时间更新、持久 inode 身份、资源最小限值和跨后端完整语义仍需完善；持久后端仍有64字节路径限制，archive名称256字节；已删除目录的完整相对解析和超出有界绝对表示的寻址仍缺 |
 | 进程记录锁 | Linux profile 的 F_GETLK/F_SETLK/F_SETLKW，按 inode + 进程持有；区间拆分合并、阻塞、EINTR/SA_RESTART、EDEADLK、取消与退出清理，ARM old/wide flock 转换 | 64 个有界锁区间，容量不足返回 ENOLCK；默认 native 配置明确 ENOTSUP，其他 fcntl 扩展未齐 |
 | 管道与向量 I/O | Linux profile 实装 4096 字节 PIPE_BUF/缓冲与 1024 项 iovec；不超过 PIPE_BUF 的写入原子性、较大请求的非阻塞前缀、取消后不消费/注入，部分写入后仍投递 SIGPIPE；本批三架构单核/四核及完整冻结验收通过 | 有界 2 条管道及 pending 队列；默认 native 容量单列，未声明完整 FIFO/TTY |
@@ -37,7 +37,7 @@ glibc 工具与库由 `scripts/setup_glibc_env.sh` 安装，`/workspace/.nos-env
 
 `tests/qemu_glibc.py` 对三架构分别检查实际 interpreter、库与镜像摘要、严格来宾标记、RTC 宿主时间窗和 QEMU 退出状态；SMP 另检查真实 CPU 掩码。`tests/qemu_posix_suite.py` 执行固定上游提交、未修改断言的 OpenPOSIX 选定用例，分别记录失败、未解决、不支持、未执行与超时。选定用例通过不等于完整 POSIX 符合性。
 
-当前仍有低于完整 POSIX 要求的资源和语义：任务/线程容量及所有线程/进程最小限值尚未满足，凭据/权限子集已通过冻结验收，全部资源限制尚未实现。Linux profile 已有有界进程记录锁；本批将管道原子写与 glibc 报告的 PIPE_BUF4096、IOV_MAX1024 对齐，通过新冻结验收 `1792365892261153665`。默认 native 仍为 256 字节管道、64 字节消息原子写，未达到 POSIX 最小 PIPE_BUF。已有测试成功不能消除这些缺口。glibc 还可能报告其构建时面向 Linux 的 option/limit，需要逐项与 NOS 实际执行能力对齐，不能将其常量视为已经满足的规范保证。
+当前仍有低于完整 POSIX 要求的资源和语义：64 个默认属性 glibc 工作线程并发已验证，但完整线程/进程最小资源要求尚未全部满足，凭据/权限子集已通过冻结验收，全部资源限制尚未实现。Linux profile 已有有界进程记录锁；本批将管道原子写与 glibc 报告的 PIPE_BUF4096、IOV_MAX1024 对齐，通过新冻结验收 `1792365892261153665`。默认 native 仍为 256 字节管道、64 字节消息原子写，未达到 POSIX 最小 PIPE_BUF。已有测试成功不能消除这些缺口。glibc 还可能报告其构建时面向 Linux 的 option/limit，需要逐项与 NOS 实际执行能力对齐，不能将其常量视为已经满足的规范保证。
 
 ## native Newlib / musl 接口矩阵
 
@@ -77,3 +77,6 @@ SMP、MPU、非 MMU 和不同 C 库必须分别执行对应验证。某个最小
 完整兼容回归使用 `python3 tests/acceptance.py --include-posix --require-frozen-source`。完整 glibc 程序组的默认宿主预算为 420 秒，单应用 focused 和原生专项为 180 秒；`--timeout` 可显式覆盖。预算是软件模拟的防挂上限，不是延迟承诺，也不免除缺失标记、非零退出或应用内断言失败。
 
 本批地址空间与进程退出修复已通过完整验收 `1792591938965616587`。leader 退出后保留可回收的子僵尸并向存活线程投递 SIGCHLD；exit_group 和致命信号状态不再被旧 leader 状态覆盖；孤儿仍有工作线程时保留其进程身份。三架构六个生命周期专项、六个 AS 专项及完整 68 组均实际退出 0；这些修复不代替完整孤儿重新归属、资源最小容量或完整 POSIX 符合性。
+
+
+线程容量批次通过完整冻结验收 `1792629772377014664`：三种 MMU 架构单核/四核两轮各 64 个默认属性 NPTL worker 与主线程同时存活，第二轮实际复用栈缓存；高槽位信号、真实 fstat、TLS/errno/malloc/stdio/TSD 及退出后精确对象/物理页基线均通过。配置为 80 任务、12 空间/进程对象、384 VMA；未扩大物理池，未修改 libc 或使用 allocator tunable。STM32、非 MMU、Newlib/musl 原配置由同轮 68 组保持验证。完整 POSIX.1-2017、25 子进程、NPROC/可变 STACK、TTY 和网络仍未完成。

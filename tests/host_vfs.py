@@ -57,13 +57,14 @@ def main():
     credentials, credentials_text = run_sanitizer('tests/host_credentials_vfs.py', out / 'credentials.log')
     resources, resources_text = run_sanitizer('tests/host_resources_vfs.py', out / 'resources.log')
     paths, paths_text = run_sanitizer('tests/host_path4096_vfs.py', out / 'path4096.log')
+    capacity, capacity_text = run_sanitizer('tests/host_capacity_vfs.py', out / 'capacity.log')
     inputs = ['tests/host_vfs.c', 'servers/vfs/server.c', 'servers/vfs/pipe_wait.h',
               'servers/vfs/archive.h', 'servers/vfs/regression.c', 'servers/drivers/devices.h',
               'servers/vfs/metadata.h', 'servers/vfs/path_io.h', 'servers/vfs/path_storage.h', 'servers/vfs/record_lock.h',
               'servers/vfs/file_data.h', 'servers/vfs/permissions.h',
               'include/nos/abi.h', 'include/nos/user.h', 'include/nos/poll_abi.h']
-    result = {'passed': good and locks['passed'] and pipes['passed'] and credentials['passed'] and resources['passed'] and paths['passed'], 'bounds_passed': good,
-              'record_locks': locks, 'pipe_atomic': pipes, 'credentials': credentials, 'resources': resources, 'paths': paths,
+    result = {'passed': good and locks['passed'] and pipes['passed'] and credentials['passed'] and resources['passed'] and paths['passed'] and capacity['passed'], 'bounds_passed': good,
+              'record_locks': locks, 'pipe_atomic': pipes, 'credentials': credentials, 'resources': resources, 'paths': paths, 'capacity': capacity,
               'scope': 'VFS bounds, record-lock, pipe, permission, resource admission and PATH4096 state; host RPC/device stubs do not verify kernel IPC or hardware',
               'build_returncode': build.returncode, 'returncode': code, 'iterations': 100000,
               'fuzz_seed': 123456789, 'operation_range': [1, 44], 'descriptor_argument_range': [-4, 35],
@@ -84,6 +85,8 @@ def main():
         print(resources_text[-5000:])
     if not paths['passed']:
         print(paths_text[-5000:])
+    if not capacity['passed']:
+        print(capacity_text[-5000:])
     print(out / 'results.json')
     return 0 if result['passed'] else 1
 

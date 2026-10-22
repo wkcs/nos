@@ -90,8 +90,8 @@ struct arch_frame *arch_return_frame(struct arch_frame *f)
 struct tables { uint32_t root[4096], user[NOS_USER_PT_SLOTS][256], helper[256];
     unsigned short binding[NOS_USER_PT_SLOTS], live[NOS_USER_PT_SLOTS];
 } __attribute__((aligned(16384)));
-/* The stride must retain the 16 KiB TTBR alignment for every task. */
-static struct tables spaces[NOS_TASKS] __attribute__((aligned(16384)));
+/* The stride must retain the 16 KiB TTBR alignment for every address space. */
+static struct tables spaces[NOS_SPACES] __attribute__((aligned(16384)));
 static int enabled[NOS_CPUS];
 static unsigned kernel_tables_ready;
 static uint32_t kernel_pages[128][256] __attribute__((aligned(1024)));
@@ -169,7 +169,7 @@ static uint32_t *user_pte(struct tables *t, uintptr_t va, int create, unsigned *
 }
 static void retire_user_tables(int finish)
 {
-    for (unsigned id = 0; id < NOS_TASKS; id++) for (unsigned n = 0; n < NOS_USER_PT_SLOTS; n++) {
+    for (unsigned id = 0; id < NOS_SPACES; id++) for (unsigned n = 0; n < NOS_USER_PT_SLOTS; n++) {
         struct tables *t = &spaces[id];
         if (t->binding[n] == 0xffff || t->live[n]) continue;
         if (!finish) t->root[t->binding[n]] = 0; else t->binding[n] = 0xffff;
@@ -409,6 +409,7 @@ unsigned arch_mapping_flags(unsigned id, uintptr_t va)
 #ifdef NOS_ARM_M
     (void)id; (void)va; return 0;
 #else
+    if (id >= NOS_SPACES) return 0;
 #ifdef NOS_LINUX_COMPAT
     if (va >= 0xffff0000u && va < 0xffff1000u) return spaces[id].helper[0xf0] ? 5 : 0;
 #endif

@@ -3,7 +3,7 @@
 struct tables { uint64_t root[512], low[512], user[NOS_USER_PT_SLOTS][512];
     unsigned short binding[NOS_USER_PT_SLOTS], live[NOS_USER_PT_SLOTS];
 } __attribute__((aligned(4096)));
-static struct tables spaces[NOS_TASKS] __attribute__((aligned(4096)));
+static struct tables spaces[NOS_SPACES] __attribute__((aligned(4096)));
 static unsigned kernel_tables_ready;
 static uint64_t kernel_low[512] __attribute__((aligned(4096)));
 static uint64_t kernel_pages[64][512] __attribute__((aligned(4096)));
@@ -84,7 +84,7 @@ static uint64_t *user_pte(struct tables *t, uintptr_t va, int create, unsigned *
  * only after all CPUs have completed the TLB invalidation. */
 static void retire_user_tables(int finish)
 {
-    for (unsigned id = 0; id < NOS_TASKS; id++) for (unsigned n = 0; n < NOS_USER_PT_SLOTS; n++) {
+    for (unsigned id = 0; id < NOS_SPACES; id++) for (unsigned n = 0; n < NOS_USER_PT_SLOTS; n++) {
         struct tables *t = &spaces[id];
         if (t->binding[n] == 0xffff || t->live[n]) continue;
         if (!finish) t->low[t->binding[n]] = 0;
@@ -242,6 +242,7 @@ int arch_irq_bind(unsigned device_index)
 
 unsigned arch_mapping_flags(unsigned id, uintptr_t va)
 {
+    if (id >= NOS_SPACES) return 0;
     uint64_t *p = user_pte(&spaces[id], va, 0, NULL);
     if (!p || !*p) return 0;
     return (unsigned)((*p >> 1) & 7);

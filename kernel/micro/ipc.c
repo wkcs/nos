@@ -2,16 +2,47 @@
 #include "kernel.h"
 static struct endpoint { unsigned used, generation, owner; } endpoints[NOS_ENDPOINTS];
 static uint64_t request_sequence;
-static unsigned exit_ids[NOS_TASKS], exit_groups[NOS_TASKS], exit_alive[NOS_TASKS], exit_pending;
+#define TASK_PENDING_BITS 32u
+#define TASK_PENDING_WORDS ((NOS_TASKS + TASK_PENDING_BITS - 1u) / TASK_PENDING_BITS)
+struct task_pending { uint32_t words[TASK_PENDING_WORDS]; };
+static unsigned exit_ids[NOS_TASKS], exit_groups[NOS_TASKS], exit_alive[NOS_TASKS];
+static struct task_pending exit_pending;
 struct cancel_notice { unsigned id, group; uint64_t token; };
 static struct cancel_notice canceled[NOS_ENDPOINTS][NOS_TASKS];
-static unsigned cancel_pending[NOS_ENDPOINTS];
+static struct task_pending cancel_pending[NOS_ENDPOINTS];
 #define PROCESS_NOTICES NOS_IPC_PROCESS_NOTICE_LIMIT
 static struct nos_message process_notices[PROCESS_NOTICES];
 static unsigned process_head, process_count;
 /* A delivered FORK still needs its parent's FD table until the server has
  * processed it. Its next valid RECV implicitly acknowledges that delivery. */
 static unsigned delivered_fork_group, delivered_fork_valid;
+static void pending_reset(struct task_pending *pending)
+{ k_memset(pending, 0, sizeof(*pending)); }
+static void pending_set(struct task_pending *pending, unsigned slot)
+{
+    if (slot >= NOS_TASKS) kernel_fail("IPC pending slot outside task pool");
+    pending->words[slot / TASK_PENDING_BITS] |= UINT32_C(1) << (slot % TASK_PENDING_BITS);
+}
+static void pending_clear(struct task_pending *pending, unsigned slot)
+{
+    if (slot >= NOS_TASKS) kernel_fail("IPC pending slot outside task pool");
+    pending->words[slot / TASK_PENDING_BITS] &= ~(UINT32_C(1) << (slot % TASK_PENDING_BITS));
+}
+static unsigned pending_first(const struct task_pending *pending)
+{
+    for (unsigned word = 0; word < TASK_PENDING_WORDS; word++) {
+        uint32_t bits = pending->words[word];
+#if NOS_TASKS % TASK_PENDING_BITS
+        if (word == TASK_PENDING_WORDS - 1)
+            bits &= UINT32_MAX >> (TASK_PENDING_BITS - NOS_TASKS % TASK_PENDING_BITS);
+#endif
+        if (!bits) continue;
+        unsigned bit = 0;
+        while (!(bits & UINT32_C(1))) { bits >>= 1; bit++; }
+        return word * TASK_PENDING_BITS + bit;
+    }
+    return NOS_TASKS;
+}
 static void notify_cancel(struct task *client);
 static unsigned endpoint_handle(unsigned i)
 {
@@ -27,7 +58,10 @@ static struct endpoint *lookup(uintptr_t handle, unsigned *index)
 void ipc_init(void)
 {
     endpoints[0].used = 1; endpoints[0].owner = tasks[0].id;
-    cancel_pending[0] = 0; exit_pending = 0; process_head = process_count = 0;
+    /* Also used for VFS restart: private endpoints and their owners survive,
+     * so their delivered-request cancellation notices must survive too. */
+    pending_reset(&cancel_pending[0]);
+    pending_reset(&exit_pending); process_head = process_count = 0;
     delivered_fork_valid = 0;
     tasks[0].endpoint_rights[0] = NOS_RIGHT_RECV | NOS_RIGHT_GRANT;
     for (unsigned i = 1; i < NOS_TASKS; i++) tasks[i].endpoint_rights[0] = NOS_RIGHT_CALL;
@@ -80,7 +114,7 @@ intptr_t endpoint_create(void)
     if (!(current_task->caps & NOS_CAP_IPC)) return -NOS_EACCES;
     for (unsigned i = 1; i < NOS_ENDPOINTS; i++) {
         if (endpoints[i].used || endpoints[i].generation > (NOS_ENDPOINT_LIMIT - 1u - NOS_ENDPOINT_BASE - i) / NOS_ENDPOINTS) continue;
-        endpoints[i].used = 1; endpoints[i].owner = current_task->id; cancel_pending[i] = 0;
+        endpoints[i].used = 1; endpoints[i].owner = current_task->id; pending_reset(&cancel_pending[i]);
         current_task->endpoint_rights[i] = NOS_RIGHT_CALL | NOS_RIGHT_RECV | NOS_RIGHT_GRANT;
         return endpoint_handle(i);
     }
@@ -92,7 +126,7 @@ intptr_t endpoint_close(uintptr_t handle)
     if (!ep) return -NOS_EINVAL;
     if (!(current_task->endpoint_rights[i] & NOS_RIGHT_GRANT) &&
         !(current_task->caps & NOS_CAP_SPAWN)) return -NOS_EACCES;
-    ep->used = 0; cancel_pending[i] = 0;
+    ep->used = 0; pending_reset(&cancel_pending[i]);
     if (!i) { process_head = process_count = 0; delivered_fork_valid = 0; }
     if (i) ep->generation++;
     for (unsigned n = 0; n < NOS_TASKS; n++) {
@@ -164,7 +198,7 @@ static void notify_cancel(struct task *client)
         server->state = TASK_READY;
     } else {
         canceled[i][slot] = (struct cancel_notice){ client->id, client->space_owner, client->request.token };
-        cancel_pending[i] |= 1u << slot;
+        pending_set(&cancel_pending[i], slot);
     }
 }
 static struct task *oldest_request(unsigned handle)
@@ -278,21 +312,19 @@ intptr_t ipc_recv(uintptr_t handle, uintptr_t buffer)
         }
         return rc;
     }
-    if (cancel_pending[i]) {
-        unsigned slot = 0;
-        while (!(cancel_pending[i] & (1u << slot))) slot++;
+    unsigned slot = pending_first(&cancel_pending[i]);
+    if (slot < NOS_TASKS) {
         struct cancel_notice *old = &canceled[i][slot];
         struct nos_message notice = { .sender = old->id, .op = NOS_IPC_PEER_CANCEL,
             .token = old->token, .process = old->group };
-        cancel_pending[i] &= ~(1u << slot);
+        pending_clear(&cancel_pending[i], slot);
         return user_copy_out(buffer, &notice, sizeof(notice));
     }
-    if (!i && exit_pending) {
-        unsigned slot = 0;
-        while (!(exit_pending & (1u << slot))) slot++;
+    slot = pending_first(&exit_pending);
+    if (!i && slot < NOS_TASKS) {
         struct nos_message notice = { .sender = exit_ids[slot], .op = NOS_IPC_PEER_EXIT,
             .process = exit_groups[slot], .value = exit_alive[slot] };
-        exit_pending &= ~(1u << slot); return user_copy_out(buffer, &notice, sizeof(notice));
+        pending_clear(&exit_pending, slot); return user_copy_out(buffer, &notice, sizeof(notice));
     }
     struct task *client = oldest_request((unsigned)handle);
     if (client) { client->request_sent = 1; return user_copy_out(buffer, &client->request, sizeof(struct nos_message)); }
@@ -433,7 +465,7 @@ void ipc_task_exit(struct task *task)
         task->endpoint_rights[i] = 0;
         if (!endpoints[i].used || endpoints[i].owner != task->id) continue;
         unsigned handle = endpoint_handle(i);
-        endpoints[i].used = 0; cancel_pending[i] = 0;
+        endpoints[i].used = 0; pending_reset(&cancel_pending[i]);
         if (!i) { process_head = process_count = 0; delivered_fork_valid = 0; }
         if (i) endpoints[i].generation++;
         for (unsigned j = 0; j < NOS_TASKS; j++) {
@@ -457,7 +489,292 @@ void ipc_task_exit(struct task *task)
             if (!task_copy_out(server, server->pending, &notice, sizeof(notice))) server->state = TASK_READY;
         } else {
             unsigned slot = task->id % NOS_TASKS; exit_ids[slot] = task->id; exit_groups[slot] = task->space_owner;
-            exit_alive[slot] = alive; exit_pending |= 1u << slot;
+            exit_alive[slot] = alive; pending_set(&exit_pending, slot);
         }
     }
 }
+
+#if defined(NOS_SELFTEST) && defined(NOS_LINUX_COMPAT)
+/* Boot CPU only, before userspace or secondary CPUs run. Synthetic threads
+ * borrow the service's address space and credentials without acquiring or
+ * releasing either. In particular the real idle task in slot 79 survives
+ * byte-for-byte. Whole-task storage also restores priority donation and the
+ * rights revoked globally by endpoint close/owner exit. Keep it off the stack. */
+static struct {
+    struct task tasks[NOS_TASKS];
+    struct endpoint endpoints[NOS_ENDPOINTS];
+    struct cancel_notice canceled[NOS_ENDPOINTS][NOS_TASKS];
+    struct task_pending cancel_pending[NOS_ENDPOINTS], exit_pending;
+    unsigned exit_ids[NOS_TASKS], exit_groups[NOS_TASKS], exit_alive[NOS_TASKS];
+    struct nos_message process_notices[PROCESS_NOTICES], user_messages[2], private_message;
+    unsigned process_head, process_count, delivered_fork_group, delivered_fork_valid;
+    uint64_t request_sequence;
+} capacity_saved;
+
+static void capacity_client(unsigned slot, unsigned generation)
+{
+    struct task *client = &tasks[slot];
+    *client = capacity_saved.tasks[0];
+    client->generation = generation; client->id = generation * NOS_TASKS + slot;
+    client->parent = tasks[0].id; client->state = TASK_READY;
+    client->caps = NOS_CAP_IPC; client->is_thread = 1;
+    client->run_cpu = client->pin_cpu = UINT32_MAX;
+    client->base_priority = client->priority = 8;
+    client->request_sent = 0; client->wake_tick = 0;
+    k_memset(client->endpoint_rights, 0, sizeof(client->endpoint_rights));
+    client->endpoint_rights[0] = NOS_RIGHT_CALL;
+}
+
+int ipc_capacity_selftest(void)
+{
+    static const unsigned slots[] = {31, 32, 63, 64, 79};
+    enum { COUNT = sizeof(slots) / sizeof(slots[0]) };
+    _Static_assert(NOS_TASKS > 79, "IPC capacity regression needs high task slots");
+    struct task *previous = current_task, *server = &tasks[0];
+    unsigned saved_reschedule = reschedule;
+    uintptr_t buffer = USER_DATA + HEAP_OFFSET;
+    uintptr_t reply_buffer = buffer + sizeof(struct nos_message);
+    struct nos_message message = {0};
+    uint64_t tokens[COUNT];
+    unsigned ids[COUNT];
+    int ok = 0;
+    if (task_copy_in(server, capacity_saved.user_messages, buffer,
+                     sizeof(capacity_saved.user_messages))) return 0;
+    if (task_copy_in(&tasks[1], &capacity_saved.private_message, buffer,
+                     sizeof(capacity_saved.private_message))) return 0;
+#define SAVE_CAPACITY(field) k_memcpy(&capacity_saved.field, &field, sizeof(field))
+#define RESTORE_CAPACITY(field) k_memcpy(&field, &capacity_saved.field, sizeof(field))
+    SAVE_CAPACITY(tasks); SAVE_CAPACITY(endpoints); SAVE_CAPACITY(canceled);
+    SAVE_CAPACITY(cancel_pending); SAVE_CAPACITY(exit_pending);
+    SAVE_CAPACITY(exit_ids); SAVE_CAPACITY(exit_groups); SAVE_CAPACITY(exit_alive);
+    SAVE_CAPACITY(process_notices); SAVE_CAPACITY(process_head); SAVE_CAPACITY(process_count);
+    SAVE_CAPACITY(delivered_fork_group); SAVE_CAPACITY(delivered_fork_valid);
+    SAVE_CAPACITY(request_sequence);
+#define REQUIRE_CAPACITY(condition) do { if (!(condition)) { \
+    kernel_print("IPC capacity failed: " #condition "\n"); goto restore; \
+} } while (0)
+    current_task = server; server->state = TASK_READY;
+    REQUIRE_CAPACITY(!process_count && pending_first(&exit_pending) == NOS_TASKS);
+    for (unsigned i = 0; i < NOS_ENDPOINTS; i++)
+        REQUIRE_CAPACITY(pending_first(&cancel_pending[i]) == NOS_TASKS);
+    for (unsigned i = 0; i < COUNT; i++) capacity_client(slots[i], 2);
+
+    /* Actual queued CALL delivery and reply checks, including an old full ID
+     * after slot reuse and an old token against a valid new-generation ID. */
+    for (unsigned i = 0; i < COUNT; i++) {
+        struct task *client = &tasks[slots[i]];
+        unsigned old_id = client->id;
+        message = (struct nos_message){ .op = 7, .len = 1 };
+        message.data[0] = (unsigned char)slots[i];
+        REQUIRE_CAPACITY(!task_copy_out(server, buffer, &message, sizeof(message)));
+        current_task = client;
+        REQUIRE_CAPACITY(!ipc_call(0, buffer, reply_buffer, 0));
+        REQUIRE_CAPACITY(client->state == TASK_REPLY && !client->request_sent);
+        current_task = server;
+        REQUIRE_CAPACITY(!ipc_recv(0, buffer));
+        REQUIRE_CAPACITY(!task_copy_in(server, &message, buffer, sizeof(message)));
+        uint64_t old_token = message.token;
+        REQUIRE_CAPACITY(client->request_sent && message.sender == (intptr_t)old_id &&
+                         message.process == server->space_owner && old_token &&
+                         message.data[0] == (char)slots[i]);
+        REQUIRE_CAPACITY(!ipc_cancel(old_id));
+        REQUIRE_CAPACITY(client->state == TASK_READY && !client->request_sent &&
+                         FRAME_RESULT(&client->frame) == (uintptr_t)-NOS_EINTR);
+        REQUIRE_CAPACITY(!ipc_recv(0, buffer));
+        REQUIRE_CAPACITY(!task_copy_in(server, &message, buffer, sizeof(message)));
+        REQUIRE_CAPACITY(message.op == NOS_IPC_PEER_CANCEL && message.sender == (intptr_t)old_id &&
+                         message.process == server->space_owner && message.token == old_token);
+        REQUIRE_CAPACITY(ipc_reply(old_id, buffer) == -NOS_EPERM);
+        capacity_client(slots[i], 3);
+        message = (struct nos_message){ .op = 8 };
+        REQUIRE_CAPACITY(!task_copy_out(server, buffer, &message, sizeof(message)));
+        current_task = client;
+        REQUIRE_CAPACITY(!ipc_call(0, buffer, reply_buffer, 0));
+        current_task = server;
+        REQUIRE_CAPACITY(!ipc_recv(0, buffer));
+        REQUIRE_CAPACITY(!task_copy_in(server, &message, buffer, sizeof(message)));
+        uint64_t new_token = message.token;
+        REQUIRE_CAPACITY(message.sender == (intptr_t)client->id && new_token > old_token);
+        message.token = old_token;
+        REQUIRE_CAPACITY(!task_copy_out(server, buffer, &message, sizeof(message)));
+        REQUIRE_CAPACITY(ipc_reply(old_id, buffer) == -NOS_EPERM);
+        REQUIRE_CAPACITY(ipc_reply(client->id, buffer) == -NOS_EINVAL);
+        REQUIRE_CAPACITY(client->state == TASK_REPLY && client->request_sent);
+        message.token = new_token; message.len = 1; message.data[0] = (unsigned char)i;
+        REQUIRE_CAPACITY(!task_copy_out(server, buffer, &message, sizeof(message)));
+        REQUIRE_CAPACITY(!ipc_reply(client->id, buffer));
+        REQUIRE_CAPACITY(!task_copy_in(client, &message, reply_buffer, sizeof(message)));
+        REQUIRE_CAPACITY(client->state == TASK_READY && !client->request_sent &&
+                         message.sender == (intptr_t)server->id && message.process == server->space_owner &&
+                         message.token == new_token && message.len == 1 && message.data[0] == (char)i);
+    }
+
+    /* Hold every boundary bit at once. Reusing one slot replaces its own
+     * notice only; process lifecycle notices retain their delivery priority. */
+    for (unsigned i = 0; i < COUNT; i++) {
+        struct task *client = &tasks[slots[i]];
+        client->state = TASK_REPLY; client->request_sent = 1;
+        client->reply_from = server->id; client->endpoint_handle = 0;
+        client->request.token = ++request_sequence;
+        ids[i] = client->id; tokens[i] = client->request.token;
+        REQUIRE_CAPACITY(!ipc_cancel(client->id));
+    }
+    capacity_client(slots[0], 4);
+    tasks[slots[0]].state = TASK_REPLY; tasks[slots[0]].request_sent = 1;
+    tasks[slots[0]].endpoint_handle = 0; tasks[slots[0]].reply_from = server->id;
+    tasks[slots[0]].request.token = ++request_sequence;
+    REQUIRE_CAPACITY(!ipc_cancel(tasks[slots[0]].id));
+    REQUIRE_CAPACITY(ipc_reply(ids[0], buffer) == -NOS_EPERM);
+    ids[0] = tasks[slots[0]].id; tokens[0] = tasks[slots[0]].request.token;
+    REQUIRE_CAPACITY(!ipc_process_notice(NOS_IPC_PROCESS_EXEC, server->space_owner, 17));
+    REQUIRE_CAPACITY(!ipc_recv(0, buffer));
+    REQUIRE_CAPACITY(!task_copy_in(server, &message, buffer, sizeof(message)));
+    REQUIRE_CAPACITY(message.op == NOS_IPC_PROCESS_EXEC && message.value == 17);
+    for (unsigned i = 0; i < COUNT; i++) {
+        REQUIRE_CAPACITY(!ipc_recv(0, buffer));
+        REQUIRE_CAPACITY(!task_copy_in(server, &message, buffer, sizeof(message)));
+        REQUIRE_CAPACITY(message.op == NOS_IPC_PEER_CANCEL && message.sender == (intptr_t)ids[i] &&
+                         message.process == server->space_owner && message.token == tokens[i]);
+    }
+    REQUIRE_CAPACITY(pending_first(&cancel_pending[0]) == NOS_TASKS);
+
+    /* VFS reinitialization must leave unrelated private services alone. The
+     * private owner borrows init's AS/credentials, not the VFS process group;
+     * all five boundary notices remain pending while endpoint 0 is reset. */
+    struct task *private_owner = &tasks[30];
+    *private_owner = capacity_saved.tasks[1];
+    private_owner->id = 2 * NOS_TASKS + 30; private_owner->generation = 2;
+    private_owner->state = TASK_READY; private_owner->caps = NOS_CAP_IPC;
+    private_owner->run_cpu = private_owner->pin_cpu = UINT32_MAX;
+    private_owner->is_thread = 1; private_owner->request_sent = 0;
+    k_memset(private_owner->endpoint_rights, 0, sizeof(private_owner->endpoint_rights));
+    REQUIRE_CAPACITY(private_owner->space_owner != server->space_owner);
+    current_task = private_owner;
+    intptr_t private_handle = endpoint_create();
+    REQUIRE_CAPACITY(private_handle >= (intptr_t)NOS_ENDPOINT_BASE);
+    unsigned private_index = ((unsigned)private_handle - NOS_ENDPOINT_BASE) % NOS_ENDPOINTS;
+    for (unsigned i = 0; i < COUNT; i++) {
+        struct task *client = &tasks[slots[i]];
+        REQUIRE_CAPACITY(!endpoint_grant(client->id, (uintptr_t)private_handle, NOS_RIGHT_CALL, 0));
+        message = (struct nos_message){ .op = 9 };
+        REQUIRE_CAPACITY(!task_copy_out(client, buffer, &message, sizeof(message)));
+        current_task = client;
+        REQUIRE_CAPACITY(!ipc_call((uintptr_t)private_handle, buffer, reply_buffer, 0));
+        REQUIRE_CAPACITY(client->state == TASK_REPLY && !client->request_sent);
+        current_task = private_owner;
+        REQUIRE_CAPACITY(!ipc_recv((uintptr_t)private_handle, buffer));
+        REQUIRE_CAPACITY(!task_copy_in(private_owner, &message, buffer, sizeof(message)));
+        REQUIRE_CAPACITY(message.sender == (intptr_t)ids[i] && client->request_sent);
+        tokens[i] = message.token;
+    }
+    current_task = server;
+    for (unsigned i = 0; i < COUNT; i++)
+        REQUIRE_CAPACITY(!ipc_cancel(tasks[slots[i]].id));
+    /* The same caller can cancel a later VFS call without acknowledging its
+     * earlier private-service token; the pending namespaces are independent. */
+    struct task *client = &tasks[slots[0]];
+    message = (struct nos_message){ .op = 10 };
+    REQUIRE_CAPACITY(!task_copy_out(client, buffer, &message, sizeof(message)));
+    current_task = client;
+    REQUIRE_CAPACITY(!ipc_call(0, buffer, reply_buffer, 0));
+    current_task = server;
+    REQUIRE_CAPACITY(!ipc_recv(0, buffer));
+    REQUIRE_CAPACITY(!ipc_cancel(client->id));
+    REQUIRE_CAPACITY(pending_first(&cancel_pending[0]) == slots[0]);
+    ipc_init();
+    REQUIRE_CAPACITY(pending_first(&cancel_pending[0]) == NOS_TASKS &&
+                     pending_first(&cancel_pending[private_index]) == slots[0] &&
+                     endpoints[private_index].owner == private_owner->id);
+    current_task = private_owner;
+    for (unsigned i = 0; i < COUNT; i++) {
+        REQUIRE_CAPACITY(!ipc_recv((uintptr_t)private_handle, buffer));
+        REQUIRE_CAPACITY(!task_copy_in(private_owner, &message, buffer, sizeof(message)));
+        REQUIRE_CAPACITY(message.op == NOS_IPC_PEER_CANCEL && message.sender == (intptr_t)ids[i] &&
+                         message.process == server->space_owner && message.token == tokens[i]);
+    }
+    REQUIRE_CAPACITY(pending_first(&cancel_pending[private_index]) == NOS_TASKS);
+    REQUIRE_CAPACITY(!endpoint_close((uintptr_t)private_handle));
+    *private_owner = capacity_saved.tasks[30];
+    current_task = server;
+
+    /* A close clears every pending word and revokes high-slot rights. Owner
+     * death must do the same before releasing blocked high-slot callers. */
+    server->caps |= NOS_CAP_IPC;
+    intptr_t handle = endpoint_create();
+    REQUIRE_CAPACITY(handle >= (intptr_t)NOS_ENDPOINT_BASE);
+    unsigned index = ((unsigned)handle - NOS_ENDPOINT_BASE) % NOS_ENDPOINTS;
+    for (unsigned i = 0; i < COUNT; i++) {
+        struct task *client = &tasks[slots[i]];
+        client->endpoint_rights[index] = NOS_RIGHT_CALL;
+        client->endpoint_handle = (unsigned)handle;
+        client->state = TASK_REPLY; client->request_sent = 1;
+        client->request.token = ++request_sequence;
+        REQUIRE_CAPACITY(!ipc_cancel(client->id));
+    }
+    REQUIRE_CAPACITY(!endpoint_close((uintptr_t)handle));
+    REQUIRE_CAPACITY(pending_first(&cancel_pending[index]) == NOS_TASKS);
+    for (unsigned i = 0; i < COUNT; i++)
+        REQUIRE_CAPACITY(!tasks[slots[i]].endpoint_rights[index]);
+
+    current_task = &tasks[slots[0]];
+    handle = endpoint_create();
+    REQUIRE_CAPACITY(handle >= (intptr_t)NOS_ENDPOINT_BASE);
+    index = ((unsigned)handle - NOS_ENDPOINT_BASE) % NOS_ENDPOINTS;
+    current_task = server;
+    for (unsigned i = 1; i < COUNT; i++) {
+        struct task *client = &tasks[slots[i]];
+        client->endpoint_rights[index] = NOS_RIGHT_CALL;
+        client->endpoint_handle = (unsigned)handle;
+        client->state = TASK_REPLY; client->request_sent = 1;
+        client->request.token = ++request_sequence;
+        REQUIRE_CAPACITY(!ipc_cancel(client->id));
+        client->state = TASK_REPLY; client->request_sent = 1;
+    }
+    tasks[slots[0]].state = TASK_DEAD;
+    ipc_task_exit(&tasks[slots[0]]);
+    REQUIRE_CAPACITY(!endpoints[index].used && pending_first(&cancel_pending[index]) == NOS_TASKS);
+    for (unsigned i = 1; i < COUNT; i++) {
+        struct task *client = &tasks[slots[i]];
+        REQUIRE_CAPACITY(client->state == TASK_READY && !client->request_sent &&
+                         !client->endpoint_rights[index] &&
+                         FRAME_RESULT(&client->frame) == (uintptr_t)-NOS_ESRCH);
+    }
+
+    /* Include the owner's already-queued exit and retain all later high-slot
+     * exits simultaneously. Only the service and five fixtures share group 0. */
+    for (unsigned n = 1; n < NOS_TASKS; n++) {
+        unsigned fixture = 0;
+        for (unsigned i = 0; i < COUNT; i++) fixture |= n == slots[i];
+        REQUIRE_CAPACITY(fixture || tasks[n].state == TASK_UNUSED ||
+                         tasks[n].space_owner != server->space_owner);
+    }
+    for (unsigned i = 1; i < COUNT; i++) {
+        tasks[slots[i]].state = TASK_DEAD;
+        ipc_task_exit(&tasks[slots[i]]);
+    }
+    for (unsigned i = 0; i < COUNT; i++) {
+        REQUIRE_CAPACITY(!ipc_recv(0, buffer));
+        REQUIRE_CAPACITY(!task_copy_in(server, &message, buffer, sizeof(message)));
+        REQUIRE_CAPACITY(message.op == NOS_IPC_PEER_EXIT && message.sender == (intptr_t)ids[i] &&
+                         message.process == server->space_owner && message.value == (intptr_t)(COUNT - i));
+    }
+    REQUIRE_CAPACITY(pending_first(&exit_pending) == NOS_TASKS);
+    ok = 1;
+restore:
+    RESTORE_CAPACITY(tasks); RESTORE_CAPACITY(endpoints); RESTORE_CAPACITY(canceled);
+    RESTORE_CAPACITY(cancel_pending); RESTORE_CAPACITY(exit_pending);
+    RESTORE_CAPACITY(exit_ids); RESTORE_CAPACITY(exit_groups); RESTORE_CAPACITY(exit_alive);
+    RESTORE_CAPACITY(process_notices); RESTORE_CAPACITY(process_head); RESTORE_CAPACITY(process_count);
+    RESTORE_CAPACITY(delivered_fork_group); RESTORE_CAPACITY(delivered_fork_valid);
+    RESTORE_CAPACITY(request_sequence);
+    if (task_copy_out(server, buffer, capacity_saved.user_messages,
+                      sizeof(capacity_saved.user_messages))) ok = 0;
+    if (task_copy_out(&tasks[1], buffer, &capacity_saved.private_message,
+                      sizeof(capacity_saved.private_message))) ok = 0;
+    current_task = previous; reschedule = saved_reschedule;
+#undef REQUIRE_CAPACITY
+#undef RESTORE_CAPACITY
+#undef SAVE_CAPACITY
+    return ok;
+}
+#endif

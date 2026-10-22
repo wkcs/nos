@@ -300,9 +300,12 @@ static intptr_t dispatch(uintptr_t nr, uintptr_t a, uintptr_t b, uintptr_t c)
 #ifdef NOS_LINUX_COMPAT
             if (t->credential_ref) kernel_fail("exec spawn with credentials");
 #endif
-            unsigned generation = t->generation; k_memset(t, 0, sizeof(*t));
+            unsigned generation = t->generation;
+            if (generation > (NOS_TID_MAX - i) / NOS_TASKS)
+                kernel_fail("task identifier exhausted");
+            k_memset(t, 0, sizeof(*t));
             t->id = generation * NOS_TASKS + i; t->generation = generation;
-            t->space_id = i; t->space_owner = t->id; t->run_cpu = t->pin_cpu = UINT32_MAX;
+            t->space_id = NOS_SPACES; t->space_owner = t->id; t->run_cpu = t->pin_cpu = UINT32_MAX;
             t->priority = t->base_priority = request.priority;
             t->parent = current_task->id; t->caps = current_task->caps & ~NOS_CAP_SPAWN;
             rc = credentials_create(t, current_task); if (rc) return rc;
@@ -474,6 +477,10 @@ void kernel_start(void)
         tasks[slot].pin_cpu = cpu;
     }
     ipc_init();
+#if defined(NOS_SELFTEST) && defined(NOS_LINUX_COMPAT)
+    if (!ipc_capacity_selftest()) kernel_fail("IPC high task slot regression");
+    kernel_print("PASS ipc_capacity_high_slots\n");
+#endif
 #ifdef NOS_SELFTEST
     if (!memory_transaction_selftest()) kernel_fail("memory mapping transaction rollback");
     kernel_print("PASS mapping_transaction_rollback\n");

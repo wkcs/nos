@@ -1,7 +1,7 @@
 /* Copyright (C) 2026 NOS contributors */
 #include "abi.h"
 #ifdef NOS_LINUX_COMPAT
-#define MAPPING_TEST_LIMIT 256u
+#define MAPPING_TEST_LIMIT (NOS_VM_REGIONS + 1u)
 #else
 #define MAPPING_TEST_LIMIT 64u
 #endif

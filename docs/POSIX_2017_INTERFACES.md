@@ -16,7 +16,7 @@
 | 身份、会话、作业控制：getuid/setuid/getgroups/setsid/setpgid/tcsetpgrp | 权限凭据、会话和进程组、控制终端 | Linux profile 已实现独立凭据引用对象、real/effective/saved UID/GID、32 补充组，CALL 时捕获身份供 VFS 授权，用户信号按实际身份检查；成功 exec 将保存 ID 更新为有效 ID，失败保持旧凭据；三 MMU 单核/四核真实 glibc 和完整 68 组验收通过。glibc 的 ngroups_max 查询对应实际 proc 节点。set-ID ELF、fsuid/fsgid、完整控制终端及作业控制仍缺；默认 native 不自动获得这些接口 |
 | 信号：sigaction/sigprocmask/sigsuspend/sigwait/kill/raise | 每线程 mask、进程 pending、处理器帧/返回、默认动作、EINTR/restart | native musl port 只有线程 mask 状态；Linux personality 已新增真实投递/返回，glibc 信号及 NPTL 取消必须按各架构独立报告 |
 | 时间：clock_gettime/getres/nanosleep/clock_nanosleep/gettimeofday/time、timer* | 单调时钟、墙钟、绝对等待、剩余时间、信号计时器 | native 两库通过 CLOCK_GET64 共享实际 RTC 与单调快照，三 MMU 已通过 gettimeofday/REALTIME 绝对等待；Newlib 的 clock ID 1/4 显式转换成 NOS 的 0/1，32 位 time_t 溢出返回真实 EOVERFLOW。STM32 没有 RTC 时明确 ENOTSUP，仍保留单调等待；进程/线程 CPU 时钟和完整 timer 选项需独立验证 |
-| 线程：pthread_create/join/self/equal/once/key*、mutex/cond/rwlock/barrier | TLS、跨核同步、析构、属性、取消/分离、锁类型与错误恢复 | native musl/Newlib 的 create/join/基本 mutex/cond/TSD 已测；真实 glibc NPTL 默认线程、跨核 TLS/errno/malloc/共享 FILE、detach/TSD、robust owner death 已在 ARM/RV64 SMP2、A64 SMP4 通过。rwlock/barrier/once/TSD 析构三轮再入另在三 MMU SMP2 通过；全部调度/优先级属性和其他组合不能由这些程序推断 |
+| 线程：pthread_create/join/self/equal/once/key*、mutex/cond/rwlock/barrier | TLS、跨核同步、析构、属性、取消/分离、锁类型与错误恢复 | native musl/Newlib 的 create/join/基本 mutex/cond/TSD 已测；真实 glibc NPTL 默认线程、跨核 TLS/errno/malloc/共享 FILE、detach/TSD、robust owner death 已在 ARM/RV64 SMP2、A64 SMP4 通过。rwlock/barrier/once/TSD 析构三轮再入另在三 MMU SMP2 通过；另已在三 MMU 单核/四核实际保持 64 个默认属性 worker 与主线程同时存活，两轮复用栈并恢复退出资源基线；全部调度/优先级属性和其他组合不能由这些程序推断 |
 | 线程取消及信号取消点 | 延迟/异步取消、清理栈、阻塞调用可中断、资源释放 | native Newlib/musl 的 pthread_cancel 仍显式 ENOTSUP；真实 glibc 的条件等待取消、清理/TSD 和纯用户代码异步取消已在 ARM/RV64 SMP2、A64 SMP4 通过，不泛化为另两库支持；所有 I/O 取消点和取消竞态仍需更广覆盖 |
 | 管道和终端：pipe/pipe2/isatty/termios/ttyname | 真阻塞、O_NONBLOCK、dup 后实际类型、TTY 参数与控制终端 | VFS pipe 队列已有真实回归；本批 Linux profile 将原子写 4096、IOV1024 与 libc 查询对齐，部分写后 SIGPIPE 与最终读 span 检查已通过新三架构单核/四核及完整冻结验收；UART 字符输入不同于完整 POSIX TTY/PTY |
 | 多路 I/O：poll/select/pselect、fd_set | 多对象等待、ready 条件、原子 signal mask、超时 | VFS 查询实际 OFD/pipe/UART readiness，native Newlib/musl 已桥接并新增超时/EOF/无效 FD 回归；native ppoll/pselect 非空 signal mask 尚不支持，Linux gateway 的原子 mask 等待单独验证 |
@@ -37,3 +37,5 @@ POSIX 的可选功能需要按规范的 option 标识分别选择和记录，例
 PATH4096批次已验收：RAM总路径4095个非NUL字符、组件255、同次调用的两个4096字节输入、长符号链接、cwd改名及删除后旧引用身份。旧256路径回归仍保留；本批宿主8项、三架构六个新应用专项及完整68组均通过，报告 `1792569009279952329`。持久化64、archive256和已删除目录的完整相对解析边界仍单列。
 
 地址空间与退出生命周期批次通过新完整 68 组：`1792591938965616587`。确定性回归覆盖主线程先退出、子进程退出后再 wait、额外存活线程的 exit_group/致命信号状态，以及父进程结束后的存活线程身份与 fork/wait。当前孤儿向 init/subreaper 归属仍未实现，不能由身份保留推断完整进程模型。
+
+线程容量新增验收 `1792629772377014664`：80 任务槽与 12 个空间/进程对象分离，真实 64 worker 两轮并发通过三架构单核/四核，包含高槽信号与 VFS RPC、TLS/TSD、malloc/stdio 及进程退出精确回收。25 并发子进程和 NPROC 尚未完成，不等同完整 POSIX 资源符合性。

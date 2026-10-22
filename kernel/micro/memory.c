@@ -1,5 +1,6 @@
 /* Copyright (C) 2026 NOS contributors */
 #include "kernel.h"
+#include "linux.h"
 static unsigned char page_pool[PAGE_POOL_PAGES * NOS_PAGE_SIZE] __attribute__((aligned(NOS_PAGE_SIZE)));
 /* Halfword accesses also work before ARM enables normal-memory mappings. */
 static volatile unsigned short allocation[PAGE_POOL_PAGES];
@@ -63,7 +64,7 @@ struct memory_space {
     uint64_t as_limit;
 #endif
 };
-static struct memory_space memory_spaces[NOS_TASKS];
+static struct memory_space memory_spaces[NOS_SPACES];
 /* Physical pages are page aligned.  Odd values mark an unbacked virtual
  * reservation; split reservations retain this tag when their offset changes. */
 static int vma_backed(const struct vma *v) { return v->pa && !(v->pa & 1); }
@@ -78,7 +79,7 @@ struct shared_object {
 #define SHARED_LEASE_BASE 0x70000000u
 #define SHARED_GENERATION_MAX 0xfffffu
 struct shared_lease {
-    unsigned generation, object, object_generation, prot, count, owners[NOS_TASKS];
+    unsigned generation, object, object_generation, prot, count, owners[NOS_SPACES];
 };
 static struct shared_object shared_objects[SHARED_OBJECTS];
 static struct shared_lease shared_leases[SHARED_LEASES];
@@ -94,7 +95,7 @@ static struct shared_object *shared_from_backing(uintptr_t pa, size_t bytes)
 static int backing_shared(uintptr_t pa, size_t bytes) { return shared_from_backing(pa, bytes) != NULL; }
 static int group_alive(unsigned owner)
 {
-    for (unsigned i = 0; i < NOS_TASKS; i++) if (memory_spaces[i].refs && memory_spaces[i].owner == owner) return 1;
+    for (unsigned i = 0; i < NOS_SPACES; i++) if (memory_spaces[i].refs && memory_spaces[i].owner == owner) return 1;
     return 0;
 }
 static int lease_has_owner(const struct shared_lease *l, unsigned owner)
@@ -126,7 +127,7 @@ static int lease_fork(unsigned parent, unsigned child)
     lease_collect();
     for (unsigned i = 0; i < SHARED_LEASES; i++) if (shared_leases[i].object &&
         lease_has_owner(&shared_leases[i], parent) && !lease_has_owner(&shared_leases[i], child) &&
-        shared_leases[i].count == NOS_TASKS) return -NOS_ENOMEM;
+        shared_leases[i].count == NOS_SPACES) return -NOS_ENOMEM;
     for (unsigned i = 0; i < SHARED_LEASES; i++) {
         struct shared_lease *l = &shared_leases[i];
         if (l->object && lease_has_owner(l, parent) && !lease_has_owner(l, child)) l->owners[l->count++] = child;
@@ -150,7 +151,7 @@ static void shared_collect(void)
          * when another thread removes the last user mapping. */
         for (unsigned j = 0; j < NOS_TASKS && !live; j++) if (tasks[j].state == TASK_FUTEX &&
             tasks[j].futex_shared && tasks[j].futex_key >= o->pa && tasks[j].futex_key - o->pa < o->size) live = 1;
-        for (unsigned id = 0; id < NOS_TASKS && !live; id++) if (memory_spaces[id].refs)
+        for (unsigned id = 0; id < NOS_SPACES && !live; id++) if (memory_spaces[id].refs)
             for (unsigned j = 0; j < VMA_SLOTS; j++) {
                 struct vma *v = &memory_spaces[id].vma[j];
                 if (vma_backed(v) && v->pa >= o->pa && v->pa - o->pa < o->size) { live = 1; break; }
@@ -175,7 +176,7 @@ static int page_free_range(uintptr_t pa, unsigned count);
 static void invalidate_tls(struct task *task, uintptr_t va, size_t bytes);
 static struct memory_space *task_space(struct task *task)
 {
-    return task->space_id < NOS_TASKS && memory_spaces[task->space_id].refs ?
+    return task->space_id < NOS_SPACES && memory_spaces[task->space_id].refs ?
         &memory_spaces[task->space_id] : NULL;
 }
 /* Count virtual reservations, not physical backing. In particular a shared
@@ -229,9 +230,11 @@ static void sync_space(struct task *task, struct memory_space *s)
 }
 static int space_init(struct task *task, int builtin)
 {
+    if (task->memory) return -NOS_EINVAL;
+    task->space_id = NOS_SPACES;
     unsigned id;
-    for (id = 0; id < NOS_TASKS; id++) if (!memory_spaces[id].refs) break;
-    if (id == NOS_TASKS) return -NOS_ENOMEM;
+    for (id = 0; id < NOS_SPACES; id++) if (!memory_spaces[id].refs) break;
+    if (id == NOS_SPACES) return -NOS_ENOMEM;
     struct memory_space *s = &memory_spaces[id];
     k_memset(s, 0, sizeof(*s));
 #ifdef NOS_LINUX_COMPAT
@@ -288,7 +291,7 @@ failed:
     /* Discard all page-table entries before releasing their physical pages. */
     arch_space_init(id);
     page_free(s->memory, USER_BYTES / NOS_PAGE_SIZE);
-    k_memset(s, 0, sizeof(*s)); task->memory = 0;
+    k_memset(s, 0, sizeof(*s)); task->memory = 0; task->space_id = NOS_SPACES;
     return -NOS_ENOMEM;
 }
 int space_create(struct task *task) { return space_init(task, 1); }
@@ -315,7 +318,7 @@ void space_destroy(struct task *task)
     task->tls_memory = 0;
 #endif
     task->memory = 0;
-    if (--s->refs) return;
+    if (--s->refs) { task->space_id = NOS_SPACES; return; }
     /* The departing task may still be running on these tables.  Preserve
      * privileged roots until the next context switch; clear only user PTEs. */
 #ifdef NOS_MMU
@@ -335,6 +338,7 @@ void space_destroy(struct task *task)
     page_free(s->memory, USER_BYTES / NOS_PAGE_SIZE);
     unsigned owner = s->owner;
     k_memset(s, 0, sizeof(*s));
+    task->space_id = NOS_SPACES;
     shared_owner_exit(owner); shared_collect();
 }
 int space_commit_exec(struct task *task, struct task *replacement)
@@ -356,7 +360,7 @@ int space_commit_exec(struct task *task, struct task *replacement)
     task->tls_memory = replacement->tls_memory;
     task->tls_slot = 0; task->tls_value = 0;
     replacement->memory = replacement->heap = replacement->heap_limit = replacement->brk = 0;
-    replacement->tls_memory = 0;
+    replacement->tls_memory = 0; replacement->space_id = NOS_SPACES;
     return 0;
 #endif
 }
@@ -507,7 +511,8 @@ static int permitted_range(struct memory_space *s, uintptr_t va, size_t bytes, i
         return 0;
     if (overlap(va, bytes, USER_DATA, USER_BYTES) || (s->template_text &&
         overlap(va, bytes, (uintptr_t)__user_text_start, (size_t)(__user_text_end - __user_text_start)))) return 0;
-    if (!gateway && overlap(va, bytes, 0x01800000u, 0x00200000u)) return 0;
+    if (!gateway && overlap(va, bytes, NOS_LINUX_GATEWAY_BASE,
+                            NOS_LINUX_GATEWAY_RESERVED_END - NOS_LINUX_GATEWAY_BASE)) return 0;
     static const uintptr_t reserved[][2] = {
         {0x03000000u, 0x00200000u}, /* Capability-only device mappings. */
         {0x04000000u, 0x00200000u}, /* CLINT supervisor alias. */
@@ -590,8 +595,10 @@ int space_fork(struct task *child, struct task *parent)
      * than application memory and must not occupy its new slot. */
     for (unsigned i = 0; i < VMA_SLOTS; i++) {
         const struct vma *old = &source->vma[i];
-        if (!old->pa || (source->gateway && overlap(old->va, old->size, 0x01900000u, 0x00100000u))) continue;
-        int gateway = source->gateway && overlap(old->va, old->size, 0x01800000u, 0x00100000u);
+        if (!old->pa || (source->gateway && overlap(old->va, old->size,
+            NOS_LINUX_GATEWAY_STACK_BASE, NOS_LINUX_GATEWAY_RESERVED_END - NOS_LINUX_GATEWAY_STACK_BASE))) continue;
+        int gateway = source->gateway && overlap(old->va, old->size,
+            NOS_LINUX_GATEWAY_BASE, NOS_LINUX_GATEWAY_END - NOS_LINUX_GATEWAY_BASE);
         int shared = backing_shared(old->pa, old->size);
         unsigned initial_prot = !old->prot && vma_backed(old) && !shared ? NOS_PROT_READ : old->prot;
         intptr_t mapped = map_backing(child, old->va, initial_prot, old->size, gateway, shared ? old->pa : 0);
@@ -623,7 +630,8 @@ int vm_image_map(struct task *task, uintptr_t va, size_t bytes, unsigned prot)
 int vm_gateway_map(struct task *task, uintptr_t va, size_t bytes, unsigned prot)
 {
 #ifdef NOS_MMU
-    if (va < 0x01800000u || va >= 0x01a00000u || bytes > 0x01a00000u - va) return -NOS_EINVAL;
+    if (va < NOS_LINUX_GATEWAY_BASE || va >= NOS_LINUX_GATEWAY_RESERVED_END ||
+        bytes > NOS_LINUX_GATEWAY_RESERVED_END - va) return -NOS_EINVAL;
     intptr_t result = map_new(task, va, prot, bytes, 1);
     if ((uintptr_t)result < (uintptr_t)-4095) task_space(task)->gateway = 1;
     return (uintptr_t)result >= (uintptr_t)-4095 ? (int)result : 0;
@@ -696,9 +704,25 @@ static void invalidate_tls(struct task *task, uintptr_t va, size_t bytes)
         tasks[i].space_id == task->space_id && tasks[i].tls_slot >= va &&
         tasks[i].tls_slot - va < bytes) tasks[i].tls_slot = 0;
 }
+#ifdef NOS_LINUX_COMPAT
+/* Kernel entries are serialized across CPUs. Keep the large profile's
+ * transaction metadata off the per-CPU kernel stack. Mutations never nest;
+ * assert that contract before borrowing the single bounded workspace. */
+static struct {
+    struct vma replacement[VMA_SLOTS];
+    unsigned char fresh[VMA_SLOTS];
+    unsigned active;
+} vm_workspace;
+static void vm_workspace_acquire(void)
+{
+    if (vm_workspace.active) kernel_fail("nested memory transaction");
+    vm_workspace.active = 1;
+}
+#endif
 /* Range mutations preflight metadata and backing allocations, then commit
  * only after all permissions have been installed successfully. */
-static intptr_t vm_change_mode(struct task *task, uintptr_t va, size_t bytes, unsigned prot, int remove, int holes)
+static intptr_t vm_change_workspace(struct task *task, uintptr_t va, size_t bytes, unsigned prot, int remove, int holes,
+                                    struct vma *replacement, unsigned char *fresh)
 {
     struct memory_space *s = task_space(task);
     if (!s || (va & (NOS_PAGE_SIZE - 1))) return -NOS_EINVAL;
@@ -724,8 +748,8 @@ static intptr_t vm_change_mode(struct task *task, uintptr_t va, size_t bytes, un
         }
         if (!found) return -NOS_EINVAL;
     }
-    struct vma replacement[VMA_SLOTS]; unsigned used = 0;
-    k_memset(replacement, 0, sizeof(replacement));
+    unsigned used = 0;
+    k_memset(replacement, 0, sizeof(s->vma));
     for (unsigned i = 0; i < VMA_SLOTS; i++) {
         struct vma old = s->vma[i];
         if (!old.pa) continue;
@@ -760,8 +784,7 @@ static intptr_t vm_change_mode(struct task *task, uintptr_t va, size_t bytes, un
     }
     if (regions > 7) return -NOS_ENOMEM;
 #endif
-    unsigned char fresh[VMA_SLOTS];
-    k_memset(fresh, 0, sizeof(fresh));
+    k_memset(fresh, 0, VMA_SLOTS * sizeof(*fresh));
     for (unsigned i = 0; i < used; i++) if ((replacement[i].pa & 1) && replacement[i].prot) {
         replacement[i].pa = page_alloc((unsigned)(replacement[i].size / NOS_PAGE_SIZE));
         if (!replacement[i].pa) {
@@ -813,22 +836,38 @@ static intptr_t vm_change_mode(struct task *task, uintptr_t va, size_t bytes, un
         if (vma_backed(old) && !backing_shared(old->pa, old->size) && page_free_range(old->pa + first - old->va, (unsigned)((last - first) / NOS_PAGE_SIZE)))
             kernel_fail("range free failed");
     }
-    k_memcpy(s->vma, replacement, sizeof(replacement));
+    k_memcpy(s->vma, replacement, sizeof(s->vma));
     shared_collect();
     if (remove || !(prot & NOS_PROT_WRITE)) invalidate_tls(task, va, bytes);
     return 0;
+}
+static intptr_t vm_change_mode(struct task *task, uintptr_t va, size_t bytes, unsigned prot, int remove, int holes)
+{
+#ifdef NOS_LINUX_COMPAT
+    vm_workspace_acquire();
+    intptr_t result = vm_change_workspace(task, va, bytes, prot, remove, holes,
+                                         vm_workspace.replacement, vm_workspace.fresh);
+    vm_workspace.active = 0;
+    return result;
+#else
+    struct vma replacement[VMA_SLOTS];
+    unsigned char fresh[VMA_SLOTS];
+    return vm_change_workspace(task, va, bytes, prot, remove, holes, replacement, fresh);
+#endif
 }
 static intptr_t vm_change(struct task *task, uintptr_t va, size_t bytes, unsigned prot, int remove)
 { return vm_change_mode(task, va, bytes, prot, remove, 0); }
 intptr_t vm_gateway_unmap(struct task *task, uintptr_t va, size_t bytes)
 {
-    if (va < 0x01800000u || va >= 0x01a00000u || !bytes || bytes > 0x01a00000u - va) return -NOS_EINVAL;
+    if (va < NOS_LINUX_GATEWAY_BASE || va >= NOS_LINUX_GATEWAY_RESERVED_END || !bytes ||
+        bytes > NOS_LINUX_GATEWAY_RESERVED_END - va) return -NOS_EINVAL;
     return vm_change(task, va, bytes, 0, 1);
 }
 intptr_t vm_unmap(struct task *task, uintptr_t va, size_t bytes)
 {
     struct memory_space *s = task_space(task);
-    if (s && s->gateway && overlap(va, bytes ? bytes : NOS_PAGE_SIZE, 0x01800000u, 0x00200000u)) return -NOS_EPERM;
+    if (s && s->gateway && overlap(va, bytes ? bytes : NOS_PAGE_SIZE,
+        NOS_LINUX_GATEWAY_BASE, NOS_LINUX_GATEWAY_RESERVED_END - NOS_LINUX_GATEWAY_BASE)) return -NOS_EPERM;
     return vm_change(task, va, bytes, 0, 1);
 }
 intptr_t vm_protect(struct task *task, uintptr_t va, unsigned prot, size_t bytes)
@@ -837,7 +876,8 @@ intptr_t vm_protect(struct task *task, uintptr_t va, unsigned prot, size_t bytes
     (void)task; (void)va; (void)prot; (void)bytes; return -NOS_ENOTSUP;
 #else
     struct memory_space *s = task_space(task);
-    if (s && s->gateway && overlap(va, bytes ? bytes : NOS_PAGE_SIZE, 0x01800000u, 0x00200000u)) return -NOS_EPERM;
+    if (s && s->gateway && overlap(va, bytes ? bytes : NOS_PAGE_SIZE,
+        NOS_LINUX_GATEWAY_BASE, NOS_LINUX_GATEWAY_RESERVED_END - NOS_LINUX_GATEWAY_BASE)) return -NOS_EPERM;
     return vm_change(task, va, bytes, prot, 0);
 #endif
 }
@@ -902,6 +942,109 @@ unsigned task_mpu_regions(struct task *task, uintptr_t *bases, size_t *sizes, un
 
 #ifdef NOS_SELFTEST
 #if defined(NOS_MMU) && defined(NOS_LINUX_COMPAT)
+/* Exercise the independent pool using task IDs whose slot is above the
+ * address-space bound. A thread reference must neither consume a space nor
+ * permit its leader's release to recycle a still-live page-table slot. */
+static int memory_capacity_selftest(void)
+{
+    static struct task fixture[NOS_SPACES + 2];
+    unsigned initial = page_available(), available = 0, made = 0;
+    for (unsigned i = 0; i < NOS_SPACES; i++) available += !memory_spaces[i].refs;
+    k_memset(fixture, 0, sizeof(fixture));
+    int ok = available && NOS_TASKS > NOS_SPACES;
+    for (unsigned i = 0; i <= NOS_SPACES; i++) {
+        fixture[i].id = (i + 1) * NOS_TASKS + NOS_TASKS - 1;
+        int result = space_create_empty(&fixture[i]);
+        if (result) {
+            ok &= result == -NOS_ENOMEM && fixture[i].space_id == NOS_SPACES;
+            break;
+        }
+        made++;
+        ok &= fixture[i].space_id < NOS_SPACES &&
+            fixture[i].id % NOS_TASKS >= NOS_SPACES;
+        for (unsigned j = 0; j < i; j++) ok &= fixture[j].space_id != fixture[i].space_id;
+    }
+    ok &= made == available;
+    if (made) {
+        struct task *thread = &fixture[NOS_SPACES + 1], *probe = &fixture[NOS_SPACES];
+        thread->id = (NOS_SPACES + 2) * NOS_TASKS + NOS_TASKS - 1;
+        unsigned before = page_available(), id = fixture[0].space_id;
+        int cloned = space_clone(thread, &fixture[0], USER_DATA + USER_BYTES);
+        ok &= !cloned && page_available() == before;
+        if (!cloned) {
+            space_destroy(&fixture[0]);
+            ok &= !fixture[0].memory && fixture[0].space_id == NOS_SPACES;
+            ok &= thread->space_id == id && user_access(thread, USER_DATA, 1, 1);
+            ok &= space_create_empty(probe) == -NOS_ENOMEM && page_available() == before;
+            space_destroy(thread);
+            ok &= !space_create_empty(probe) && probe->space_id == id && page_available() == before;
+        }
+    }
+    for (unsigned i = 0; i < NOS_SPACES + 2; i++) space_destroy(&fixture[i]);
+    ok &= page_available() == initial;
+    if (ok) kernel_print("PASS independent_address_space_capacity\n");
+    return ok;
+}
+static int memory_gateway_capacity_selftest(struct task *parent)
+{
+    static struct task child;
+    uintptr_t stack = NOS_LINUX_GATEWAY_STACK_BASE +
+        (NOS_TASKS - 1) * NOS_LINUX_GATEWAY_STACK_STRIDE + NOS_PAGE_SIZE;
+    unsigned before = page_available();
+    int ok = !vm_gateway_map(parent, stack, NOS_LINUX_GATEWAY_STACK_BYTES, 3);
+    if (!ok) return 0;
+    ok &= user_access(parent, stack, NOS_LINUX_GATEWAY_STACK_BYTES, 1);
+    ok &= vm_map_at(parent, stack, 3, NOS_PAGE_SIZE) == -NOS_EINVAL;
+    ok &= vm_unmap(parent, stack, NOS_LINUX_GATEWAY_STACK_BYTES) == -NOS_EPERM;
+    ok &= vm_protect(parent, stack, 1, NOS_LINUX_GATEWAY_STACK_BYTES) == -NOS_EPERM;
+    k_memset(&child, 0, sizeof(child)); child.id = UINT32_MAX - 2;
+    int result = space_fork(&child, parent);
+    ok &= !result;
+    if (!result) {
+        ok &= !user_access(&child, stack, 1, 0) && !arch_mapping_flags(child.space_id, stack);
+        space_destroy(&child);
+    }
+    ok &= !vm_gateway_unmap(parent, stack, NOS_LINUX_GATEWAY_STACK_BYTES);
+    ok &= page_available() == before;
+    if (ok) kernel_print("PASS gateway_high_task_slot\n");
+    return ok;
+}
+static int memory_vma_capacity_selftest(struct task *parent)
+{
+    const uintptr_t base = 0x11000000u;
+    const size_t stride = 3 * NOS_PAGE_SIZE;
+    const unsigned flags = 0x22u | 0x100000u;
+    unsigned before = page_available(), made = 0;
+    uint64_t usage = vm_as_usage(parent);
+    int ok = VMA_SLOTS > 128;
+    for (; made < VMA_SLOTS; made++) {
+        uintptr_t address = base + made * stride;
+        if (vm_map_linux(parent, address, 2 * NOS_PAGE_SIZE, 0, flags) != (intptr_t)address) {
+            ok = 0; break;
+        }
+    }
+    uintptr_t extra = base + VMA_SLOTS * stride;
+    ok &= vm_map_linux(parent, extra, NOS_PAGE_SIZE, 3, flags) == -NOS_ENOMEM;
+    /* Splitting at capacity must fail before allocating pages or changing
+     * either the reservation charge or its inaccessible PTEs. Both mutation
+     * paths must release their scratch so the subsequent removal can run. */
+    if (made == VMA_SLOTS) {
+        uint64_t reserved = usage + (uint64_t)VMA_SLOTS * 2 * NOS_PAGE_SIZE;
+        ok &= vm_protect(parent, base, 3, NOS_PAGE_SIZE) == -NOS_ENOMEM;
+        ok &= vm_map_linux(parent, base, NOS_PAGE_SIZE, 3, 0x22u | 0x10u) == -NOS_ENOMEM;
+        ok &= vm_as_usage(parent) == reserved && page_available() == before;
+        ok &= !user_access(parent, base, 1, 0) && !arch_mapping_flags(parent->space_id, base);
+        ok &= !vm_linux_unmap(parent, base, 2 * NOS_PAGE_SIZE);
+        ok &= vm_map_linux(parent, extra, NOS_PAGE_SIZE, 3, flags) == (intptr_t)extra;
+        ok &= user_access(parent, extra, 1, 1);
+        ok &= !vm_linux_protect(parent, extra, 1, NOS_PAGE_SIZE);
+        ok &= user_access(parent, extra, 1, 0) && !user_access(parent, extra, 1, 1);
+    }
+    ok &= !vm_linux_unmap(parent, base, (VMA_SLOTS + 1) * stride);
+    ok &= vm_as_usage(parent) == usage && page_available() == before;
+    if (ok) kernel_print("PASS expanded_vma_transactions\n");
+    return ok;
+}
 static int memory_limit_inheritance_selftest(struct task *parent)
 {
     struct task *previous = current_task;
@@ -976,12 +1119,15 @@ int memory_transaction_selftest(void)
     unsigned allocated = page_available();
 #if defined(NOS_MMU) && defined(NOS_LINUX_COMPAT)
     int inherited_limits_ok = memory_limit_inheritance_selftest(&temporary);
+    int capacity_ok = memory_capacity_selftest();
+    int gateway_ok = memory_gateway_capacity_selftest(&temporary);
+    int vma_ok = memory_vma_capacity_selftest(&temporary);
 #endif
     map_fail_after = 1;
     intptr_t mapped = vm_map(&temporary, 3, 2 * NOS_PAGE_SIZE);
     int ok = mapped == -NOS_ENOMEM && page_available() == allocated;
 #if defined(NOS_MMU) && defined(NOS_LINUX_COMPAT)
-    ok &= inherited_limits_ok;
+    ok &= inherited_limits_ok && capacity_ok && gateway_ok && vma_ok;
 #endif
 #ifdef NOS_MMU
     ok &= !arch_mapping_flags(temporary.space_id, 0x02000000u);
@@ -1029,10 +1175,10 @@ int memory_transaction_selftest(void)
     ok &= !vm_linux_unmap(&temporary, 0x0ffff000u, NOS_PAGE_SIZE);
     ok &= vm_map_linux(&temporary, USER_DATA, NOS_PAGE_SIZE, 3, private_anon | fixed) == -NOS_EINVAL;
     ok &= vm_map_linux(&temporary, 0x08000000u, NOS_PAGE_SIZE, 3, private_anon | fixed) == -NOS_EINVAL;
-    ok &= !vm_gateway_map(&temporary, 0x01901000u, 2 * NOS_PAGE_SIZE, 3);
-    ok &= vm_unmap(&temporary, 0x01901000u, 2 * NOS_PAGE_SIZE) == -NOS_EPERM;
-    ok &= vm_map_linux(&temporary, 0x01901000u, NOS_PAGE_SIZE, 3, private_anon | fixed) == -NOS_EINVAL;
-    ok &= !vm_gateway_unmap(&temporary, 0x01901000u, 2 * NOS_PAGE_SIZE);
+    ok &= !vm_gateway_map(&temporary, (NOS_LINUX_GATEWAY_STACK_BASE + NOS_PAGE_SIZE), 2 * NOS_PAGE_SIZE, 3);
+    ok &= vm_unmap(&temporary, (NOS_LINUX_GATEWAY_STACK_BASE + NOS_PAGE_SIZE), 2 * NOS_PAGE_SIZE) == -NOS_EPERM;
+    ok &= vm_map_linux(&temporary, (NOS_LINUX_GATEWAY_STACK_BASE + NOS_PAGE_SIZE), NOS_PAGE_SIZE, 3, private_anon | fixed) == -NOS_EINVAL;
+    ok &= !vm_gateway_unmap(&temporary, (NOS_LINUX_GATEWAY_STACK_BASE + NOS_PAGE_SIZE), 2 * NOS_PAGE_SIZE);
     /* Reclaim sparse page tables: map more distinct blocks than the default
      * capacity, keeping only one transient mapping alive at a time. */
     unsigned exercised = 0;
@@ -1068,7 +1214,7 @@ int memory_transaction_selftest(void)
     ok &= vm_as_usage(&temporary) == base_usage + 2 * NOS_PAGE_SIZE;
     ok &= vm_map(&temporary, 3, NOS_PAGE_SIZE) == -NOS_ENOMEM;
     ok &= vm_image_map(&temporary, image + 0x400000u, NOS_PAGE_SIZE, 3) == -NOS_ENOMEM;
-    ok &= vm_gateway_map(&temporary, 0x01901000u, NOS_PAGE_SIZE, 3) == -NOS_ENOMEM;
+    ok &= vm_gateway_map(&temporary, (NOS_LINUX_GATEWAY_STACK_BASE + NOS_PAGE_SIZE), NOS_PAGE_SIZE, 3) == -NOS_ENOMEM;
     ok &= vm_map_linux(&temporary, image, 3 * NOS_PAGE_SIZE, 3,
                        private_anon | fixed) == -NOS_ENOMEM;
     ok &= !task_copy_in(&temporary, &readback, image, sizeof(readback)) && readback == word;
@@ -1263,7 +1409,8 @@ static struct vma *find_vma(struct memory_space *s, uintptr_t address)
         address - s->vma[n].va < s->vma[n].size) return &s->vma[n];
     return NULL;
 }
-static intptr_t fixed_backing(struct task *task, uintptr_t va, size_t bytes, unsigned prot, int replace, uintptr_t provided)
+static intptr_t fixed_backing_workspace(struct task *task, uintptr_t va, size_t bytes, unsigned prot, int replace, uintptr_t provided,
+                                        struct vma *replacement)
 {
     struct memory_space *s = task_space(task);
     if (!s || !valid_prot(prot) || mapping_size(bytes, prot, &bytes) || !permitted_range(s, va, bytes, 0)) return -NOS_EINVAL;
@@ -1281,8 +1428,8 @@ static intptr_t fixed_backing(struct task *task, uintptr_t va, size_t bytes, uns
         replaced += last - first;
     }
     if (!space_may_grow(s, bytes - replaced)) return -NOS_ENOMEM;
-    struct vma replacement[VMA_SLOTS]; unsigned used = 0;
-    k_memset(replacement, 0, sizeof(replacement));
+    unsigned used = 0;
+    k_memset(replacement, 0, sizeof(s->vma));
     for (unsigned i = 0; i < VMA_SLOTS; i++) {
         struct vma old = s->vma[i];
         if (!old.pa) continue;
@@ -1332,8 +1479,20 @@ static intptr_t fixed_backing(struct task *task, uintptr_t va, size_t bytes, uns
             kernel_fail("fixed-map backing release failed");
     }
     replacement[used] = (struct vma){ .va = va, .pa = pa, .size = bytes, .prot = prot, .maxprot = 7 };
-    k_memcpy(s->vma, replacement, sizeof(replacement)); invalidate_tls(task, va, bytes);
+    k_memcpy(s->vma, replacement, sizeof(s->vma)); invalidate_tls(task, va, bytes);
     shared_collect(); return (intptr_t)va;
+}
+static intptr_t fixed_backing(struct task *task, uintptr_t va, size_t bytes, unsigned prot, int replace, uintptr_t provided)
+{
+#ifdef NOS_LINUX_COMPAT
+    vm_workspace_acquire();
+    intptr_t result = fixed_backing_workspace(task, va, bytes, prot, replace, provided, vm_workspace.replacement);
+    vm_workspace.active = 0;
+    return result;
+#else
+    struct vma replacement[VMA_SLOTS];
+    return fixed_backing_workspace(task, va, bytes, prot, replace, provided, replacement);
+#endif
 }
 static intptr_t fixed_map(struct task *task, uintptr_t va, size_t bytes, unsigned prot, int replace)
 { return fixed_backing(task, va, bytes, prot, replace, 0); }

@@ -2,7 +2,7 @@
 #include "kernel.h"
 #ifdef NOS_MMU
 struct tables { uint32_t root[1024], text[1024], data[1024], heap[1024], device[1024]; };
-static struct tables spaces[NOS_TASKS] __attribute__((aligned(4096)));
+static struct tables spaces[NOS_SPACES] __attribute__((aligned(4096)));
 static uint32_t kernel_pages[2][1024] __attribute__((aligned(4096)));
 static unsigned kernel_tables_ready;
 extern char __kernel_start[], __kernel_ro_end[], kernel_stack_guard[];
@@ -207,7 +207,7 @@ int arch_irq_bind(unsigned device_index)
 unsigned arch_mapping_flags(unsigned id, uintptr_t virtual)
 {
 #ifdef NOS_MMU
-    if (id >= NOS_TASKS) return 0;
+    if (id >= NOS_SPACES) return 0;
     struct tables *t = &spaces[id];
     uint32_t entry = t->root[virtual >> 22];
     if (!(entry & 1)) return 0;

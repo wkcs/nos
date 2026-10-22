@@ -48,10 +48,17 @@ struct signal_stack { uintptr_t base; int flags;
 };
 struct signal_queue { unsigned signal; unsigned char info[128]; };
 struct signal_frame { struct arch_frame original; uint64_t mask; uintptr_t address; unsigned long cookie; };
-static struct signal_action actions[NOS_TASKS][64];
+static struct signal_action actions[NOS_SPACES][64];
 static struct signal_queue queues[NOS_TASKS][QUEUED_SIGNALS];
 static struct signal_frame frames[NOS_TASKS][SIGNAL_DEPTH];
-static unsigned action_owners[NOS_TASKS], action_valid[NOS_TASKS];
+static unsigned action_owners[NOS_SPACES], action_valid[NOS_SPACES];
+static unsigned signal_space(const struct task *task)
+{
+    if (task->space_id >= NOS_SPACES) kernel_fail("invalid signal address space");
+    return task->space_id;
+}
+static struct signal_action *task_actions(const struct task *task)
+{ return actions[signal_space(task)]; }
 static void store32(void *buffer, unsigned offset, uint32_t value) { k_memcpy((char *)buffer + offset, &value, 4); }
 static void store64(void *buffer, unsigned offset, uint64_t value) { k_memcpy((char *)buffer + offset, &value, 8); }
 static uint32_t load32(const void *buffer, unsigned offset) { uint32_t value; k_memcpy(&value, (const char *)buffer + offset, 4); return value; }
@@ -152,17 +159,19 @@ static void discard_group_signals(struct task *target, uint64_t mask)
 }
 void linux_signal_reset(struct task *task)
 {
-    if (!action_valid[task->space_id] || action_owners[task->space_id] != task->space_owner) {
-        k_memset(actions[task->space_id], 0, sizeof(actions[0]));
-        action_valid[task->space_id] = 1; action_owners[task->space_id] = task->space_owner;
+    unsigned space = signal_space(task);
+    if (!action_valid[space] || action_owners[space] != task->space_owner) {
+        k_memset(actions[space], 0, sizeof(actions[0]));
+        action_valid[space] = 1; action_owners[space] = task->space_owner;
     }
     k_memset(queues[task->id % NOS_TASKS], 0, sizeof(queues[0]));
     task->signal_pending = 0; task->signal_depth = 0;
 }
 void linux_signal_fork(struct task *child, const struct task *parent)
 {
-    k_memcpy(actions[child->space_id], actions[parent->space_id], sizeof(actions[0]));
-    action_valid[child->space_id] = 1; action_owners[child->space_id] = child->space_owner;
+    unsigned space = signal_space(child);
+    k_memcpy(actions[space], task_actions(parent), sizeof(actions[0]));
+    action_valid[space] = 1; action_owners[space] = child->space_owner;
     child->signal_mask = parent->signal_mask;
     child->signal_stack_base = parent->signal_stack_base; child->signal_stack_size = parent->signal_stack_size;
     child->signal_depth = parent->signal_depth;
@@ -200,10 +209,12 @@ void linux_signal_interrupted(struct task *task)
 }
 void linux_signal_exec(struct task *task, unsigned old_space)
 {
-    if (task->space_id != old_space) k_memcpy(actions[task->space_id], actions[old_space], sizeof(actions[0]));
-    for (unsigned i = 0; i < 64; i++) if (actions[task->space_id][i].handler != 1)
-        k_memset(&actions[task->space_id][i], 0, sizeof(actions[0][i]));
-    action_valid[task->space_id] = 1; action_owners[task->space_id] = task->space_owner;
+    unsigned space = signal_space(task);
+    if (old_space >= NOS_SPACES) kernel_fail("invalid previous signal address space");
+    if (space != old_space) k_memcpy(actions[space], actions[old_space], sizeof(actions[0]));
+    for (unsigned i = 0; i < 64; i++) if (actions[space][i].handler != 1)
+        k_memset(&actions[space][i], 0, sizeof(actions[0][i]));
+    action_valid[space] = 1; action_owners[space] = task->space_owner;
     task->signal_depth = task->signal_suspend = 0; task->signal_stack_base = task->signal_stack_size = 0;
 }
 void linux_signal_retid(struct task *source, struct task *destination)
@@ -254,7 +265,7 @@ static int signal_send_uid(struct task *task, unsigned signal, int code, unsigne
         group_stop(task, 0);
     } else if (signal == 19 || signal == 20 || signal == 21 || signal == 22) discard_group_signals(task, 1ull << 17);
     if (signal == 9) group_stop(task, 0);
-    struct signal_action *action = &actions[task->space_id][signal - 1];
+    struct signal_action *action = &task_actions(task)[signal - 1];
     if (signal != 9 && signal != 19 && (action->handler == 1 || (!action->handler && ignored_default(signal)))) return 0;
     struct signal_queue *queue = queues[task->id % NOS_TASKS];
     unsigned index = QUEUED_SIGNALS;
@@ -392,7 +403,7 @@ void linux_signal_deliver(struct task *task)
     if (task->abi != NOS_ABI_LINUX || task->state != TASK_READY || !task->signal_pending) return;
     uint64_t allowed = ~task->signal_mask | (1ull << 8) | (1ull << 18);
     unsigned char info[128]; int signal = dequeue(task, allowed, info); if (!signal) return;
-    struct signal_action action = actions[task->space_id][signal - 1];
+    struct signal_action action = task_actions(task)[signal - 1];
     if (signal == 9 || (!action.handler && !ignored_default((unsigned)signal) && signal != 19 && signal != 20 && signal != 21 && signal != 22)) {
         terminate_group(task, (unsigned)signal); return;
     }
@@ -423,7 +434,7 @@ void linux_signal_deliver(struct task *task)
     task->signal_mask |= action_mask(&action);
     if (!(action.flags & SA_NODEFER)) task->signal_mask |= 1ull << (signal - 1);
     task->signal_mask &= ~((1ull << 8) | (1ull << 18));
-    if (action.flags & SA_RESETHAND) k_memset(&actions[task->space_id][signal - 1], 0, sizeof(action));
+    if (action.flags & SA_RESETHAND) k_memset(&task_actions(task)[signal - 1], 0, sizeof(action));
     task->frame.pc = action.handler;
 #ifdef NOS_ARM
     if (task->frame.pc & 1) task->frame.status |= 1u << 5; else task->frame.status &= ~(1u << 5);
@@ -500,7 +511,7 @@ intptr_t linux_signal_syscall(uintptr_t number, const uintptr_t a[6])
     case NR(173, 139): return signal_return();
     case NR(174, 134): {
         if (!a[0] || a[0] > 64 || a[0] == 9 || a[0] == 19 || a[3] != 8) return -NOS_EINVAL;
-        struct signal_action *action = &actions[current_task->space_id][a[0] - 1], next;
+        struct signal_action *action = &task_actions(current_task)[a[0] - 1], next;
         if (a[1] && user_copy_in(&next, a[1], sizeof(next))) return -NOS_EFAULT;
         if (a[2] && user_copy_out(a[2], action, sizeof(*action))) return -NOS_EFAULT;
         if (a[1]) *action = next;

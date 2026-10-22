@@ -18,10 +18,21 @@
 #define NOS_PIPE_BUF NOS_MSG_DATA
 #define NOS_IPC_BULK_MAX 512u
 #endif
-#if defined(NOS_MMU) || defined(NOS_RISCV32)
+#ifdef NOS_LINUX_COMPAT
+#define NOS_TASKS 80u
+#define NOS_SPACES 12u
+#define NOS_PROCESSES 12u
+/* Linux robust futex words reserve the upper two TID bits. */
+#define NOS_TID_MAX 0x3fffffffu
+#elif defined(NOS_MMU) || defined(NOS_RISCV32)
 #define NOS_TASKS 12u
 #else
 #define NOS_TASKS 6u
+#endif
+#ifndef NOS_SPACES
+#define NOS_SPACES NOS_TASKS
+#define NOS_PROCESSES NOS_TASKS
+#define NOS_TID_MAX 0x7fffffffu
 #endif
 #define NOS_ABI_VERSION 1u
 #ifdef NOS_LINUX_COMPAT
@@ -38,7 +49,7 @@
 #define NOS_IDLE_FIRST (NOS_TASKS - NOS_SMP)
 #ifdef NOS_MMU
 #ifdef NOS_LINUX_COMPAT
-#define NOS_VM_REGIONS 128u
+#define NOS_VM_REGIONS 384u
 #else
 #define NOS_VM_REGIONS 16u
 #endif
@@ -126,7 +137,7 @@ struct nos_group_state { uint32_t group; int32_t state; };
 #define NOS_IPC_PEER_CANCEL (-2)
 #define NOS_IPC_PROCESS_FORK (-3)
 #define NOS_IPC_PROCESS_EXEC (-4)
-#define NOS_IPC_PROCESS_NOTICE_LIMIT (4u * NOS_TASKS)
+#define NOS_IPC_PROCESS_NOTICE_LIMIT (4u * NOS_PROCESSES)
 enum nos_syscall {
     NOS_SYS_WRITE = 0,
     NOS_SYS_GETPID = 1,
