@@ -5,10 +5,22 @@ static unsigned char page_pool[PAGE_POOL_PAGES * NOS_PAGE_SIZE] __attribute__((a
 /* Halfword accesses also work before ARM enables normal-memory mappings. */
 static volatile unsigned short allocation[PAGE_POOL_PAGES];
 static struct spinlock page_lock;
+#ifdef NOS_LINUX_COMPAT
+/* Zero denotes a sole owner not retained by fork. A retained private page
+ * counts address-space mappings, independently of true shared objects. */
+static unsigned short private_references[PAGE_POOL_PAGES];
+_Static_assert(NOS_SPACES < UINT16_MAX, "private fork references fit");
+#endif
 #ifndef NOS_MMU
 static uintptr_t shared_heap, shared_break;
 #endif
-void page_init(void) { k_memset((void *)allocation, 0, sizeof(allocation)); }
+void page_init(void)
+{
+    k_memset((void *)allocation, 0, sizeof(allocation));
+#ifdef NOS_LINUX_COMPAT
+    k_memset(private_references, 0, sizeof(private_references));
+#endif
+}
 uintptr_t page_alloc(unsigned count)
 {
     uintptr_t irq = spin_lock_irqsave(&page_lock), result = 0;
@@ -173,6 +185,11 @@ static void shared_collect(void) { }
 static void shared_owner_exit(unsigned owner) { (void)owner; }
 #endif
 static int page_free_range(uintptr_t pa, unsigned count);
+static int private_range_shared(uintptr_t pa, unsigned count);
+static int private_release_range(uintptr_t pa, unsigned count);
+#ifdef NOS_LINUX_COMPAT
+static void private_retain_range(uintptr_t pa, unsigned count);
+#endif
 static void invalidate_tls(struct task *task, uintptr_t va, size_t bytes);
 static struct memory_space *task_space(struct task *task)
 {
@@ -332,8 +349,9 @@ void space_destroy(struct task *task)
             arch_unmap(task->space_id, s->vma[i].va + n);
     arch_tlb_sync();
     for (unsigned i = 0; i < VMA_SLOTS; i++) {
-        if (vma_backed(&s->vma[i]) && !backing_shared(s->vma[i].pa, s->vma[i].size))
-            page_free_range(s->vma[i].pa, (unsigned)(s->vma[i].size / NOS_PAGE_SIZE));
+        if (vma_backed(&s->vma[i]) && !backing_shared(s->vma[i].pa, s->vma[i].size) &&
+            private_release_range(s->vma[i].pa, (unsigned)(s->vma[i].size / NOS_PAGE_SIZE)))
+            kernel_fail("private backing release failed");
     }
     page_free(s->memory, USER_BYTES / NOS_PAGE_SIZE);
     unsigned owner = s->owner;
@@ -450,6 +468,15 @@ int task_copy_load(struct task *task, uintptr_t dst, const void *src, size_t cou
 {
     if (count && arch_user_helper_phys(dst)) return -NOS_EACCES;
     if (!user_access(task, dst, count, 0)) return -NOS_EFAULT;
+    /* ELF loads and fresh signal restorers bypass WRITE permission. Never
+     * use that privilege to mutate a private snapshot retained by fork. */
+    for (uintptr_t address = dst, remaining = count; remaining;) {
+        size_t bytes = NOS_PAGE_SIZE - (address & (NOS_PAGE_SIZE - 1));
+        if (bytes > remaining) bytes = remaining;
+        uintptr_t physical = translate(task, address, 0) & ~(uintptr_t)(NOS_PAGE_SIZE - 1);
+        if (private_range_shared(physical, 1)) return -NOS_EACCES;
+        address += bytes; remaining -= bytes;
+    }
     const unsigned char *k = src;
     while (count) {
         size_t n = NOS_PAGE_SIZE - (dst & (NOS_PAGE_SIZE - 1));
@@ -599,12 +626,20 @@ int space_fork(struct task *child, struct task *parent)
             NOS_LINUX_GATEWAY_STACK_BASE, NOS_LINUX_GATEWAY_RESERVED_END - NOS_LINUX_GATEWAY_STACK_BASE))) continue;
         int gateway = source->gateway && overlap(old->va, old->size,
             NOS_LINUX_GATEWAY_BASE, NOS_LINUX_GATEWAY_END - NOS_LINUX_GATEWAY_BASE);
-        int shared = backing_shared(old->pa, old->size);
-        unsigned initial_prot = !old->prot && vma_backed(old) && !shared ? NOS_PROT_READ : old->prot;
-        intptr_t mapped = map_backing(child, old->va, initial_prot, old->size, gateway, shared ? old->pa : 0);
+        int shared = backing_shared(old->pa, old->size), retained = 0;
+#ifdef NOS_LINUX_COMPAT
+        retained = vma_backed(old) && !shared && !(old->prot & NOS_PROT_WRITE);
+#endif
+        unsigned initial_prot = !old->prot && vma_backed(old) && !shared && !retained ? NOS_PROT_READ : old->prot;
+        intptr_t mapped = map_backing(child, old->va, initial_prot, old->size, gateway,
+                                     shared || retained ? old->pa : 0);
         if ((uintptr_t)mapped >= (uintptr_t)-4095) { rc = (int)mapped; goto failed; }
+#ifdef NOS_LINUX_COMPAT
+        if (retained) private_retain_range(old->pa, (unsigned)(old->size / NOS_PAGE_SIZE));
+#endif
         for (unsigned j = 0; j < VMA_SLOTS; j++) if (target->vma[j].pa && target->vma[j].va == old->va) {
-            if (vma_backed(old) && !shared) k_memcpy((void *)target->vma[j].pa, (const void *)old->pa, old->size);
+            if (vma_backed(old) && !shared && !retained)
+                k_memcpy((void *)target->vma[j].pa, (const void *)old->pa, old->size);
             target->vma[j].maxprot = old->maxprot;
             break;
         }
@@ -698,6 +733,60 @@ static int page_free_range(uintptr_t pa, unsigned count)
     spin_unlock_irqrestore(&page_lock, irq);
     return 0;
 }
+#ifdef NOS_LINUX_COMPAT
+static int private_page_index(uintptr_t pa, unsigned count, unsigned *first)
+{
+    if (pa < (uintptr_t)page_pool || (pa & (NOS_PAGE_SIZE - 1)) || !count) return -NOS_EINVAL;
+    uintptr_t index = (pa - (uintptr_t)page_pool) / NOS_PAGE_SIZE;
+    if (index >= PAGE_POOL_PAGES || count > PAGE_POOL_PAGES - index) return -NOS_EINVAL;
+    *first = (unsigned)index; return 0;
+}
+static void private_retain_range(uintptr_t pa, unsigned count)
+{
+    unsigned first;
+    if (private_page_index(pa, count, &first)) kernel_fail("fork backing outside allocator");
+    for (unsigned i = first; i < first + count; i++) {
+        if (!allocation[i] || private_references[i] == UINT16_MAX)
+            kernel_fail("invalid private fork reference");
+        private_references[i] = private_references[i] ? private_references[i] + 1 : 2;
+    }
+}
+#endif
+static int private_range_shared(uintptr_t pa, unsigned count)
+{
+#ifdef NOS_LINUX_COMPAT
+    unsigned first;
+    if (private_page_index(pa, count, &first)) return 0;
+    for (unsigned i = first; i < first + count; i++) if (private_references[i] > 1) return 1;
+#else
+    (void)pa; (void)count;
+#endif
+    return 0;
+}
+static int private_release_range(uintptr_t pa, unsigned count)
+{
+#ifdef NOS_LINUX_COMPAT
+    unsigned first;
+    if (private_page_index(pa, count, &first)) return -NOS_EINVAL;
+    for (unsigned i = first; i < first + count; i++) if (!allocation[i]) return -NOS_EINVAL;
+    unsigned run = 0;
+    for (unsigned n = 0; n <= count; n++) {
+        int retained = n < count && private_references[first + n] > 1;
+        if (n < count) {
+            if (private_references[first + n]) private_references[first + n]--;
+            if (!retained) { run++; continue; }
+        }
+        if (run) {
+            int rc = page_free_range(pa + (n - run) * NOS_PAGE_SIZE, run);
+            if (rc) return rc;
+            run = 0;
+        }
+    }
+    return 0;
+#else
+    return page_free_range(pa, count);
+#endif
+}
 static void invalidate_tls(struct task *task, uintptr_t va, size_t bytes)
 {
     for (unsigned i = 0; i < NOS_TASKS; i++) if (tasks[i].memory &&
@@ -785,14 +874,37 @@ static intptr_t vm_change_workspace(struct task *task, uintptr_t va, size_t byte
     if (regions > 7) return -NOS_ENOMEM;
 #endif
     k_memset(fresh, 0, VMA_SLOTS * sizeof(*fresh));
-    for (unsigned i = 0; i < used; i++) if ((replacement[i].pa & 1) && replacement[i].prot) {
-        replacement[i].pa = page_alloc((unsigned)(replacement[i].size / NOS_PAGE_SIZE));
-        if (!replacement[i].pa) {
+    unsigned detached = 0;
+    for (unsigned i = 0; i < used; i++) {
+        struct vma *candidate = &replacement[i];
+        unsigned pages = (unsigned)(candidate->size / NOS_PAGE_SIZE);
+        unsigned materialize = (candidate->pa & 1) && candidate->prot;
+        unsigned copy = (candidate->prot & NOS_PROT_WRITE) &&
+            overlap(va, bytes, candidate->va, candidate->size) &&
+            private_range_shared(candidate->pa, pages);
+        if (!materialize && !copy) continue;
+        uintptr_t backing = page_alloc(pages);
+        if (!backing) {
             for (unsigned j = 0; j < i; j++) if (fresh[j])
                 page_free(replacement[j].pa, (unsigned)(replacement[j].size / NOS_PAGE_SIZE));
             return -NOS_ENOMEM;
         }
-        fresh[i] = 1;
+        if (copy) k_memcpy((void *)backing, (const void *)candidate->pa, candidate->size);
+        candidate->pa = backing; fresh[i] = copy ? 2 : 1; detached |= copy;
+    }
+    if (detached) {
+        /* A private WRITE upgrade changes physical output addresses. Publish
+         * no replacement until the break-before-make invalidation completes.
+         * A remote translation fault retries against committed permissions. */
+        for (unsigned i = 0; i < VMA_SLOTS; i++) {
+            const struct vma *old = &s->vma[i];
+            if (!old->pa || !overlap(va, bytes, old->va, old->size)) continue;
+            uintptr_t first = va > old->va ? va : old->va;
+            uintptr_t last = end < old->va + old->size ? end : old->va + old->size;
+            for (uintptr_t address = first; address < last; address += NOS_PAGE_SIZE)
+                arch_unmap(task->space_id, address);
+        }
+        arch_tlb_sync();
     }
     for (unsigned i = 0; i < VMA_SLOTS; i++) {
         struct vma *old = &s->vma[i];
@@ -801,7 +913,7 @@ static intptr_t vm_change_workspace(struct task *task, uintptr_t va, size_t byte
         uintptr_t last = end < old->va + old->size ? end : old->va + old->size;
         for (uintptr_t address = first; address < last; address += NOS_PAGE_SIZE) {
             uintptr_t physical = old->pa + address - old->va;
-            if (!remove && prot && !vma_backed(old)) {
+            if (!remove && prot) {
                 for (unsigned j = 0; j < used; j++) if (address >= replacement[j].va &&
                     address - replacement[j].va < replacement[j].size) {
                     physical = replacement[j].pa + address - replacement[j].va; break;
@@ -809,6 +921,19 @@ static intptr_t vm_change_workspace(struct task *task, uintptr_t va, size_t byte
             }
             if (remove) arch_unmap(task->space_id, address);
             else if (map_install(task->space_id, address, physical, prot)) {
+                /* Retire every candidate physical output before restoring
+                 * old mappings. Old backing and references are still live. */
+                if (detached) {
+                    for (unsigned j = 0; j < VMA_SLOTS; j++) {
+                        const struct vma *v = &s->vma[j];
+                        if (!v->pa || !overlap(va, bytes, v->va, v->size)) continue;
+                        uintptr_t begin = va > v->va ? va : v->va;
+                        uintptr_t finish = end < v->va + v->size ? end : v->va + v->size;
+                        for (uintptr_t p = begin; p < finish; p += NOS_PAGE_SIZE)
+                            arch_unmap(task->space_id, p);
+                    }
+                    arch_tlb_sync();
+                }
                 /* Roll back every affected interval, including earlier VMAs. */
                 for (unsigned j = 0; j < VMA_SLOTS; j++) {
                     struct vma *v = &s->vma[j];
@@ -833,12 +958,23 @@ static intptr_t vm_change_workspace(struct task *task, uintptr_t va, size_t byte
         if (!old->pa || !overlap(va, bytes, old->va, old->size)) continue;
         uintptr_t first = va > old->va ? va : old->va;
         uintptr_t last = end < old->va + old->size ? end : old->va + old->size;
-        if (vma_backed(old) && !backing_shared(old->pa, old->size) && page_free_range(old->pa + first - old->va, (unsigned)((last - first) / NOS_PAGE_SIZE)))
+        if (vma_backed(old) && !backing_shared(old->pa, old->size) && private_release_range(old->pa + first - old->va, (unsigned)((last - first) / NOS_PAGE_SIZE)))
             kernel_fail("range free failed");
+    }
+    for (unsigned i = 0; i < used; i++) if (fresh[i] == 2) {
+        const struct vma *candidate = &replacement[i];
+        for (unsigned j = 0; j < VMA_SLOTS; j++) {
+            const struct vma *old = &s->vma[j];
+            if (!old->pa || candidate->va < old->va || candidate->va - old->va >= old->size) continue;
+            if (private_release_range(old->pa + candidate->va - old->va,
+                                      (unsigned)(candidate->size / NOS_PAGE_SIZE)))
+                kernel_fail("detached backing release failed");
+            break;
+        }
     }
     k_memcpy(s->vma, replacement, sizeof(s->vma));
     shared_collect();
-    if (remove || !(prot & NOS_PROT_WRITE)) invalidate_tls(task, va, bytes);
+    if (remove || detached || !(prot & NOS_PROT_WRITE)) invalidate_tls(task, va, bytes);
     return 0;
 }
 static intptr_t vm_change_mode(struct task *task, uintptr_t va, size_t bytes, unsigned prot, int remove, int holes)
@@ -1045,6 +1181,92 @@ static int memory_vma_capacity_selftest(struct task *parent)
     if (ok) kernel_print("PASS expanded_vma_transactions\n");
     return ok;
 }
+static int memory_private_fork_selftest(void)
+{
+    static struct task parent, child, sibling;
+    const uintptr_t base = 0x12000000u;
+    const size_t page = NOS_PAGE_SIZE, length = 3 * NOS_PAGE_SIZE;
+    unsigned initial = page_available();
+    k_memset(&parent, 0, sizeof(parent)); k_memset(&child, 0, sizeof(child));
+    k_memset(&sibling, 0, sizeof(sibling));
+    parent.id = UINT32_MAX - 5; child.id = UINT32_MAX - 6; sibling.id = UINT32_MAX - 7;
+    int ok = 0;
+#define REQUIRE_PRIVATE(condition) do { if (!(condition)) { \
+    kernel_print("Private fork failed: " #condition "\n"); goto cleanup; \
+} } while (0)
+    REQUIRE_PRIVATE(!space_create_empty(&parent));
+    REQUIRE_PRIVATE(vm_map_at(&parent, base, 3, length) == (intptr_t)base);
+    uint32_t value = 37, readback;
+    for (unsigned i = 0; i < 3; i++)
+        REQUIRE_PRIVATE(!task_copy_out(&parent, base + i * page, &value, sizeof(value)));
+    REQUIRE_PRIVATE(!vm_load_protect(&parent, base, 1, length));
+    unsigned before_fork = page_available();
+    REQUIRE_PRIVATE(!space_fork(&child, &parent));
+    REQUIRE_PRIVATE(!space_fork(&sibling, &parent));
+    REQUIRE_PRIVATE(page_available() == before_fork - 2 * USER_BYTES / NOS_PAGE_SIZE);
+    unsigned shared_pages = page_available();
+    for (unsigned i = 0; i < 3; i++) {
+        uintptr_t address = base + i * page;
+        REQUIRE_PRIVATE(task_user_phys_read(&parent, address) == task_user_phys_read(&child, address));
+        REQUIRE_PRIVATE(task_user_phys_read(&parent, address) == task_user_phys_read(&sibling, address));
+    }
+    /* Privileged loader writes cannot bypass the retained snapshot. Ordinary
+     * copy-out must also respect the currently read-only permissions. */
+    value = 99;
+    REQUIRE_PRIVATE(task_copy_load(&child, base, &value, sizeof(value)) == -NOS_EACCES);
+    REQUIRE_PRIVATE(task_copy_out(&child, base, &value, sizeof(value)) == -NOS_EFAULT);
+    REQUIRE_PRIVATE(!vm_load_protect(&sibling, base, 0, length));
+    REQUIRE_PRIVATE(!user_access(&sibling, base, 1, 0) && page_available() == shared_pages);
+    /* Both an immediate and a partially installed detachment must leave the
+     * old PTEs, bytes, references and allocation count unchanged. */
+    for (unsigned fail = 0; fail < 2; fail++) {
+        map_fail_after = (int)fail;
+        REQUIRE_PRIVATE(vm_load_protect(&child, base, 3, length) == -NOS_ENOMEM);
+        REQUIRE_PRIVATE(page_available() == shared_pages);
+        for (unsigned i = 0; i < 3; i++) {
+            uintptr_t address = base + i * page;
+            REQUIRE_PRIVATE(arch_mapping_flags(child.space_id, address) == 1);
+            REQUIRE_PRIVATE(task_user_phys_read(&parent, address) == task_user_phys_read(&child, address));
+            REQUIRE_PRIVATE(!task_copy_in(&child, &readback, address, sizeof(readback)) && readback == 37);
+        }
+    }
+    REQUIRE_PRIVATE(!vm_load_protect(&child, base + page, 3, page));
+    REQUIRE_PRIVATE(page_available() == shared_pages - 1);
+    REQUIRE_PRIVATE(task_user_phys_read(&parent, base + page) != task_user_phys_read(&child, base + page));
+    REQUIRE_PRIVATE(!task_copy_out(&child, base + page, &value, sizeof(value)));
+    REQUIRE_PRIVATE(!task_copy_in(&parent, &readback, base + page, sizeof(readback)) && readback == 37);
+    REQUIRE_PRIVATE(!vm_linux_unmap(&child, base + page, page));
+    REQUIRE_PRIVATE(!user_access(&child, base + page, 1, 0) && page_available() == shared_pages);
+    /* The original parent must detach as well; one PROT_NONE descendant still
+     * owns all original pages while the other keeps the outer two intervals. */
+    REQUIRE_PRIVATE(!vm_load_protect(&parent, base, 3, length));
+    for (unsigned i = 0; i < 3; i++) {
+        value = 11 + i;
+        REQUIRE_PRIVATE(!task_copy_out(&parent, base + i * page, &value, sizeof(value)));
+    }
+    REQUIRE_PRIVATE(page_available() == shared_pages - 3);
+    REQUIRE_PRIVATE(!vm_load_protect(&sibling, base, 1, length));
+    for (unsigned i = 0; i < 3; i++)
+        REQUIRE_PRIVATE(!task_copy_in(&sibling, &readback, base + i * page, sizeof(readback)) && readback == 37);
+    REQUIRE_PRIVATE(vm_map_linux(&child, base, page, 3, 0x22u | 0x10u) == (intptr_t)base);
+    value = 21;
+    REQUIRE_PRIVATE(!task_copy_out(&child, base, &value, sizeof(value)));
+    REQUIRE_PRIVATE(!task_copy_in(&sibling, &readback, base, sizeof(readback)) && readback == 37);
+    REQUIRE_PRIVATE(!task_copy_in(&parent, &readback, base, sizeof(readback)) && readback == 11);
+    space_destroy(&parent);
+    REQUIRE_PRIVATE(!task_copy_in(&child, &readback, base + 2 * page, sizeof(readback)) && readback == 37);
+    REQUIRE_PRIVATE(!task_copy_in(&sibling, &readback, base + page, sizeof(readback)) && readback == 37);
+    space_destroy(&child);
+    REQUIRE_PRIVATE(!task_copy_in(&sibling, &readback, base + 2 * page, sizeof(readback)) && readback == 37);
+    ok = 1;
+cleanup:
+    map_fail_after = -1;
+    space_destroy(&parent); space_destroy(&child); space_destroy(&sibling);
+    ok &= page_available() == initial;
+    if (ok) kernel_print("PASS fork_private_readonly_transactions\n");
+#undef REQUIRE_PRIVATE
+    return ok;
+}
 static int memory_limit_inheritance_selftest(struct task *parent)
 {
     struct task *previous = current_task;
@@ -1122,12 +1344,13 @@ int memory_transaction_selftest(void)
     int capacity_ok = memory_capacity_selftest();
     int gateway_ok = memory_gateway_capacity_selftest(&temporary);
     int vma_ok = memory_vma_capacity_selftest(&temporary);
+    int private_fork_ok = memory_private_fork_selftest();
 #endif
     map_fail_after = 1;
     intptr_t mapped = vm_map(&temporary, 3, 2 * NOS_PAGE_SIZE);
     int ok = mapped == -NOS_ENOMEM && page_available() == allocated;
 #if defined(NOS_MMU) && defined(NOS_LINUX_COMPAT)
-    ok &= inherited_limits_ok && capacity_ok && gateway_ok && vma_ok;
+    ok &= inherited_limits_ok && capacity_ok && gateway_ok && vma_ok && private_fork_ok;
 #endif
 #ifdef NOS_MMU
     ok &= !arch_mapping_flags(temporary.space_id, 0x02000000u);
@@ -1475,7 +1698,7 @@ static intptr_t fixed_backing_workspace(struct task *task, uintptr_t va, size_t 
         if (!old->pa || !overlap(va, bytes, old->va, old->size)) continue;
         uintptr_t first = va > old->va ? va : old->va;
         uintptr_t last = end < old->va + old->size ? end : old->va + old->size;
-        if (vma_backed(old) && !backing_shared(old->pa, old->size) && page_free_range(old->pa + first - old->va, (unsigned)((last - first) / NOS_PAGE_SIZE)))
+        if (vma_backed(old) && !backing_shared(old->pa, old->size) && private_release_range(old->pa + first - old->va, (unsigned)((last - first) / NOS_PAGE_SIZE)))
             kernel_fail("fixed-map backing release failed");
     }
     replacement[used] = (struct vma){ .va = va, .pa = pa, .size = bytes, .prot = prot, .maxprot = 7 };

@@ -23,7 +23,7 @@
 | 网络：socket/bind/listen/accept/connect/send/recv/getsockopt/getaddrinfo | 协议栈、socket OFD、阻塞/非阻塞、解析服务 | 尚无完整网络服务，glibc 的网络函数导出不代表可用 |
 | 映射：mmap/munmap/mprotect/msync、shm_open/shm_unlink | 文件映射、共享一致性、偏移/保护、写回、生命周期 | Linux profile 的 RAM 文件采用同一真实背页，glibc 三 MMU SMP2 已验证 pwrite/pread 与 MAP_SHARED 相互可见、msync、只读 FD 映射禁止写升级、unlink 后旧映射存活和同名重建独立。不能泛化为 FatFs/磁盘 mmap 或所有持久化写回语义 |
 | 同步与 IPC：sem*、mq*、shm* | 命名对象、生存期、进程共享、阻塞/优先级/超时 | glibc 三 MMU SMP2 已验证 unnamed private 信号量阻塞/超时、shm_open 上 pshared=1 信号量跨 fork 不同 VA 等待唤醒、named sem 经 exec 在不同 VA 打开及 unlink/重建身份。mq、所有 named 对象权限/资源竞态和持久化恢复仍不能由这些程序推断支持 |
-| 资源/调度：getrlimit/setrlimit/getrusage/sched*/nice | 实际限制执行、统计、优先级策略和权限 | 进程共享的 RLIMIT_NOFILE 由 VFS 执行，RLIMIT_AS 由 VM 统一计费与准入；ARM191、三架构 libc 查询、PROT_NONE/固定替换/brk/exec 回滚已通过单核/四核及完整冻结验收。prlimit 仅自身，STACK 仅查询/相同值，NPROC 等限制、统计、调度与最小容量仍需实现 |
+| 资源/调度：getrlimit/setrlimit/getrusage/sched*/nice | 实际限制执行、统计、优先级策略和权限 | 进程共享的 RLIMIT_NOFILE 由 VFS 执行，RLIMIT_AS 由 VM 统一计费与准入，RLIMIT_NPROC 按真实 UID 的线程/僵尸引用创建准入；ARM191、三架构 libc 查询、PROT_NONE/固定替换/brk/exec 回滚已通过单核/四核及完整冻结验收。prlimit 仅自身，STACK 仅查询/相同值，其他限制、统计、调度与完整最小资源要求仍需实现 |
 | 纯库扩展：regex/glob/fnmatch/iconv/locale/strftime | 库实现和 locale/时区/文件依赖可获得 | 真实 libc 可提供大量算法；glob 仍依赖目录，locale/iconv/时区数据必须打包并实际测试 |
 | 系统信息：sysconf/pathconf/confstr/uname | 返回与执行的 limits/options 一致 | 有界 NOS 配额应真实报告；不能直接继承 Linux 主机配置 |
 
@@ -38,4 +38,6 @@ PATH4096批次已验收：RAM总路径4095个非NUL字符、组件255、同次�
 
 地址空间与退出生命周期批次通过新完整 68 组：`1792591938965616587`。确定性回归覆盖主线程先退出、子进程退出后再 wait、额外存活线程的 exit_group/致命信号状态，以及父进程结束后的存活线程身份与 fork/wait。当前孤儿向 init/subreaper 归属仍未实现，不能由身份保留推断完整进程模型。
 
-线程容量新增验收 `1792629772377014664`：80 任务槽与 12 个空间/进程对象分离，真实 64 worker 两轮并发通过三架构单核/四核，包含高槽信号与 VFS RPC、TLS/TSD、malloc/stdio 及进程退出精确回收。25 并发子进程和 NPROC 尚未完成，不等同完整 POSIX 资源符合性。
+线程容量新增验收 `1792629772377014664`：80 任务槽与 12 个空间/进程对象分离，真实 64 worker 两轮并发通过三架构单核/四核，包含高槽信号与 VFS RPC、TLS/TSD、malloc/stdio 及进程退出精确回收。该批尚未实现 25 并发子进程和 NPROC，后续实现见下段；不等同完整 POSIX 资源符合性。
+
+进程容量与 NPROC 新验收 `1792672703748903595` 已实现并实测两轮 25 子进程并发（三 MMU 单核/四核），以及进程共享、真实 UID、线程/僵尸计费和延迟 exec 边界。只读私有背页 fork 共享后写升级先复制，真实 MAP_SHARED 语义分别保持。完整 wait、init/subreaper、可变 STACK、其余资源/调度属性与 TTY/网络仍未齐备，不代表完整 POSIX.1-2017。

@@ -302,6 +302,22 @@ unsigned arch_fault_signal(void)
 #endif
 }
 
+unsigned arch_fault_access(void)
+{
+#ifdef NOS_ARM_M
+    return 0;
+#else
+    unsigned kind = arm_fault_kind[arch_cpu_id()], status;
+    if (kind == 1) __asm__ volatile("mrc p15, 0, %0, c5, c0, 1" : "=r"(status));
+    else if (kind == 2) __asm__ volatile("mrc p15, 0, %0, c5, c0, 0" : "=r"(status));
+    else return 0;
+    unsigned cause = (status & 15) | ((status >> 6) & 16);
+    if (cause != 5 && cause != 7) return 0; /* Translation faults only. */
+    if (kind == 1) return NOS_PROT_EXEC;
+    return status & (1u << 11) ? NOS_PROT_WRITE : NOS_PROT_READ;
+#endif
+}
+
 uintptr_t arch_fault_address(void)
 {
 #ifdef NOS_ARM_M

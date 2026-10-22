@@ -232,6 +232,12 @@ $(O)/apps/glibc_address_space.elf: apps/glibc_address_space.c $(LINUX_LIBRARIES)
 $(O)/apps/glibc_capacity.elf: apps/glibc_capacity.c $(LINUX_LIBRARIES) $(LINUX_CRT_FILES) $(LINUX_MANIFEST) $(BUILD_SIGNATURE)
 	@mkdir -p $(dir $@)
 	$(LINUX_CC) $(LINUX_APP_FLAGS) $< -pthread -ldl -lm -o $@
+$(O)/apps/glibc_nproc.elf: apps/glibc_nproc.c $(LINUX_LIBRARIES) $(LINUX_CRT_FILES) $(LINUX_MANIFEST) $(BUILD_SIGNATURE)
+	@mkdir -p $(dir $@)
+	$(LINUX_CC) $(LINUX_APP_FLAGS) $< -pthread -ldl -lm -o $@
+$(O)/apps/glibc_process_capacity.elf: apps/glibc_process_capacity.c $(LINUX_LIBRARIES) $(LINUX_CRT_FILES) $(LINUX_MANIFEST) $(BUILD_SIGNATURE)
+	@mkdir -p $(dir $@)
+	$(LINUX_CC) $(LINUX_APP_FLAGS) $< -pthread -ldl -lm -o $@
 $(O)/apps/glibc_credentials.elf: apps/glibc_credentials.c $(LINUX_LIBRARIES) $(LINUX_CRT_FILES) $(LINUX_MANIFEST) $(BUILD_SIGNATURE)
 	@mkdir -p $(dir $@)
 	$(LINUX_CC) $(LINUX_APP_FLAGS) $< -pthread -ldl -lm -o $@
@@ -290,6 +296,10 @@ INITRAMFS_IMAGES += $(O)/apps/glibc_address_space.elf
 INITRAMFS_FILES += --file /bin/glibc_address_space=$(O)/apps/glibc_address_space.elf
 INITRAMFS_IMAGES += $(O)/apps/glibc_capacity.elf
 INITRAMFS_FILES += --file /bin/glibc_capacity=$(O)/apps/glibc_capacity.elf
+INITRAMFS_IMAGES += $(O)/apps/glibc_process_capacity.elf
+INITRAMFS_FILES += --file /bin/glibc_process_capacity=$(O)/apps/glibc_process_capacity.elf
+INITRAMFS_IMAGES += $(O)/apps/glibc_nproc.elf
+INITRAMFS_FILES += --file /bin/glibc_nproc=$(O)/apps/glibc_nproc.elf
 INITRAMFS_IMAGES += $(O)/apps/glibc_path4096.elf
 INITRAMFS_FILES += --file /bin/glibc_path4096=$(O)/apps/glibc_path4096.elf
 INITRAMFS_IMAGES += $(O)/apps/glibc_permissions.elf

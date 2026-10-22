@@ -6,7 +6,8 @@
 struct credential_object {
     unsigned owner, references;
     struct nos_credentials value;
-    uint64_t stack[2], nofile[2], address_space[2];
+    uint64_t stack[2], nofile[2], address_space[2], nproc[2];
+    unsigned nproc_exceeded;
 };
 static struct credential_object credential_objects[NOS_PROCESSES];
 static struct credential_object *process_object(const struct task *task)
@@ -20,10 +21,47 @@ static struct credential_object *process_object(const struct task *task)
 }
 const struct nos_credentials *credentials_get(const struct task *task)
 { return &process_object(task)->value; }
+/* Count references, not process objects: every thread consumes one UID task
+ * count, and a zombie retains its reference until task_reap. Shared-object
+ * real-UID changes move the whole process without a stale task-slot cache. */
+static uint64_t real_uid_tasks(uint32_t uid)
+{
+    uint64_t count = 0;
+    for (unsigned i = 0; i < NOS_PROCESSES; i++) {
+        const struct credential_object *object = &credential_objects[i];
+        if (object->references && object->value.ruid == uid) count += object->references;
+    }
+    return count;
+}
+int process_nproc_admit(const struct task *task)
+{
+    struct credential_object *object = process_object(task);
+    /* NOS capabilities are not Linux CAP_SYS_ADMIN/CAP_SYS_RESOURCE. The
+     * supported exemption is real UID 0, independent of effective UID. */
+    if (object->value.ruid && real_uid_tasks(object->value.ruid) >= object->nproc[0])
+        return -NOS_EAGAIN;
+    object->nproc_exceeded = 0;
+    return 0;
+}
+int process_nproc_exec_admit(struct task *task)
+{
+    struct credential_object *object = process_object(task);
+    if (!object->nproc_exceeded) return 0;
+    /* The current task already exists. Equality admits exec; creation needs
+     * one additional reference and therefore uses >= instead. */
+    if (object->value.ruid && real_uid_tasks(object->value.ruid) > object->nproc[0])
+        return -NOS_EAGAIN;
+    object->nproc_exceeded = 0;
+    return 0;
+}
 int credentials_create(struct task *task, const struct task *parent)
 {
     if (task->credential_ref) kernel_fail("credential reference overwritten");
     const struct credential_object *source = parent ? process_object(parent) : NULL;
+    if (parent) {
+        int rc = process_nproc_admit(parent);
+        if (rc) return rc;
+    }
     for (unsigned i = 0; i < NOS_PROCESSES; i++) {
         struct credential_object *object = &credential_objects[i];
         if (object->references) continue;
@@ -33,10 +71,12 @@ int credentials_create(struct task *task, const struct task *parent)
             k_memcpy(object->stack, source->stack, sizeof(object->stack));
             k_memcpy(object->nofile, source->nofile, sizeof(object->nofile));
             k_memcpy(object->address_space, source->address_space, sizeof(object->address_space));
+            k_memcpy(object->nproc, source->nproc, sizeof(object->nproc));
         } else {
             object->stack[0] = object->stack[1] = 256u * 1024u;
             object->nofile[0] = object->nofile[1] = NOS_FD_LIMIT;
             object->address_space[0] = object->address_space[1] = UINT64_C(0x40000000);
+            object->nproc[0] = object->nproc[1] = NOS_TASKS;
         }
         object->owner = task->space_owner; object->references = 1;
         task->credential_ref = i + 1; return 0;
@@ -46,7 +86,8 @@ int credentials_create(struct task *task, const struct task *parent)
 int credentials_share(struct task *task, const struct task *parent)
 {
     if (task->credential_ref) kernel_fail("credential reference overwritten");
-    (void)credentials_get(parent);
+    int rc = process_nproc_admit(parent);
+    if (rc) return rc;
     if (task->space_owner != parent->space_owner) return -NOS_EINVAL;
     struct credential_object *object = &credential_objects[parent->credential_ref - 1];
     if (object->references >= NOS_TASKS) kernel_fail("credential reference overflow");
@@ -69,6 +110,7 @@ void credentials_exec(struct task *task)
      * only after the image commits, preserving all IDs on an exec failure.
      * The surviving process keeps its existing object and references. */
     value->suid = value->euid; value->sgid = value->egid;
+    process_object(task)->nproc_exceeded = 0;
 }
 void process_nofile_limits(const struct task *task, uint64_t limits[2])
 { k_memcpy(limits, process_object(task)->nofile, sizeof(uint64_t) * 2); }
@@ -82,6 +124,7 @@ intptr_t process_limit_operation(unsigned resource, uintptr_t new_limit, uintptr
     struct credential_object *object = process_object(current_task);
     uint64_t *limits;
     if (resource == 3) limits = object->stack;
+    else if (resource == 6) limits = object->nproc;
     else if (resource == 7) limits = object->nofile;
     else if (resource == 9) limits = object->address_space;
     else return -NOS_ENOTSUP;
@@ -100,10 +143,10 @@ intptr_t process_limit_operation(unsigned resource, uintptr_t new_limit, uintptr
              * service's real structural capacity. No infinity is accepted. */
             if (replacement[1] > NOS_FD_LIMIT ||
                 (replacement[1] > old[1] && object->value.euid)) return -NOS_EPERM;
-        } else if (resource == 9) {
-            /* An AS policy limit does not promise physical backing or alter
-             * the architecture's valid user range. Infinity disables only
-             * this admission bound, retaining every structural VM check. */
+        } else if (resource == 9 || resource == 6) {
+            /* AS/NPROC are policy limits, not promises of backing memory,
+             * address space or task slots. Infinity disables only policy;
+             * every structural pool/admission check remains in force. */
             if (replacement[1] > old[1] && object->value.euid) return -NOS_EPERM;
         } else if (replacement[0] != old[0] || replacement[1] != old[1]) {
             /* Main-stack admission and growth remain unsupported. */
@@ -181,7 +224,16 @@ static int change_credentials(struct task *task, unsigned command, const struct 
         if (gid) { next.rgid = real; next.egid = effective; next.sgid = saved; }
         else { next.ruid = real; next.euid = effective; next.suid = saved; }
     }
-    credential_objects[task->credential_ref - 1].value = next;
+    struct credential_object *object = process_object(task);
+    if (next.ruid != object->value.ruid) {
+        uint64_t count = real_uid_tasks(next.ruid) + object->references;
+        /* Linux permits setuid beyond NPROC, deferring EAGAIN to exec. The
+         * flag belongs to stable process credentials here because NPTL UID
+         * changes and limits are process-wide. Repeated no-op SETXID calls
+         * must not clear a flag set by the first thread's transition. */
+        object->nproc_exceeded = next.ruid && count > object->nproc[0];
+    }
+    object->value = next;
     return 0;
 }
 intptr_t credentials_operation(uintptr_t command, uintptr_t pointer, uintptr_t flags)
@@ -276,6 +328,8 @@ int credentials_signal_allowed(const struct task *sender, const struct task *tar
         (signal == 18 && linux_process_session(sender) == linux_process_session(target));
 }
 #else
+int process_nproc_admit(const struct task *task) { (void)task; return 0; }
+int process_nproc_exec_admit(struct task *task) { (void)task; return 0; }
 int credentials_create(struct task *task, const struct task *parent) { (void)task; (void)parent; return 0; }
 int credentials_share(struct task *task, const struct task *parent) { (void)task; (void)parent; return 0; }
 void credentials_release(struct task *task) { (void)task; }

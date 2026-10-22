@@ -403,7 +403,7 @@ static int stack_unsupported(void)
     CHECK(!getrlimit64(RLIMIT_STACK, &stack64) && stack64.rlim_cur == STACK_BYTES &&
           stack64.rlim_max == STACK_BYTES, "unsupported_stack_mutation_unchanged");
     struct rlimit64 unsupported = {0x1234, 0x5678};
-    ERROR(getrlimit64(RLIMIT_NPROC, &unsupported), ENOTSUP, "process_capacity_not_fake_unlimited");
+    ERROR(getrlimit64(RLIMIT_CPU, &unsupported), ENOTSUP, "cpu_limit_not_fake_unlimited");
     CHECK(unsupported.rlim_cur == 0x1234 && unsupported.rlim_max == 0x5678,
           "unsupported_resource_output_unchanged");
     ERROR(syscall(SYS_prlimit64, 0, 16, NULL, &unsupported), EINVAL,

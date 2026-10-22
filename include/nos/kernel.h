@@ -213,6 +213,8 @@ void credentials_release(struct task *task);
 void credentials_exec(struct task *task);
 void process_nofile_limits(const struct task *task, uint64_t limits[2]);
 void process_as_limits(const struct task *task, uint64_t limits[2]);
+int process_nproc_admit(const struct task *task);
+int process_nproc_exec_admit(struct task *task);
 intptr_t process_limit_operation(unsigned resource, uintptr_t new_limit, uintptr_t old_limit, unsigned wide);
 const struct nos_credentials *credentials_get(const struct task *task);
 intptr_t credentials_operation(uintptr_t command, uintptr_t pointer, uintptr_t flags);

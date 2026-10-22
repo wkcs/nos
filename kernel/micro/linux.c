@@ -110,7 +110,8 @@ void linux_exec_progress(void)
     }
     uint64_t limits[2];
     process_as_limits(task, limits);
-    int rc = vm_as_usage(&exec_image) > limits[0] ? -NOS_ENOMEM : 0;
+    int rc = process_nproc_exec_admit(task);
+    if (!rc && vm_as_usage(&exec_image) > limits[0]) rc = -NOS_ENOMEM;
     if (!rc) {
         vm_as_limit_set(&exec_image, limits[0]);
         rc = ipc_process_notice(NOS_IPC_PROCESS_EXEC, task->space_owner, 0);
@@ -129,6 +130,8 @@ intptr_t linux_exec_current(uintptr_t pointer, uintptr_t entropy, uintptr_t flag
     if (task->abi != NOS_ABI_GATEWAY || !task->linux_gateway_active) return -NOS_EPERM;
     if (flags != NOS_EXEC_RANDOM_VALID || !entropy) return -NOS_EAGAIN;
     if (exec_pending) return -NOS_EAGAIN;
+    int admission = process_nproc_exec_admit(task);
+    if (admission) return admission;
     struct nos_exec_request request; static struct nos_exec_args args;
     if (user_copy_in(&request, pointer, sizeof(request))) return -NOS_EFAULT;
     int rc = nos_exec_copy_args(&request, &args); if (rc) return rc;
@@ -323,6 +326,8 @@ static intptr_t linux_fork(const uintptr_t arguments[6])
     uintptr_t flags = arguments[0];
     if ((flags & CLONE_PARENT_SETTID) && !user_access(current_task, arguments[2], 4, 1)) return -NOS_EFAULT;
     if ((flags & (CLONE_CHILD_SETTID | CLONE_CHILD_CLEARTID)) && !user_access(current_task, arguments[4], 4, 1)) return -NOS_EFAULT;
+    int admission = process_nproc_admit(current_task);
+    if (admission) return admission;
     for (unsigned i = 2; i < NOS_IDLE_FIRST; i++) {
         struct task *child = &tasks[i]; if (child->state != TASK_UNUSED) continue;
         if (child->credential_ref) kernel_fail("fork with credentials");
@@ -406,6 +411,8 @@ static intptr_t linux_clone(const uintptr_t a[6])
     if (!stack || (stack & (sizeof(uintptr_t) == 4 ? 7u : 15u)) || !user_access(current_task, stack - 64, 64, 1)) return -NOS_EFAULT;
     if ((flags & CLONE_PARENT_SETTID) && !user_access(current_task, a[2], 4, 1)) return -NOS_EFAULT;
     if ((flags & (CLONE_CHILD_CLEARTID | CLONE_CHILD_SETTID)) && !user_access(current_task, a[4], 4, 1)) return -NOS_EFAULT;
+    int admission = process_nproc_admit(current_task);
+    if (admission) return admission;
     for (unsigned i = 2; i < NOS_IDLE_FIRST; i++) {
         struct task *child = &tasks[i]; if (child->state != TASK_UNUSED) continue;
         if (child->credential_ref) kernel_fail("clone with credentials");

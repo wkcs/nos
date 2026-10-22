@@ -42,6 +42,10 @@ int create_task(unsigned slot, uintptr_t pc, uintptr_t arg, unsigned priority, u
      * vanished ordinary parent must never silently become a root identity. */
     const struct task *source = parent == UINT32_MAX ? NULL : find_task(parent);
     if (parent != UINT32_MAX && !source) return -NOS_ESRCH;
+    if (source) {
+        int rc = process_nproc_admit(source);
+        if (rc) return rc;
+    }
     struct task *t = &tasks[slot]; task_prepare(t, slot, priority, caps, parent);
     int rc = credentials_create(t, source);
     if (rc) return rc;
@@ -90,6 +94,8 @@ intptr_t thread_create(uintptr_t pointer, uintptr_t priority)
         !user_access(current_task, args.stack, args.stack_size, 1) ||
         (args.clear_tid && ((args.clear_tid & 3) || !user_access(current_task, args.clear_tid, sizeof(unsigned), 1))))
         return -NOS_EINVAL;
+    int admission = process_nproc_admit(current_task);
+    if (admission) return admission;
     for (unsigned i = 2; i < NOS_IDLE_FIRST; i++) {
         if (tasks[i].state != TASK_UNUSED) continue;
         struct task *t = &tasks[i];
@@ -369,6 +375,7 @@ intptr_t task_exec_linux(uintptr_t pointer, uintptr_t entropy, uintptr_t flags)
     args.random_valid = 1;
     size_t bytes; const void *image = nos_initramfs_find(args.path, &bytes);
     if (!image) return -NOS_ENOENT;
+    rc = process_nproc_admit(current_task); if (rc) return rc;
     for (unsigned i = 2; i < NOS_IDLE_FIRST; i++) {
         struct task *t = &tasks[i]; if (t->state != TASK_UNUSED) continue;
         task_prepare(t, i, request.priority, current_task->caps & ~NOS_CAP_SPAWN, current_task->id);

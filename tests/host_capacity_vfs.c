@@ -37,7 +37,7 @@ static void capacity_pipe_waiters(void)
 {
     capacity_reset();
     int pair[2] = { -1, -1 };
-    int ok = NOS_TASKS == 80 && NOS_PROCESSES == 12 && OPEN_COUNT == 384 && FD_TABLE_COUNT == 63;
+    int ok = NOS_TASKS == 80 && NOS_PROCESSES == 40 && OPEN_COUNT == 1280 && FD_TABLE_COUNT == 203;
     ok &= !capacity_pipe(1000, 1, pair);
     if (pair[0] < 0) { check(0, "vfs_capacity_64_high_slot_readers_share_process_fds"); return; }
     unsigned reader = table_for(1000)->fd[pair[0]] - 1;
@@ -94,25 +94,25 @@ static void capacity_owner_gc(void)
         group_state(owner, NOS_GROUP_LIVE_TASKS);
         ok &= table_for(owner) != NULL;
     }
-    ok &= capacity_tables() == FD_TABLE_COUNT && !table_for(9000);
+    ok &= capacity_tables() == FD_TABLE_COUNT && !table_for((1000 + (FD_TABLE_COUNT + 1) * NOS_TASKS));
     ok &= capacity_read(1000, 79, pair[0]) == HOST_PENDING && opened[reader].refs == 2;
     group_state(1000, NOS_GROUP_FORK_REFERENCES);
     unsigned batches = batch_queries;
     batch_error = -NOS_EACCES; service_complete(); batch_error = 0;
     ok &= batch_queries == batches + 1 && pipe_wait_count() == 1 && opened[reader].refs == 2 && existing_table(1000);
     service_complete();
-    ok &= batch_queries == batches + 2 && !scalar_queries && !pipe_wait_count() &&
+    ok &= batch_queries == batches + 1 + (FD_TABLE_COUNT + NOS_GROUP_QUERY_MAX - 1) / NOS_GROUP_QUERY_MAX && !scalar_queries && !pipe_wait_count() &&
         existing_table(1000) && existing_table(1080) && opened[reader].refs == 1;
     /* The fork-referenced old generation retains its FD table even while a
      * new process generation with the same task-slot residue remains live. */
     struct fd_table before = *existing_table(1000);
-    ok &= inherit_files(1000, 9000) == -NOS_ENOSPC &&
+    ok &= inherit_files(1000, (1000 + (FD_TABLE_COUNT + 1) * NOS_TASKS)) == -NOS_ENOSPC &&
         !memcmp(&before, existing_table(1000), sizeof(before)) && opened[reader].refs == 1;
     group_state(1000 + (FD_TABLE_COUNT - 1) * NOS_TASKS, 0); service_complete();
-    ok &= !inherit_files(1000, 9000) && opened[reader].refs == 2;
+    ok &= !inherit_files(1000, (1000 + (FD_TABLE_COUNT + 1) * NOS_TASKS)) && opened[reader].refs == 2;
     group_state(1000, 0); service_complete();
-    ok &= !existing_table(1000) && existing_table(1080) && existing_table(9000) &&
-        existing_table(9000)->fd[pair[0]] == reader + 1 && opened[reader].refs == 1;
+    ok &= !existing_table(1000) && existing_table(1080) && existing_table((1000 + (FD_TABLE_COUNT + 1) * NOS_TASKS)) &&
+        existing_table((1000 + (FD_TABLE_COUNT + 1) * NOS_TASKS))->fd[pair[0]] == reader + 1 && opened[reader].refs == 1;
     check(ok, "vfs_capacity_full_generation_gc_pending_fork_pins");
 }
 static void capacity_record_graph(void)

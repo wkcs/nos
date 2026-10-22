@@ -51,11 +51,11 @@ static void capacity_number(const char *label, unsigned value)
     do { digits[--used] = (char)('0' + value % 10); value /= 10; } while (value);
     nos_puts(label); nos_puts(digits + used);
 }
-static int capacity_path(const char *path)
+static unsigned capacity_path(const char *path)
 {
-    const char *expected = "/bin/glibc_capacity";
-    while (*path && *path == *expected) { path++; expected++; }
-    return *path == *expected;
+    if (u_streq(path, "/bin/glibc_capacity")) return 1;
+    if (u_streq(path, "/bin/glibc_process_capacity")) return 2;
+    return 0;
 }
 static void failed(const char *path, int status)
 {
@@ -101,7 +101,8 @@ static int execute_linux(const char *path, const unsigned char *supplied_random)
 }
 static int run_linux(const char *path)
 {
-    if (!capacity_path(path)) return execute_linux(path, 0);
+    unsigned kind = capacity_path(path);
+    if (!kind) return execute_linux(path, 0);
     /* Initialize the persistent virtio-rng DMA storage before measuring
      * application resources. These fresh bytes are consumed by this exec. */
     unsigned char random[16];
@@ -118,7 +119,8 @@ static int run_linux(const char *path)
     void *sample_result = (void *)3;
     int joined = !nos_thread_join(&sampler, &sample_result);
     int collected = capacity_collect(&before, &after) && joined;
-    capacity_number("glibc_capacity_resources free_before=", before.free_pages);
+    capacity_number(kind == 2 ? "glibc_process_capacity_resources free_before=" :
+                    "glibc_capacity_resources free_before=", before.free_pages);
     capacity_number(" free_min=", monitor.minimum_free);
     capacity_number(" free_after=", after.free_pages);
     capacity_number(" tasks_before=", before.tasks);
@@ -126,9 +128,9 @@ static int run_linux(const char *path)
     capacity_number(" tasks_after=", after.tasks);
     nos_puts(" monitor_stack_bytes=8192\n");
     int sampled = joined && !sample_result && monitor.samples &&
-        monitor.minimum_free < before.free_pages && monitor.peak_tasks >= before.tasks + 66;
-    nos_check(sampled, "glibc_capacity_native_peak_sample");
-    nos_check(collected, "glibc_capacity_process_exit_page_baseline");
+        monitor.minimum_free < before.free_pages && monitor.peak_tasks >= before.tasks + (kind == 2 ? 27u : 66u);
+    nos_check(sampled, kind == 2 ? "glibc_process_capacity_native_peak_sample" : "glibc_capacity_native_peak_sample");
+    nos_check(collected, kind == 2 ? "glibc_process_capacity_process_exit_page_baseline" : "glibc_capacity_process_exit_page_baseline");
     return status ? status : sampled && collected ? 0 : -NOS_EIO;
 }
 void nos_linux_regression(void)
@@ -198,6 +200,12 @@ void nos_linux_regression(void)
     result = run_linux("/bin/glibc_threads");
     failed("/bin/glibc_threads", result);
     nos_check(result == 0, "glibc_nptl_threads");
+    result = run_linux("/bin/glibc_process_capacity");
+    failed("/bin/glibc_process_capacity", result);
+    nos_check(result == 0, "glibc_process_capacity_application");
+    result = run_linux("/bin/glibc_nproc");
+    failed("/bin/glibc_nproc", result);
+    nos_check(result == 0, "glibc_nproc_application");
     result = run_linux("/bin/glibc_capacity");
     failed("/bin/glibc_capacity", result);
     nos_check(result == 0, "glibc_capacity_application");

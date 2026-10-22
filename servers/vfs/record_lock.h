@@ -236,10 +236,11 @@ static void record_lock_close(intptr_t owner, const struct description *descript
 /* Exit notifications are coalesced by task slot. A full-generation query is
  * authoritative; bit 2 retains FD state still referenced by queued forks. */
 #ifdef NOS_LINUX_COMPAT
-/* The server is single threaded. One snapshot avoids a trap per active group
- * while retaining a full-generation liveness check at each existing GC point. */
+/* The server is single threaded. Query every bounded batch before releasing
+ * any owner: a later query failure must preserve all FD, cwd, lock and wait
+ * state. Full generation IDs are retained across the entire collection. */
 static struct nos_group_state collected_groups[FD_TABLE_COUNT];
-_Static_assert(FD_TABLE_COUNT <= NOS_GROUP_QUERY_MAX, "GC snapshot fits query batch");
+_Static_assert(NOS_GROUP_QUERY_MAX > 0, "nonempty GC query batches");
 #endif
 static void collect_process_owners(void)
 {
@@ -247,8 +248,21 @@ static void collect_process_owners(void)
     unsigned count = 0;
     for (unsigned i = 0; i < FD_TABLE_COUNT; i++) if (fds[i].pid >= 0)
         collected_groups[count++] = (struct nos_group_state){ .group = (uint32_t)fds[i].pid, .state = -NOS_ENOTSUP };
-    if (!count || nos_syscall(NOS_SYS_GROUP_ALIVE, (uintptr_t)collected_groups, count, NOS_GROUP_QUERY_BATCH)) return;
+    for (unsigned first = 0; first < count; first += NOS_GROUP_QUERY_MAX) {
+        unsigned batch = count - first;
+        if (batch > NOS_GROUP_QUERY_MAX) batch = NOS_GROUP_QUERY_MAX;
+        if (nos_syscall(NOS_SYS_GROUP_ALIVE, (uintptr_t)&collected_groups[first],
+                        batch, NOS_GROUP_QUERY_BATCH)) return;
+    }
+    /* The service cannot mutate fds between batches. Validate the complete
+     * returned snapshot before committing even the first owner release. */
     unsigned entry = 0;
+    for (unsigned i = 0; i < FD_TABLE_COUNT; i++) if (fds[i].pid >= 0) {
+        const struct nos_group_state *group = &collected_groups[entry++];
+        if (group->group != (uint32_t)fds[i].pid || group->state < 0 ||
+            ((unsigned)group->state & ~(NOS_GROUP_LIVE_TASKS | NOS_GROUP_FORK_REFERENCES))) return;
+    }
+    entry = 0;
     for (unsigned i = 0; i < FD_TABLE_COUNT; i++) if (fds[i].pid >= 0) {
         const struct nos_group_state *group = &collected_groups[entry++];
         intptr_t state = group->state;

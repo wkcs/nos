@@ -20,8 +20,8 @@
 #endif
 #ifdef NOS_LINUX_COMPAT
 #define NOS_TASKS 80u
-#define NOS_SPACES 12u
-#define NOS_PROCESSES 12u
+#define NOS_SPACES 40u
+#define NOS_PROCESSES 40u
 /* Linux robust futex words reserve the upper two TID bits. */
 #define NOS_TID_MAX 0x3fffffffu
 #elif defined(NOS_MMU) || defined(NOS_RISCV32)

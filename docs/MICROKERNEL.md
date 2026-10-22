@@ -97,7 +97,7 @@ ARM、ARM64、RV64 的 Linux personality 解码真实六参数 syscall ABI。内
 
 Linux profile 的大定位读使用独立的 512 字节暂存上限；VFS 对 OFD 副本读取，并向 runtime 的暂存区 STORE。runtime 仅在 RPC 成功且长度合法后复制当前块到调用方，避免 STORE 与回复之间取消时发布失败块；整次调用仍保留先前已完成块的短读语义。小读、pwrite 和默认嵌入式配置保留原协议，文件偏移不变。
 
-fork 复制私有映射并保留共享映射的物理身份；exec 分阶段准备新地址空间，失败保留旧镜像，成功保留进程 PID 并替换上下文。处理器帧、signal mask、pending、sigreturn、TLS、robust futex 和取消机制分别处理。ARM 兼容配置还映射受控只读可执行的 Linux kuser helper 页；不因此允许任意高地址用户访问。
+Linux profile 的 fork 复制可写私有映射、保留只读私有背页引用，并保留共享映射的物理身份；只读私有页升级可写前先复制。默认配置仍复制私有映射；exec 分阶段准备新地址空间，失败保留旧镜像，成功保留进程 PID 并替换上下文。处理器帧、signal mask、pending、sigreturn、TLS、robust futex 和取消机制分别处理。ARM 兼容配置还映射受控只读可执行的 Linux kuser helper 页；不因此允许任意高地址用户访问。
 
 RAM 文件的读写和 MAP_SHARED 指向同一物理后端。只有可信 VFS 具有共享对象 broker 权限；每次映射得到绑定地址空间、对象 generation 和 FD 最大权限的一次性租约。成功和失败映射均消费该次授权，VMA 保存独立 maxprot；同进程此前获得可写映射不能提升后来只读 FD 的映射权限。已存在映射、尚未消费的有效租约和队列中的共享 futex 维持物理页身份，关闭 FD、unlink 和最后解除映射分别处理。进程共享 futex 用物理页身份及偏移匹配，允许不同虚拟地址同步。
 
@@ -147,7 +147,7 @@ RV64 的四个无 errno 身份 getter（getuid/geteuid/getgid/getegid）采用 p
 
 ## Linux profile 的进程资源限额
 
-Linux profile 将 STACK/NOFILE/AS 限额与稳定进程对象一起引用，线程共享、fork 复制、exec 保留。NOFILE 接受结构容量 32 内的软/硬限制，非 root 不能提高硬限制；soft>hard 返回 EINVAL，超出实际容量返回 EPERM。STACK 暂仅查询与相同值请求，未实现的已知资源返回 ENOTSUP，无效资源编号返回 EINVAL。ARM ugetrlimit191 返回两个 u32，prlimit64 返回两个 u64；旧 ARM signed ABI 与直接 generic get/setrlimit 入口明确 ENOSYS，实际 glibc 路由单独验证。
+Linux profile 将 STACK/NOFILE/AS/NPROC 限额与稳定进程对象一起引用，线程共享、fork 复制、exec 保留。NOFILE 接受结构容量 32 内的软/硬限制，非 root 不能提高硬限制；soft>hard 返回 EINVAL，超出实际容量返回 EPERM。STACK 暂仅查询与相同值请求，未实现的已知资源返回 ENOTSUP，无效资源编号返回 EINVAL。ARM ugetrlimit191 返回两个 u32，prlimit64 返回两个 u64；旧 ARM signed ABI 与直接 generic get/setrlimit 入口明确 ENOSYS，实际 glibc 路由单独验证。
 
 IPC_LIMITS70 复用 IPC_SUBJECT 的活动请求授权与 24 字节 query，输出 32 字节 token/sender/process/NOFILE 软硬限额。身份仍为 CALL 时不可变快照；资源查询读取当前值，作为 VFS 的新 FD 分配准入点。后续降低限额不关闭已授权 FD，后续准入读取新值。内核提供可信限额机制，用户态 VFS 保留 FD 编号和分配策略；只在 open/dup/pipe 入口增加限额查询。默认 native 配置返回 ENOTSUP，不增加其任务或用户模板预算。
 
@@ -171,7 +171,7 @@ Linux profile 新增 RLIMIT_AS，默认软/硬限额均为 1 GiB。它是进程�
 
 用量从已提交的地址空间元数据重算：固定用户数据区扣除未映射 guard、内建文本的整页大小，以及全部 VMA；包括 PROT_NONE、共享页的每个虚拟别名和运行库 gateway。架构 helper 和仅设备服务可使用的保留 MMIO 窗口不在普通 VMA 计费内；普通 Linux mmap 入口仍受限额检查。地址空间初始化统一读取已有进程对象的 AS 限额，先检查固定映射额度再分配，覆盖内建任务、原生 ELF spawn 与 Linux ELF spawn，避免分散入口漏接。mmap、镜像装载、共享映射和 Linux brk 增长统一准入；MAP_FIXED 按覆盖区间中的新增虚拟字节检查，先检查后修改，mprotect 不重复收费，munmap 释放额度。native brk 只调整已映射固定数据区内的指针。
 
-fork 可复制已超出新软限额的现有映射，替换子进程 gateway 后再启用继承的增长限额。exec 在独立地址空间按继承软限额装载，并在 VFS exec 通知前重新检查当前进程限额；失败释放候选映像，保留旧映像。默认非 Linux/嵌入式地址空间不增加限额字段。mremap、可变 STACK、NPROC 与完整 POSIX 最小资源容量仍未实现；本机制的实际验收另列于验证报告。
+fork 可复制已超出新软限额的现有映射，替换子进程 gateway 后再启用继承的增长限额。exec 在独立地址空间按继承软限额装载，并在 VFS exec 通知前重新检查当前进程限额；失败释放候选映像，保留旧映像。默认非 Linux/嵌入式地址空间不增加限额字段。mremap、可变 STACK 与其余 POSIX 最小资源要求仍未完成；本机制的实际验收另列于验证报告。
 
 
 ### 进程退出与孤儿身份
@@ -183,10 +183,23 @@ Linux 父子关系使用完整 TGID。主线程已退出但仍有工作线程时
 
 ### 线程与进程容量分离
 
-Linux profile 使用 NOS_TASKS=80、NOS_SPACES=12、NOS_PROCESSES=12，robust futex 的 TID 上限为 0x3fffffff。任务引用、挂起请求、信号队列和处理器帧按任务容量配置；地址空间、页表、信号处置及共享租约 owner 按空间容量配置；凭据对象、384 OFD 和 63 FD 表按进程容量配置。地址空间不是任务槽的同义编号，创建失败和最后释放后使用无效空间编号。
+Linux profile 使用 NOS_TASKS=80、NOS_SPACES=40、NOS_PROCESSES=40，robust futex 的 TID 上限为 0x3fffffff。任务引用、挂起请求、信号队列和处理器帧按任务容量配置；地址空间、页表、信号处置及共享租约 owner 按空间容量配置；凭据对象、1280 OFD 和 203 FD 表按进程容量配置。地址空间不是任务槽的同义编号，创建失败和最后释放后使用无效空间编号。
 
 取消/退出通知使用带边界检查的 uint32_t 多字位图，消息保留完整任务身份及 token；VFS 重启只重置端点 0 的通知，保留其他存活端点的状态。文件锁依赖图使用最多 64 个 held-lock owner 的静态队列，避免按 80 个任务递归。
 
 gateway 代码区仍为 [0x01800000,0x01900000)，各任务栈按 16 KiB stride、8 KiB 映射及 guard 分配，保留区结束为 0x01b00000；fork 排除全部线程 gateway 栈。384 VMA 的候选表与 fresh 标记放在有嵌套检查的静态工作区，依赖当前串行内核临界区；这不表示多核并行执行内核。默认配置继续使用原容量及局部事务数组，物理池仍为 32 MiB。
 
 实际验证见完整冻结验收 `1792629772377014664`：三 MMU 单核/四核的两轮 64 worker、独立空间耗尽、最高槽位及满表事务回滚全部通过。进程最终退出后精确回收；glibc join 后保留合法栈缓存，不要求错误的即时物理页归零。
+
+
+### 只读 fork 背页与进程限额
+
+仅 Linux profile 在 fork 中保留只读或已背页 PROT_NONE 私有 VMA 的物理引用，每个地址空间映射计一次；线程共享地址空间不重复计背页。可写私有页继续复制。任何持有者将共享的私有页升级为可写时，先准备候选背页和内容，完成 break-before-make 与 TLB 同步后提交，再释放旧引用；映射失败恢复原 PTE、数据、引用和页数。最后引用解除才归还物理页，部分解除映射及 MAP_FIXED 同样处理。真实 MAP_SHARED 对象使用原有租约/权限/共享 futex 身份，不与私有 fork 引用混用。特权装载复制不能绕过保留快照的只读保护。这是只读页共享及权限升级复制，没有实现按写入缺页分配的完整 COW。
+
+其他 CPU 可能在 PTE 暂时失效时发生翻译/page fault，进入内核等待全局锁后，只有已提交的页表和软件范围仍允许该次读/写/取指，才重试原指令。ARM/A64 限制具体翻译错误 syndrome；RV64 page fault 还要求有效、可访问的用户叶项与写所需 D 位。非法指令、对齐/外部错误及真实权限拒绝不被当作已解决的映射故障。
+
+RLIMIT_NPROC 默认软/硬值 80，是进程共享的准入策略而非全局空闲容量承诺；fork 复制、exec 保留，infinity 只解除策略限制。按真实 UID 汇总稳定凭据对象的引用，包含线程及未 reap 的僵尸；真实 UID 0 豁免创建检查，提高硬限额要求有效 UID 0。NOS capability 与 Linux CAP_SYS_ADMIN/CAP_SYS_RESOURCE 分开，尚未实现后两者的通用特权模型。真实 UID 变化重新归属整个共享凭据对象的计数，超限记录延迟 exec 检查；无操作身份请求保留标志，单纯降低限额不额外拒绝 exec。
+
+VFS 保留 203 项完整 generation 候选快照，分成最多 64 项的系统调用；全部批次和状态预检成功后才释放任一对象。不同批次不宣称处于同一内核临界区，较早看到仍存活的组可保守留到下一轮；完整 generation 死亡不会复活，待确认 fork 引用仍独立保留 FD 表。任意批次失败不执行部分回收。
+
+上述实现通过最终冻结验收 `1792672703748903595`，三 MMU 单核/四核的 25 子进程、NPROC 和原有 64 worker 全量验证通过。预算与实际资源基线见验证报告。

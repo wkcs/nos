@@ -164,6 +164,15 @@ unsigned arch_fault_signal(void)
     return 11;
 }
 
+unsigned arch_fault_access(void)
+{
+    uintptr_t cause; __asm__ volatile("csrr %0, scause" : "=r"(cause));
+    if (cause == 12) return NOS_PROT_EXEC;
+    if (cause == 13) return NOS_PROT_READ;
+    if (cause == 15) return NOS_PROT_WRITE;
+    return 0;
+}
+
 uintptr_t arch_fault_address(void)
 {
     uintptr_t address;
@@ -245,7 +254,18 @@ unsigned arch_mapping_flags(unsigned id, uintptr_t va)
     if (id >= NOS_SPACES) return 0;
     uint64_t *p = user_pte(&spaces[id], va, 0, NULL);
     if (!p || !*p) return 0;
-    return (unsigned)((*p >> 1) & 7);
+    uint64_t entry = *p;
+#ifdef NOS_LINUX_COMPAT
+    /* A page-fault syndrome also covers permission faults. Fault retries
+     * require a valid accessed user leaf, not merely plausible RWX bits. */
+    if ((entry & (1u | 16u | 64u)) != (1u | 16u | 64u) || !(entry & 14u) ||
+        ((entry & 4u) && !(entry & 2u))) return 0;
+    unsigned flags = (unsigned)((entry >> 1) & 7u);
+    if (!(entry & 128u)) flags &= ~NOS_PROT_WRITE;
+    return flags;
+#else
+    return (unsigned)((entry >> 1) & 7);
+#endif
 }
 void arch_fault_probe(void)
 { __asm__ volatile(".word 0" ::: "memory"); }

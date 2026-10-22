@@ -206,6 +206,16 @@ unsigned arch_fault_signal(void)
     return 4;
 }
 
+unsigned arch_fault_access(void)
+{
+    uintptr_t status; __asm__ volatile("mrs %0, esr_el1" : "=r"(status));
+    unsigned cause = (unsigned)(status >> 26), code = (unsigned)status & 63;
+    if (code < 4 || code > 7) return 0; /* Translation faults, levels 0..3. */
+    if (cause == 0x20) return NOS_PROT_EXEC;
+    if (cause != 0x24) return 0;
+    return status & (1u << 6) ? NOS_PROT_WRITE : NOS_PROT_READ;
+}
+
 uintptr_t arch_fault_address(void)
 {
     uintptr_t address;

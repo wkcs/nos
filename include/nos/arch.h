@@ -56,6 +56,9 @@ void arch_platform_init(void);
 uint64_t arch_realtime_ns(void);
 uintptr_t arch_fault_address(void);
 unsigned arch_fault_signal(void);
+#if defined(NOS_MMU) && defined(NOS_LINUX_COMPAT)
+unsigned arch_fault_access(void);
+#endif
 #if defined(NOS_ARM) || defined(NOS_ARM_M)
 uintptr_t arch_user_helper_phys(uintptr_t va);
 #else

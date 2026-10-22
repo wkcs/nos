@@ -294,6 +294,7 @@ static intptr_t dispatch(uintptr_t nr, uintptr_t a, uintptr_t b, uintptr_t c)
         int rc = nos_exec_copy_args(&request, &args); if (rc) return rc;
         size_t bytes; const void *image = nos_initramfs_find(args.path, &bytes);
         if (!image) return -NOS_ENOENT;
+        rc = process_nproc_admit(current_task); if (rc) return rc;
         for (unsigned i = 2; i < NOS_IDLE_FIRST; i++) {
             if (tasks[i].state != TASK_UNUSED) continue;
             struct task *t = &tasks[i];
@@ -335,6 +336,22 @@ static intptr_t dispatch(uintptr_t nr, uintptr_t a, uintptr_t b, uintptr_t c)
     default: return -NOS_ENOSYS;
     }
 }
+/* Another CPU may have faulted while a serialized mapping transaction had
+ * temporarily invalidated its PTE. Recheck the committed mapping only for
+ * architecture-reported translation/page faults, preserving all real faults. */
+static int fault_mapping_resolved(void)
+{
+#if defined(NOS_MMU) && defined(NOS_LINUX_COMPAT)
+    unsigned access = arch_fault_access();
+    if (access != NOS_PROT_READ && access != NOS_PROT_WRITE && access != NOS_PROT_EXEC) return 0;
+    uintptr_t address = arch_fault_address();
+    if (!(arch_mapping_flags(current_task->space_id, address) & access)) return 0;
+    return access == NOS_PROT_EXEC ? user_exec_access(current_task, address) :
+        user_access(current_task, address, 1, access == NOS_PROT_WRITE);
+#else
+    return 0;
+#endif
+}
 struct arch_frame *kernel_trap(struct arch_frame *frame, unsigned event)
 {
     if (!current_task) kernel_fail("trap before task initialization");
@@ -366,15 +383,17 @@ struct arch_frame *kernel_trap(struct arch_frame *frame, unsigned event)
         if (event == ARCH_TIMER && !hardware_irq) { arch_timer_ack(); scheduler_tick(); }
         reschedule = 1;
     } else if (event == ARCH_FAULT) {
+        if (!fault_mapping_resolved()) {
 #if defined(NOS_MMU) && defined(NOS_LINUX_COMPAT)
-        if (current_task->abi == NOS_ABI_LINUX) {
-            if (linux_signal_send(current_task, arch_fault_signal(), 1, 0, arch_fault_address()))
-                task_finish(current_task, -NOS_EFAULT);
-        } else
+            if (current_task->abi == NOS_ABI_LINUX) {
+                if (linux_signal_send(current_task, arch_fault_signal(), 1, 0, arch_fault_address()))
+                    task_finish(current_task, -NOS_EFAULT);
+            } else
 #endif
-        {
-            if (current_task->id % NOS_TASKS == 1) kernel_fail("init task faulted");
-            task_finish(current_task, -NOS_EFAULT);
+            {
+                if (current_task->id % NOS_TASKS == 1) kernel_fail("init task faulted");
+                task_finish(current_task, -NOS_EFAULT);
+            }
         }
     } else {
         uintptr_t nr, a, b, c;

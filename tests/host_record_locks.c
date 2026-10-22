@@ -27,11 +27,12 @@ static struct { uintptr_t handle; void *address; size_t length; } host_shared[32
 static uintptr_t host_shared_sequence;
 static size_t uart_bytes, uart_calls, uart_max;
 static unsigned char archive_image[1536];
-static struct { uintptr_t owner; intptr_t state; unsigned used; } host_groups[NOS_TASKS + 4];
+#define HOST_GROUP_COUNT (FD_TABLE_COUNT + 4u)
+static struct { uintptr_t owner; intptr_t state; unsigned used; } host_groups[HOST_GROUP_COUNT];
 static void group_state(uintptr_t owner, intptr_t state)
 {
-    for (unsigned i = 0; i < NOS_TASKS + 4; i++) if (host_groups[i].used && host_groups[i].owner == owner) { host_groups[i].state = state; return; }
-    for (unsigned i = 0; i < NOS_TASKS + 4; i++) if (!host_groups[i].used) { host_groups[i].owner = owner; host_groups[i].state = state; host_groups[i].used = 1; return; }
+    for (unsigned i = 0; i < HOST_GROUP_COUNT; i++) if (host_groups[i].used && host_groups[i].owner == owner) { host_groups[i].state = state; return; }
+    for (unsigned i = 0; i < HOST_GROUP_COUNT; i++) if (!host_groups[i].used) { host_groups[i].owner = owner; host_groups[i].state = state; host_groups[i].used = 1; return; }
     abort();
 }
 static struct fd_table *existing_table(intptr_t owner)
@@ -102,18 +103,22 @@ intptr_t nos_syscall(uintptr_t number, uintptr_t a, uintptr_t b, uintptr_t c)
     if (number == NOS_SYS_GROUP_ALIVE) {
         if (c == NOS_GROUP_QUERY_BATCH) {
             batch_queries++;
+#ifdef NOS_HOST_GROUP_QUERY_HOOK
+            intptr_t injected = NOS_HOST_GROUP_QUERY_HOOK(a, b, c);
+            if (injected) return injected;
+#endif
             if (batch_error) return batch_error;
             if (!b || b > NOS_GROUP_QUERY_MAX) return -NOS_EINVAL;
             struct nos_group_state *groups = (void *)a;
             for (size_t n = 0; n < b; n++) {
                 groups[n].state = NOS_GROUP_LIVE_TASKS;
-                for (unsigned i = 0; i < NOS_TASKS + 4; i++)
+                for (unsigned i = 0; i < HOST_GROUP_COUNT; i++)
                     if (host_groups[i].used && host_groups[i].owner == groups[n].group) groups[n].state = host_groups[i].state;
             }
             return 0;
         }
         scalar_queries++;
-        for (unsigned i = 0; i < NOS_TASKS + 4; i++) if (host_groups[i].used && host_groups[i].owner == a) return host_groups[i].state;
+        for (unsigned i = 0; i < HOST_GROUP_COUNT; i++) if (host_groups[i].used && host_groups[i].owner == a) return host_groups[i].state;
         return 1;
     }
     if (number == NOS_SYS_REPLY) {
