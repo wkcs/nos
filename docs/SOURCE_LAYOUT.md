@@ -26,6 +26,7 @@
 | `tests/guest/` | 内建来宾回归、架构探针；`apps/` 子目录为独立测试 ELF 源码 |
 | `tests/` | 宿主消毒器、QEMU runner、验收编排与硬件 runner |
 | `third_party/` | 保留许可证的 Lua/LVGL 第三方源码 |
+| `protocols/nlp/v1/`、`docs/protocols/nlp/` | NLP设计注册表、固定向量与协议草案；尚未接入固件 |
 | `scripts/`、`configs/` | 当前构建、环境准备与平台配置 |
 
 函数实现置于所属模块的 `.c` 中。用户运行库拆成独立编译单元，模块间通过现有公共声明调用，不以包含 `.c` 的方式拼接。nshell 的纯解析/编辑接口在 `include/nos/shell.h`，命令执行私有声明在 `user/shell/commands.h`。VFS 现有静态内部实现仍使用本地私有头，其跨模块拆分可后续独立进行。

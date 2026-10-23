@@ -1,0 +1,552 @@
+{
+  "schema": "nos-nlp-design-registry-1",
+  "status": "DRAFT_NOT_IMPLEMENTED",
+  "wire": {
+    "major": 1,
+    "magic_hex": "4e4c",
+    "header_bytes": 52,
+    "numeric_endian": "little",
+    "uuid_order": "RFC9562-bytes",
+    "max_payload": 1024,
+    "plaintext_trailer_bytes": 4,
+    "aead_tag_bytes": 16,
+    "fields": [
+      {
+        "name": "magic",
+        "offset": 0,
+        "bytes": 2
+      },
+      {
+        "name": "major",
+        "offset": 2,
+        "bytes": 1
+      },
+      {
+        "name": "header_len",
+        "offset": 3,
+        "bytes": 1
+      },
+      {
+        "name": "kind",
+        "offset": 4,
+        "bytes": 1
+      },
+      {
+        "name": "flags",
+        "offset": 5,
+        "bytes": 1
+      },
+      {
+        "name": "priority",
+        "offset": 6,
+        "bytes": 1
+      },
+      {
+        "name": "hop_limit",
+        "offset": 7,
+        "bytes": 1
+      },
+      {
+        "name": "fabric_epoch",
+        "offset": 8,
+        "bytes": 4
+      },
+      {
+        "name": "src_node",
+        "offset": 12,
+        "bytes": 2
+      },
+      {
+        "name": "dst_node",
+        "offset": 14,
+        "bytes": 2
+      },
+      {
+        "name": "src_cap",
+        "offset": 16,
+        "bytes": 2
+      },
+      {
+        "name": "dst_cap",
+        "offset": 18,
+        "bytes": 2
+      },
+      {
+        "name": "channel_id",
+        "offset": 20,
+        "bytes": 2
+      },
+      {
+        "name": "opcode",
+        "offset": 22,
+        "bytes": 2
+      },
+      {
+        "name": "session_id",
+        "offset": 24,
+        "bytes": 4
+      },
+      {
+        "name": "packet_counter",
+        "offset": 28,
+        "bytes": 4
+      },
+      {
+        "name": "reliable_seq",
+        "offset": 32,
+        "bytes": 4
+      },
+      {
+        "name": "ack",
+        "offset": 36,
+        "bytes": 4
+      },
+      {
+        "name": "payload_len",
+        "offset": 40,
+        "bytes": 2
+      },
+      {
+        "name": "reserved",
+        "offset": 42,
+        "bytes": 2
+      },
+      {
+        "name": "receive_limit",
+        "offset": 44,
+        "bytes": 4
+      },
+      {
+        "name": "header_crc32c",
+        "offset": 48,
+        "bytes": 4
+      }
+    ],
+    "kinds": {
+      "CONTROL": 0,
+      "REQUEST": 1,
+      "RESPONSE": 2,
+      "EVENT": 3,
+      "DATA": 4,
+      "ACK": 5,
+      "CLOSE": 6
+    },
+    "flags": {
+      "RELIABLE": 1,
+      "ENCRYPTED": 2
+    },
+    "crc32c": {
+      "reflected_polynomial": "82f63b78",
+      "initial": "ffffffff",
+      "xor_out": "ffffffff",
+      "check_123456789": "e3069283"
+    }
+  },
+  "core_opcodes": {
+    "HELLO": 1,
+    "HELLO_ACK": 2,
+    "JOIN_REQUEST": 3,
+    "JOIN_ACCEPT": 4,
+    "LEASE_RENEW": 5,
+    "LEASE_REVOKE": 6,
+    "GET_DEVICE": 7,
+    "LIST_CAPS": 8,
+    "GET_CAP_DESC": 9,
+    "GET_PORTS": 10,
+    "TOPO_SUBSCRIBE": 11,
+    "TOPO_EVENT": 12,
+    "ROUTE_ERROR": 13,
+    "OPEN": 14,
+    "CLOSE": 15,
+    "PING": 16,
+    "PONG": 17,
+    "AUTH_START": 18,
+    "AUTH_STEP": 19,
+    "AUTH_FINISH": 20,
+    "ROUTE_INSTALL": 21,
+    "ROUTE_RESULT": 22
+  },
+  "statuses": {
+    "OK": 0,
+    "UNSUPPORTED": 1,
+    "INVALID": 2,
+    "DENIED": 3,
+    "BUSY": 4,
+    "NOT_FOUND": 5,
+    "STALE": 6,
+    "NO_SPACE": 7,
+    "INTEGRITY": 8,
+    "RANGE": 9,
+    "TIMEOUT": 10,
+    "CONFLICT": 11,
+    "OUTCOME_UNKNOWN": 12,
+    "DISCONNECTED": 13,
+    "NO_ROUTE": 14,
+    "MTU_TOO_SMALL": 15
+  },
+  "capabilities": [
+    {
+      "name": "device",
+      "type_uuid": "04fd1cc6-c2ff-56d5-8865-51d04d84c748",
+      "major": 1,
+      "minor": 0,
+      "definition": "draft-defined",
+      "operations": {
+        "GET_DEVICE": 7,
+        "LIST_CAPS": 8,
+        "GET_CAP_DESC": 9,
+        "GET_PORTS": 10,
+        "TOPO_SUBSCRIBE": 11,
+        "OPEN": 14,
+        "CLOSE": 15
+      }
+    },
+    {
+      "name": "log",
+      "type_uuid": "50fb316e-373d-5c42-8052-d77ff91feb4c",
+      "major": 1,
+      "minor": 0,
+      "definition": "draft-defined",
+      "operations": {
+        "SUBSCRIBE": 1,
+        "SET_FILTER": 2,
+        "GET_STATS": 3,
+        "UNSUBSCRIBE": 4,
+        "RECORD": 4097
+      }
+    },
+    {
+      "name": "shell",
+      "type_uuid": "1140805a-6354-5fd9-9e8b-8d6da6840891",
+      "major": 1,
+      "minor": 0,
+      "definition": "draft-defined",
+      "operations": {
+        "OPEN_TERMINAL": 1,
+        "RESIZE": 2,
+        "INTERRUPT": 3,
+        "CLOSE_TERMINAL": 4,
+        "GET_EXIT": 5,
+        "EXIT": 4097,
+        "BYTES": 8193
+      }
+    },
+    {
+      "name": "firmware",
+      "type_uuid": "f115869e-a25d-5025-87bb-0e8fb05f8cb9",
+      "major": 1,
+      "minor": 0,
+      "definition": "draft-defined",
+      "operations": {
+        "GET_TARGETS": 1,
+        "BEGIN": 2,
+        "MANIFEST_CHUNK": 3,
+        "WRITE": 4,
+        "QUERY": 5,
+        "VERIFY": 6,
+        "APPLY": 7,
+        "ABORT": 8,
+        "CONFIRM": 9
+      }
+    },
+    {
+      "name": "keyboard",
+      "type_uuid": "e51e1aa3-d373-5ea5-ae1b-2196671dc4cb",
+      "major": 1,
+      "minor": 0,
+      "definition": "draft-defined",
+      "operations": {
+        "GET_STATE": 1,
+        "SUBSCRIBE": 2,
+        "SET_LEDS": 3,
+        "SET_OUTPUT_OWNER": 4,
+        "GET_STATS": 5,
+        "STATE": 4097
+      }
+    },
+    {
+      "name": "keymap",
+      "type_uuid": "788bb7e8-3569-5c85-9936-a8507a7b966f",
+      "major": 1,
+      "minor": 0,
+      "definition": "draft-defined",
+      "operations": {
+        "GET_LAYOUT": 1,
+        "BEGIN": 2,
+        "READ_PAGE": 3,
+        "WRITE_PAGE": 4,
+        "VALIDATE": 5,
+        "COMMIT": 6,
+        "ABORT": 7,
+        "GET_STATUS": 8
+      }
+    },
+    {
+      "name": "input",
+      "type_uuid": "3873b0db-7c77-52ab-a85c-32f51b853c40",
+      "major": 1,
+      "minor": 0,
+      "definition": "draft-defined",
+      "operations": {
+        "GET_CONTROLS": 1,
+        "GET_STATE": 2,
+        "SUBSCRIBE": 3,
+        "BIND": 4,
+        "UNBIND": 5,
+        "BUTTON_STATE": 4097,
+        "RELATIVE": 4098
+      }
+    },
+    {
+      "name": "display",
+      "type_uuid": "b0ae47cb-3ab0-5adb-917b-b856f7043c71",
+      "major": 1,
+      "minor": 0,
+      "definition": "draft-defined",
+      "operations": {
+        "GET_INFO": 1,
+        "BEGIN_FRAME": 2,
+        "END_FRAME": 3,
+        "ABORT_FRAME": 4,
+        "SET_POWER": 5,
+        "TILE": 8193
+      }
+    },
+    {
+      "name": "lighting",
+      "type_uuid": "9607c1fb-1ae8-5c37-859d-19a304ed50a8",
+      "major": 1,
+      "minor": 0,
+      "definition": "draft-defined",
+      "operations": {
+        "GET_INFO": 1,
+        "SET": 2,
+        "GET_STATE": 3
+      }
+    },
+    {
+      "name": "bluetooth",
+      "type_uuid": "17022721-406e-51cb-ad68-d276ea044dd4",
+      "major": 1,
+      "minor": 0,
+      "definition": "draft-defined",
+      "operations": {
+        "GET_INFO": 1,
+        "SCAN": 2,
+        "PAIR": 3,
+        "UNPAIR": 4,
+        "BIND": 5,
+        "GET_STATE": 6,
+        "SCAN_RESULT": 4097,
+        "LINK_STATE": 4098,
+        "JOB_DONE": 4099
+      }
+    },
+    {
+      "name": "wifi",
+      "type_uuid": "31a62ba4-c3d8-5044-bfa0-5c9dd482ac2e",
+      "major": 1,
+      "minor": 0,
+      "definition": "draft-defined",
+      "operations": {
+        "GET_INFO": 1,
+        "SCAN": 2,
+        "CONFIGURE": 3,
+        "CONNECT": 4,
+        "DISCONNECT": 5,
+        "GET_STATE": 6,
+        "SCAN_RESULT": 4097,
+        "LINK_STATE": 4098,
+        "JOB_DONE": 4099
+      }
+    },
+    {
+      "name": "power",
+      "type_uuid": "da7d3309-1a5f-55e1-875b-94cf0246f07b",
+      "major": 1,
+      "minor": 0,
+      "definition": "reserved",
+      "operations": {
+        "GET_INFO": 1,
+        "GET_STATE": 2,
+        "SET_POLICY": 3
+      }
+    },
+    {
+      "name": "time",
+      "type_uuid": "1af754e9-e283-5852-8c00-d2102426170d",
+      "major": 1,
+      "minor": 0,
+      "definition": "reserved",
+      "operations": {
+        "GET_INFO": 1,
+        "GET_TIME": 2,
+        "SYNC_SAMPLE": 3
+      }
+    }
+  ],
+  "limits": {
+    "max_tlvs": 32,
+    "max_hops": 16,
+    "max_tree_depth": 8,
+    "max_reliable_window": 8,
+    "max_rpc_inflight": 8,
+    "max_manifest_bytes": 512,
+    "max_radio_scan_results": 32
+  },
+  "mcu_profile": {
+    "payload_bytes": 128,
+    "max_encrypted_pdu_bytes": 196,
+    "peers": 4,
+    "routes": 16,
+    "local_capabilities": 8,
+    "sessions": 8,
+    "channels_per_session": 2,
+    "reliable_window": 2,
+    "reassembly_slots": 2,
+    "pdu_pool_slots": 6,
+    "unauthenticated_handshakes": 1,
+    "rpc_inflight_per_session": 2,
+    "log_ring_bytes": 512,
+    "static_ram_target_bytes": 10240
+  },
+  "firmware_manifest_tags": {
+    "BOARD_UUID": 1,
+    "HW_MIN": 2,
+    "HW_MAX": 3,
+    "COMPONENT_UUID": 4,
+    "IMAGE_SIZE": 5,
+    "IMAGE_SHA256": 6,
+    "FIRMWARE_VERSION": 7,
+    "ROLLBACK_INDEX": 8,
+    "KEY_ID": 9,
+    "SIGNATURE": 10
+  },
+  "radio_tags": {
+    "JOB_ID": 1,
+    "ROLE": 2,
+    "DURATION_MS": 3,
+    "MAX_RESULTS": 4,
+    "PEER_ADDRESS": 5,
+    "ADDRESS_TYPE": 6,
+    "PEER_NAME": 7,
+    "SOURCE_DEVICE_UID": 8,
+    "SOURCE_CAPABILITY_ID": 9,
+    "PAIRING_METHOD": 10,
+    "PASSKEY": 11,
+    "SSID": 12,
+    "PASSWORD": 13,
+    "SECURITY": 14,
+    "STATE": 15,
+    "RESULT_STATUS": 16,
+    "RSSI": 17,
+    "IP_ADDRESS": 18,
+    "SUPPORTED_ROLES": 19,
+    "DROPPED_RESULTS": 20
+  },
+  "bindings": {
+    "uart": {
+      "framing": "COBS(u16le_length + PDU) + 00",
+      "partial_timeout_ms": 250
+    },
+    "tcp": {
+      "framing": "u16le_length + PDU",
+      "experimental_default_port": 38447
+    },
+    "udp": {
+      "framing": "one PDU per datagram"
+    },
+    "usb": {
+      "framing": "u16le_length + PDU",
+      "proposed_endpoints": {
+        "out": 2,
+        "in": 130
+      }
+    },
+    "i2c_spi": {
+      "ID": 0,
+      "STATUS": 16,
+      "RX_COMMIT": 32,
+      "TX_PEEK": 48,
+      "TX_ACK": 64,
+      "CANCEL": 80,
+      "id_hex": "4e4c504901000000",
+      "status_bytes": 20,
+      "token_bytes": 12,
+      "token_format": "boot_id:u64le + sequence:u32le",
+      "peek_overhead_bytes": 14
+    },
+    "can": {
+      "extended_id": true,
+      "max_link_devices": 253,
+      "priority_bits": [
+        28,
+        26
+      ],
+      "source_bits": [
+        25,
+        18
+      ],
+      "destination_bits": [
+        17,
+        10
+      ],
+      "transfer_bits": [
+        9,
+        4
+      ],
+      "subtype_bits": [
+        3,
+        0
+      ],
+      "fragment_header_bytes": 2,
+      "transfer_ids": 64,
+      "reassembly_timeout_ms": 100,
+      "optional_commissioning": "CAN-COMMISSION-1"
+    }
+  },
+  "control_tags": {
+    "NONCE": 1,
+    "DEVICE_UID": 2,
+    "BOOT_ID": 3,
+    "WIRE_RANGE": 4,
+    "MAX_PAYLOAD": 5,
+    "PORT_ROLES": 6,
+    "SECURITY_MODES": 7,
+    "RESOURCE_PROFILE": 8,
+    "FABRIC_UID": 9,
+    "FABRIC_EPOCH": 10,
+    "NODE_ID": 11,
+    "LEASE_MS": 12,
+    "PARENT_UID": 13,
+    "ANCESTORS": 14,
+    "HANDSHAKE_STAGE": 15,
+    "NOISE_MESSAGE": 16,
+    "MANAGEMENT_SESSION_ID": 17,
+    "ROUTE_REVISION": 18,
+    "ROUTE_ACTION": 19,
+    "ROUTE_NODE": 20,
+    "ROUTE_CHILD_UID": 21,
+    "AUTHENTICATOR": 22
+  },
+  "capability_descriptor_tags": {
+    "ROLES": 1,
+    "ORIGIN": 2,
+    "OWNER_UID": 3,
+    "FEATURES": 4,
+    "REQUIRED_PERMISSIONS": 5,
+    "MAX_PAYLOAD": 6,
+    "MAX_CHANNELS": 7,
+    "MAX_RPC_INFLIGHT": 8,
+    "INPUT_LEASE_RANGE": 9,
+    "FORMAT_NAME": 10
+  },
+  "capability_roles": {
+    "PROVIDE": 1,
+    "CONSUME": 2
+  },
+  "resource_profiles": {
+    "MCU_BASE": 1,
+    "GENERAL": 2
+  }
+}
