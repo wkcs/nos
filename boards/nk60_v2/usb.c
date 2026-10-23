@@ -14,6 +14,7 @@
 #define TX0SIZE 0x028u
 #define GCCFG 0x038u
 #define TX1SIZE 0x104u
+#define TX2SIZE 0x108u
 #define DCFG 0x800u
 #define DCTL 0x804u
 #define DIEPMSK 0x810u
@@ -83,13 +84,20 @@ static void arm_out(struct nk60_usb *d)
     write_reg(d, OUTSIZE, (3u << 29) | (1u << 19) | 64u);
     update_reg(d, OUTCTL, EPDIS, USBAEP | CNAK | EPENA);
 }
+static void arm_nlp_out(struct nk60_usb *d)
+{
+    if (!d->keyboard.configured || d->nlp_ready || (d->keyboard.nlp_halted & 1)) return;
+    write_reg(d, OUTSIZE + 0x40, (1u << 19) | 64u);
+    update_reg(d, OUTCTL + 0x40, EPDIS, USBAEP | CNAK | EPENA);
+}
 static int transmit(void *context, uint8_t endpoint, const uint8_t *bytes, size_t length)
 {
     struct nk60_usb *d = context;
     unsigned ep = endpoint & 15u, i, j;
     uint32_t word;
     if (!d->ready) return -EIO;
-    if (!(endpoint & 0x80) || ep > 1 || length > 64) return -EINVAL;
+    if (!(endpoint & 0x80) || ep > 2 || length > 64) return -EINVAL;
+    if (ep == 2 && (!d->keyboard.configured || d->keyboard.suspended || (d->keyboard.nlp_halted & 2))) return -EAGAIN;
     if (d->tx_busy[ep] || (read_reg(d, INFSPACE(ep)) & 0xffffu) < (length + 3) / 4)
         return -EAGAIN;
     d->tx_busy[ep] = 1;
@@ -108,7 +116,7 @@ static void cancel(void *context, uint8_t endpoint)
     struct nk60_usb *d = context;
     unsigned ep = endpoint & 15u;
     uint32_t ctl;
-    if (!(endpoint & 0x80) || ep > 1) return;
+    if (!(endpoint & 0x80) || ep > 2) return;
     /* A fresh SETUP aborts EP0 in hardware. For EP1 explicitly disable the
      * endpoint before flushing FIFO, so a partial packet cannot escape later. */
     ctl = read_reg(d, INCTL(ep));
@@ -124,20 +132,38 @@ static void stall(void *context, uint8_t endpoint, int enabled)
 {
     struct nk60_usb *d = context;
     unsigned ep = endpoint & 15u, reg;
-    if (ep > 1 || (!(endpoint & 0x80) && ep)) return;
-    reg = endpoint & 0x80 ? INCTL(ep) : OUTCTL;
+    if (ep > 2 || (!(endpoint & 0x80) && ep != 0 && ep != 2)) return;
+    reg = endpoint & 0x80 ? INCTL(ep) : OUTCTL + ep * 0x20;
     if (enabled) update_reg(d, reg, 0, STALL);
-    else update_reg(d, reg, STALL, ep ? SD0PID : 0);
+    else {
+        update_reg(d, reg, STALL, ep ? SD0PID : 0);
+        if (endpoint == 2) arm_nlp_out(d);
+    }
 }
 static void configure(void *context, int enabled)
 {
     struct nk60_usb *d = context;
+    if (enabled != 3) {
+        ++d->nlp_generation; d->nlp_ready = d->nlp_length = 0;
+        if (d->ready) cancel(d, 0x82);
+        write_reg(d, ININT(2), 0xffffffffu); write_reg(d, OUTINT + 0x40, 0xffffffffu);
+    }
     if (enabled) {
-        write_reg(d, ININT(1), 0xffffffffu);
-        write_reg(d, INCTL(1), 64u | USBAEP | (3u << 18) | (1u << 22) | SD0PID | SNAK);
-        update_reg(d, DAINTMSK, 0, 2u);
+        if (enabled != 2) {
+            write_reg(d, ININT(1), 0xffffffffu);
+            write_reg(d, INCTL(1), 64u | USBAEP | (3u << 18) | (1u << 22) | SD0PID | SNAK);
+            update_reg(d, DAINTMSK, 0, 2u);
+        }
+        if (enabled == 3 || !d->keyboard.nlp_enabled) return;
+        write_reg(d, INCTL(2), 64u | USBAEP | (2u << 18) | (2u << 22) | SD0PID | SNAK);
+        write_reg(d, OUTCTL + 0x40, 64u | USBAEP | (2u << 18) | SD0PID | SNAK);
+        update_reg(d, DAINTMSK, 0, 6u | (1u << 18));
+        arm_nlp_out(d);
     } else {
-        update_reg(d, DAINTMSK, 2u, 0);
+        update_reg(d, DAINTMSK, 6u | (1u << 18), 0);
+        update_reg(d, INCTL(2), USBAEP | STALL, SNAK);
+        update_reg(d, OUTCTL + 0x40, USBAEP | STALL, SNAK);
+        d->tx_busy[2] = 0;
         update_reg(d, INCTL(1), USBAEP | STALL, SNAK);
         d->tx_busy[1] = 0;
     }
@@ -206,6 +232,7 @@ int nk60_usb_init(struct nk60_usb *d, const struct nk60_io *io)
     t.context = d; t.send = transmit; t.cancel = cancel; t.stall = stall;
     t.configure = configure; t.address = address; t.wake = wake;
     usb_keyboard_init(&d->keyboard, &t);
+    usb_keyboard_enable_nlp(&d->keyboard, 1);
     board_usb_pins(d);
     write_reg(d, GAHBCFG, 0);
     update_reg(d, DCTL, 0, 2u);
@@ -222,6 +249,7 @@ int nk60_usb_init(struct nk60_usb *d, const struct nk60_io *io)
     write_reg(d, GRXFSIZ, 128);
     write_reg(d, TX0SIZE, (64u << 16) | 128u);
     write_reg(d, TX1SIZE, (64u << 16) | 192u);
+    write_reg(d, TX2SIZE, (64u << 16) | 256u);
     if (flush_fifo(d, 16)) { fail_device(d, -ETIMEDOUT); return d->error; }
     write_reg(d, GRSTCTL, 1u << 4);
     if (wait_bits(d, GRSTCTL, 1u << 4, 0)) { fail_device(d, -ETIMEDOUT); return d->error; }
@@ -248,7 +276,10 @@ static void receive_fifo(struct nk60_usb *d)
         for (j = 0; j < 4 && i + j < length && i + j < sizeof(data); ++j)
             data[i + j] = (uint8_t)(word >> (j * 8));
     }
-    if (endpoint || length > sizeof(data)) {
+    if (endpoint == 2 && packet == 2 && length <= sizeof(data) && d->keyboard.configured && !d->nlp_ready) {
+        for (i = 0; i < length; ++i) d->nlp_out[i] = data[i];
+        d->nlp_length = (uint8_t)length; d->nlp_ready = 1;
+    } else if (endpoint || length > sizeof(data)) {
         if (!endpoint) { stall(d, 0, 1); stall(d, 0x80, 1); }
         d->error = -EIO;
     } else if (packet == 6) {
@@ -292,6 +323,11 @@ int nk60_usb_poll(struct nk60_usb *d, uint32_t now_ms)
         /* Drain all queued RX entries before handling SETUP-done/XFRC. */
         if (flags & RXFLVL) { receive_fifo(d); continue; }
         if (flags & OEPINT) {
+            uint32_t nlp_ints = read_reg(d, OUTINT + 0x40);
+            if (nlp_ints) {
+                write_reg(d, OUTINT + 0x40, nlp_ints);
+                if (nlp_ints & 1u) arm_nlp_out(d);
+            }
             ints = read_reg(d, OUTINT);
             if (ints & (1u << 3)) {
                 write_reg(d, OUTINT, (1u << 3) | 1u);
@@ -312,13 +348,13 @@ int nk60_usb_poll(struct nk60_usb *d, uint32_t now_ms)
             write_reg(d, OUTINT, ints & ~9u);
         }
         if (flags & IEPINT) {
-            pending = read_reg(d, DAINT) & read_reg(d, DAINTMSK) & 3u;
-            for (ep = 0; ep < 2; ++ep) if (pending & (1u << ep)) {
+            pending = read_reg(d, DAINT) & read_reg(d, DAINTMSK) & 7u;
+            for (ep = 0; ep < 3; ++ep) if (pending & (1u << ep)) {
                 ints = read_reg(d, ININT(ep));
                 write_reg(d, ININT(ep), ints);
                 if ((ints & 1u) && d->tx_busy[ep]) {
                     d->tx_busy[ep] = 0;
-                    usb_keyboard_in_complete(&d->keyboard, (uint8_t)(0x80u | ep));
+                    if (ep < 2) usb_keyboard_in_complete(&d->keyboard, (uint8_t)(0x80u | ep));
                 }
             }
         }
@@ -329,9 +365,25 @@ int nk60_usb_poll(struct nk60_usb *d, uint32_t now_ms)
     usb_keyboard_poll(&d->keyboard, now_ms);
     return d->ready ? 0 : d->error;
 }
+int nk60_usb_nlp_read(struct nk60_usb *d, uint8_t *out, size_t capacity)
+{
+    unsigned length;
+    if (!d || !out || !d->ready || !d->keyboard.configured || !d->nlp_ready) return 0;
+    length = d->nlp_length;
+    if (capacity < length) return -EINVAL;
+    for (unsigned i = 0; i < length; ++i) out[i] = d->nlp_out[i];
+    d->nlp_ready = d->nlp_length = 0; arm_nlp_out(d);
+    return (int)length;
+}
+int nk60_usb_nlp_write(struct nk60_usb *d, const uint8_t *bytes, size_t length)
+{
+    if (!d || (!bytes && length)) return -EINVAL;
+    return transmit(d, 0x82, bytes, length);
+}
 void nk60_usb_disconnect(struct nk60_usb *d)
 {
     if (!d) return;
+    ++d->nlp_generation; d->nlp_ready = d->nlp_length = 0;
     update_reg(d, DCTL, 0, 2u);
     write_reg(d, GINTMSK, 0); write_reg(d, GAHBCFG, 0);
     d->ready = 0;

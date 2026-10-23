@@ -16,6 +16,8 @@ static void service_runtime(struct nk60_service *s);
 static void output(struct nk60_service *s, const char *text)
 {
     size_t length = strlen(text);
+    if (s->link.ready)
+        (void)nlp_log_write(&s->link.log, 2, 1, text, length, s->monotonic_us);
     if (!s->hooks.write)
         return;
     if (length > NK60_SERVICE_TX_BYTES - s->tx_count) {
@@ -60,6 +62,7 @@ static uint32_t clock_update(struct nk60_service *s)
 
     /* Divide deltas, not the wrapping microsecond counter itself. */
     s->last_us = now;
+    s->monotonic_us += delta;
     s->now_ms += delta / 1000u;
     s->fraction_us += delta % 1000u;
     if (s->fraction_us >= 1000u) {
@@ -108,6 +111,21 @@ static void apply_config(struct nk60_service *s)
     }
 }
 
+int nk60_service_commit_wire(struct nk60_service *s, const uint8_t *bytes, int persist)
+{
+    if (!s || !bytes || s->saving) return -NLP_BUSY;
+    if (persist && !s->flash_ready) return -NLP_UNSUPPORTED;
+    if (s->edits == UINT32_MAX) return -NLP_RANGE;
+    if (kb_config_decode(&s->candidate, bytes, KB_CONFIG_WIRE_BYTES) || kb_reconfigure(&s->keyboard, &s->candidate))
+        return -NLP_INVALID;
+    (void)usb_keyboard_set_nkro(&s->usb.keyboard, s->candidate.nkro);
+    mark_dirty(s);
+    if (persist) {
+        if (!s->flash_ready) return -NLP_UNSUPPORTED;
+        s->save_requested = 1;
+    }
+    return 0;
+}
 static int same(const char *a, const char *b)
 {
     while (*a && *a == *b) {
@@ -451,6 +469,11 @@ static void lighting(struct nk60_service *s)
         s->colors[i].g = s->keyboard.config.rgb_mode == 1 ||
                          (layers & (1u << KB_LAYER_PN)) ? level : 0;
         s->colors[i].b = level;
+        if (s->keyboard.config.rgb_mode == 1 && s->link.ready) {
+            s->colors[i].r = (uint8_t)((unsigned)level * s->link.static_rgb[0] / 255);
+            s->colors[i].g = (uint8_t)((unsigned)level * s->link.static_rgb[1] / 255);
+            s->colors[i].b = (uint8_t)((unsigned)level * s->link.static_rgb[2] / 255);
+        }
     }
     /* Legacy canvas position x=0,y=2 corresponds to the physical Caps key. */
     if (s->last_leds & 2u) {
@@ -533,6 +556,10 @@ int nk60_service_init(struct nk60_service *s, const struct nk60_io *io,
         ++s->usb_errors;
         output(s, "ERR USB initialization failed\r\n");
     }
+    if (nk60_link_init(s)) {
+        usb_keyboard_enable_nlp(&s->usb.keyboard, 0);
+        output(s, "WARN NLP unavailable: UID/boot journal needs reserved NOR sectors\r\n");
+    }
     nk60_hw_set_progress(&s->hardware, flash_progress, s);
     s->rgb_pending = 1;
     output(s, "NOS nk60_v2 user keyboard service; UART115200 8N1; help\r\n");
@@ -545,6 +572,7 @@ void nk60_service_step(struct nk60_service *s)
     if (!s)
         return;
     service_runtime(s);
+    nk60_link_step(s);
     maintenance(s);
     persist(s);
     lighting(s);

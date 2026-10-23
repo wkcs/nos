@@ -22,6 +22,9 @@
 static unsigned failures;
 static int mapping_valid(intptr_t address)
 { return address != 0 && (uintptr_t)address < (uintptr_t)-4095; }
+#ifdef NOS_NLP_TEST
+void nos_nlp_regression(void);
+#endif
 void nos_vfs_regression(void);
 void nos_libc_regression(void);
 void nos_kernel_regression(void);
@@ -205,6 +208,9 @@ void nos_validation(uintptr_t unused)
     (void)unused;
 #ifdef NOS_CLOCK_TEST_EPOCH
     clock_epoch_regression();
+#ifdef NOS_NLP_TEST
+    nos_nlp_regression();
+#endif
     nos_syscall(NOS_SYS_FINISH, failures, 0, 0);
     for (;;) { }
 #endif
@@ -214,6 +220,9 @@ void nos_validation(uintptr_t unused)
 #endif
     nos_persistence_regression(NOS_PERSISTENCE_TEST);
     nos_syscall(NOS_SYS_SLEEP, 2, 0, 0);
+#ifdef NOS_NLP_TEST
+    nos_nlp_regression();
+#endif
     nos_syscall(NOS_SYS_FINISH, failures, 0, 0);
     for (;;) { }
 #endif
@@ -404,6 +413,9 @@ void nos_validation(uintptr_t unused)
     nos_posix_suite();
 #elif defined(NOS_LINUX_COMPAT)
     nos_linux_regression();
+#endif
+#ifdef NOS_NLP_TEST
+    nos_nlp_regression();
 #endif
     nos_syscall(NOS_SYS_FINISH, failures, 0, 0);
     for (;;) { }

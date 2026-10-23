@@ -13,6 +13,7 @@ struct usb_keyboard_transport {
     int (*send)(void *, uint8_t endpoint, const uint8_t *, size_t);
     void (*cancel)(void *, uint8_t endpoint);
     void (*stall)(void *, uint8_t endpoint, int enabled);
+    /* 0 off, 1 all, 2 reset NLP interface, 3 reset HID interface. */
     void (*configure)(void *, int enabled);
     void (*address)(void *, uint8_t address);
     void (*wake)(void *, int asserted);
@@ -30,11 +31,13 @@ struct usb_keyboard {
     uint8_t action, action_value, output_id, output_length, output_received;
     uint8_t address, configured, protocol, nkro_enabled, leds, idle;
     uint8_t remote_enabled, suspended, waking, halted, in_busy;
-    uint8_t head, count, pending_sync;
+    uint8_t head, count, pending_sync, nlp_enabled, nlp_halted;
     int last_error;
 };
 void usb_keyboard_init(struct usb_keyboard *, const struct usb_keyboard_transport *);
 void usb_keyboard_reset(struct usb_keyboard *);
+/* Set before enumeration; preserves the HID-only default for other boards. */
+void usb_keyboard_enable_nlp(struct usb_keyboard *, int enabled);
 void usb_keyboard_setup(struct usb_keyboard *, const uint8_t setup[8]);
 void usb_keyboard_out(struct usb_keyboard *, const uint8_t *, size_t);
 void usb_keyboard_in_complete(struct usb_keyboard *, uint8_t endpoint);

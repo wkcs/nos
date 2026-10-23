@@ -12,6 +12,7 @@ INPUTS = ["tests/host_usb_keyboard.c", "servers/usb/keyboard_usb.h",
           "servers/usb/keyboard_usb.c", "boards/nk60_v2/nk60_usb.h",
           "boards/nk60_v2/usb.c", "boards/nk60_v2/hardware.h"]
 REQUIRED = {
+    "usb_nlp_composite_bulk_backpressure_generation_reset_and_hid_independence",
     "usb_ep0_descriptor_layout_setup_cancel_address_led_stall",
     "usb_boot_nkro_media_queue_backpressure_release_halt",
     "usb_per_report_idle_suspend_host_optin_wake_wrap",

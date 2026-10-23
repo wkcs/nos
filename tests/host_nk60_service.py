@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Copyright (C) 2026 NOS contributors. Sanitize actual keyboard service glue."""
+import glob
 import hashlib
 import json
 import os
@@ -16,6 +17,7 @@ INPUTS = ['tests/host_nk60_service.c', 'servers/keyboard/service.c',
           'servers/usb/keyboard_usb.h', 'boards/nk60_v2/hardware.h',
           'boards/nk60_v2/nk60_usb.h']
 REQUIRED = {
+    'nk60_nlp_real_service_discovery_keymap_sha_commit_and_peer_bound_unlock',
     'nk60_service_real_engine_usb_press_release',
     'nk60_service_usb_backpressure_retains_release',
     'nk60_service_physical_unlock_parser_and_nonblocking_uart',
@@ -28,12 +30,14 @@ REQUIRED = {
 def main():
     out = ROOT / 'out/microkernel/host-nk60-service' / str(time.time_ns())
     out.mkdir(parents=True)
+    INPUTS.extend(sorted(glob.glob('servers/nlp/*/*.c') + glob.glob('include/nos/nlp/*.h') + ['servers/keyboard/link.c','servers/keyboard/link_caps.c','servers/keyboard/link.h'] + glob.glob('third_party/tinycrypt/lib/source/*.c') + glob.glob('third_party/tinycrypt/lib/include/tinycrypt/*.h')))
     hashes = {name: hashlib.sha256((ROOT / name).read_bytes()).hexdigest() for name in INPUTS}
-    command = ['gcc', '-Iinclude/nos', '-Wall', '-Wextra', '-Werror', '-std=gnu11',
+    command = ['gcc', '-Iinclude/nos', '-Ithird_party/tinycrypt/lib/include', '-Wall', '-Wextra', '-Werror', '-std=gnu11',
                '-O1', '-g', '-fsanitize=address,undefined', '-fno-omit-frame-pointer',
                'tests/host_nk60_service.c', 'servers/keyboard/service.c',
                'servers/keyboard/keyboard.c', 'servers/keyboard/keymap.c',
                'servers/keyboard/config.c', 'servers/usb/keyboard_usb.c',
+               'servers/keyboard/link.c', 'servers/keyboard/link_caps.c', 'third_party/tinycrypt/lib/source/sha256.c', 'third_party/tinycrypt/lib/source/utils.c', *sorted(glob.glob('servers/nlp/*/*.c')),
                '-o', str(out / 'host-nk60-service')]
     with (out / 'build.log').open('w') as stream:
         build = subprocess.run(command, cwd=ROOT, stdout=stream, stderr=subprocess.STDOUT)

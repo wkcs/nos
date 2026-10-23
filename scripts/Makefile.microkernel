@@ -5,6 +5,7 @@ MPU ?= 0
 SMP ?= 1
 PERSISTENCE_TEST ?= 0
 EXTRA_APPS ?= 0
+NLP_TEST ?= 0
 LINUX_COMPAT ?= 0
 POSIX_SUITE ?= 0
 POSIX_CASE_TICKS ?= 3000
@@ -92,6 +93,12 @@ $(error POSIX_SUITE=1 requires LINUX_COMPAT=1)
 endif
 DEFS += -DNOS_POSIX_SUITE -DNOS_POSIX_CASE_TICKS=$(POSIX_CASE_TICKS)
 endif
+ifeq ($(NLP_TEST),1)
+ifneq ($(BUILD_MODE),selftest)
+$(error NLP_TEST=1 requires BUILD_MODE=selftest)
+endif
+DEFS += -DNOS_NLP_TEST
+endif
 COMMONFLAGS := $(CPUFLAGS) -ffreestanding -fno-builtin -fno-stack-protector -fno-pie -fno-pic -fno-common -ffunction-sections -fdata-sections -fno-tree-loop-distribute-patterns -Wall -Wextra -Werror -std=gnu11 -O2 -g -Iinclude/nos -MMD -MP $(DEFS)
 COMMONFLAGS += $(if $(filter selftest,$(BUILD_MODE)),-DNOS_SELFTEST,-DNOS_NORMAL_BOOT)
 COMMONFLAGS += $(EXTRA_CFLAGS)
@@ -127,8 +134,16 @@ endif
 ifeq ($(PLATFORM),nk60_v2)
 KERNEL_SRC += boards/nk60_v2/boot.c
 USER_SRC := user/lib/syscall.c user/lib/string.c user/lib/process.c
-USER_SRC += servers/keyboard/keyboard.c servers/keyboard/keymap.c servers/keyboard/config.c servers/keyboard/service.c
+USER_SRC += servers/keyboard/keyboard.c servers/keyboard/keymap.c servers/keyboard/config.c servers/keyboard/service.c servers/keyboard/link.c servers/keyboard/link_caps.c
+USER_SRC += $(wildcard servers/nlp/*/*.c)
+USERFLAGS += -Ithird_party/tinycrypt/lib/include
+NLP_VENDOR_OBJECTS := $(O)/servers/nlp/vendor/sha256.o $(O)/servers/nlp/vendor/utils.o
 USER_SRC += $(wildcard servers/usb/*.c) $(filter-out boards/nk60_v2/boot.c,$(wildcard boards/nk60_v2/*.c))
+endif
+ifeq ($(NLP_TEST),1)
+USER_SRC += tests/guest/nlp_regression.c $(wildcard servers/nlp/*/*.c)
+USERFLAGS += -Ithird_party/tinycrypt/lib/include
+NLP_VENDOR_OBJECTS := $(O)/servers/nlp/vendor/sha256.o $(O)/servers/nlp/vendor/utils.o
 endif
 ifneq ($(filter $(PLATFORM),stm32 nk60_v2),)
 ASM_SRC := arch/arm/cortex_m.S
@@ -177,7 +192,7 @@ ifneq ($(PLATFORM),nk60_v2)
 ASM_SRC += tests/guest/$(if $(filter riscv32_virt riscv32_nommu,$(PLATFORM)),rv32_context_probe,context_probe).S
 endif
 OBJECTS := $(addprefix $(O)/,$(KERNEL_SRC:.c=.o) $(USER_SRC:.c=.o) $(ASM_SRC:.S=.o))
-OBJECTS += $(O)/initramfs.o
+OBJECTS += $(O)/initramfs.o $(NLP_VENDOR_OBJECTS)
 LIBGCC_ARCHIVE := $(shell $(CC) $(CPUFLAGS) -print-libgcc-file-name)
 KERNEL_LIBGCC := $(O)/kernel-libgcc.a
 KERNEL_LIBGCC_SYMBOLS := $(O)/kernel-libgcc.syms
@@ -200,6 +215,9 @@ $(O)/%.o: %.c $(BUILD_SIGNATURE)
 	@mkdir -p $(dir $@)
 	$(CC) $(COMMONFLAGS) $(if $(filter kernel/% arch/% boards/nk60_v2/boot.c,$<),$(KERNELFLAGS),$(USERFLAGS)) -c $< -o $@
 	$(if $(filter kernel/% arch/% boards/nk60_v2/boot.c,$<),$(OBJCOPY) --redefine-syms $(KERNEL_LIBGCC_SYMBOLS) $@,@:)
+$(O)/servers/nlp/vendor/%.o: third_party/tinycrypt/lib/source/%.c $(BUILD_SIGNATURE)
+	@mkdir -p $(dir $@)
+	$(CC) $(COMMONFLAGS) $(USERFLAGS) -c $< -o $@
 $(O)/%.o: %.S $(BUILD_SIGNATURE)
 	@mkdir -p $(dir $@)
 	$(CC) $(CPUFLAGS) -fno-pic -fno-pie $(DEFS) -Iinclude/nos -MMD -MP -g -c $< -o $@
@@ -209,7 +227,7 @@ APP_LINKER := apps/$(if $(filter stm32 riscv32_nommu,$(PLATFORM)),$(PLATFORM),ap
 APP_PICFLAGS := $(if $(filter stm32 riscv32_nommu,$(PLATFORM)),-fpie,-fno-pie -fno-pic)
 M4_APP_LINKFLAGS := -Wl,-pie,--no-dynamic-linker
 APP_LINKFLAGS := $(if $(filter stm32 riscv32_nommu,$(PLATFORM)),$(M4_APP_LINKFLAGS),-static -no-pie)
-APP_PUBLIC_HEADERS := $(wildcard include/nos/*.h include/nos/sys/*.h libc/port/newlib_include/*.h)
+APP_PUBLIC_HEADERS := $(wildcard include/nos/*.h include/nos/sys/*.h include/nos/nlp/*.h libc/port/newlib_include/*.h)
 $(O)/apps/hello.elf: apps/start.c apps/hello.c $(APP_LINKER) $(APP_PUBLIC_HEADERS) $(BUILD_SIGNATURE)
 	@mkdir -p $(dir $@)
 ifeq ($(PLATFORM),riscv32_nommu)
@@ -422,3 +440,7 @@ endif
 clean:
 	rm -rf $(O)
 -include $(OBJECTS:.o=.d)
+
+.PHONY: nlp-tools
+nlp-tools:
+	$(MAKE) -f apps/nlp-host/Makefile

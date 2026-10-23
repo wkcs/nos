@@ -32,7 +32,7 @@ def main():
                 symbols[fields[2]] = int(fields[0], 16)
         assert 'nos_vfs_server' not in symbols, 'keyboard profile retained a VFS server'
         start, end = symbols['__user_text_start'], symbols['__user_text_end']
-        for function in ('nos_keyboard_service', 'kb_scan', 'nk60_matrix_scan', 'nk60_usb_poll'):
+        for function in ('nos_keyboard_service', 'kb_scan', 'nk60_matrix_scan', 'nk60_usb_poll', 'nlp_endpoint_receive', 'nlp_session_receive', 'nlp_frame_decode', 'nlp_sha256', 'tc_sha256_update'):
             assert start <= symbols[function] < end, f'{function} is outside user text'
         assert symbols['nk60_boot_init'] < start, 'board clock init linked as a user driver'
         assert symbols['__user_bss_end'] + 4096 < symbols['__stack_top'] == 0x20010000

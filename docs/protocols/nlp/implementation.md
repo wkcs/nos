@@ -1,101 +1,90 @@
-# NLP 的 NOS/NK60 接入与开发计划
+# NLP 的实现、接入与验收
 
 <!-- Copyright (C) 2026 NOS contributors -->
 
-本文是实现蓝图。已有 NK60 固件是 `c729dae` 的 USB HID/UART维护版本；本次仅提供协议设计、注册表和参考格式检查，没有启用 NLP 功能或修改该固件。
+NLP v1 是实验实现，已接入 NK60 用户态键盘服务。协议栈、独立主机客户端与模型测试可运行；没有可访问实板，不据此宣称 USB 电气、无线模块、安全 OTA 或完整 NOS nshell 已验收。
 
-## 1. 目标拓扑
+## 1. 源码入口
 
-```mermaid
-flowchart TD
-    PC[PC：nlp-host / 设备与能力目录 / 可选协调者] -->|USB vendor 或 Wi-Fi TCP| K[NK60：keyboard、keymap、lighting、log]
-    K -->|SPI| D[屏幕模块：display]
-    K -->|I²C / UART| E[旋钮与扩展按键：input]
-    K -->|UART / SPI| B[蓝牙模块：bluetooth + keyboard sink]
-    K -->|UART / SPI| W[Wi-Fi 模块：wifi + NLP 上行]
-    E -->|I²C / CAN| X[下一级 input / display]
-```
-
-PC在线时可作协调者，NK60为多端口路由器与输入聚合器。离线键盘也可配置NK60为协调者，蓝牙模块作为sink/上行桥；两个模式切换须显式选fabric、撤销旧租约，不能让PC与NK60同时发号。独立模块可使用NOS或其他RTOS/裸机，只要实现相同wire与能力profile。
-
-原生NLP模块有自身UID/boot、能力与认证；普通I²C/SPI芯片可由本地代理暴露功能，明确owner/origin，不伪造独立安全身份。多层设备在上位机保持各自身份，不压扁成“NK60下面第几个串口”的永久ID。
-
-## 2. 代码边界
-
-后续建议目录（当前尚未创建生产模块）：
-
-```text
-servers/nlp/
-  core/          帧、会话、信用、请求、目录、租约
-  routing/       协调者、树路由、源约束、热插拔
-  transports/    USB/IP/UART/mailbox/CAN适配
-  capabilities/  能力分派、log/shell/update/input/display代理
-include/nos/nlp/ 设备/能力客户端API与无指针wire定义
-apps/nlp-host/   PC发现、配对、查询、终端、升级和拓扑工具
-```
-
-NLP目录、路由、重传、profile与日志/shell/升级业务留在用户态。内核继续只提供IPC、受权设备访问、DMA/IRQ、内存和调度；不把协议parser或远程命令塞进异常路径。公用codec不依赖NOS，适合其他MCU移植。
-
-客户端API围绕 `find_devices / list_capabilities / open / call / subscribe / read / write / close`，句柄带boot/session generation；cancel和disconnect有明确结果，不能透传远程指针。本地NOS IPC handle和网络capability_id不能共用命名空间。
-
-## 3. NK60 输入和输出
-
-现有 `kb_scan(uint64_t)` 只描述固定61键，不能把扩展按键直接塞进剩余3位。应增加来源化输入适配层：`source(uid,boot,cap,binding) + control_id → action`，本地矩阵也作为一个来源；每来源维护按下集合，合并后驱动当前动作/层/宏/报告引擎。
-
-- 旋钮/按键模块加入后只显示为可绑定能力，默认不自动产生全局输入。用户配置映射到音量、层、快捷键或屏幕菜单；错误模块不能执行shell/升级。
-- 同一usage用来源引用计数合并；断线、租约到期或移除只释放该来源。短租约、全量刷新、全松开屏障和队列溢出处理与现有防卡键策略一致。
-- owner管理解决USB HID、NLP host和蓝牙sink多输出问题。默认LOCAL_USB；host调试订阅只观察，不额外向OS注入键盘；切换sink先全释放旧sink，再等所有来源全松开。
-- 屏幕显示层、连接状态、配对/升级进度等，经display tile能力提交。字体/布局可在NK60或模块侧按已声明profile处理，不默认把整屏帧缓冲放进F401 RAM。
-- 蓝牙模块的配对/连接与keyboard sink分开授权；Wi-Fi模块可提供新的上行邻接。无线断线会使相关绑定失效，不能无限缓存按键再集中重放。
-
-## 4. F401 资源目标
-
-这是后续编译/压测要验证的目标，不是已测量结果。当前固件bin约47KiB、64KiB SRAM、静态区最高0x20009e88，应用Flash限前128KiB；不能使用未确认的尾部内部Flash或覆盖外置NOR配置区。
-
-| 资源 | MCU基础配置目标 |
+| 位置 | 职责 |
 | --- | --- |
-| 最大payload / 完整加密PDU | 128 / 196字节 |
-| peer / 路由 / 级联深度 | 4 / 16 / 8 |
-| 本地普通能力 / 业务session | 8 / 8（按需打开，不预留8个大消息队列） |
-| 活跃安全association | 最多4；握手workspace全局串行复用 |
-| 每session活跃channel / 最大可靠窗口 | 2 / 2；较大配置才允许4通道/8窗口 |
-| 重组槽 | 总2个、每peer最多1个，196字节/槽 |
-| 完整PDU数据池 | 总6槽共享，不按peer×session×window相乘；先分配槽再授信 |
-| 预认证握手 / 在途RPC | 全局1 / 每session2，总量受固定池限制 |
-| 日志额外ring | ≤512字节，满后丢弃并计数 |
-| NLP新增静态RAM / 用户栈 | 目标≤10KiB / 独立4KiB栈（或经验证的协作服务） |
+| `include/nos/nlp/` | 可移植 C API、明确的 wire 字段与固定资源上限 |
+| `servers/nlp/core/` | codec、TLV、可靠会话、共享池、RPC、发现、权限、Noise adapter、启动日志 |
+| `servers/nlp/transports/` | USB/TCP 长度分帧、UART COBS、I²C/SPI mailbox、CAN classic/FD |
+| `servers/nlp/routing/` | 有根树、源子树检查、协调者两阶段路由安装、目录、租约与撤销 |
+| `servers/nlp/capabilities/` | 标准能力处理器及平台后端接口 |
+| `servers/keyboard/link*` | NK60 USB、实际键盘引擎/配置/灯光与 NLP 的连接 |
+| `apps/nlp-host/` | Linux C/OpenSSL 回环服务与可选真实 PTY 后端 |
+| `scripts/nlp_host.py`、`nlp_crypto.py` | 独立 Python 客户端、安全握手、配置、拓扑与终端 |
+| `protocols/nlp/v1/` | 注册表、固定向量；`gen_nlp_registry.py` 生成 C 注册头 |
 
-只有实际链接map、栈使用和高水位符合预算才能启用该配置。共享消息池须保留ACK/CLOSE/释放事件槽；同时打开8session不意味着每个都授予2帧信用。认证/升级hash和外设轮询不可阻塞USB/矩阵；超时和poll都有上限。
+业务均在用户态；未给内核增加远程 parser、命令执行或任意 Flash/MMIO 接口。C 栈不依赖 NOS syscall、堆、socket 或硬件 HAL。发送回调只接收完整 PDU；适配器持有复制后的有界发送队列，返回 BUSY 时不得消费调用者的消息。
 
-PC/大MCU配置可支持payload1024、更多会话和全网目录；能力与载体逐条协商取最小值，不把PC资源假定成每个级联模块都具备。
+应用先初始化 endpoint/config，注册能力，再由链路分帧回调调用 `nlp_endpoint_receive()`，周期调用 `nlp_endpoint_poll()` 及能力 poll。`now_ms` 是可回绕 u32 单调毫秒，相邻 poll 间隔必须小于半周期；endpoint 累加成 u64 提供事件时间。断链必须调用 `nlp_endpoint_disconnect()`，不能只丢弃 socket。错误码为负的注册状态；wire status 是其正值。
 
-## 5. 分阶段实施与完成条件
+多端口程序为每个直接邻居提供一个 endpoint；连接共享 coordinator/router 的 callbacks、身份、端口和权限策略。`nlp_fabric_*` 实现异步 PREPARE/COMMIT/REVOKE 和带快照 revision 的目录，`nlp_route_control()`/dispatch 负责注册的 wire 控制消息，应用负责将协调者的安装回调送往正确管理会话。当前 NK60 只连接一个 USB 对端，没有装配成多物理端口路由产品。
 
-| 阶段 | 交付 | 完成条件 |
+## 2. 已实现功能与后端边界
+
+| 功能 | 当前交付 | 仍需平台工作 |
 | --- | --- | --- |
-| P0：协议冻结 | 本次草案、注册表、固定向量、参考codec | 布局/CRC/封装与测试一致；open问题有明确状态；无固件“已支持”误报 |
-| P1：最小链路 | portable C codec、有界池、UART与USB vendor、host CLI、device/log | 两个独立实现互通；粘拆包/丢包/CRC/超长/断开均安全；原HID及扫描回归通过 |
-| P2：会话和授权 | Noise库接入、配对、管理/业务会话、RPC/信用/撤销 | 独立测试向量、nonce/重放/降级/资源耗尽、可靠重复副作用检查；安全熵方案可验证 |
-| P3：发现与级联 | 协调者、租约、目录、热插拔、UART/I²C/SPI/CAN、多层host拓扑 | 8层和资源边界、环路/重复UID/父切换、MTU变窄、迟到completion；CAN commissioning独立总线验收 |
-| P4：键盘与模块 | 来源化input、keyboard/keymap/lighting、显示tile、output owner | 两来源同usage、掉线全释放、旋钮不重放、无双重输入、改键原子提交、UI保存状态正确 |
-| P5：终端/升级 | 通用NOS nshell代理、受权固件staging和可恢复boot流程 | 终端流控/取消/权限；manifest/兼容/签名/断点/断电/回退；不具备安全boot的板返回UNSUPPORTED |
-| P6：无线与扩展 | BT/Wi-Fi profile定稿、模块适配、低功耗 | 先完成profile字节格式，再双端互通；断链/重连/凭据保密/输入租约和功耗验收 |
+| Wire/会话/RPC | CRC32C、严格长度/TLV、累计 ACK/绝对信用、重传、去重、重放窗口、关闭释放、结果缓存与 OUTCOME_UNKNOWN | 链路排队与工作量预算 |
+| 安全 | Noise XX、JOIN HMAC、按能力/方向/通道派生 AEAD；OpenSSL 与独立 Python 双向互通 | 固定公钥配对 UI、设备熵、密钥存储、独立安全审计 |
+| 发现/级联 | HELLO/JOIN、目录分页、GET_TOPOLOGY、8层两阶段路由、租约、父节点消失清理 | 多端口物理集成；拓扑推送、运行中能力增删尚未实现 |
+| keyboard/input | 状态快照、短租约、全释放屏障、来源合并、按钮/旋钮提供端、owner | 扩展模块到 NK60 动作/层/宏的持久映射 UI 与具体硬件 |
+| keymap/lighting | SHA256 事务、generation、原子配置提交、持久状态；NK60 模式/亮度/RGB | 远程配置 GUI；RGB 三元组目前易失，旧配置仅持久模式/亮度 |
+| log | UTF-8 边界、有界 ring、过滤、限速、可选可靠订阅 | 平台日志源接入与隐私策略 |
+| display | bounds/CRC tile、progressive/atomic 后端、owner、断开取消 | 指定屏幕驱动与显存策略 |
+| shell | 可靠字节流、尺寸、INT/TERM、退出与断线清理；主机真实 POSIX PTY | NOS-native nshell/VFS/TTY 后端；NK60 不注册 shell |
+| firmware | 实际 Ed25519 签名验证接口、manifest/SHA256、兼容/回滚检查、持久 offset、恢复、APPLY gate | 实板 staging、bootloader 再验证、A/B 试启动/确认/回退；NK60 不注册 firmware |
+| bluetooth/wifi | 类型化参数、加密授权、异步 job、凭据不回显 | 指定模块驱动、真实无线链路和功耗；不是 Wi-Fi/TCP 协议栈 |
+| CAN/I²C/SPI | classic/FD 分段重组、超时、mailbox token/PEEK/ACK | 控制器驱动、电气仲裁、SPI CS 事务、transfer ID 重用 guard；CAN-COMMISSION-1 尚未实现 |
 
-P1可先做受限物理链路的device/log互通，但SHELL、FIRMWARE_APPLY、RADIO_CONFIG和跨信任域输入必须等P2，不以“先能用”静默开放高权限操作。
+power/time 为保留类型。没有后端的能力不注册；不对不支持的操作返回伪成功。固件测试中的持久存储/启动后端为模型，并非已部署安全启动产品。
 
-## 6. 验收矩阵与故障注入
+## 3. NK60 固件
 
-- Wire：大小端、保留位、截断、超长、CRC、未知必须TLV、重复项、版本拒绝；参考向量与独立C/host实现逐字节一致。
-- Session：分方向计数、不回绕、信用不可撤回、ACK不等于业务成功、重传不重新执行、缓存淘汰OUTCOME_UNKNOWN、断电后旧会话失效。
-- Transport：TCP粘拆、UART delimiter恢复、I²C短交易/PEEK重读/token迟到、SPI CS提前释放、CAN重复/乱序/token复用/bus-off；CAN匿名枚举的相同ID零数据应答须实测。
-- Topology：多层混合载体、备用边环路、双协调者、UID冲突、路由资源耗尽、邻接/epoch变化、模块重启和proxy能力移除。
-- Profiles：按键最终释放、双路径owner、两来源引用、显示半帧、日志淹没、终端Ctrl-C/退出、升级每个擦写/元数据阶段断电。
-- NOS：涉及内核/ABI/内存时执行既有完整QEMU回归；仅设计和host参考codec不需要重跑内核80组，更不能据host模型声称物理模块已适配。
+复合 USB 保留 interface0 HID/EP81，新增 interface1 vendor class FF/subclass4E/protocol1，EP02 OUT 与 EP82 IN；完整配置描述符57字节。HID 和 NLP 独立排队、背压和 halt。NLP 不向操作系统自动注入按键，不制造第二个 HID 键盘。UART 继续运行原维护文本命令，不能直接对该 UART 运行 NLP 客户端。
 
-当前仍无可访问实板。首次实际接入优先USB+UART，然后I²C/SPI小模块，再CAN和无线；所有模型、固件编译、真实总线/USB枚举与安全审计分别记录。
+NK60 在这条 USB 链路作为根节点1，提供 device、keyboard、log、keymap，以及 RGB 可用时的 lighting。出厂 UID96 与固定前缀组成 UID128。外置 NOR 最后16KiB明确分配为两扇区启动计数日志、两扇区旧配置日志。未知非空启动日志扇区保留原内容并禁用 NLP；不能自动擦除旧数据。计数写入并读回校验后才启用链路；无法获得持久 boot 时保留 HID/UART，关闭 NLP vendor。
 
-## 7. 本次设计检查
+F401 没有经过验证的熵/crypto 后端，因此固件明确使用 PHYSICALLY_TRUSTED，不广告认证会话、shell、firmware 或 radio。初始仅允许发现、观察与日志。Esc+PN+Fn 按住两秒，将30秒 CONFIG_WRITE 权限授给当时连接的 UID/boot；更换对端、USB reset 或到期撤销。改键使用现有完整1056字节 canonical 配置，SHA256/语义检查后原子替换，返回易失/待保存状态；Flash 安全空闲保存规则仍生效。设备稳定 UID 和 CRC 日志不构成抗回滚安全存储。
 
-`python3 tests/host_nlp_protocol.py` 运行纯host参考格式检查；`scripts/nlp_codec.py` 可打印/检查固定明文报文与UART/TCP封装。它们不实现路由、会话、权限、Noise或任何能力业务。测试通过仅表示草案中的字节布局、注册表和向量彼此一致，后续P1..P6不能因此标记完成。
+## 4. 实际有界配置
 
-当前检查包含17组测试、7个固定PDU向量、4个COBS边界向量、600次确定种子的报文往返和1000次噪声输入检查；独立CRC oracle不调用参考CRC实现。每次运行将日志、退出状态及12个输入文件的前后SHA256放在`out/microkernel/host-nlp-protocol/<UTC时间>/`。CAN枚举只验证UID前缀模型与ID编码，未验证实际仲裁、时序或硬件发送取消；AEAD向量仅检查AAD头规范化，不执行密码学。
+| 项目 | 当前实现 |
+| --- | --- |
+| payload | 默认128，编译支持128..1024；完整加密 PDU 为 payload+68 |
+| 每 endpoint 邻居 / 能力 / 会话 | 1 / 8 / 4（管理1+业务最多3） |
+| 每 session 通道 / 窗口 / 在途 RPC | 2 / 默认1、最大2 / 1 |
+| PDU 共享池 | 6槽，其中2槽控制类；每类 RX 留出至少1个 TX 槽避免响应死锁 |
+| 目录 / 路由 / 端口 / 最大深度 | 16 / 16 / 4 / 8 |
+| 在途协调者 admission | 1；短地址在 epoch 内不复用 |
+| 日志 | 4条，payload128时记录数据512字节；最多16条/秒、burst1 |
+| CAN 重组 | 2槽、100ms期限；FD 使用合法 DLC padding |
+
+注册表 `mcu_profile` 保留设计目标，实际值以 `implementation` 和 C 头常量为准，不能把8个目标会话描述成当前固件容量。NK60 链接器强制前128KiB应用 Flash、64KiB SRAM、16KiB共享用户静态区及用户栈/MSP余量。实际占用由 `tests/nk60_firmware.py` 输出 ELF/map 验证，未测量真实板上的栈/队列高水位。
+
+## 5. 可重复验收
+
+```sh
+python3 scripts/gen_nlp_registry.py --check
+python3 tests/host_nlp_protocol.py
+python3 tests/host_nlp.py
+source /workspace/.nos-env/activate.sh
+python3 tests/acceptance.py --section boards --require-frozen-source
+python3 tests/qemu_matrix.py --nlp-test --timeout 180 --output-root out/microkernel/nlp-matrix
+python3 tests/qemu_matrix.py --nlp-test --platform stm32 --libc minimal --mpu --output-root out/microkernel/nlp-mpu
+```
+
+Host NLP 测试在128/1024两配置运行实际 C 源码、ASan/UBSan/LSan、异常输入、真实8层 coordinator/router、签名固件状态机、独立 Noise/字节向量，并通过 loopback TCP 检查双方向安全握手、拒绝错误 pin/明文降级/篡改及真实 PTY。测试身份仅为临时确定向量；生产密钥使用 keygen。云端 traced sandbox 的 LSan 与本地 socket 测试需在允许它们的执行环境运行。
+
+NK60 服务模型经模拟 USB 字节流执行真实 discovery、权限拒绝、物理解锁、SHA 配置上传/提交与新 peer 撤权。boards 还包含实际 USB/DWC2/设备白名单源码回归、两种 MPU 固件交叉构建和明确跳过 F401 时钟初始化的 Cortex-M 启动专项。
+
+QEMU 的 `--nlp-test` 在真实用户态执行5个 C 栈探针：wire/CRC、UART/TCP分帧、CAN重组、SHA256、树路由提交/转发/过期；默认原八平台/C库组合及 STM32 MPU 使用 stock netduinoplus2。它不模拟真实 NK60 USB/NOR/键盘，也不验证安全握手或无线硬件。完整 POSIX/Linux 合规不由此次局部协议验收推断。
+
+各 runner 将命令、必要标记、退出状态和身份/源码摘要写入 `out/microkernel/` 下独立结果目录。最终测试期间冻结源码、文档和构建输入；物理 USB 枚举、时序、真实断电恢复和独立安全审计单独验收。
+
+## 6. 后续平台接入顺序
+
+先实板验证复合 USB、持久 boot、键盘配置和供电，再为已选定的旋钮/屏幕接入 UART 或 mailbox。随后装配多端口协调者与输入映射，接入真实蓝牙/Wi-Fi模块及 CAN。NOS nshell 需先接入用户态终端后端；安全升级需先完成并验证板级 bootloader/分区/恢复入口。这些工作需要明确硬件与平台实现，不能由通用协议测试替代。

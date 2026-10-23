@@ -1,6 +1,6 @@
 {
   "schema": "nos-nlp-design-registry-1",
-  "status": "DRAFT_NOT_IMPLEMENTED",
+  "status": "EXPERIMENTAL_IMPLEMENTATION",
   "wire": {
     "major": 1,
     "magic_hex": "4e4c",
@@ -164,7 +164,8 @@
     "AUTH_STEP": 19,
     "AUTH_FINISH": 20,
     "ROUTE_INSTALL": 21,
-    "ROUTE_RESULT": 22
+    "ROUTE_RESULT": 22,
+    "GET_TOPOLOGY": 23
   },
   "statuses": {
     "OK": 0,
@@ -198,7 +199,8 @@
         "GET_PORTS": 10,
         "TOPO_SUBSCRIBE": 11,
         "OPEN": 14,
-        "CLOSE": 15
+        "CLOSE": 15,
+        "GET_TOPOLOGY": 23
       }
     },
     {
@@ -548,5 +550,39 @@
   "resource_profiles": {
     "MCU_BASE": 1,
     "GENERAL": 2
+  },
+  "implementation": {
+    "sdk": "servers/nlp",
+    "headers": "include/nos/nlp",
+    "endpoint_peers": 1,
+    "capabilities_per_endpoint": 8,
+    "sessions_per_endpoint": 4,
+    "channels_per_session": 2,
+    "reliable_window_max": 2,
+    "rpc_inflight": 1,
+    "payload_default": 128,
+    "payload_compile_range": [
+      128,
+      1024
+    ],
+    "nk60_transport": "composite USB vendor, physically trusted only",
+    "nk60_capabilities": [
+      "device",
+      "keyboard",
+      "log",
+      "keymap",
+      "lighting"
+    ],
+    "host_crypto": "OpenSSL provider and independent Python cryptography client",
+    "reserved_or_platform_pending": [
+      "power",
+      "time",
+      "CAN-COMMISSION-1",
+      "topology push events",
+      "NOS-native nshell backend",
+      "NK60 safe OTA bootloader",
+      "NK60 authenticated entropy and crypto backend",
+      "physical peripheral/module drivers"
+    ]
   }
 }

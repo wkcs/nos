@@ -196,10 +196,10 @@ static void test_idle_and_suspend(void)
 /* Register-accurate enough to enforce DWC2 W1C, RX status/FIFO ownership,
  * endpoint enables, transfer completion, and per-endpoint transmit FIFOs. */
 struct dwc2 {
-    uint32_t reg[0x2100/4], gpio[16], rcc[32], us;
+    uint32_t reg[0x3100/4], gpio[16], rcc[32], us;
     uint32_t rx_status[8], rx_words[8][32];
     unsigned rx_head, rx_count, rx_word, current_rx, reads, stuck_reset;
-    uint32_t tx[2][256]; unsigned tx_count[2];
+    uint32_t tx[3][256]; unsigned tx_count[3];
 };
 static uint32_t dw_read(void *context, uintptr_t address)
 {
@@ -207,18 +207,18 @@ static uint32_t dw_read(void *context, uintptr_t address)
     unsigned off;
     if (address >= NK60_GPIO_A && address < NK60_GPIO_A+64) return m->gpio[(address-NK60_GPIO_A)/4];
     if (address >= NK60_RCC && address < NK60_RCC+128) return m->rcc[(address-NK60_RCC)/4];
-    assert(address >= NK60_USB_BASE && address < NK60_USB_BASE+0x2100 && !(address & 3));
+    assert(address >= NK60_USB_BASE && address < NK60_USB_BASE+0x3100 && !(address & 3));
     off = (unsigned)(address-NK60_USB_BASE);
     if (off == 0x010) return m->stuck_reset ? 1u : 1u << 31;
-    if (off == 0x918 || off == 0x938) return 64;
+    if (off == 0x918 || off == 0x938 || off == 0x958) return 64;
     if (off == 0x014) {
         uint32_t value = m->reg[off/4];
         if (m->rx_count) value |= 1u << 4;
-        if (m->reg[0xb08/4] & m->reg[0x814/4]) value |= 1u << 19;
-        if ((m->reg[0x908/4] | m->reg[0x928/4]) & m->reg[0x810/4]) value |= 1u << 18;
+        if ((m->reg[0xb08/4] | m->reg[0xb48/4]) & m->reg[0x814/4]) value |= 1u << 19;
+        if ((m->reg[0x908/4] | m->reg[0x928/4] | m->reg[0x948/4]) & m->reg[0x810/4]) value |= 1u << 18;
         return value;
     }
-    if (off == 0x818) return (m->reg[0x908/4] ? 1u : 0) | (m->reg[0x928/4] ? 2u : 0);
+    if (off == 0x818) return (m->reg[0x908/4] ? 1u : 0) | (m->reg[0x928/4] ? 2u : 0) | (m->reg[0x948/4] ? 4u : 0);
     if (off == 0x020) {
         uint32_t result;
         assert(m->rx_count); m->current_rx = m->rx_head; m->rx_word = 0;
@@ -234,14 +234,14 @@ static void dw_write(void *context, uintptr_t address, uint32_t value)
     unsigned off, ep;
     if (address >= NK60_GPIO_A && address < NK60_GPIO_A+64) { m->gpio[(address-NK60_GPIO_A)/4] = value; return; }
     if (address >= NK60_RCC && address < NK60_RCC+128) { m->rcc[(address-NK60_RCC)/4] = value; return; }
-    assert(address >= NK60_USB_BASE && address < NK60_USB_BASE+0x2100 && !(address & 3));
+    assert(address >= NK60_USB_BASE && address < NK60_USB_BASE+0x3100 && !(address & 3));
     off = (unsigned)(address-NK60_USB_BASE);
-    if (off == 0x014 || off == 0x908 || off == 0x928 || off == 0xb08) { m->reg[off/4] &= ~value; return; }
+    if (off == 0x014 || off == 0x908 || off == 0x928 || off == 0x948 || off == 0xb08 || off == 0xb48) { m->reg[off/4] &= ~value; return; }
     if (off == 0x010 && (value & (1u << 4))) m->rx_count = 0;
-    if (off == 0x1000 || off == 0x2000) {
-        ep = off == 0x2000; assert(m->tx_count[ep] < 256); m->tx[ep][m->tx_count[ep]++] = value; return;
+    if (off == 0x1000 || off == 0x2000 || off == 0x3000) {
+        ep = (off - 0x1000) / 0x1000; assert(m->tx_count[ep] < 256); m->tx[ep][m->tx_count[ep]++] = value; return;
     }
-    if (off == 0x900 || off == 0x920) {
+    if (off == 0x900 || off == 0x920 || off == 0x940) {
         if (value & (1u << 30)) value &= ~(1u << 31);
     }
     m->reg[off/4] = value;
@@ -316,6 +316,39 @@ static void test_dwc2(void)
     memset(&m,0,sizeof(m)); m.stuck_reset = 1;
     assert(nk60_usb_init(&d,&io) == -110 && !d.ready && m.reg[0x018/4] == 0);
 }
+static void test_nlp_composite(void)
+{
+    struct host h;
+    host_init(&h); usb_keyboard_enable_nlp(&h.usb, 1);
+    setup(&h, 0x80, 6, 0x200, 0, 57);
+    const struct transfer *p = &h.packet[h.count - 1];
+    assert(p->length == 57 && p->data[2] == 57 && p->data[4] == 2);
+    assert(p->data[34] == 9 && p->data[36] == 1 && p->data[39] == 255 && p->data[40] == 0x4e);
+    assert(p->data[45] == 2 && p->data[52] == 0x82);
+    complete(&h, 0x80); usb_keyboard_reset(&h.usb); assert(h.usb.nlp_enabled);
+    struct dwc2 m; struct nk60_usb d;
+    struct nk60_io io = {&m,dw_read,dw_write,0,0,dw_time,dw_delay};
+    memset(&m,0,sizeof(m)); assert(!nk60_usb_init(&d,&io));
+    assert(m.reg[0x108/4] == ((64u << 16) | 256u));
+    dw_setup(&m,&d,0,5,7,0); dw_complete(&m,&d,0);
+    dw_setup(&m,&d,0,9,1,0); dw_complete(&m,&d,0);
+    assert((m.reg[0x81c/4] & (4u | (1u << 18))) == (4u | (1u << 18)));
+    uint8_t bytes[64],readback[64]; for(unsigned i=0;i<64;++i)bytes[i]=(uint8_t)i;
+    assert(!nk60_usb_nlp_write(&d,bytes,64)); assert(d.tx_busy[2]);
+    assert(nk60_usb_nlp_write(&d,bytes,64)==-11); dw_complete(&m,&d,2); assert(!d.tx_busy[2]);
+    assert(m.tx_count[2]==16 && m.tx[2][0]==0x03020100);
+    dw_rx(&m,2,bytes,64);m.rx_status[(m.rx_head+m.rx_count-1)%8]|=2;
+    m.reg[0xb48/4]|=1;assert(!nk60_usb_poll(&d,4));assert(d.nlp_ready);
+    assert(nk60_usb_nlp_read(&d,readback,63)==-22 && d.nlp_ready);
+    assert(nk60_usb_nlp_read(&d,readback,64)==64 && !memcmp(bytes,readback,64) && !d.nlp_ready);
+    uint32_t generation=d.nlp_generation; unsigned hid_busy=d.tx_busy[1];
+    uint8_t alternate[8]={1,11,0,0,1,0,0,0};
+    dw_rx(&m,6,alternate,8);m.reg[0xb08/4]|=8;assert(!nk60_usb_poll(&d,5));dw_complete(&m,&d,0);
+    assert(d.nlp_generation==generation+1 && d.tx_busy[1]==hid_busy);
+    generation=d.nlp_generation;m.reg[0x014/4]|=1u<<12;assert(!nk60_usb_poll(&d,6));
+    assert(d.nlp_generation>generation && !d.nlp_ready && !d.keyboard.configured && d.keyboard.nlp_enabled);
+    puts("PASS usb_nlp_composite_bulk_backpressure_generation_reset_and_hid_independence");
+}
 static void test_setup_fuzz(void)
 {
     struct host h;
@@ -339,6 +372,7 @@ int main(void)
     test_reports(); puts("PASS usb_boot_nkro_media_queue_backpressure_release_halt");
     test_idle_and_suspend(); puts("PASS usb_per_report_idle_suspend_host_optin_wake_wrap");
     test_dwc2(); puts("PASS usb_dwc2_gpio_clock_fifo_w1c_setup_out_completion_timeout");
+    test_nlp_composite();
     test_setup_fuzz(); puts("PASS usb_10000_malformed_setup_and_out_sequences");
     puts("USB keyboard: EP0, descriptors, HID protocol/LED/idle, queue, wake and DWC2 register model passed");
     return 0;

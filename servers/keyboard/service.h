@@ -3,6 +3,7 @@
 #define NOS_NK60_KEYBOARD_SERVICE_H
 
 #include "keyboard.h"
+#include "link.h"
 #include "../../boards/nk60_v2/hardware.h"
 #include "../../boards/nk60_v2/nk60_usb.h"
 
@@ -22,6 +23,7 @@ struct nk60_service_hooks {
 
 /* Statically allocated by the trusted user-mode service, never on its stack. */
 struct nk60_service {
+    struct nk60_link link;
     struct nk60_hw hardware;
     struct nk60_usb usb;
     struct keyboard keyboard;
@@ -32,7 +34,7 @@ struct nk60_service {
     uint8_t wave[NK60_RGB_WAVE_BYTES];
     char line[NK60_SERVICE_LINE_BYTES];
     char tx[NK60_SERVICE_TX_BYTES];
-    uint64_t pressed;
+    uint64_t pressed, monotonic_us;
     uint32_t last_us, now_ms, fraction_us, next_scan_us;
     uint32_t last_edit_ms, last_rgb_ms, unlock_started_ms, unlocked_ms;
     uint32_t generation, store_base, edits, scan_overruns, scan_errors;
@@ -54,5 +56,6 @@ int nk60_service_init(struct nk60_service *, const struct nk60_io *,
 void nk60_service_step(struct nk60_service *);
 /* UART command parser can be driven independently of the endless task loop. */
 void nk60_service_command(struct nk60_service *, const char *line);
+int nk60_service_commit_wire(struct nk60_service *, const uint8_t *, int persist);
 void nos_keyboard_service(uintptr_t unused);
 #endif

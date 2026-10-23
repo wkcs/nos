@@ -2,7 +2,7 @@
 
 <!-- Copyright (C) 2026 NOS contributors -->
 
-本页为协议设计，不是已实现/审计的密码学。校验和、USB 连接、CAN ACK、已加入 Wi-Fi 和能力自报都不构成业务授权。
+C/OpenSSL 与 Python/cryptography 已实现本页 Noise/KDF/JOIN/AEAD profile 并有独立互通检查；尚未经过独立安全审计。NK60 当前仅启用显式物理信任模式。校验和、USB 连接、CAN ACK、已加入 Wi-Fi 和能力自报都不构成业务授权。
 
 ## 1. 信任建立
 
@@ -12,7 +12,7 @@
 
 ## 2. 密码学 profile 与会话键
 
-v1 安全 profile 提案为 `Noise_XX_25519_ChaChaPoly_SHA256`，静态 key 在配对时校验。使用成熟库；不能自行把 CRC、XOR 或口令直接当加密。Noise 握手只在受限核心 AUTH 消息中传输，基线128字节payload可容纳空应用payload的XX握手消息；更大的证书链必须显式分块/单独profile，不能无界塞入握手。
+v1 实验安全 profile 为 `Noise_XX_25519_ChaChaPoly_SHA256`，静态 key 在配对时校验。使用成熟库；不能自行把 CRC、XOR 或口令直接当加密。Noise 握手只在受限核心 AUTH 消息中传输，基线128字节payload可容纳空应用payload的XX握手消息；更大的证书链必须显式分块/单独profile，不能无界塞入握手。
 
 Noise prologue 绑定 NLP major、fabric UID/epoch、双方 UID/boot、握手 nonce、管理 session ID 和公开协商参数。AUTH 成功形成端点间安全 association，在有有效节点租约后打开 capability0 的管理 session。随后 OPEN 在已认证管理会话内申请具体能力；能力版本、功能、授权范围和新 session ID 进入派生上下文。重建 association 关闭旧会话，不能保留旧 key/计数器。
 
@@ -34,7 +34,7 @@ F401 不能被假定有硬件随机数源。安全握手需要经过验证的熵
 
 ## 4. 业务授权
 
-授权记录至少包含 `(peer_uid/key, target_uid, capability_id/type, allowed_ops, expiry, limits)`。标准角色拆成 DISCOVER、OBSERVE_INPUT、BIND_INPUT、CONFIG_WRITE、LOG_READ、SHELL、FIRMWARE_STAGE、FIRMWARE_APPLY、RADIO_CONFIG。观察按键不赋予注入权，上传不赋予启动新固件权。
+授权记录至少包含 `(peer_uid/key, target_uid, capability_id/type, allowed_ops, expiry, limits)`。标准角色拆成 DISCOVER、OBSERVE_INPUT、BIND_INPUT、CONFIG_WRITE、LOG_READ、SHELL、FIRMWARE_STAGE、FIRMWARE_APPLY、RADIO_CONFIG，以及 COORDINATE(bit9，路由控制)。观察按键不赋予注入权，上传不赋予启动新固件权。
 
 物理解锁授予短期、目标和 peer 绑定的授权，不是全网通用 token。NLP 设备可能经过多个桥，末端必须检查自己的授权；桥不能用自己的更高权限把下游请求当成本地管理员调用。路由控制由协调者管理，业务授权仍由能力 owner 决定。
 
@@ -52,7 +52,7 @@ F401 不能被假定有硬件随机数源。安全握手需要经过验证的熵
 
 验证头/总长后才重组或查会话；限制每端口未认证peer、每peer重组、目录条目、会话、流、未完成RPC和消息速率。队列满返回 BUSY/NO_SPACE 或按明确日志策略丢弃，不占用无限堆，也不能阻塞键盘全释放和授权撤销。
 
-参考资料：[Noise framework](https://noiseprotocol.org/noise.html)、[RFC 8439](https://www.rfc-editor.org/rfc/rfc8439)、[RFC 5869](https://www.rfc-editor.org/rfc/rfc5869)、[RFC 9562](https://www.rfc-editor.org/rfc/rfc9562)。这些是设计依据；互通与安全审计仍是后续验收任务。
+参考资料：[Noise framework](https://noiseprotocol.org/noise.html)、[RFC 8439](https://www.rfc-editor.org/rfc/rfc8439)、[RFC 5869](https://www.rfc-editor.org/rfc/rfc5869)、[RFC 9562](https://www.rfc-editor.org/rfc/rfc9562)。这些是协议依据；已有软件互通检查不能替代独立安全审计或设备熵源验证。
 
 
 ## 7. 入网前的邻接确认
@@ -61,4 +61,10 @@ F401 不能被假定有硬件随机数源。安全握手需要经过验证的熵
 
 bootstrap方向key为HKDF-SHA256(Extract salt=handshake_hash, IKM=该方向Split key；Expand info=`b"NLP1/join" | management_session_id:u32 | src_uid[16] | dst_uid[16] | src_boot:u64 | dst_boot:u64 | fabric_uid[16] | fabric_epoch:u32`，输出32字节)。HMAC输入为规范头（hop与header CRC归零，但payload_len包含末尾36字节认证TLV）加完整CONTROL payload、去掉末尾的tag22 TLV。数值仍按wire小端，tag22必须最后、长度32；不与业务AEAD复用key。HMAC只在Noise认证完成后验证；control_id从1单调、无回绕，已完成id只允许逐字节相同的重复并返回原结果，状态有界且超时即销毁邻接association，不能跨boot恢复。
 
-此profile及Noise/KDF具体集成仍须独立安全审查和互通向量；本次参考codec不生成或验证HMAC/AEAD，普通CRC通过不能被描述为已认证JOIN。
+C auth/security 与独立 Python crypto 客户端实际生成并验证 HMAC/AEAD。普通明文 codec 的 CRC 检查不代表认证 JOIN。此 profile 仍须独立安全审查。
+
+## 8. 实现的固定 transcript
+
+Prologue 恰92字节：`b"NLP1AUTH" | major:u16=1 | payload:u16 | security:u16=2 | profile:u16=1 | fabric_uid[16] | epoch:u32 | hello_nonce:u32 | management_session_id:u32 | lower_uid[16] | higher_uid[16] | lower_boot:u64 | higher_boot:u64`。全部数值小端；UID按字节排序。AUTH 消息长32/96/64字节。安全 UID 是 `SHA256(static_public_key)[:16]`，双方固定公钥必须通过预置 pin 验证；当前没有自动 TOFU UI 或证书链。channel KDF info 恰90字节，JOIN KDF info 恰81字节。
+
+主机实际原语由 OpenSSL EVP/HMAC/RAND 提供；测试客户端独立使用 Python cryptography。嵌入式 TinyCrypt 子集只用于配置完整性 SHA256，不提供 Noise、随机源或安全启动。不得将主机互通结果解释成 F401 已具备安全熵/抗回滚。

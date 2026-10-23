@@ -21,6 +21,7 @@ static inline int nk60_mmio_allowed(uintptr_t address, unsigned width, int write
     if (width == 1u)
         return address == (uintptr_t)0x4001300cu; /* SPI1 DR byte transfer. */
     if (width != 4u || (address & 3u)) return 0;
+    if (!write && address >= (uintptr_t)0x1fff7a10u && address <= (uintptr_t)0x1fff7a18u) return 1; /* F401 factory UID */
     for (unsigned i = 0; i < 3u; i++) {
         uintptr_t base = (uintptr_t)0x40020000u + i * 0x400u;
         if (address < base || address > base + 0x24u) continue;
@@ -37,10 +38,11 @@ static inline int nk60_mmio_allowed(uintptr_t address, unsigned width, int write
         return !write || (address & 0xfu) != 8u; /* SPI SR is read-only. */
     if (address < (uintptr_t)0x50000000u) return 0;
     uintptr_t offset = address - (uintptr_t)0x50000000u;
-    return offset <= 0x104u || (offset >= 0x800u && offset <= 0x83cu) ||
-        (offset >= 0x900u && offset <= 0x93cu) ||
+    return offset <= 0x108u || (offset >= 0x800u && offset <= 0x83cu) ||
+        (offset >= 0x900u && offset <= 0x95cu) ||
         (offset >= 0xb00u && offset <= 0xb1cu) ||
-        offset == 0xe00u || offset == 0x1000u || offset == 0x2000u;
+        (offset >= 0xb40u && offset <= 0xb5cu) ||
+        offset == 0xe00u || offset == 0x1000u || offset == 0x2000u || offset == 0x3000u;
 }
 
 /* Subtraction after a checked lower bound avoids end-address overflow. */

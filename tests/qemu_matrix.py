@@ -108,6 +108,7 @@ def main():
     parser.add_argument('--cpus', type=int, choices=range(1, 5), default=1)
     parser.add_argument('--disk', type=Path)
     parser.add_argument('--mpu', action='store_true', help='Enable Cortex-M MPU isolation')
+    parser.add_argument('--nlp-test', action='store_true', help='Execute freestanding NLP wire/transport/router/hash probes in the actual guest')
     parser.add_argument('--extra-apps', action='store_true', help='Embed and execute real Lua and LVGL applications; requires musl')
     parser.add_argument('--clock-epoch', type=lambda value: int(value, 0), help='Isolated clock boundary profile: initialize guest ticks to this unsigned 64-bit value')
     parser.add_argument('--output-root', type=Path, help='Isolated build directory root')
@@ -144,7 +145,7 @@ def main():
                 out.mkdir(parents=True, exist_ok=True)
             with (out / 'build.log').open('w') as log:
                 clock_flags = [] if args.clock_epoch is None else [f'EXTRA_CFLAGS=-DNOS_CLOCK_TEST_EPOCH={args.clock_epoch}ULL']
-                build = subprocess.run(['make', '-j5', f'PLATFORM={platform}', f'LIBC={libc}', f'O={out}', 'BUILD_MODE=selftest', f'SMP={args.cpus}', f'MPU={int(args.mpu)}', f'EXTRA_APPS={int(args.extra_apps)}', *clock_flags], cwd=ROOT, stdout=log, stderr=subprocess.STDOUT)
+                build = subprocess.run(['make', '-j5', f'PLATFORM={platform}', f'LIBC={libc}', f'O={out}', 'BUILD_MODE=selftest', f'SMP={args.cpus}', f'MPU={int(args.mpu)}', f'EXTRA_APPS={int(args.extra_apps)}', f'NLP_TEST={int(args.nlp_test)}', *clock_flags], cwd=ROOT, stdout=log, stderr=subprocess.STDOUT)
             shutil.copy2(out / 'build.log', saved / 'build.log')
             if build.returncode:
                 print((out / 'build.log').read_text()[-7000:])
@@ -201,6 +202,9 @@ def main():
                             'clock64_legacy_boundary', 'clock64_sleep_progress', 'timer_preemption'}
                 if libc != 'minimal':
                     required |= {'libc_clock_epoch_boundary'}
+            if args.nlp_test:
+                required |= {'nlp_wire_crc_bounded_decode', 'nlp_uart_tcp_actual_fragmented_frames',
+                             'nlp_can_classic_reassembly', 'nlp_freestanding_sha256', 'nlp_tree_commit_forward_and_expiry'}
             missing = sorted(required - passed)
             clock_ok = args.cpus == 1 or (runtime_metrics.get('host_clock_seconds') is not None and
                                          runtime_metrics['host_clock_seconds'] >= 0.4)

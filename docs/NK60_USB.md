@@ -16,6 +16,9 @@ The device retains the historical NOS development VID/PID `0eff:0001`.
 This preserves the repository's identity; it does not establish a USB-IF vendor
 allocation. Device release is 2.00. It exposes one boot-capable HID interface,
 one interrupt IN endpoint `0x81` (64 bytes, 1ms interval), and EP0 (64 bytes).
+NLP adds vendor interface1 (class FF/subclass4E/protocol1), bulk OUT02 and IN82
+(64 bytes each); the composite configuration descriptor is57 bytes. If NLP boot
+identity cannot be initialized, enumeration uses the original HID-only descriptor.
 The configuration is bus-powered, declares 500mA, and advertises host-controlled
 remote wake. The service keeps RGB off before configuration and during suspend,
 and limits configured brightness separately (see the board service policy).
@@ -40,7 +43,7 @@ byte; their NKRO bitmap bits stay zero. Usage0 bits are not set by the engine.
 
 `SET_REPORT(Output, ID1)` uses the two-byte report `[1, leds]`. Boot LED output
 uses ID0 and one byte. `GET_REPORT` returns current input state or LED state.
-Unsupported IDs, features, interface numbers, lengths and alternate settings
+Unsupported IDs, features, interface numbers, lengths and alternate settings other than0
 STALL EP0. A fresh SETUP cancels a previous control transfer and clears EP0
 STALL. Standard descriptors, address/configuration, status, remote wake,
 endpoint halt, and alternate setting0 are implemented. Address changes commit
@@ -67,8 +70,8 @@ adapter asserts resume for2ms using `delay_us` and clears it before returning,
 so a delayed caller cannot hold resume beyond the USB15ms limit. The portable
 protocol layer also clears its wake state after2ms or on resume/reset.
 
-The DWC2 driver allocates128 words of RX FIFO plus64 words each for EP0/EP1 TX,
-within the controller's320-word budget. It drains RX word padding, bounds all
+The DWC2 driver allocates128 words of RX FIFO plus64 words each for EP0/EP1/EP2 TX,
+exactly the controller's320-word budget. It drains RX word padding, bounds all
 copies, handles SETUP and OUT completion independently, clears stale IN
 completion on replacement SETUP, and applies DATA0 when an endpoint halt is
 cleared. FIFO/reset/disable waits have both10ms elapsed-time and100000-iteration
@@ -99,3 +102,10 @@ acceptance still requires Linux/Windows/macOS enumeration and descriptor
 inspection, BIOS boot mode, >6 simultaneous keys, media release, Caps/Num LED
 output, repeated plug/unplug, endpoint/host stalls, suspend/resume with host wake
 enabled and disabled, and measured configured/suspend current with RGB load.
+
+The NLP vendor interface uses `u16le_length | PDU`, independent endpoint busy
+flags and bounded OUT backpressure. Interface/endpoint resets invalidate NLP
+sessions and pending bytes without resetting the HID report protocol. The model
+tests cover composite descriptors, EP2 traffic, backpressure, alternate resets
+and HID independence. No physical host enumeration is claimed; see
+[NLP implementation](protocols/nlp/implementation.md).

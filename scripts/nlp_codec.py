@@ -134,7 +134,8 @@ def encode_frame(header, payload=b''):
     return raw + struct.pack('<I', crc32c(raw))
 
 
-def decode_frame(frame):
+def inspect_frame(frame):
+    """UNAUTHENTICATED header checks only; never dispatch the resulting payload."""
     if not isinstance(frame, (bytes, bytearray)) or not HEADER_BYTES + 4 <= len(frame) <= MAX_PDU:
         raise ProtocolError('invalid complete PDU length')
     fields = _HEADER.unpack(frame[:HEADER_BYTES])
@@ -151,7 +152,12 @@ def decode_frame(frame):
     trailer = 16 if flags & ENCRYPTED else 4
     if len(frame) != HEADER_BYTES + length + trailer:
         raise ProtocolError('truncated PDU or trailing garbage')
-    if flags & ENCRYPTED:
+    return header, length
+
+
+def decode_frame(frame):
+    header, length = inspect_frame(frame)
+    if header.flags & ENCRYPTED:
         raise UnsupportedSecurity('opaque encrypted frame is NOT authenticated by this codec')
     if struct.unpack_from('<I', frame, len(frame) - 4)[0] != crc32c(frame[:-4]):
         raise ProtocolError('invalid frame CRC32C')

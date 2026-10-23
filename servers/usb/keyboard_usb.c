@@ -20,6 +20,8 @@
 #define ACTION_IDLE 6u
 #define ACTION_HALT 7u
 #define ACTION_INTERFACE 8u
+#define ACTION_NLP_HALT 9u
+#define ACTION_NLP_INTERFACE 10u
 
 /* A single boot-capable interface avoids two logical keyboards reporting the
  * same keys. Report protocol uses ID1 NKRO, ID2 consumer, or optional ID3 6KRO.
@@ -51,6 +53,19 @@ static const uint8_t configuration_descriptor[] = {
     9,0x21,0x11,0x01,0,1,0x22,sizeof(report_descriptor),0,
     7,5,0x81,3,64,0,1
 };
+static const uint8_t nlp_configuration_descriptor[] = {
+    9,2,57,0,2,1,0,0xa0,250,
+    9,4,0,0,1,3,1,1,0,
+    9,0x21,0x11,0x01,0,1,0x22,sizeof(report_descriptor),0,
+    7,5,0x81,3,64,0,1,
+    9,4,1,0,2,0xff,0x4e,1,0,
+    7,5,0x02,2,64,0,0,
+    7,5,0x82,2,64,0,0
+};
+void usb_keyboard_enable_nlp(struct usb_keyboard *u, int enabled)
+{
+    if (u && !u->configured) u->nlp_enabled = !!enabled;
+}
 static void copy_bytes(uint8_t *to, const uint8_t *from, size_t length)
 {
     size_t i;
@@ -176,12 +191,14 @@ void usb_keyboard_init(struct usb_keyboard *u, const struct usb_keyboard_transpo
 void usb_keyboard_reset(struct usb_keyboard *u)
 {
     struct usb_keyboard_transport t = u->transport;
+    uint8_t nlp_enabled = u->nlp_enabled;
     u->transport.cancel(t.context, 0x80);
     u->transport.cancel(t.context, EP_IN);
     u->transport.configure(t.context, 0);
     u->transport.address(t.context, 0);
     u->transport.wake(t.context, 0);
     usb_keyboard_init(u, &t);
+    u->nlp_enabled = nlp_enabled;
 }
 static void descriptor(struct usb_keyboard *u, uint16_t value, uint16_t index,
                        uint16_t length, uint8_t recipient)
@@ -192,7 +209,8 @@ static void descriptor(struct usb_keyboard *u, uint16_t value, uint16_t index,
     if ((value >> 8) == 1 && !(value & 255) && !index && !recipient)
         control_in(u, device_descriptor, sizeof(device_descriptor), length);
     else if ((value >> 8) == 2 && !(value & 255) && !index && !recipient)
-        control_in(u, configuration_descriptor, sizeof(configuration_descriptor), length);
+        control_in(u, u->nlp_enabled ? nlp_configuration_descriptor : configuration_descriptor,
+                   u->nlp_enabled ? sizeof(nlp_configuration_descriptor) : sizeof(configuration_descriptor), length);
     else if ((value >> 8) == 0x21 && !(value & 255) && !index && recipient == 1)
         control_in(u, configuration_descriptor + 18, 9, length);
     else if ((value >> 8) == 0x22 && !(value & 255) && !index && recipient == 1)
@@ -237,9 +255,11 @@ void usb_keyboard_setup(struct usb_keyboard *u, const uint8_t s[8])
         if (request == 0 && !(value) && length == 2 && (type & 0x80)) {
             bytes[0] = bytes[1] = 0;
             if (type == 0x80 && !index) bytes[0] = (uint8_t)(u->remote_enabled ? 2 : 0);
-            else if (type == 0x81 && !index && u->configured) { }
+            else if (type == 0x81 && (!index || (index == 1 && u->nlp_enabled)) && u->configured) { }
             else if (type == 0x82 && (index == 0 || index == 0x80 || (index == EP_IN && u->configured)))
                 bytes[0] = index == EP_IN ? u->halted : 0;
+            else if (type == 0x82 && u->nlp_enabled && u->configured && (index == 2 || index == 0x82))
+                bytes[0] = !!(u->nlp_halted & (index == 2 ? 1 : 2));
             else { stall_control(u); return; }
             control_in(u, bytes, 2, length); return;
         }
@@ -250,6 +270,17 @@ void usb_keyboard_setup(struct usb_keyboard *u, const uint8_t s[8])
             if (type == 2 && !value && index == EP_IN && u->configured) {
                 status_in(u, ACTION_HALT, request == 3); return;
             }
+        }
+        if ((request == 1 || request == 3) && type == 2 && !value && !length &&
+            u->configured && u->nlp_enabled && (index == 2 || index == 0x82)) {
+            u->action_id = (uint8_t)index;
+            status_in(u, ACTION_NLP_HALT, request == 3); return;
+        }
+        if ((request == 10 || request == 11) && index == 1 && u->nlp_enabled && u->configured && !value) {
+            if (request == 10 && type == 0x81 && length == 1) {
+                bytes[0] = 0; control_in(u, bytes, 1, 1); return;
+            }
+            if (request == 11 && type == 1 && !length) { status_in(u, ACTION_NLP_INTERFACE, 0); return; }
         }
         if (request == 10 && type == 0x81 && !value && !index && length == 1 && u->configured) {
             bytes[0] = 0; control_in(u, bytes, 1, 1); return;
@@ -333,14 +364,28 @@ void usb_keyboard_in_complete(struct usb_keyboard *u, uint8_t endpoint)
         u->transport.address(u->transport.context, u->address); break;
     case ACTION_CONFIG:
         drop_queue(u); u->configured = u->action_value;
-        u->halted = u->remote_enabled = 0;
+        u->halted = u->remote_enabled = u->nlp_halted = 0;
         u->transport.configure(u->transport.context, u->configured);
         /* Current physical state is retained for reconnection synchronisation. */
         u->pending_sync = u->configured;
         u->idle_ms = u->now_ms; break;
     case ACTION_INTERFACE:
         drop_queue(u); u->halted = 0;
-        u->transport.configure(u->transport.context, 1); u->pending_sync = 1;
+        u->transport.configure(u->transport.context, u->nlp_enabled ? 3 : 1); u->pending_sync = 1;
+        break;
+    case ACTION_NLP_INTERFACE:
+        u->nlp_halted = 0;
+        u->transport.configure(u->transport.context, 2);
+        break;
+    case ACTION_NLP_HALT:
+        {
+            unsigned bit = u->action_id == 2 ? 1 : 2;
+            if (u->action_value) u->nlp_halted |= (uint8_t)bit;
+            else u->nlp_halted &= (uint8_t)~bit;
+            if (u->action_id == 0x82 && u->action_value)
+                u->transport.cancel(u->transport.context, 0x82);
+            u->transport.stall(u->transport.context, u->action_id, u->action_value);
+        }
         break;
     case ACTION_LEDS: u->leds = u->action_value; break;
     case ACTION_PROTOCOL:

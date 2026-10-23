@@ -2,7 +2,7 @@
 
 <!-- Copyright (C) 2026 NOS contributors -->
 
-本页是 [NLP 设计草案](README.md) 的 wire 提案；尚未声明生产实现。权威数字见 `protocols/nlp/v1/registry.json`。所有整数为小端；UUID 是 RFC 9562 字节顺序的 16 个原始字节（不是 Windows GUID 混合端序），摘要为原始字节，字符串为有明确长度的 UTF-8，不带 NUL。不得直接序列化 C 结构、指针、枚举宽度或 padding。
+本页定义 [NLP 实验实现](README.md) 的 wire；扩展目标与实际接口限制见 [实现状态](implementation.md)。权威数字见 `protocols/nlp/v1/registry.json`。所有整数为小端；UUID 是 RFC 9562 字节顺序的 16 个原始字节（不是 Windows GUID 混合端序），摘要为原始字节，字符串为有明确长度的 UTF-8，不带 NUL。不得直接序列化 C 结构、指针、枚举宽度或 padding。
 
 ## 1. 固定头与完整包
 
@@ -77,24 +77,25 @@ CONTROL 用于注册的 HELLO/JOIN/AUTH/PING/PONG/拓扑事件等核心消息，
 | 20 | AUTH_FINISH |
 | 21 | ROUTE_INSTALL |
 | 22 | ROUTE_RESULT |
+| 23 | GET_TOPOLOGY |
 
 ## 3. 打开与关闭
 
 `AUTH → MANAGEMENT_ACTIVE → OPEN → ACTIVE → DRAINING → CLOSED`。AUTH 的 nonce、UID/boot/fabric/epoch 及协商结果进入密码学 transcript，成功建立端点安全association，并在有效地址租约就绪后激活capability0管理session。由UID较小端使用本次boot的单调全局计数分配管理和业务session_id；另一端通过管理RPC申请。OPEN在已认证管理session内申请一项能力、角色、major/minor、功能位、可靠模式、最大 payload、最大在途请求和租约；OPEN 的 RESPONSE 返回选择值或明确错误，不能悄悄取消认证要求。
 
-每个会话绑定两端 UID/boot/节点租约、能力实例和类型版本。默认 channel 0 管会话、1 管业务；其他通道由能力定义，基线最多 4 个。CLOSE(kind6)使用核心CLOSE opcode和8字节控制前缀，在可能时可靠发送；显式断链仍以本地撤销为准。session_id 在同一端点对/启动内不复用；channel ID 在会话内不复用。双方方向分别维护状态，不能把一个方向的序号当作另一个方向的确认。认证association是内部密钥上下文；设备与能力仍是公开API的两个对象，不能绕过OPEN直接访问别的能力。
+每个会话绑定两端 UID/boot/节点租约、能力实例和类型版本。默认 channel 0 管会话、1 管业务；当前实现固定两个通道；更多通道需新配置和互通验证。CLOSE(kind6)使用核心CLOSE opcode和8字节控制前缀。SDK 本地撤销时在 channel0 尝试发送无需信用的非可靠 CLOSE，安全会话仍必须 AEAD 认证和重放检查；可靠 CLOSE 也可接收。显式断链仍以本地撤销为准。session_id 在同一端点对/启动内不复用；channel ID 在会话内不复用。双方方向分别维护状态，不能把一个方向的序号当作另一个方向的确认。认证association是内部密钥上下文；设备与能力仍是公开API的两个对象，不能绕过OPEN直接访问别的能力。
 
 序号、计数器和信用均为 u32，**不做模回绕**；接近上限时排空并重新建立会话。源设备重启不能沿用旧密钥、session_id 或计数器。CLOSE 先停止新业务，再有界排空；断链/授权撤销立即结束，不等待对端配合。
 
 ## 4. 可靠性与流控
 
-- 可靠通道采用累计 ACK 和有界滑动窗口：基线最大 4 帧，可协商 1..8。接收端有多少实际槽才授予多少信用；乱序只占已授予的槽。`receive_limit >= ack` 且只能增加，不能用新的“小窗口”撤回已授予信用。
+- 可靠通道采用累计 ACK 和有界滑动窗口：当前最大 2 帧，默认 1 帧；注册表全局上限保留给后续配置。接收端有多少实际槽才授予多少信用；乱序只占已授予的槽。`receive_limit >= ack` 且只能增加，不能用新的“小窗口”撤回已授予信用。
 - `reliable_seq` 仅为可靠 REQUEST/RESPONSE/EVENT/DATA/会话控制递增。纯 ACK 没有 payload、opcode=0、seq=0、不设 RELIABLE，自身不需要再确认；它仍有新 packet_counter，并可携带 ack/receive_limit。非可靠通道 ack/limit 均为 0。
 - ACK 只表示认证且收进有界收件箱。信用要在消费者释放槽后才增加；应用未取走时可以 ACK 前进、limit 不变。这不表示 RPC 已执行或数据已持久化。
 - 收到窗口内的乱序帧暂存，不越序交付；重复 seq 不再交付，只回当前 ACK。已消费的 seq 永不重新执行。应用拒绝格式/权限时仍要结束该 seq 的处理，并回复错误或关闭通道，不能无限重试同一坏消息。
 - 重传保留完全相同的端到端密文、packet_counter、seq、ack/limit 等字段；路由 hop/头 CRC 可变化。更新捎带确认或信用必须构造一个新计数器的包。发送重传帧不得重新加密同一 nonce 下的不同内容。
-- 初始 RTO：本地有线 100 ms、IP 300 ms；根据 RTT 更新，范围 20 ms..2 s，指数退避，最多 5 次后关闭。这些是默认值，OPEN 可因慢路径选择更大上限，不能把无限 retry 作为可靠性。
-- 控制保留队列至少 2 项，数据用尽信用时仍可处理 ACK/CLOSE/撤销。日志拥塞先丢日志，升级/显示不能独占输入队列；加权调度在防饿死前提下优先控制和输入。载体不可中断的最大传输时长须计入端口预算。
+- 当前初始 RTO 100 ms，指数退避至 2 s，最多 5 次重传后关闭；尚未实现 RTT 自适应或慢路径 RTO 协商。
+- 控制保留队列至少 2 项，数据用尽信用时仍可处理 ACK/CLOSE/撤销。日志拥塞先丢日志，升级/显示不能独占输入队列；当前保留控制类缓冲，并由合作式 poll 限制业务工作量；通用多端口加权调度仍需平台实现。载体不可中断的最大传输时长须计入端口预算。
 - 非可靠通道适用于可丢日志和遥测，使用 packet_counter 防重放；不得用于必须保留的键盘按下/释放或 shell 输入。对端断开时返回明确结果，不跨会话重发副作用。
 
 加密 nonce 和重放规则见 [安全设计](security.md)。可靠数据的重放由不回绕的 seq 和已消费状态约束；不能单凭一个跨通道的短 counter 位图丢掉合法重传。channel 分开计数，避免大日志流淘汰交互流的旧包。
@@ -156,3 +157,9 @@ PROVIDE表示产生该类型数据/执行服务；CONSUME表示接收同类型�
 `TOPO_SUBSCRIBE`请求body为空，响应为当前directory_revision:u32和event_seq:u32。CONTROL TOPO_EVENT带tag2/3/11/18，status为OK，control_id为事件序号；tag19在此上下文为event_kind:u8（1 DEVICE_ONLINE、2 DEVICE_REMOVED、3 CAP_ADDED、4 CAP_CHANGED、5 CAP_REMOVED），tag20在CAP事件中为capability_id:u16。事件只提示失效，不含完整目录；任何序号间隙都重新分页同步。ROUTE_ERROR的status为NO_ROUTE/MTU_TOO_SMALL/TIMEOUT，仅向已知已认证源回报，不代替原业务响应。
 
 这里只规定注册操作；新增公共管理操作必须先分配opcode和字段定义，不能让“管理TLV”成为随意执行私有命令的通道。
+
+## 8. 当前目录与路由控制编码
+
+GET_TOPOLOGY(23) 是管理 REQUEST/RESPONSE。请求12字节：`revision:u32, cursor:u32, max_entries:u16, reserved:u16=0`；首次 revision/cursor 为0。响应12字节：`revision:u32, next_cursor:u32, count:u16, more:u8, reserved:u8=0`，后接40字节条目：`uid[16], boot:u64, node:u16, parent:u16, path_payload:u16, cap_count:u16, descriptor_revision:u32, remaining_lease_ms:u32`。快照变化返回 STALE。没有全域目录时返回本地与直接对端。TOPO_SUBSCRIBE/TOPO_EVENT/ROUTE_ERROR 仍保留注册号，不能推断已实现推送。
+
+ROUTE_INSTALL(21)/ROUTE_RESULT(22) 使用管理会话 channel0 的 CONTROL 格式，权限 COORDINATE(bit9)。TLV2 为目标UID、12为租约ms、18为revision、19为action、20为短地址、21为下一跳子设备UID；PREPARE/COMMIT/REVOKE 的 control_id 与 revision 一致。中间节点仅经应用提供的 UID→直接端口查询安装路由。协调者等待全部祖先 COMMIT 确认才公布新节点。路由器在本地首发时不减 hop，转发才递减；hop1可本地递送。

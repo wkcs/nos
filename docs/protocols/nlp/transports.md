@@ -2,6 +2,8 @@
 
 <!-- Copyright (C) 2026 NOS contributors -->
 
+实现范围：C SDK 已包含 TCP/USB 长度分帧、UART COBS、I²C/SPI mailbox 和 CAN classic/FD 分段重组；主机有 TCP、POSIX UART 与可选 PyUSB 适配，NK60 接入复合 USB。I²C/SPI 事务、CAN 控制器/收发器、Wi-Fi 链路和串口电气驱动由平台提供，尚未实板验收。UDP 只保留设计绑定；CAN-COMMISSION-1 只保留设计及参考模型，尚无完整 C 自动枚举状态机。
+
 载体提供 `probe / peer_up / send_pdu / receive_pdu / poll / cancel / peer_down`。接口返回实际接收、忙、超时、链路关闭等结果，不把“排进 DMA 队列”当成端到端完成。每个适配器声明 PDU 上限、最坏不可抢占时间、轮询周期、在途/重组槽数及安全模式。线路参数与角色不放进业务能力格式。
 
 ## 1. 共用规则

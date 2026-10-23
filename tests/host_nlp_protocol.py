@@ -67,7 +67,7 @@ class ProtocolTests(unittest.TestCase):
         self.assertEqual(profile['max_encrypted_pdu_bytes'], 52 + profile['payload_bytes'] + 16)
         self.assertLessEqual(profile['reliable_window'], REGISTRY['limits']['max_reliable_window'])
         self.assertLess(profile['pdu_pool_slots'], profile['sessions'] * profile['reliable_window'])
-        self.assertEqual(REGISTRY['status'], 'DRAFT_NOT_IMPLEMENTED')
+        self.assertEqual(REGISTRY['status'], 'EXPERIMENTAL_IMPLEMENTATION')
 
     def test_docs_and_local_links(self):
         docs = list((ROOT / 'docs/protocols/nlp').glob('*.md'))
@@ -83,7 +83,7 @@ class ProtocolTests(unittest.TestCase):
             self.assertIn('| ' + str(field['offset']) + ' | ' + field['name'] + ' | ' + str(field['bytes']) + ' |', wire)
         for opcode in REGISTRY['core_opcodes']:
             self.assertIn(opcode, wire)
-        self.assertIn('尚未接入 NOS 固件', (ROOT / 'docs/protocols/nlp/README.md').read_text())
+        self.assertIn('实验实现', (ROOT / 'docs/protocols/nlp/README.md').read_text())
 
     def test_crc_oracle(self):
         self.assertEqual(nlp.crc32c(b'123456789'), 0xe3069283)

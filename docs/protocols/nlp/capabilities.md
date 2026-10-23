@@ -2,6 +2,8 @@
 
 <!-- Copyright (C) 2026 NOS contributors -->
 
+C SDK 已实现 keyboard/log/input/keymap/display/shell/firmware/bluetooth/wifi 的有界处理器；lighting 接入 NK60。power/time 仍保留。能力处理器通过显式后端回调连接硬件和操作系统，仅在后端具备功能时注册。NK60 当前只公布 device/keyboard/log/keymap/lighting；没有宣传终端、OTA、屏幕或无线实板支持。
+
 所有条目均为**待实现的标准接口设计**。稳定类型由 `UUIDv5(NAMESPACE_URL, "https://github.com/wkcs/nos/nlp/capability/" + name)` 生成，完整 UUID/操作码见注册表。厂商类型使用自己控制的名称空间；不占用下表类型后改变格式。同一类型可有多个实例。
 
 除管理预会话外，REQUEST/RESPONSE 都带 [wire](wire.md) 的 8 字节 RPC 前缀；下文长度不含该前缀。EVENT/DATA 不带 RPC 前缀，使用其明确格式。未定义字段/功能必须拒绝，不能返回空成功。大对象显式分块，每块都必须适配协商 payload。
@@ -14,17 +16,17 @@
 
 ## 2. 日志 `log`
 
-操作：SUBSCRIBE(1)、SET_FILTER(2)、GET_STATS(3)、UNSUBSCRIBE(4)；事件 RECORD(0x1001)。过滤包括级别 mask、最多4个 component_id、每秒记录上限和丢弃策略。默认非可靠、priority3、16条/秒、突发8条；设备按自身 ring/链路预算进一步限制，不能阻塞中断、键盘扫描或内核临界区。
+操作：SUBSCRIBE(1)、SET_FILTER(2)、GET_STATS(3)、UNSUBSCRIBE(4)；事件 RECORD(0x1001)。过滤包括级别 mask、最多4个 component_id、每秒记录上限和丢弃策略。默认非可靠、priority3、最多16条/秒，当前 burst 参数只接受1；设备按自身 ring/链路预算进一步限制，不能阻塞中断、键盘扫描或内核临界区。
 
 RECORD 固定头24字节：`monotonic_us:u64, record_seq:u32, dropped_total:u32, component_id:u16, level:u8, flags:u8, text_len:u16, reserved:u16`，随后 text_len 字节 UTF-8。reserved=0；flags bit0 TRUNCATED，其余0；level0..5。消息总长必须精确匹配。时间来自该设备本次 boot 的单调时钟，不冒充全网 UTC；dropped_total/record_seq 按 u32 计数，工具结合 boot_id 和序号显示丢失。
 
-读取日志和修改日志级别可有不同权限。敏感日志不因使用有线载体而默认公开。GET_STATS 返回 ring 容量、当前占用、累计丢弃和限速计数；不能用“可靠日志”占满控制缓冲。
+读取日志和修改日志级别可有不同权限。敏感日志不因使用有线载体而默认公开。GET_STATS 返回四个u32：ring字节容量、当前记录数(0..4)、累计覆盖/丢弃、累计记录序号；不能用“可靠日志”占满控制缓冲。
 
 ## 3. 终端 `shell`
 
 操作 OPEN_TERMINAL(1)、RESIZE(2)、INTERRUPT(3)、CLOSE_TERMINAL(4)、GET_EXIT(5)；DATA BYTES(0x2001)、事件 EXIT(0x1001)。shell 是独立终端会话，不是把 RPC 字符串交给内核 eval。
 
-OPEN 参数：`columns:u16, rows:u16, flags:u16, term_len:u16, term[term_len]`，列1..512、行1..256、term_len≤32，term 为 UTF-8；flags bit0 请求独立 stderr，其余0。成功响应固定12字节：`terminal_id:u32, features:u32, lease_ms:u32`，features bit0独立stderr，其余0，终端空闲租约由服务端选择（默认30000ms，可由有效输入/输出续期）。基线在可靠 channel1 传双向有序终端字节，服务端提供 stdin 与合并的 stdout/stderr；独立 stderr 仅在描述符和 OPEN 确认后用 channel2。不做 NUL 结尾处理，允许终端控制字节；INTERRUPT 在保留控制队列处理，不能被大量输出饿死。
+OPEN 参数：`columns:u16, rows:u16, flags:u16, term_len:u16, term[term_len]`，列1..512、行1..256、term_len≤32，当前后端 term 限可打印 ASCII（UTF-8 子集）；flags bit0 请求独立 stderr，其余0。成功响应固定12字节：`terminal_id:u32, features:u32, lease_ms:u32`，features bit0独立stderr，其余0，当前 lease_ms 返回所属 NLP 会话租约（默认15000ms），由有效会话流量续期；尚未另设终端空闲超时。基线在可靠 channel1 传双向有序终端字节，服务端提供 stdin 与合并的 stdout/stderr；独立 stderr 仅在描述符和 OPEN 确认后用 channel2。不做 NUL 结尾处理，允许终端控制字节；INTERRUPT 在保留控制队列处理，不能被大量输出饿死。
 
 RESIZE 为 `terminal_id:u32, columns:u16, rows:u16`，INTERRUPT 为 `terminal_id:u32, signal:u16, reserved:u16`（协议值2 INT / 15 TERM，不透传其他OS信号号）；CLOSE/GET_EXIT 为 terminal_id:u32。BYTES 为 `terminal_id:u32 | data[]`；EXIT 为 `terminal_id:u32, exit_status:i32`。输出和关闭均有背压、取消与会话撤销语义；字节流不跨重连重放，断开后结果可能 UNKNOWN。
 

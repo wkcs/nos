@@ -13,7 +13,8 @@ int main(void)
         0x40003800u, 0x40003804u, 0x4000380cu,
         0x50000000u, 0x50000104u, 0x50000800u, 0x5000083cu,
         0x50000900u, 0x5000093cu, 0x50000b00u, 0x50000b1cu,
-        0x50000e00u, 0x50001000u, 0x50002000u
+        0x50000e00u, 0x50001000u, 0x50002000u, 0x50003000u,
+        0x50000108u, 0x50000940u, 0x5000095cu, 0x50000b40u, 0x50000b5cu
     };
     for (unsigned i = 0; i < sizeof(read_write) / sizeof(read_write[0]); i++) {
         uintptr_t address = read_write[i];
@@ -40,15 +41,21 @@ int main(void)
         assert(nk60_mmio_allowed(base + 0x18u, 4, 1));
         assert(!nk60_mmio_allowed(base + 0x1cu, 4, 0));
     }
+    for (unsigned i = 0; i < 3; ++i) {
+        assert(nk60_mmio_allowed(0x1fff7a10u + i * 4u, 4, 0));
+        assert(!nk60_mmio_allowed(0x1fff7a10u + i * 4u, 4, 1));
+    }
+    assert(!nk60_mmio_allowed(0x1fff7a0cu, 4, 0));
+    assert(!nk60_mmio_allowed(0x1fff7a1cu, 4, 0));
     puts("PASS nk60_mmio_valid_registers_and_widths");
 
     const uintptr_t forbidden[] = {
         0, UINTPTR_MAX, UINTPTR_MAX - 3u, 0x08000000u, 0x20000000u,
         0x40000000u, 0x40000028u, 0x40020c00u, 0x40023800u,
         0x40023804u, 0x40023808u, 0x40026000u, 0x40026070u,
-        0x4002607cu, 0x40023810u, 0x50000108u, 0x500007fcu,
-        0x50000840u, 0x50000940u, 0x50000afcu, 0x50000b20u,
-        0x50000dfcu, 0x50001004u, 0x50001ffcu, 0x50002004u,
+        0x4002607cu, 0x40023810u, 0x5000010cu, 0x500007fcu,
+        0x50000840u, 0x50000960u, 0x50000afcu, 0x50000b20u,
+        0x50000dfcu, 0x50001004u, 0x50001ffcu, 0x50002004u, 0x50003004u, 0x50000b60u,
         0xe000e100u, 0xe000ed08u, 0xe000ed9cu
     };
     for (unsigned i = 0; i < sizeof(forbidden) / sizeof(forbidden[0]); i++) {
