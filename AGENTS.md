@@ -9,6 +9,7 @@
 - 基础验证：`make qemu-test`，执行原有八个真实 QEMU 组合。
 - 完整软件验收：`python3 tests/acceptance.py --include-posix --require-frozen-source`；开发时按平台或 section 做局部检查。
 - STM32 必须使用原版 QEMU 的 `netduinoplus2`；禁止用历史 `nos_stm32` 补丁机型替代。
+- 实板键盘：`make PLATFORM=nk60_v2 LIBC=minimal firmware`，仅正常启动/单核；资源、烧录和非实板验证边界见 `docs/NK60_V2.md`。`boards` 验收包含模型测试和明确跳过 F401 时钟初始化的 QEMU 用户入口专项，不能宣称键盘外设已实测。
 
 ## 模块与权限
 

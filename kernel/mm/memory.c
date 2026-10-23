@@ -11,7 +11,7 @@ static struct spinlock page_lock;
 static unsigned short private_references[PAGE_POOL_PAGES];
 _Static_assert(NOS_SPACES < UINT16_MAX, "private fork references fit");
 #endif
-#ifndef NOS_MMU
+#if !defined(NOS_MMU) && !defined(NOS_NK60_V2)
 static uintptr_t shared_heap, shared_break;
 #endif
 void page_init(void)
@@ -293,23 +293,27 @@ static int space_init(struct task *task, int builtin)
     s->heap = USER_DATA + HEAP_OFFSET;
     s->heap_limit = USER_DATA + HEAP_END;
 #else
+#ifndef NOS_NK60_V2
     if (!shared_heap) {
         shared_heap = page_alloc(2);
         if (!shared_heap) goto failed;
         shared_break = shared_heap;
     }
     s->heap = shared_heap; s->heap_limit = shared_heap + 2 * NOS_PAGE_SIZE;
+#endif
     task->tls_memory = s->memory;
 #endif
     s->brk = s->heap;
     sync_space(task, s);
     return 0;
+#if defined(NOS_MMU) || !defined(NOS_NK60_V2)
 failed:
     /* Discard all page-table entries before releasing their physical pages. */
     arch_space_init(id);
     page_free(s->memory, USER_BYTES / NOS_PAGE_SIZE);
     k_memset(s, 0, sizeof(*s)); task->memory = 0; task->space_id = NOS_SPACES;
     return -NOS_ENOMEM;
+#endif
 }
 int space_create(struct task *task) { return space_init(task, 1); }
 int space_create_empty(struct task *task) { return space_init(task, 0); }
@@ -418,6 +422,10 @@ static uintptr_t translate(struct task *task, uintptr_t p, int write)
 }
 intptr_t vm_brk(struct task *task, uintptr_t address)
 {
+#ifdef NOS_NK60_V2
+    (void)task; (void)address;
+    return -NOS_ENOTSUP;
+#else
     struct memory_space *s = task_space(task);
     if (!s) return -NOS_EINVAL;
 #ifndef NOS_MMU
@@ -430,6 +438,7 @@ intptr_t vm_brk(struct task *task, uintptr_t address)
     shared_break = address;
 #endif
     return (intptr_t)address;
+#endif
 }
 int user_access(struct task *task, uintptr_t ptr, size_t size, int write)
 {
@@ -1061,7 +1070,9 @@ unsigned task_mpu_regions(struct task *task, uintptr_t *bases, size_t *sizes, un
     if (!s) return 0;
     unsigned n = 0;
     bases[n] = s->memory; sizes[n] = USER_BYTES; flags[n++] = 3;
-    bases[n] = s->heap; sizes[n] = s->heap_limit - s->heap; flags[n++] = 3;
+    if (s->heap_limit > s->heap) {
+        bases[n] = s->heap; sizes[n] = s->heap_limit - s->heap; flags[n++] = 3;
+    }
     bases[n] = (uintptr_t)__user_data_start;
     sizes[n] = ((size_t)(__user_bss_end - __user_data_start) + NOS_PAGE_SIZE - 1) & ~(size_t)(NOS_PAGE_SIZE - 1);
     flags[n++] = 3;

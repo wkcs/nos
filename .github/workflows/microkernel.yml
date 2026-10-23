@@ -37,6 +37,11 @@ jobs:
             out/microkernel/persistence/
             out/microkernel/normal-validation/
             out/microkernel/build-configuration/**/incremental-results.json
+            out/microkernel/host-keyboard/
+            out/microkernel/host-usb-keyboard/
+            out/microkernel/host-nk60-*/
+            out/microkernel/nk60-firmware/
+            out/microkernel/nk60-startup/
   linux-compat:
     if: github.event_name == 'workflow_dispatch' && inputs.linux_compat
     runs-on: ubuntu-latest

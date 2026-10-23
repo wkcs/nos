@@ -1,9 +1,16 @@
 /* Copyright (C) 2026 NOS contributors */
 #include "kernel.h"
+#ifdef NOS_NK60_V2
+#include "nk60_device.h"
+#endif
 static volatile uint32_t *reg(uintptr_t p) { return (volatile uint32_t *)p; }
 #ifdef NOS_ARM_M
 void arch_platform_init(void)
 {
+#ifdef NOS_NK60_V2
+    extern void nk60_boot_init(void);
+    nk60_boot_init();
+#endif
     *reg(0x4001100c) = (1u << 13) | (1u << 3) | (1u << 2);
 #ifdef NOS_MPU
     /* Enable MemManage rather than allowing all MPU violations to escalate. */
@@ -11,7 +18,15 @@ void arch_platform_init(void)
     if (!(*reg(0xe000ed90) & 0xff00)) kernel_fail("CPU has no MPU");
 #endif
 }
-void arch_putc(char c) { *reg(0x40011004) = (unsigned char)c; }
+void arch_putc(char c)
+{
+#ifdef NOS_NK60_V2
+    unsigned remaining = 1000000u;
+    while (!(*reg(0x40011000u) & (1u << 7)) && --remaining) { }
+    if (!remaining) return;
+#endif
+    *reg(0x40011004) = (unsigned char)c;
+}
 uintptr_t arch_irq_save(void)
 {
     uintptr_t v; __asm__ volatile("mrs %0, primask; cpsid i" : "=r"(v) :: "memory"); return v;
@@ -19,7 +34,11 @@ uintptr_t arch_irq_save(void)
 void arch_irq_restore(uintptr_t v) { __asm__ volatile("msr primask, %0" :: "r"(v) : "memory"); }
 void arch_timer_init(void)
 {
+#ifdef NOS_NK60_V2
+    *reg(0xe000e014) = 840000u - 1u; /* 84 MHz / 100 Hz */
+#else
     *reg(0xe000e014) = 1680000 - 1;
+#endif
     *reg(0xe000e018) = 0;
     *reg(0xe000e010) = 7;
 }
@@ -60,7 +79,11 @@ void arch_space_switch(unsigned id)
     uintptr_t bases[7]; size_t sizes[7]; unsigned flags[7];
     unsigned n = task_mpu_regions(current_task, bases, sizes, flags);
     *reg(0xe000ed94) = 0;
+#ifdef NOS_NK60_V2
+    mpu_region(0, 0x08000000u, 256u * 1024u, 5);
+#else
     mpu_region(0, 0x08000000u, 1024 * 1024, 5);
+#endif
     for (unsigned i = 0; i < n; i++) mpu_region(i + 1, bases[i], sizes[i], flags[i]);
     for (unsigned i = n + 1; i < 8; i++) { *reg(0xe000ed98) = i; *reg(0xe000eda0) = 0; }
     *reg(0xe000ed94) = 5; /* enable, privileged background mapping */
@@ -230,6 +253,12 @@ struct arch_frame *arch_return_frame(struct arch_frame *f) { return f; }
 #endif
 void arch_shutdown(int failed)
 {
+#ifdef NOS_NK60_V2
+    /* No debugger/semihosting dependency on physical hardware. Preserve the
+     * failure UART message and halt with interrupts disabled. */
+    (void)failed;
+    __asm__ volatile("cpsid i" ::: "memory");
+#else
     uintptr_t args[2] = { 0x20026, (uintptr_t)failed };
     register uintptr_t r0 __asm__("r0") = 0x20;
     register uintptr_t r1 __asm__("r1") = (uintptr_t)args;
@@ -238,13 +267,87 @@ void arch_shutdown(int failed)
 #else
     __asm__ volatile("svc #0x123456" : "+r"(r0) : "r"(r1) : "memory");
 #endif
+#endif
     for (;;) __asm__ volatile("wfi");
 }
+
+#ifdef NOS_NK60_V2
+/* Only this fixed SPI2 route owns DMA1. General DMA registers are never
+ * exposed through the MMIO capability. The synchronous operation keeps the
+ * caller's validated source allocation alive through completion/quiescence. */
+static void nk60_dma_stop(void)
+{
+    *reg(0x40026070u) &= ~1u; /* DMA1 stream4 EN */
+    unsigned remaining = 10000u;
+    while ((*reg(0x40026070u) & 1u) && --remaining) { }
+    if (!remaining) {
+        /* A stuck stream must not retain access to user memory on return. */
+        *reg(0x40023810u) |= 1u << 21; /* AHB1RSTR: DMA1 reset */
+        __asm__ volatile("dsb" ::: "memory");
+        *reg(0x40023810u) &= ~(1u << 21);
+        if (*reg(0x40026070u) & 1u) kernel_fail("NK60 DMA would not quiesce");
+    }
+    __asm__ volatile("dsb" ::: "memory");
+    *reg(0x4002600cu) = 0x3du; /* HIFCR: all stream4 flags */
+}
+static intptr_t nk60_rgb_dma(struct task *task, uintptr_t source, size_t length)
+{
+    if (length != NOS_NK60_RGB_BYTES) return -NOS_EINVAL;
+    if (!nk60_dma_sram_range(source, length) ||
+        !user_access(task, source, length, 0) ||
+        task_user_phys_read(task, source) != source ||
+        task_user_phys_read(task, source + length - 1u) != source + length - 1u)
+        return -NOS_EFAULT;
+    *reg(0x40023830u) |= 1u << 21; /* DMA1 clock */
+    (void)*reg(0x40023830u);
+    nk60_dma_stop();
+    if (!(*reg(0x40003800u) & (1u << 6)) ||
+        !(*reg(0x40003804u) & (1u << 1))) return -NOS_EIO;
+    *reg(0x40026074u) = (uint32_t)length;
+    *reg(0x40026078u) = 0x4000380cu; /* fixed peripheral destination */
+    *reg(0x4002607cu) = (uint32_t)source;
+    *reg(0x40026084u) = 0; /* byte direct mode, FIFO disabled */
+    *reg(0x40026070u) = (1u << 6) | (1u << 10) | (2u << 16);
+    __asm__ volatile("dsb" ::: "memory");
+    *reg(0x40026070u) |= 1u;
+    uint32_t start = *reg(0x40000024u);
+    unsigned remaining = 2000000u;
+    intptr_t result = -NOS_ETIMEDOUT;
+    while (--remaining && (uint32_t)(*reg(0x40000024u) - start) < 10000u) {
+        uint32_t status = *reg(0x40026004u);
+        if (status & 0x0du) { result = -NOS_EIO; break; }
+        if (status & (1u << 5)) {
+            result = *reg(0x40026074u) ? -NOS_EIO : 0;
+            break;
+        }
+    }
+    nk60_dma_stop();
+    if (result) *reg(0x40003804u) &= ~(1u << 1); /* stop SPI DMA requests */
+    return result;
+}
+#endif
 
 intptr_t arch_device_operation(struct task *task, uintptr_t op, uintptr_t b, uintptr_t c)
 {
 #ifdef NOS_ARM_M
-    (void)task; (void)b; (void)c;
+#ifdef NOS_NK60_V2
+    if (op >= NOS_NK60_READ32 && op <= NOS_NK60_WRITE8) {
+        unsigned width = op >= NOS_NK60_READ8 ? 1u : 4u;
+        int write = op == NOS_NK60_WRITE32 || op == NOS_NK60_WRITE8;
+        if (!nk60_mmio_allowed(b, width, write)) return -NOS_EACCES;
+        if (width == 1u) {
+            volatile uint8_t *byte = (volatile uint8_t *)b;
+            if (write) { if (c > UINT8_MAX) return -NOS_EINVAL; *byte = (uint8_t)c; return 0; }
+            return *byte;
+        }
+        if (write) { *reg(b) = (uint32_t)c; return 0; }
+        return (intptr_t)*reg(b);
+    }
+    if (op == NOS_NK60_RGB_DMA) return nk60_rgb_dma(task, b, c);
+#else
+    (void)task;
+#endif
+    (void)b; (void)c;
     if (op == 5) { unsigned status = *reg(0x40011000); return ((status & (1u << 5)) ? 1 : 0) | ((status & (1u << 7)) ? 4 : 0); }
     if (op == 4) { if (b) *reg(0x4001100c) |= 1u << 5; else *reg(0x4001100c) &= ~(1u << 5); return 0; }
     if (!op) return (*reg(0x40011000) & (1u << 5)) ? (intptr_t)(*reg(0x40011004) & 255) : -NOS_EAGAIN;
@@ -349,7 +452,16 @@ void arch_device_revoke(struct task *task)
 {
     if (!(task->caps & NOS_CAP_DEVICE)) return;
 #ifdef NOS_ARM_M
-    *reg(0x4001100c) &= ~(1u << 5); arch_irq_mask(37, 1); return;
+    *reg(0x4001100c) &= ~(1u << 5); arch_irq_mask(37, 1);
+#ifdef NOS_NK60_V2
+    if (*reg(0x40023834u) & (1u << 7)) {
+        *reg(0x50000018u) = 0; /* GINTMSK: stop USB interrupt delivery. */
+        *reg(0x50000804u) |= 1u << 1; /* DCTL: soft disconnect. */
+    }
+    arch_irq_mask(67, 1);
+    if (*reg(0x40023830u) & (1u << 21)) nk60_dma_stop();
+#endif
+    return;
 #else
     *reg(0x09000038) = 0; arch_irq_mask(33, 1);
     unsigned count =
@@ -408,6 +520,9 @@ void arch_irq_mask(unsigned irq, int masked)
 int arch_irq_bind(unsigned device_index)
 {
 #ifdef NOS_ARM_M
+#ifdef NOS_NK60_V2
+    if (device_index == NOS_NK60_USB_IRQ_DEVICE) { arch_irq_mask(67, 0); return 67; }
+#endif
     if (device_index && device_index != 0x100) return -NOS_EINVAL;
     *reg(0x4001100c) |= 1u << 5; /* USART1 RXNE interrupt */
     arch_irq_mask(37, 0); return 37;

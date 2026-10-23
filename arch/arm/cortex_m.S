@@ -21,7 +21,17 @@ _start:
     .word fault_handler
     .endr
     .word external_handler
+#ifdef NOS_NK60_V2
+    /* IRQ38..66 followed by OTG_FS IRQ67. USART1 remains IRQ37. */
+    .rept 29
+    .word fault_handler
+    .endr
+    .word external_handler
+#endif
 .section .boot,"ax"
+#ifdef NOS_NK60_V2
+.global reset_handler
+#endif
 .thumb_func
 reset_handler:
     cpsid i

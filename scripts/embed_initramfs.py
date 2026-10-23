@@ -121,9 +121,10 @@ if args.negative_fixtures and entries:
     entries.append(('/abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ', 0))
     if args.path_max == 256:
         entries.append(('/' + '/'.join([letter * 50 for letter in 'abcd'] + ['hello']), 0))
-lines += ['static int same(const char *a, const char *b)',
-          '{ while (*a && *a == *b) { a++; b++; } return *a == *b; }',
-          'const void *nos_initramfs_find(const char *path, size_t *bytes)', '{',
+if entries:
+    lines += ['static int same(const char *a, const char *b)',
+              '{ while (*a && *a == *b) { a++; b++; } return *a == *b; }']
+lines += ['const void *nos_initramfs_find(const char *path, size_t *bytes)', '{',
           '    if (!path || !bytes) return 0;']
 for name, i in entries:
     lines.append(f'    if (same(path, {json.dumps(name)})) {{ *bytes = sizeof(image_{i}); return image_{i}; }}')

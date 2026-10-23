@@ -20,6 +20,8 @@ source /workspace/.nos-env/activate.sh
 | `riscv32_virt` | `virt` / RV32GC，`-bios none` | Sv32 | minimal | 1–4 |
 | `riscv32_nommu` | `virt` / RV32GC，`-bios none` | 关闭地址翻译，共享地址空间 | minimal | 1–4 |
 
+`nk60_v2` 是真实 STM32F401 键盘固件目标，不加入上述 QEMU 外设矩阵；构建和烧录见 [NK60 V2](NK60_V2.md)。完整验收增加 `boards` section，覆盖实际键盘/USB/硬件库的宿主 sanitizer、固件资源边界和明确跳过 F401 时钟初始化的 Cortex-M 启动专项。后者只验证真实 ELF 的用户入口/系统调用/MPU，不能证明 NK60 外设。
+
 RV32 使用 `riscv64-unknown-elf` multilib 编译器；PIE 链接还需要支持 ELF32 的 Linux RISC-V binutils。自备工具链可通过 Make 的 `ARM_PREFIX`、`ARM64_PREFIX`、`RISCV_PREFIX`、`RISCV32_PREFIX` 和 `QEMU_BINDIR` 覆盖；具体参数以 `scripts/Makefile.microkernel` 为准。源码构建使用 `-Wall -Wextra -Werror`。
 
 ## 常用命令

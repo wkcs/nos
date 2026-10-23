@@ -13,12 +13,12 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--section', action='append', choices=('baseline', 'build', 'normal', 'storage', 'smp', 'mpu', 'rv32', 'applications', 'faults', 'clock', 'glibc', 'posix-vfs', 'posix-path', 'posix-suite', 'posix-suite-expanded', 'shared-files'))
-    parser.add_argument('--include-posix', action='store_true', help='Add the 18 POSIX/glibc groups to the default 54 groups')
+    parser.add_argument('--section', action='append', choices=('baseline', 'build', 'normal', 'storage', 'smp', 'mpu', 'rv32', 'applications', 'faults', 'clock', 'boards', 'glibc', 'posix-vfs', 'posix-path', 'posix-suite', 'posix-suite-expanded', 'shared-files'))
+    parser.add_argument('--include-posix', action='store_true', help='Add the 18 POSIX/glibc groups to the default 62 groups')
     parser.add_argument('--dry-run', action='store_true', help='Print the exact command plan without running checks or claiming results')
     parser.add_argument('--require-frozen-source', action='store_true', help='Fail final acceptance if repository source identity changes during the run')
     args = parser.parse_args()
-    sections = set(args.section or ('baseline', 'build', 'normal', 'storage', 'smp', 'mpu', 'rv32', 'applications', 'faults', 'clock'))
+    sections = set(args.section or ('baseline', 'build', 'normal', 'storage', 'smp', 'mpu', 'rv32', 'applications', 'faults', 'clock', 'boards'))
     if args.include_posix:
         sections |= {'shared-files', 'posix-vfs', 'posix-path', 'glibc', 'posix-suite-expanded'}
     run_id = time.time_ns()
@@ -31,6 +31,14 @@ def main():
     add('build', 'incremental_configuration', 'tests/build_configuration.py', '--platform', 'arm64_virt', '--libc', 'musl')
     add('build', 'vfs_host_sanitizers', 'tests/host_vfs.py')
     add('build', 'nshell_host_sanitizers', 'tests/host_shell.py')
+    add('boards', 'keyboard_host_sanitizers', 'tests/host_keyboard.py')
+    add('boards', 'usb_keyboard_host_sanitizers', 'tests/host_usb_keyboard.py')
+    add('boards', 'nk60_hardware_host_sanitizers', 'tests/host_nk60_hardware.py')
+    add('boards', 'nk60_device_host_sanitizers', 'tests/host_nk60_device.py')
+    add('boards', 'nk60_service_host_sanitizers', 'tests/host_nk60_service.py')
+    add('boards', 'nk60_flash_image_validation', 'tests/test_nk60_flash_tool.py')
+    add('boards', 'nk60_firmware_cross_builds', 'tests/nk60_firmware.py')
+    add('boards', 'nk60_cortex_m_startup_stubbed_clock', 'tests/qemu_nk60_startup.py')
     for platform in ('arm_virt', 'arm64_virt', 'riscv_virt'):
         add('shared-files', f'{platform}_shared_file_pages', 'tests/qemu_shared_files.py', '--platform', platform,
             '--output-root', out / 'shared-files')

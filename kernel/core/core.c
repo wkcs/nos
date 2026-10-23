@@ -207,6 +207,10 @@ static intptr_t dispatch(uintptr_t nr, uintptr_t a, uintptr_t b, uintptr_t c)
         task_finish(peer, -NOS_EINTR); return 0;
     }
     case NOS_SYS_SERVICE_RESTART:
+#ifdef NOS_NK60_V2
+        /* This firmware has no VFS service or process supervisor. */
+        return -NOS_ENOTSUP;
+#else
         if (!(current_task->caps & NOS_CAP_SPAWN) || a) return -NOS_EACCES;
         if (tasks[0].state != TASK_DEAD && tasks[0].state != TASK_UNUSED) return -NOS_EBUSY;
         for (unsigned i = 2; i < NOS_IDLE_FIRST; i++) {
@@ -218,6 +222,7 @@ static intptr_t dispatch(uintptr_t nr, uintptr_t a, uintptr_t b, uintptr_t c)
         if (create_task(0, (uintptr_t)nos_vfs_server, 0, 4,
             device_service_caps(current_task->caps), UINT32_MAX) < 0) return -NOS_ENOMEM;
         ipc_init(); reschedule = 1; return tasks[0].id;
+#endif
     case NOS_SYS_OBJECT_STATS: {
         struct nos_object_stats stats = { 0, mutex_count(), endpoint_count(), page_available() };
         for (unsigned i = 0; i < NOS_TASKS; i++) stats.tasks += tasks[i].state != TASK_UNUSED && tasks[i].state != TASK_RETIRED;
@@ -480,6 +485,12 @@ void kernel_start(void)
 #if NOS_SMP > 1
     caps |= NOS_CAP_SMP;
 #endif
+#ifdef NOS_NK60_V2
+    extern void nos_keyboard_service(uintptr_t unused);
+    if (create_task(0, (uintptr_t)nos_keyboard_service, 0, 4,
+        device_service_caps(caps), UINT32_MAX) < 0)
+        kernel_fail("keyboard address space");
+#else
     if (create_task(0, (uintptr_t)nos_vfs_server, 0, 4, device_service_caps(caps), UINT32_MAX) < 0 ||
         create_task(1,
 #ifdef NOS_NORMAL_BOOT
@@ -489,6 +500,7 @@ void kernel_start(void)
 #endif
         0, 8, caps | NOS_CAP_SPAWN, UINT32_MAX) < 0)
         kernel_fail("initial address spaces");
+#endif
     extern void nos_idle(uintptr_t unused);
     for (unsigned cpu = 0; cpu < NOS_SMP; cpu++) {
         unsigned slot = NOS_IDLE_FIRST + cpu;

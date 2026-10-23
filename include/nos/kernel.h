@@ -36,16 +36,26 @@
 #endif
 #else
 #ifndef USER_BYTES
+#ifdef NOS_NK60_V2
+#define USER_BYTES NOS_PAGE_SIZE
+#else
 #define USER_BYTES (8u * 1024u)
+#endif
 #endif
 #ifndef HEAP_OFFSET
 #define HEAP_OFFSET 0u
 #endif
 #ifndef HEAP_END
+#ifdef NOS_NK60_V2
+#define HEAP_END 0u
+#else
 #define HEAP_END (4u * 1024u)
 #endif
+#endif
 #ifndef PAGE_POOL_PAGES
-#ifdef NOS_RISCV32
+#ifdef NOS_NK60_V2
+#define PAGE_POOL_PAGES 4u
+#elif defined(NOS_RISCV32)
 #define PAGE_POOL_PAGES 256u
 #else
 #define PAGE_POOL_PAGES 20u
@@ -55,6 +65,8 @@
 #ifndef VMA_SLOTS
 #ifdef NOS_LINUX_COMPAT
 #define VMA_SLOTS 384u
+#elif defined(NOS_NK60_V2)
+#define VMA_SLOTS 4u
 #else
 #define VMA_SLOTS 16u
 #endif

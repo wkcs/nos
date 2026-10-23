@@ -50,6 +50,38 @@ void *memset(void *d, int value, size_t n)
 {
     return u_memset(d, value, n);
 }
+
+size_t strlen(const char *s)
+{
+    return u_strlen(s);
+}
+
+int memcmp(const void *a, const void *b, size_t n)
+{
+    const unsigned char *x = a, *y = b;
+    while (n--) {
+        if (*x != *y)
+            return (int)*x - (int)*y;
+        x++;
+        y++;
+    }
+    return 0;
+}
+
+void *memmove(void *dst, const void *src, size_t n)
+{
+    unsigned char *d = dst;
+    const unsigned char *s = src;
+    if ((uintptr_t)d > (uintptr_t)s && (uintptr_t)d - (uintptr_t)s < n) {
+        while (n) {
+            n--;
+            d[n] = s[n];
+        }
+    } else {
+        u_memcpy(dst, src, n);
+    }
+    return dst;
+}
 #if defined(NOS_ARM) || defined(NOS_ARM_M)
 void __aeabi_memcpy(void *d, const void *s, size_t n)
 {

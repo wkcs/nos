@@ -318,3 +318,35 @@ RISC-V UART 的一次真实停顿由 GDB 确认：ring 为空、接收线程等�
 新增受控回归在真实 NOS ACK 处暂停，注入静默触发字符及屏蔽期间输入，随后只恢复 NOS 代码；测试不写控制器寄存器。旧 RV64 镜像 SHA256 `e85e1e467c63ba5a9918f8f10df4635970d702c45ff57bd4da6c44b233caf301` 正确失败，GDB/窗口检查成功但 pending 命令未执行，报告 `out/microkernel/uart-rearm/1792678250156875125/riscv_virt/results.json`。修复后的 RV64、RV32 MMU、RV32 非 MMU 三项均通过，且在最终 72 组再次通过。
 
 开发期间保留的失败记录：`out/microkernel/acceptance/1792675107193889589/results.json` 为远端服务取消后立即重启的旧测试竞态；`out/microkernel/acceptance/1792676448571282442/results.json` 为 UART 丢通知。增量检查首次遇到旧对象残留后中止的记录位于 `out/microkernel/shell-first-exit.json`。这些记录均未作为最终通过证据。当前源结构与清理边界见 [SOURCE_LAYOUT.md](SOURCE_LAYOUT.md)。
+
+## nk60_v2 用户态键盘迁移：最终软件验证
+
+本批在 `dev/nk60-v2` 上从 `62ae16cd9e3399fe18a5ba65b46816ff7e52902b` 开发。新增真实 STM32F401 键盘固件目标、用户态扫描/USB HID/配置/RGB 服务、能力检查的寄存器白名单与固定 SPI2 DMA，以及板级开发/烧录工具。功能与硬件边界见 [NK60 V2](NK60_V2.md)，主流项目依据见 [键盘调研](KEYBOARD_RESEARCH.md)。
+
+**80 个唯一命令组均有同一冻结源码下的正式通过证据，但不是一次连续无失败的 80/80。** 汇总为 `out/microkernel/nk60-final/coverage-results.json`。冻结输入共 1477 个文件，基础 HEAD 如上；原 tracked diff SHA256 为 `c032a7129a03c14062e18ae69f2dcccfc0c9be1d1d833ae5d74c16b70018dbeb`，新增文件 SHA256 同时记录。测试后逐文件核对全部输入一致，随后仅更新本报告与执行计划。
+
+执行与失败记录完整保留：
+
+- 原始 `python3 tests/acceptance.py --include-posix --require-frozen-source` 在 27/80 组通过后会话进程中断，报告 `out/microkernel/acceptance/1792719902448257600/results.json`；完整 runner 的退出码不可得，不能算完整通过。
+- 严格核对源码身份、全部文件哈希和命令前缀后恢复剩余 53 组。`out/microkernel/acceptance/1792741226753387273/results.json` 完成全部覆盖，**79/80，通过 79、失败 1，source_changed_during_run=false**，恢复进程实际退出 1。失败是 ARM64 glibc 四核组达到原 420 秒宿主总期限，缺少最终容量标记；未将超时算通过。
+- 对比既有通过版本，失败 ELF 的内核/原生用户执行段与 26 个应用的全部可加载节相同；记录在 `out/microkernel/nk60-final/generic-binary-comparison.json`。同一失败镜像的带时间戳诊断于 352.93 秒自然退出 0，必需标记齐全，没有触发停滞 GDB 抓取。该次使用 900 秒诊断上限，明确不作为正式验收、不覆盖原失败，也不据此声称修复了某个死锁。
+- 随后正式 runner 以**原来的 420 秒期限**重跑 ARM64 四核组，**331 项检查、退出 0**，64 线程与 25 子进程容量/回收指标、跨 CPU、RTC 和时钟检查均通过。报告 `out/microkernel/glibc-reports/1792743558289208836/results.json`，收据 `out/microkernel/nk60-final/a64-strict-retry-exit.json`。前后 ELF SHA256 均为 `c26f4ea884aaf543ffed6755678e7ad57cbd0045bdd4004f48bca217e028db98`。来宾断言和内部等待期限未变，未修改冻结源码；首次超时原因没有被冒称为已定位的软件缺陷。
+
+原有八组合、三架构各 51 项上游选定 POSIX 用例（共 153）、glibc 单核/四核、存储/回退、SMP、STM32 MPU、RV32 MMU/非 MMU、时钟、精确异常及 Lua/LVGL 都有通过记录。完整 POSIX.1-2017 和远端 CI 仍不能由这些选定检查推断。
+
+新增键盘软件检查在原完整覆盖的 `boards` section 中全部通过：
+
+| 检查 | 实际范围 |
+| --- | --- |
+| `host_keyboard.py` | 真实动作引擎、10 万次状态扫描、双槽 CRC、1080 个逐字节断电点、存储故障和 generation 回绕 |
+| `host_usb_keyboard.py` | 真实 HID/EP0 与 DWC2 寄存器模型、boot/NKRO/media、背压释放、idle/reset/suspend、1 万次异常请求 |
+| `host_nk60_hardware.py` | 72→61 键映射、SPI NOR 分页/容量/超时/进度、GRB/DMA 错误断电 |
+| `host_nk60_device.py` | 实际 MMIO 宽度/对齐/地址白名单、核心/DMA 寄存器拒绝、SRAM/长度/溢出边界 |
+| `host_nk60_service.py` | 实际服务/动作/日志/HID 集成，物理解锁、UART 改键/宏、非阻塞输出、Flash 期间继续 USB/输入、挂起关灯及计时回绕 |
+| `test_nk60_flash_tool.py` | 17 项 ARM ELF/入口/向量/载入地址与擦除边界校验 |
+| `nk60_firmware.py` | MPU 关/开两种真实固件编译、64 KiB SRAM/128 KiB Flash、用户段与特权段边界 |
+| `qemu_nk60_startup.py` | 实际 NK60 ELF 的 Cortex-M 用户入口、PSP/MSP、MPU、真实 SVC、设备权限、空闲调度；明确跳过 F401 时钟初始化 |
+
+前五组启用 ASan、UBSan 与 LeakSanitizer。最终固件报告为 `out/microkernel/nk60-firmware/1792720080241941009/results.json`：MPU 关闭/开启的 bin 分别为 **47856 / 48844 字节**，静态 SRAM 最高地址均为 `0x20009e88`，低于 64 KiB 栈顶并保留至少 4 KiB MSP。精确测试产物已按哈希复制到 `out/microkernel/nk60_v2/{minimal,mpu}/nos.{elf,bin,hex,map}`，来源及 SHA256 在各目录 `firmware.json`。烧录器默认只生成已验证计划，没有连接探针或写入实物。
+
+**本批没有可访问 nk60_v2 实板。** 原版 `netduinoplus2` 是 F405 模型；跳过时钟的启动专项只证明 CPU/内核 ABI，宿主模型只证明软件状态机。F401 晶振、实际扫描周期、USB 枚举与桌面兼容、LED/DMA 波形、Flash 实际掉电及电流仍待实板验收。扫描目标 4 ms，不宣称 1 kHz。RGB 配置前/挂起断电和软件限幅不等于全板满足 USB 挂起电流；低功耗尚未完成。VIA/Vial、组合键、无线和 USB 升级未实现，后续按调研优先级推进。

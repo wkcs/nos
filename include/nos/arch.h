@@ -17,7 +17,11 @@ struct arch_frame { uintptr_t x[32], pc, status; uint64_t f[32]; uintptr_t fcsr;
 #define FRAME_RESULT(f) ((f)->x[10])
 #elif defined(NOS_ARM_M)
 struct arch_frame { uintptr_t saved[8], r[4], ip, lr, pc, status, sp; };
+#ifdef NOS_NK60_V2
+#define ARCH_NAME "stm32f401-nk60_v2"
+#else
 #define ARCH_NAME "stm32f405"
+#endif
 #define FRAME_RESULT(f) ((f)->r[0])
 #else
 struct arch_frame { uintptr_t r[13], sp, lr, pc, status, tls; uint64_t d[32]; uintptr_t fpscr, padding; };

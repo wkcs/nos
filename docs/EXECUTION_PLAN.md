@@ -210,3 +210,13 @@ AS 限额见下方已完成批次；下一批优先完善稳定进程/地址空�
 - [x] 最终冻结源码完整验收 72/72、退出 0；1435 个文件及 Git 索引核对一致。报告 `out/microkernel/acceptance/1792678382066433286/results.json`，独立核对 `out/microkernel/shell-final-evidence.json`。
 
 使用说明见 [NSHELL.md](NSHELL.md)，目录职责见 [SOURCE_LAYOUT.md](SOURCE_LAYOUT.md)。完整 POSIX.1-2017 与原有后续生命周期/TTY/网络任务继续按支持范围与未完成清单推进。
+
+## nk60_v2 有线键盘迁移
+
+- [x] 从历史 nk60_v2 驱动核对 F401、8 MHz HSE、61 键 HC595 映射、RGB、W25Q 和 USB；使用当前微内核的独立实板构建目标，不恢复旧 RTOS/HAL。
+- [x] 用户态扫描/键盘动作/USB HID/配置服务接入；内核提供能力检查的 MMIO 白名单与固定目的 DMA，64 KiB SRAM、128 KiB 擦除对齐应用分区、MPU/非 MPU 固件均可构建。
+- [x] 增加对称防抖、层/改键、tap-hold、一次性修饰、有限宏、媒体键、6KRO/NKRO、锁灯/RGB、CRC 双槽日志及物理解锁 UART 维护命令。
+- [x] 固定官方 QMK/ZMK/KMK/VIA/Vial/TinyUSB 文档，补充能力对照、实现边界和后续优先级；不宣称 VIA/Vial GUI、无线、完整低功耗已支持。
+- [x] 新增五组宿主 sanitizer runner、烧录镜像验证、两种固件构建及真实 Cortex-M 启动/SVC 专项（明确跳过未建模时钟）。开发验证均通过。
+- [x] 完成同一冻结源码的 80 组覆盖验证：首轮完整覆盖 79/80；ARM64 glibc 四核首次 420 秒超时，保留失败后，以相同 ELF 和原 420 秒期限正式复验 331 项、退出 0。断点、复验和输入核对见验证报告，不宣称一次连续无失败的 80/80。
+- [ ] 实板电气/枚举/逐键/灯光/功耗/断电验收：当前无可访问硬件，保留 [验收步骤](NK60_V2.md)。

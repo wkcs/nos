@@ -1,6 +1,6 @@
 # Copyright (C) 2026 NOS contributors
 PYTHON ?= python3
-BUILD_MODE ?= selftest
+BUILD_MODE ?= $(if $(filter nk60_v2,$(PLATFORM)),normal,selftest)
 MPU ?= 0
 SMP ?= 1
 PERSISTENCE_TEST ?= 0
@@ -27,6 +27,21 @@ ARCH_DIR := arch/arm
 CPUFLAGS := -mcpu=cortex-m4 -mthumb -mfloat-abi=soft
 DEFS := -DNOS_ARM_M
 LINKER := $(ARCH_DIR)/stm32.ld
+else ifeq ($(PLATFORM),nk60_v2)
+CROSS := $(ARM_PREFIX)
+ARCH_DIR := arch/arm
+CPUFLAGS := -mcpu=cortex-m4 -mthumb -mfloat-abi=soft
+DEFS := -DNOS_ARM_M -DNOS_NK60_V2
+LINKER := boards/nk60_v2/nk60_v2.ld
+ifneq ($(LIBC),minimal)
+$(error nk60_v2 uses the allocation-free minimal keyboard profile)
+endif
+ifneq ($(SMP),1)
+$(error nk60_v2 has one Cortex-M4 core)
+endif
+ifneq ($(BUILD_MODE),normal)
+$(error nk60_v2 uses BUILD_MODE=normal; peripheral models run in host tests)
+endif
 else ifeq ($(PLATFORM),arm64_virt)
 CROSS := $(ARM64_PREFIX)
 ARCH_DIR := arch/arm64
@@ -109,7 +124,13 @@ endif
 ifeq ($(BUILD_MODE),selftest)
 USER_SRC += tests/guest/validation.c tests/guest/libc_regression.c tests/guest/kernel_regression.c tests/guest/arch_regression.c tests/guest/elf_regression.c tests/guest/vfs_regression.c
 endif
-ifeq ($(PLATFORM),stm32)
+ifeq ($(PLATFORM),nk60_v2)
+KERNEL_SRC += boards/nk60_v2/boot.c
+USER_SRC := user/lib/syscall.c user/lib/string.c user/lib/process.c
+USER_SRC += servers/keyboard/keyboard.c servers/keyboard/keymap.c servers/keyboard/config.c servers/keyboard/service.c
+USER_SRC += $(wildcard servers/usb/*.c) $(filter-out boards/nk60_v2/boot.c,$(wildcard boards/nk60_v2/*.c))
+endif
+ifneq ($(filter $(PLATFORM),stm32 nk60_v2),)
 ASM_SRC := arch/arm/cortex_m.S
 else
 ASM_SRC := $(ARCH_DIR)/entry.S
@@ -152,7 +173,9 @@ LIBC_ARCHIVE := $(MUSL_ROOT)/lib/libc.a
 else ifneq ($(LIBC),minimal)
 $(error LIBC must be minimal, newlib or musl)
 endif
+ifneq ($(PLATFORM),nk60_v2)
 ASM_SRC += tests/guest/$(if $(filter riscv32_virt riscv32_nommu,$(PLATFORM)),rv32_context_probe,context_probe).S
+endif
 OBJECTS := $(addprefix $(O)/,$(KERNEL_SRC:.c=.o) $(USER_SRC:.c=.o) $(ASM_SRC:.S=.o))
 OBJECTS += $(O)/initramfs.o
 LIBGCC_ARCHIVE := $(shell $(CC) $(CPUFLAGS) -print-libgcc-file-name)
@@ -175,8 +198,8 @@ $(O)/nos.elf: $(OBJECTS) $(LINKER) $(LIBC_ARCHIVE) $(LIBGCC_ARCHIVE) $(KERNEL_LI
 	$(CROSS)size $@
 $(O)/%.o: %.c $(BUILD_SIGNATURE)
 	@mkdir -p $(dir $@)
-	$(CC) $(COMMONFLAGS) $(if $(filter kernel/% arch/%,$<),$(KERNELFLAGS),$(USERFLAGS)) -c $< -o $@
-	$(if $(filter kernel/% arch/%,$<),$(OBJCOPY) --redefine-syms $(KERNEL_LIBGCC_SYMBOLS) $@,@:)
+	$(CC) $(COMMONFLAGS) $(if $(filter kernel/% arch/% boards/nk60_v2/boot.c,$<),$(KERNELFLAGS),$(USERFLAGS)) -c $< -o $@
+	$(if $(filter kernel/% arch/% boards/nk60_v2/boot.c,$<),$(OBJCOPY) --redefine-syms $(KERNEL_LIBGCC_SYMBOLS) $@,@:)
 $(O)/%.o: %.S $(BUILD_SIGNATURE)
 	@mkdir -p $(dir $@)
 	$(CC) $(CPUFLAGS) -fno-pic -fno-pie $(DEFS) -Iinclude/nos -MMD -MP -g -c $< -o $@
@@ -370,6 +393,10 @@ $(O)/apps/lvgl.elf: $(APP_LIBC_SOURCES) apps/lvgl/main.c apps/lvgl/lv_conf.h $(U
 INITRAMFS_FILES += --file /bin/lua=$(O)/apps/lua.elf --file /bin/lvgl=$(O)/apps/lvgl.elf
 INITRAMFS_IMAGES += $(O)/apps/lua.elf $(O)/apps/lvgl.elf
 endif
+ifeq ($(PLATFORM),nk60_v2)
+INITRAMFS_IMAGES :=
+INITRAMFS_FILES :=
+endif
 $(O)/initramfs.c: $(INITRAMFS_IMAGES) scripts/embed_initramfs.py
 	$(PYTHON) scripts/embed_initramfs.py --output $@ $(INITRAMFS_FILES) $(if $(filter selftest,$(BUILD_MODE)),--negative-fixtures,) $(if $(filter 1,$(LINUX_COMPAT)),--path-max 256,)
 $(O)/initramfs.o: $(O)/initramfs.c $(BUILD_SIGNATURE)
@@ -382,6 +409,16 @@ test qemu-test:
 	$(PYTHON) tests/qemu_matrix.py
 qemu-run: $(O)/nos.elf
 	$(PYTHON) scripts/run_qemu.py --platform $(PLATFORM) --image $(O)/nos.elf
+ifeq ($(PLATFORM),nk60_v2)
+.PHONY: firmware flash
+firmware: $(O)/nos.bin $(O)/nos.hex
+$(O)/nos.bin: $(O)/nos.elf
+	$(OBJCOPY) -O binary $< $@
+$(O)/nos.hex: $(O)/nos.elf
+	$(OBJCOPY) -O ihex $< $@
+flash: firmware
+	$(PYTHON) scripts/flash_nk60_v2.py --image $(O)/nos.elf
+endif
 clean:
 	rm -rf $(O)
 -include $(OBJECTS:.o=.d)

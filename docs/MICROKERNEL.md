@@ -4,6 +4,8 @@
 
 默认构建使用跨架构微内核。旧 RTOS 源码、旧板级构建和补丁机型已清理；当前目录见 [SOURCE_LAYOUT.md](SOURCE_LAYOUT.md)。实现与验收的执行清单见 [EXECUTION_PLAN.md](EXECUTION_PLAN.md)，命令见 [QEMU_VALIDATION.md](QEMU_VALIDATION.md)。
 
+真实键盘板目标 `nk60_v2` 使用同一 Cortex-M 微内核，启动用户态键盘服务；扫描、USB HID、改键和 NOR 配置均在服务中，内核仅增加受设备能力检查的寄存器白名单和固定目的 DMA。该目标使用 64 KiB SRAM、128 KiB 擦除对齐应用 Flash、minimal 运行库，不启动通用 VFS。构建、功能与未实测范围见 [NK60 V2](NK60_V2.md)。
+
 ## 特权边界
 
 ```mermaid

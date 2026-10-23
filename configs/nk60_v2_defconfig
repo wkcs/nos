@@ -1,0 +1,6 @@
+# NK60 V2 STM32F401, wired keyboard service, no MMU, 64 KiB SRAM.
+PLATFORM = nk60_v2
+LIBC = minimal
+BUILD_MODE = normal
+SMP = 1
+MPU = 0
