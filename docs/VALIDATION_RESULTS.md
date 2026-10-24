@@ -350,3 +350,8 @@ RISC-V UART 的一次真实停顿由 GDB 确认：ring 为空、接收线程等�
 前五组启用 ASan、UBSan 与 LeakSanitizer。最终固件报告为 `out/microkernel/nk60-firmware/1792720080241941009/results.json`：MPU 关闭/开启的 bin 分别为 **47856 / 48844 字节**，静态 SRAM 最高地址均为 `0x20009e88`，低于 64 KiB 栈顶并保留至少 4 KiB MSP。精确测试产物已按哈希复制到 `out/microkernel/nk60_v2/{minimal,mpu}/nos.{elf,bin,hex,map}`，来源及 SHA256 在各目录 `firmware.json`。烧录器默认只生成已验证计划，没有连接探针或写入实物。
 
 **本批没有可访问 nk60_v2 实板。** 原版 `netduinoplus2` 是 F405 模型；跳过时钟的启动专项只证明 CPU/内核 ABI，宿主模型只证明软件状态机。F401 晶振、实际扫描周期、USB 枚举与桌面兼容、LED/DMA 波形、Flash 实际掉电及电流仍待实板验收。扫描目标 4 ms，不宣称 1 kHz。RGB 配置前/挂起断电和软件限幅不等于全板满足 USB 挂起电流；低功耗尚未完成。VIA/Vial、组合键、无线和 USB 升级未实现，后续按调研优先级推进。
+
+
+## ESP32-S3 / ESP-IDF
+
+公共实现 `e8ca7d0` 的冻结完整验收 `1792823254327022584` 为 **85/85 组通过、所有 runner 退出 0、源码未变化**。S3 工具环境修正后，`e85bbdd` 的专项 `1792826002233142349` 再次通过正常启动、14 个运行标记、32 个实际 SDK 入口链接审计和组件管理器配置检查。两提交间只变化 S3 环境脚本/依赖锁/测试及说明，已核对公共实现逐文件相同；不是冒称一次运行覆盖两个源码快照。ADC 全生态 profile 未在 QEMU 启动，实板外设、无线、双核和完整 POSIX 不由此推断。完整身份、固件哈希和限制见 [ESP32-S3 验证记录](ESP32_S3_VALIDATION.md)。

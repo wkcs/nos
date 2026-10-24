@@ -23,3 +23,5 @@ python3 tests/acceptance.py --include-posix --require-frozen-source
 普通启动使用 `make PLATFORM=arm64_virt BUILD_MODE=normal qemu-run`，nshell 支持文件操作、目录切换、引号/转义、历史和行编辑，见 [nshell 使用说明](docs/NSHELL.md)。三个 MMU 主架构的 Linux 兼容配置已验证真实 glibc、动态链接和部分 POSIX 接口；完整 POSIX.1-2017、网络与真实板级外设仍未完成。详细范围以支持文档为准。
 
 ESP32-S3 的 ESP-IDF 兼容移植由 NOS 管理任务/调度，提供单核共享内存基线、官方 SDK 外设依赖链接审计与实际 S3 QEMU 回归；双核、无线、USB 及完整实板生态尚未验收。构建入口为 `make PLATFORM=esp32s3 firmware`，详细依赖、自动化和边界见 [ESP32-S3](docs/ESP32_S3.md)。
+
+ESP32-S3 的运行专项与公共实现 85 组验收记录见 [移植验证](docs/ESP32_S3_VALIDATION.md)。
