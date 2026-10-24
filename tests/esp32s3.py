@@ -26,6 +26,8 @@ MARKERS = [
     "PASS esp32s3_priority_inheritance_native_exit",
     "PASS esp32s3_static_tasks_capacity_rollback",
     "PASS esp32s3_sdk_gpio_uart_flash_nvs",
+    "PASS esp32s3_managed_devices",
+    "PASS esp32s3_device_capacity_no_leak",
     "PASS esp32s3_sdk_ota_reject_abort",
     "PASS esp32s3_task_recycle_no_stack_leak",
     "PASS esp32s3_nos_idf_regression",
@@ -54,6 +56,11 @@ def audit(build, ecosystem=False, regression=True):
         "kernel/ipc/ipc.c",
         "arch/xtensa/platform.c",
         "ports/esp_idf/components/freertos/nos_tasks.c",
+        "servers/drivers/framework/device.c",
+        "servers/drivers/framework/service.c",
+        "ports/esp_idf/components/nos_devices/devices.c",
+        "ports/esp_idf/components/nos_devices/serial_buses.c",
+        "ports/esp_idf/components/nos_devices/storage.c",
     ]
     assert all((ROOT / p).resolve() in files for p in required)
     nm = (
@@ -68,14 +75,36 @@ def audit(build, ecosystem=False, regression=True):
         assert name in names, f"Missing NOS scheduler mechanism: {name}"
     assert not any(name.startswith("nos_sdk_unused_") for name in names)
     assert "vPortTCBPreDeleteHook" not in names, "SDK cleanup assumes a different TCB layout"
+    application = list((ROOT / "ports/esp_idf/project/main").glob("*.c")) + [
+        ROOT / "tests/guest/esp32s3_regression.c"
+    ]
+    subprocess.run(["python3", ROOT / "scripts/check_idf_app_devices.py", *application], check=True)
+    mechanisms = ["nos_service_start", "nos_idf_devices_init"]
+    if regression:
+        mechanisms += ["nos_service_call", "nos_service_stop", "nos_idf_devices_snapshot"]
+    for name in mechanisms:
+        assert name in names, f"Missing managed device mechanism: {name}"
     checked = []
     if ecosystem:
-        source = (ROOT / "ports/esp_idf/project/main/ecosystem.c").read_text()
+        for path in ("auxiliary.c", "wireless.c", "usb.c", "can.c"):
+            assert (ROOT / "ports/esp_idf/components/nos_devices" / path).resolve() in files
+        for name in (
+            "idf_auxiliary_ops",
+            "idf_wifi_ops",
+            "idf_ble_ops",
+            "idf_usb_host_ops",
+            "idf_usb_device_ops",
+            "idf_can_ops",
+        ):
+            assert name in names, f"Missing managed SDK backend: {name}"
+        source = (ROOT / "ports/esp_idf/components/nos_devices/ecosystem.c").read_text()
         checked = re.findall(r"\(uintptr_t\)(\w+)", source)
         assert len(checked) == 32 and all(name in names for name in checked)
     return {
         "build_manifest": manifest,
         "nos_scheduler": True,
+        "managed_device_model": True,
+        "application_sdk_hardware_includes": False,
         "original_tasks_c_compiled": False,
         "retained_sdk_collections": ["list", "queue", "timers", "event_groups", "stream_buffer"],
         "sdk_entry_points": checked,

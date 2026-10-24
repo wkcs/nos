@@ -77,7 +77,8 @@ int nos_spi_transfer(const struct nos_spi_device *, const struct nos_spi_segment
 /* A message sequence is one atomic bus transaction: repeated START between
  * messages, STOP only at end/error. No automatic write retry or bus recovery.
  * Backends return ENOTSUP for unsupported sequences, ETIMEDOUT on deadline,
- * ENODEV on address NACK and EIO on data NACK/arbitration/short transfer.
+ * ENODEV on a known address NACK, EIO on data NACK/arbitration/short transfer
+ * or when the controller cannot identify which NACK phase failed.
  * 10-bit capability is explicit; zero-length messages are not supported. */
 #define NOS_I2C_READ 1u
 #define NOS_I2C_TEN_BIT 2u

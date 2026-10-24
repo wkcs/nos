@@ -34,6 +34,7 @@ def main():
     add('boards', 'usb_host_otg_sanitizers', 'tests/host_usb_host.py')
     add('boards', 'usb_host_actual_dwc2_qemu', 'tests/qemu_usb_host.py')
     add('boards', 'portable_device_driver_framework', 'tests/host_driver_framework.py')
+    add('boards', 'managed_device_lifecycle', 'tests/host_managed_devices.py')
     add('boards', 'nlp_reference_wire_registry', 'tests/host_nlp_protocol.py')
     add('boards', 'nlp_actual_c_python_interoperability', 'tests/host_nlp.py')
     add('boards', 'keyboard_host_sanitizers', 'tests/host_keyboard.py')

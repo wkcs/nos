@@ -43,7 +43,7 @@ int nos_device_register(struct nos_device_registry *r, struct nos_device *d)
     }
     for (i = 0; i < d->resource_count; i++) {
         const struct nos_resource *s = &d->resources[i];
-        if ((unsigned)s->type > NOS_RESOURCE_PINCTRL ||
+        if ((unsigned)s->type > NOS_RESOURCE_CONTROLLER ||
             (s->type == NOS_RESOURCE_MMIO && (!s->size || s->start > UINT64_MAX - s->size)))
             return -NOS_DRV_EINVAL;
         for (j = 0; j < i; j++)

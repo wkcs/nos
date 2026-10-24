@@ -25,3 +25,5 @@ python3 tests/acceptance.py --include-posix --require-frozen-source
 ESP32-S3 的 ESP-IDF 兼容移植由 NOS 管理任务/调度，提供单核共享内存基线、官方 SDK 外设依赖链接审计与实际 S3 QEMU 回归；双核、无线、USB 及完整实板生态尚未验收。构建入口为 `make PLATFORM=esp32s3 firmware`，详细依赖、自动化和边界见 [ESP32-S3](docs/ESP32_S3.md)。
 
 ESP32-S3 的运行专项与公共实现 85 组验收记录见 [移植验证](docs/ESP32_S3_VALIDATION.md)。
+
+ESP32-S3 外设通过 [NOS 设备服务模型](docs/ESP32_S3_DEVICES.md) 管理，底层复用官方 IDF 驱动与无线库；22 类后端的功能子集和未实测边界见该文档。

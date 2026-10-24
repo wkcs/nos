@@ -4,8 +4,11 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "nos/abi.h"
+#include "nos/driver/esp_idf.h"
+#include <assert.h>
 void app_main(void)
 {
+    assert(nos_idf_devices_init() == 0);
     esp_chip_info_t chip;
     esp_chip_info(&chip);
     printf("NOS ESP32-S3: chip=%d, physical cores=%d, scheduler cores=1, task=%ld\n", chip.model,
@@ -15,5 +18,6 @@ void app_main(void)
     printf("SDK linkage audit entries: %u\n", nos_esp_idf_ecosystem_link_count());
 #endif
     puts("NOS IDF application ready");
-    /* Add application services here. SDK drivers use the NOS task bridge. */
+    /* Register board devices through nos_idf_device_create(); applications
+     * use NOS service requests, never vendor controller handles. */
 }

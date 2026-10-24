@@ -13,12 +13,8 @@
 #include "esp_chip_info.h"
 #include "esp_timer.h"
 #include "esp_heap_caps.h"
-#include "driver/gpio.h"
-#include "driver/uart.h"
-#include "nvs_flash.h"
-#include "nvs.h"
-#include "esp_ota_ops.h"
 #include "nos/abi.h"
+#include "nos/driver/esp_idf.h"
 static QueueHandle_t queue;
 static SemaphoreHandle_t done;
 static EventGroupHandle_t events;
@@ -291,43 +287,97 @@ void app_main(void)
     assert(heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT) == capacity_free);
     puts("PASS esp32s3_static_tasks_capacity_rollback");
 
-    gpio_config_t pins = {.pin_bit_mask = 1ULL << 4,
-                          .mode = GPIO_MODE_INPUT,
-                          .pull_up_en = GPIO_PULLUP_DISABLE,
-                          .pull_down_en = GPIO_PULLDOWN_ENABLE};
-    assert(gpio_config(&pins) == ESP_OK);
-    assert(gpio_get_level(GPIO_NUM_4) == 0 || gpio_get_level(GPIO_NUM_4) == 1);
-    uart_config_t uart = {.baud_rate = 115200,
-                          .data_bits = UART_DATA_8_BITS,
-                          .parity = UART_PARITY_DISABLE,
-                          .stop_bits = UART_STOP_BITS_1,
-                          .flow_ctrl = UART_HW_FLOWCTRL_DISABLE,
-                          .source_clk = UART_SCLK_DEFAULT};
-    assert(uart_param_config(UART_NUM_1, &uart) == ESP_OK);
-    assert(uart_driver_install(UART_NUM_1, 512, 0, 0, NULL, 0) == ESP_OK);
+    assert(nos_idf_devices_init() == 0);
+    struct nos_idf_device_config config = {
+        .name = "test.gpio4", .kind = NOS_SERVICE_GPIO, .pins = {4, -1, -1, -1}};
+    struct nos_service *gpio, *other, *uart, *storage, *ota;
+    assert(nos_idf_device_create(&config, &gpio) == 0);
+    assert(nos_service_start(gpio) == 0);
+    struct nos_idf_device_config conflict = {
+        .name = "test.i2c-pin-conflict", .kind = NOS_SERVICE_I2C, .pins = {4, 5}, .hz = 100000};
+    assert(nos_idf_device_create(&conflict, &other) == 0);
+    assert(nos_service_start(other) == -NOS_DRV_EBUSY);
+    assert(nos_idf_device_destroy(&other) == 0);
+    config.name = "test.duplicate-pin";
+    assert(nos_idf_device_create(&config, &other) == 0);
+    assert(nos_service_start(other) == -NOS_DRV_EBUSY);
+    assert(nos_idf_device_destroy(&other) == 0 && !other);
+    struct nos_gpio_config pins = {NOS_GPIO_INPUT, NOS_GPIO_PULL_DOWN, 0, 0};
+    assert(nos_service_call(gpio, NOS_IO_CONFIGURE, &pins, sizeof(pins)) == 0);
+    int level;
+    assert(nos_service_call(gpio, NOS_IO_READ, &level, sizeof(level)) == 0);
+    assert(level == 0 || level == 1);
+    assert(nos_service_call(gpio, NOS_IO_READ, &level, 1) == -NOS_DRV_ENOTSUP);
+    assert(nos_idf_device_destroy(&gpio) == 0 && !gpio);
+    /* Boot console pins cannot be seized even in trusted shared memory. */
+    config.name = "test.reserved-console";
+    config.pins[0] = 43;
+    assert(nos_idf_device_create(&config, &other) == 0);
+    assert(nos_service_start(other) == -NOS_DRV_EBUSY);
+    assert(nos_idf_device_destroy(&other) == 0);
+    config = (struct nos_idf_device_config){.name = "test.uart1",
+                                            .kind = NOS_SERVICE_UART,
+                                            .instance = 1,
+                                            .pins = {-1, -1, -1, -1},
+                                            .hz = 115200};
+    assert(nos_idf_device_create(&config, &uart) == 0);
+    assert(nos_service_start(uart) == 0);
     uint8_t byte;
-    assert(uart_read_bytes(UART_NUM_1, &byte, 1, 0) == 0);
-    assert(uart_write_bytes(UART_NUM_1, "NOS", 3) == 3);
-    assert(uart_driver_delete(UART_NUM_1) == ESP_OK);
-    assert(nvs_flash_init() == ESP_OK);
-    nvs_handle_t nvs;
-    assert(nvs_open("nos-test", NVS_READWRITE, &nvs) == ESP_OK);
-    assert(nvs_set_u32(nvs, "value", 0x12345678) == ESP_OK && nvs_commit(nvs) == ESP_OK);
-    uint32_t stored;
-    assert(nvs_get_u32(nvs, "value", &stored) == ESP_OK && stored == 0x12345678);
-    assert(nvs_erase_all(nvs) == ESP_OK && nvs_commit(nvs) == ESP_OK);
-    nvs_close(nvs);
+    struct nos_io_buffer buffer = {&byte, 1, 99};
+    assert(nos_service_call(uart, NOS_IO_READ, &buffer, sizeof(buffer)) == -NOS_DRV_EAGAIN);
+    assert(buffer.actual == 0);
+    buffer = (struct nos_io_buffer){"NOS", 3, 0};
+    assert(nos_service_call(uart, NOS_IO_WRITE, &buffer, sizeof(buffer)) == 0);
+    assert(buffer.actual > 0 && buffer.actual <= 3);
+    assert(nos_service_stop(uart) == 0);
+    assert(nos_service_call(uart, NOS_IO_WRITE, &buffer, sizeof(buffer)) == -NOS_DRV_ENODEV);
+    assert(nos_idf_device_destroy(&uart) == 0);
+    config = (struct nos_idf_device_config){
+        .name = "test.nvs", .kind = NOS_SERVICE_STORAGE, .storage_namespace = "nos-test"};
+    assert(nos_idf_device_create(&config, &storage) == 0);
+    assert(nos_service_start(storage) == 0);
+    struct nos_io_kv kv = {"value", 0x12345678};
+    assert(nos_service_call(storage, NOS_IO_WRITE, &kv, sizeof(kv)) == 0);
+    assert(nos_service_call(storage, NOS_IO_COMMIT, NULL, 0) == 0);
+    kv.value = 0;
+    assert(nos_service_call(storage, NOS_IO_READ, &kv, sizeof(kv)) == 0 && kv.value == 0x12345678);
+    assert(nos_service_call(storage, NOS_IO_ERASE, NULL, 0) == 0);
+    assert(nos_service_call(storage, NOS_IO_COMMIT, NULL, 0) == 0);
+    assert(nos_idf_device_destroy(&storage) == 0);
+    struct nos_service_info devices[2];
+    size_t device_count;
+    assert(nos_idf_devices_snapshot(devices, 2, &device_count) == 0 && device_count == 1);
+    assert(!strcmp(devices[0].name, "system.flash-psram-console"));
     puts("PASS esp32s3_sdk_gpio_uart_flash_nvs");
-    const esp_partition_t *active = esp_ota_get_running_partition();
-    const esp_partition_t *inactive = esp_ota_get_next_update_partition(NULL);
-    assert(active && inactive && active->address != inactive->address);
-    esp_ota_handle_t ota;
-    assert(esp_ota_begin(inactive, 4096, &ota) == ESP_OK);
-    static const uint8_t invalid_image[32] = {0};
-    assert(esp_ota_write(ota, invalid_image, sizeof(invalid_image)) == ESP_ERR_OTA_VALIDATE_FAILED);
-    assert(esp_ota_abort(ota) == ESP_OK);
-    assert(esp_ota_get_running_partition()->address == active->address);
+    puts("PASS esp32s3_managed_devices");
+    config = (struct nos_idf_device_config){.name = "test.ota", .kind = NOS_SERVICE_OTA};
+    assert(nos_idf_device_create(&config, &ota) == 0);
+    assert(nos_service_start(ota) == 0);
+    struct nos_io_ota_begin begin = {4096};
+    assert(nos_service_call(ota, NOS_IO_OTA_BEGIN, &begin, sizeof(begin)) == 0);
+    uint8_t invalid_image[32] = {0};
+    buffer = (struct nos_io_buffer){invalid_image, sizeof(invalid_image), 0};
+    assert(nos_service_call(ota, NOS_IO_WRITE, &buffer, sizeof(buffer)) == -NOS_DRV_EIO);
+    assert(buffer.actual == 0);
+    assert(nos_service_call(ota, NOS_IO_OTA_ABORT, NULL, 0) == 0);
+    assert(nos_idf_device_destroy(&ota) == 0);
     puts("PASS esp32s3_sdk_ota_reject_abort");
+
+    size_t device_heap = heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    struct nos_service *slots[32] = {0};
+    char names[32][16];
+    config = (struct nos_idf_device_config){.kind = NOS_SERVICE_GPIO, .pins = {4}};
+    for (unsigned i = 0; i < 31; i++) {
+        snprintf(names[i], sizeof(names[i]), "capacity.%u", i);
+        config.name = names[i];
+        assert(nos_idf_device_create(&config, &slots[i]) == 0);
+    }
+    config.name = "capacity.full";
+    assert(nos_idf_device_create(&config, &slots[31]) == -NOS_DRV_ENOSPC && !slots[31]);
+    for (unsigned i = 0; i < 31; i++)
+        assert(nos_idf_device_destroy(&slots[i]) == 0 && !slots[i]);
+    assert(heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT) == device_heap);
+    puts("PASS esp32s3_device_capacity_no_leak");
 
     size_t before = heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
     for (unsigned i = 0; i < 40; i++) {

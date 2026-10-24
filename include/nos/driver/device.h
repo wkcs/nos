@@ -32,7 +32,9 @@ enum nos_resource_type {
     NOS_RESOURCE_DMA,
     NOS_RESOURCE_CLOCK,
     NOS_RESOURCE_RESET,
-    NOS_RESOURCE_PINCTRL
+    NOS_RESOURCE_PINCTRL,
+    /* Logical controller identity; aliases must use the same provider/id. */
+    NOS_RESOURCE_CONTROLLER
 };
 /* Descriptive only. id identifies a platform provider/capability; start is a
  * bus address, never a pointer. Driver services must obtain kernel authorization
