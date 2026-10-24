@@ -60,6 +60,8 @@ SPI 超时通过 IDF 复位接口停止控制器，并用 SDK HAL 退还轮询�
 
 NVS 由存储和无线后端在域锁下引用计数，最后一个用户停止时调用 SDK deinit。SDK 的 lwIP/default event loop 与 SDSPI 全局基础设施保留到固件结束；每个接口、卡和总线仍由各自 NOS 设备管理。启动时钟、堆、ROM、tick、日志等系统基础设施由 ESP-IDF 启动路径负责，不伪装成可卸载的应用设备。
 
+Wi-Fi 网络接口通过原始 SDK 的可返回错误 API 创建，避免默认 STA 快捷函数在内存不足等错误上触发断言。SDK 的 Wi-Fi/NimBLE 初始化可能只返回最初错误、隐藏内部清理失败；这类失败以及不可确认完成的 Wi-Fi 清理会保留设备、NVS 引用和资源，要求重启。不能根据 NOT_INIT 或空句柄推断无线硬件已停止。
+
 ## 板级接入示例
 
 下面引脚必须按实板确认。配置只在 BSP 中依赖 ESP32；业务使用的请求结构可在其他平台复用。
@@ -91,12 +93,15 @@ if (!error) {
 ```sh
 python3 tests/host_managed_devices.py
 python3 tests/host_driver_framework.py
+python3 tests/host_esp32s3_wireless.py
 python3 tests/esp32s3.py
 source /workspace/.nos-env/activate.sh
 python3 tests/acceptance.py --include-posix --require-frozen-source
 ```
 
 宿主测试对实际管理器注入资源冲突、启动/停止失败，验证故障隔离、回滚、重试、重入拒绝、四线程串行化和快照。S3 回归经 NOS 请求测试 GPIO/UART、NVS、OTA、引脚冲突与保留引脚、停止后拒绝 I/O、注册表耗尽及堆回收。完整生态 profile 核对真实后端与 SDK 入口进入 ELF。应用源码审计拒绝直接包含外设、HAL、无线、USB、NVS/OTA 头文件。
+
+S3 专项也运行 Wi-Fi 宿主故障模型：保留实际适配代码中的 Wi-Fi 语句，用 SDK API 替身注入分配、附着、初始化及卸载失败，同时连接实际 NOS 管理器，检查资源保留与停止重试。这不验证 RF 或 BLE 运行时；真实 Xtensa 构建负责核对官方 SDK 声明。宿主检查需要系统 GCC，以及 ASan/UBSan/LeakSanitizer 可正常运行的环境。
 
 当前没有可访问实板。Wi-Fi/BLE、USB、外接总线、DMA/复位、电气行为与辅助外设只具有构建/链接证据，尚未实测。完整生态镜像仍受 QEMU ADC 自校准模型缺失限制，不能宣称它已启动。SPI 强制复位路径也需要实板故障注入验证。
 

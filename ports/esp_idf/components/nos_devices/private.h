@@ -40,7 +40,7 @@ struct idf_device {
         } ota;
         struct {
             void *netif;
-            uint8_t started, configured;
+            uint8_t started, configured, attached;
         } wifi;
         struct {
             TaskHandle_t task, stop_task;

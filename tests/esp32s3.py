@@ -282,6 +282,17 @@ def main():
     before = port.source_identity()
     result = {"source": before, "idf_commit": port.IDF_COMMIT, "passed": False}
     try:
+        subprocess.run(
+            [
+                "python3",
+                ROOT / "tests/host_esp32s3_wireless.py",
+                "--output",
+                report / "wifi-faults",
+            ],
+            cwd=ROOT,
+            check=True,
+        )
+        result["wifi_fault_model"] = json.loads((report / "wifi-faults/results.json").read_text())
         result["component_manager"] = manager_smoke(report)
         configurations = [("runtime", "runtime", True)]
         if not args.runtime_only:

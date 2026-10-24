@@ -17,7 +17,7 @@
 | TinyUSB 子模块 | esp-usb 固定的 `894ea01409e0407a7dbe0ee29b2d58a4691f9046` |
 | Python 包 | `ports/esp_idf/python-requirements.lock`；组件管理器 2.5.2 对应 IDF 5.4 接口 |
 
-Linux x86_64、Python 3.12 环境：
+Linux x86_64、Python 3.12 环境（宿主故障模型测试还需要 GCC/build-essential）：
 
 ```sh
 python3 scripts/esp32s3.py setup

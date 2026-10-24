@@ -4,6 +4,7 @@
 #include "esp_event.h"
 #include "esp_netif.h"
 #include "esp_wifi.h"
+#include "esp_wifi_default.h"
 #include "nimble/nimble_port.h"
 #include "host/ble_hs.h"
 #include "esp_bt.h"
@@ -26,13 +27,32 @@ static int wifi_start(void *context)
             return idf_error(result);
         network_initialized = 1;
     }
-    d->u.wifi.netif = esp_netif_create_default_wifi_sta();
+    /* The SDK convenience helper asserts on allocation/attach failure. Use
+     * the same public steps with explicit errors at the NOS service boundary. */
+    esp_netif_config_t netif_config = ESP_NETIF_DEFAULT_WIFI_STA();
+    d->u.wifi.netif = esp_netif_new(&netif_config);
     if (!d->u.wifi.netif)
         return -NOS_DRV_ENOSPC;
-    wifi_init_config_t config = WIFI_INIT_CONFIG_DEFAULT();
-    rc = idf_error(esp_wifi_init(&config));
+    rc = idf_error(esp_netif_attach_wifi_station(d->u.wifi.netif));
+    if (rc) {
+        /* IDF publishes its interface pointer before attach completes. An
+         * unsuccessful attach has no guaranteed public rollback contract. */
+        d->faulted = 1;
+        return rc;
+    }
+    d->u.wifi.attached = 1;
+    rc = idf_error(esp_wifi_set_default_wifi_sta_handlers());
     if (rc)
         return rc;
+    wifi_init_config_t config = WIFI_INIT_CONFIG_DEFAULT();
+    rc = idf_error(esp_wifi_init(&config));
+    if (rc) {
+        /* IDF can log a failed internal deinit yet return only the original
+         * init error; public deinit then reports NOT_INIT. Retain ownership
+         * until reboot instead of assuming the radio is quiescent. */
+        d->faulted = 1;
+        return rc;
+    }
     d->installed = 1;
     /* Credentials stay in RAM unless an explicit NOS persistence policy saves
      * them. No implicit writes or credential logging by this adapter. */
@@ -44,6 +64,8 @@ static int wifi_start(void *context)
 static int wifi_stop(void *context)
 {
     struct idf_device *d = context;
+    if (d->faulted)
+        return -NOS_DRV_EIO;
     if (d->u.wifi.started) {
         int rc = idf_error(esp_wifi_stop());
         if (rc)
@@ -52,12 +74,22 @@ static int wifi_stop(void *context)
     }
     if (d->installed) {
         int rc = idf_error(esp_wifi_deinit());
-        if (rc)
+        if (rc) {
+            d->faulted = 1;
             return rc;
+        }
         d->installed = 0;
     }
     if (d->u.wifi.netif) {
-        esp_netif_destroy_default_wifi(d->u.wifi.netif);
+        if (d->u.wifi.attached) {
+            int rc = idf_error(esp_wifi_clear_default_wifi_driver_and_handlers(d->u.wifi.netif));
+            if (rc) {
+                d->faulted = 1;
+                return rc;
+            }
+            d->u.wifi.attached = 0;
+        }
+        esp_netif_destroy(d->u.wifi.netif);
         d->u.wifi.netif = NULL;
     }
     int rc = d->nvs_owned ? idf_nvs_release() : 0;
@@ -141,8 +173,8 @@ static int ble_start(void *context)
         return -NOS_DRV_ENOSPC;
     rc = idf_error(nimble_port_init());
     if (rc) {
-        if (esp_bt_controller_get_status() != ESP_BT_CONTROLLER_STATUS_IDLE)
-            d->faulted = 1;
+        /* The vendor helper can also hide failed controller/host cleanup. */
+        d->faulted = 1;
         return rc;
     }
     d->installed = 1;
