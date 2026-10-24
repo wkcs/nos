@@ -2,7 +2,7 @@
 
 <!-- Copyright (C) 2026 NOS contributors -->
 
-通用设备生命周期、资源 lease、GPIO/SPI/I²C/UART/USB device 接口及 ESP32/RK3588 移植入口见 [设备驱动模型](../../docs/DEVICE_DRIVERS.md)。NK60 已接入 GPIO、SPI NOR 和 USB 发送；本页继续记录原 VFS 设备与存储服务。
+通用设备生命周期、资源 lease、GPIO/SPI/I²C/UART/USB device 接口及 ESP32/RK3588 移植入口见 [设备驱动模型](../../docs/DEVICE_DRIVERS.md)。NK60 已接入 GPIO、SPI NOR 和 USB 发送；USB host、DWC2 DMA、HID/BOT 和 OTG 角色管理见 [USB host/OTG](../../docs/USB_HOST_OTG.md)。本页继续记录原 VFS 设备与存储服务。
 
 `servers/vfs/server.c` 是独立调度的非特权服务。文件业务、描述符表、管道、FatFs 和 virtio 队列均在用户态执行。内核检查 DEVICE 能力、建立设备页映射、查询调用方可写页的 DMA 物理地址、提供 IRQ 对象，以及访问平台串口控制寄存器。只有 VFS 服务获得初始 DEVICE 能力，接收线程继承其地址空间组权限。
 

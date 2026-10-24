@@ -4,7 +4,7 @@
 
 公共接口位于 `include/nos/driver/`，实现位于 `servers/drivers/framework/`；SPI NOR 协议位于 `servers/drivers/spi/nor.c`。这些是用户态 C 接口，不改变 syscall ABI，也不把文件系统、USB 类协议或设备枚举业务放进内核。
 
-本轮提供静态设备注册、显式 compatible 匹配与 probe/remove、父设备依赖、资源 lease 回滚、挂起/恢复，以及 GPIO、SPI、I²C、UART、USB device 数据通路。NK60 的 GPIO 扫描、SPI1/W25Q 和 USB IN 发送已实际接入。I²C 控制器接口有独立模型验证；尚未为 NK60 启用新的 I²C 引脚/控制器。原 VFS 的 virtio 和中断串口继续使用已有实现。
+本轮提供静态设备注册、显式 compatible 匹配与 probe/remove、父设备依赖、资源 lease 回滚、挂起/恢复，以及 GPIO、SPI、I²C、UART、USB device 数据通路；host/OTG 扩展见 [USB host 与双角色框架](USB_HOST_OTG.md)。NK60 的 GPIO 扫描、SPI1/W25Q 和 USB IN 发送已实际接入。I²C 控制器接口有独立模型验证；尚未为 NK60 启用新的 I²C 引脚/控制器。原 VFS 的 virtio 和中断串口继续使用已有实现。
 
 ```mermaid
 flowchart TB
@@ -53,7 +53,7 @@ SPI/I²C 一次最多 16 段，总字节最多 65536，且受具体控制器 `ma
 
 I²C address NACK 返回 ENODEV，data NACK/仲裁/短传输返回 EIO，超时 ETIMEDOUT。框架保留控制器负错误，意外的正 status 转 EIO。SPI 回调自行以单个整笔 deadline 约束所有等待；框架无法中断一个不遵守契约的后端。NK60 后端同时使用时间上限和轮询次数上限，时钟停止也有限退出。
 
-USB v1 范围是 **device 数据通路**。EP0 请求、端点配置/分配、SET_ADDRESS 的 status-stage 时序、SETUP/reset/suspend/remote wake、复合功能组合和 OUT 数据事件仍沿用 `servers/usb/keyboard_usb.h` 的类/平台边界；没有实现 USB host、hub、xHCI、通用 class 注册总线或异步 URB API。NK60 HID/NLP 描述符和背压队列保持原契约。`in_mask` 限制控制器允许的 IN 地址，枚举/暂停/endpoint halt 的动态状态仍由后端检查。
+USB v1 范围是 **device 数据通路**。EP0 请求、端点配置/分配、SET_ADDRESS 的 status-stage 时序、SETUP/reset/suspend/remote wake、复合功能组合和 OUT 数据事件仍沿用 `servers/usb/keyboard_usb.h` 的类/平台边界；USB host、DWC2 DMA HCD、HID/BOT 与 OTG role 管理现已由独立 [host/OTG 框架](USB_HOST_OTG.md) 提供；hub、xHCI、通用 device class 注册总线或异步 URB API 仍未提供。NK60 HID/NLP 描述符和背压队列保持原契约。`in_mask` 限制控制器允许的 IN 地址，枚举/暂停/endpoint halt 的动态状态仍由后端检查。
 
 ## 可复用协议和后端
 

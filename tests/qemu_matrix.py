@@ -17,6 +17,7 @@ from build_signature import atomic_write_changed
 from qemu_guest import run_guest
 COMMON = {
     'driver_framework_userspace_lifecycle',
+    'usb_host_descriptor_and_otg_userspace_roles',
     'page_allocator', 'user_syscall', 'unknown_syscall', 'user_pointer_validation',
     'ipc_capabilities', 'vfs_mkdir', 'vfs_rpc_read_write_seek', 'vfs_stat',
     'vfs_fd_ownership', 'vfs_close_unlink_errors', 'vfs_mount_procfs',

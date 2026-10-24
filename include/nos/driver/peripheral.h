@@ -122,7 +122,8 @@ intptr_t nos_uart_read(struct nos_uart *, void *, size_t);
 intptr_t nos_uart_write(struct nos_uart *, const void *, size_t);
 int nos_uart_poll(struct nos_uart *, uint32_t *events);
 
-/* USB DEVICE controller (not host/xHCI). Class protocol and enumeration remain
+/* USB device controller. Host: usb_host.h; dual role policy: usb_otg.h.
+ * Class protocol and enumeration remain
  * above this boundary. send copies/consumes bytes, success means accepted, not
  * host-ACKed. Completion is delivered by the platform to its class event loop;
  * cancel must discard in-flight data and stale completion for this endpoint.

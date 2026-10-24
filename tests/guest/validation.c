@@ -30,6 +30,7 @@ void nos_libc_regression(void);
 void nos_kernel_regression(void);
 void nos_arch_regression(void);
 void nos_driver_regression(void);
+void nos_usb_regression(void);
 void nos_elf_regression(void);
 #ifdef NOS_POSIX_SUITE
 void nos_posix_suite(void);
@@ -408,6 +409,7 @@ void nos_validation(uintptr_t unused)
     nos_libc_regression();
     nos_arch_regression();
     nos_driver_regression();
+    nos_usb_regression();
     nos_elf_regression();
     resource_regression();
     nos_kernel_regression();
