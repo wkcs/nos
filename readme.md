@@ -26,6 +26,8 @@ ESP32-S3 的 ESP-IDF 兼容移植由 NOS 管理任务/调度，提供单核共�
 
 ESP32-S3 的运行专项、设备管理接入和公共实现冻结验收记录见 [移植验证](docs/ESP32_S3_VALIDATION.md)。
 
-ESP32-S3 外设通过 [NOS 设备服务模型](docs/ESP32_S3_DEVICES.md) 管理，底层复用官方 IDF 驱动与无线库；23 类服务（含自动 OTG）的功能子集和未实测边界见该文档。
+ESP32-S3 外设通过 [NOS 设备服务模型](docs/ESP32_S3_DEVICES.md) 管理，底层复用官方 IDF 驱动与无线库；24 类服务（含自动 OTG、固定 USB Serial/JTAG）的功能子集和未实测边界见该文档。
 
 ESP32-S3 的 GATT 服务端、USB Host HID/MSC 与自动 OTG 接口及官方 QEMU 验证方法见 [连接能力](docs/ESP32_S3_CONNECTIVITY.md)。
+
+ESP32-C3 单核 RISC-V 移植复用同一 NOS/IDF 桥接；构建、烧录、17类受管理服务和芯片限制见 [ESP32_C3.md](docs/ESP32_C3.md)。

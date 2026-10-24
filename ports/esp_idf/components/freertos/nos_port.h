@@ -26,9 +26,9 @@ struct nos_idf_task {
 };
 _Static_assert(offsetof(struct nos_idf_task, top) == 0 &&
                    offsetof(struct nos_idf_task, stack_end) == 4,
-               "Xtensa SDK context ABI");
+               "IDF SDK context ABI");
 void nos_idf_flush_pending(void);
 void nos_idf_scheduler_ready(void);
 void nos_idf_idle(void);
-intptr_t nos_xtensa_syscall(uintptr_t, uintptr_t, uintptr_t, uintptr_t);
+intptr_t nos_idf_syscall(uintptr_t, uintptr_t, uintptr_t, uintptr_t);
 #endif

@@ -21,7 +21,7 @@ struct elf_segment { uint32_t type, offset, va, pa, filesz, memsz, flags, align;
 #define ELF_MACHINE 94
 #elif defined(NOS_ARM64)
 #define ELF_MACHINE 183
-#elif defined(NOS_RISCV)
+#elif defined(NOS_RISCV) || defined(NOS_IDF_RISCV)
 #define ELF_MACHINE 243
 #else
 #define ELF_MACHINE 40

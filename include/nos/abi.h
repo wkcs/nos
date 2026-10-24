@@ -25,7 +25,11 @@
 /* Linux robust futex words reserve the upper two TID bits. */
 #define NOS_TID_MAX 0x3fffffffu
 #elif defined(NOS_ESP_IDF)
+#ifdef NOS_IDF_RISCV
+#define NOS_TASKS 16u
+#else
 #define NOS_TASKS 24u
+#endif
 #elif defined(NOS_NK60_V2)
 /* Dedicated keyboard image: one device service and one idle task. */
 #define NOS_TASKS 4u

@@ -1,5 +1,6 @@
 /* Copyright (C) 2026 NOS contributors. Same protocol code on host and S3. */
 #include <assert.h>
+#include "esp_idf_test.h"
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -83,7 +84,7 @@ static void gatt_check(void)
     invalid_profile.security = &invalid_security;
     assert(nos_ble_gatt_init(gatt, &invalid_profile) == -NOS_DRV_EINVAL);
     free(gatt);
-    puts("PASS esp32s3_ble_gatt_state_descriptors_subscriptions_mtu_queue_atomicity");
+    puts("PASS " NOS_IDF_TEST_NAME "_ble_gatt_state_descriptors_subscriptions_mtu_queue_atomicity");
 }
 static uint32_t live = 1;
 static int control_error, transfer_error, malformed, controls;
@@ -156,7 +157,7 @@ static void class_check(void)
     transfer_error = 7;
     assert(nos_usb_hid_read(&hid, report, 8, &actual) == -NOS_DRV_EIO);
     transfer_error = 0;
-    puts("PASS esp32s3_usb_class_transport_hid_stale_and_backend_errors");
+    puts("PASS " NOS_IDF_TEST_NAME "_usb_class_transport_hid_stale_and_backend_errors");
 }
 static unsigned role, powered, starts, stops;
 static int role_start(void *p, enum nos_usb_role r)
@@ -196,7 +197,7 @@ static void otg_check(void)
     in.overcurrent = 1;
     assert(nos_usb_otg_update(&o, &in, 13) == -NOS_DRV_EIO && !role);
     assert(!nos_usb_otg_recover(&o, 14) && starts == 2 && stops == 2);
-    puts("PASS esp32s3_usb_otg_auto_discharge_wrap_and_overcurrent");
+    puts("PASS " NOS_IDF_TEST_NAME "_usb_otg_auto_discharge_wrap_and_overcurrent");
 }
 void nos_esp32s3_protocol_regression(void)
 {

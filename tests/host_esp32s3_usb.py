@@ -19,6 +19,9 @@ def main():
     otg = (ROOT / "ports/esp_idf/components/nos_devices/usb_otg.c").read_text()
     otg = re.sub(r'^#include "[^\n]+"\n', "", otg, flags=re.M)
     (out / "otg.c").write_text('#include "host_esp32s3_usb_sdk.h"\n' + otg)
+    serial = (ROOT / "ports/esp_idf/components/nos_devices/usb_serial.c").read_text()
+    serial = re.sub(r'^#include "[^\n]+"\n', "", serial, flags=re.M)
+    (out / "serial.c").write_text('#include "host_esp32s3_usb_sdk.h"\n' + serial)
     subprocess.run(
         [
             "gcc",
@@ -36,6 +39,7 @@ def main():
             "-g",
             str(out / "bridge.c"),
             str(out / "otg.c"),
+            str(out / "serial.c"),
             "tests/host_esp32s3_usb.c",
             "servers/usb/host/otg.c",
             "servers/drivers/framework/device.c",

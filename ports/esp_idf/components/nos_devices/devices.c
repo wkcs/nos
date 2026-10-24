@@ -10,7 +10,12 @@ static StaticSemaphore_t mutex_storage;
 static portMUX_TYPE init_lock = portMUX_INITIALIZER_UNLOCKED;
 static unsigned initialized;
 static struct nos_service reserved;
-static struct nos_resource reserved_pins[14];
+#if CONFIG_IDF_TARGET_ESP32C3
+static const uint8_t system_pins[] = {11, 12, 13, 14, 15, 16, 17, 20, 21};
+#else
+static const uint8_t system_pins[] = {26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 43, 44};
+#endif
+static struct nos_resource reserved_pins[sizeof(system_pins)];
 static int lock(void *context)
 {
     if (xPortInIsrContext() || xTaskGetSchedulerState() != taskSCHEDULER_RUNNING)
@@ -66,12 +71,12 @@ int nos_idf_devices_init(void)
     if (!initialized) {
         struct nos_service_lock sync = {mutex, lock, unlock};
         rc = nos_service_domain_init(&domain, entries, 32, &sync);
-        for (unsigned i = 0; i < 14; i++)
-            reserved_pins[i] = (struct nos_resource){.id = i < 12 ? 26 + i : 43 + i - 12,
+        for (unsigned i = 0; i < sizeof(system_pins); i++)
+            reserved_pins[i] = (struct nos_resource){.id = system_pins[i],
                                                      .type = NOS_RESOURCE_PINCTRL};
         if (!rc)
             rc = nos_service_register(&domain, &reserved, "system.flash-psram-console",
-                                      NOS_SERVICE_STORAGE, reserved_pins, 14, &reserve_ops, NULL);
+                                      NOS_SERVICE_STORAGE, reserved_pins, sizeof(system_pins), &reserve_ops, NULL);
         if (!rc)
             rc = nos_service_start(&reserved);
         initialized = rc ? 2 : 1;
@@ -101,25 +106,37 @@ static const struct nos_service_ops *backend(enum nos_service_kind kind)
         return &idf_wifi_ops;
     case NOS_SERVICE_BLE:
         return &idf_ble_ops;
+#if SOC_USB_OTG_SUPPORTED
     case NOS_SERVICE_USB_HOST:
         return &idf_usb_host_ops;
     case NOS_SERVICE_USB_DEVICE:
         return &idf_usb_device_ops;
     case NOS_SERVICE_USB_OTG:
         return &idf_usb_otg_ops;
+#endif
+    case NOS_SERVICE_USB_SERIAL_JTAG:
+        return &idf_usb_serial_ops;
     case NOS_SERVICE_CAN:
         return &idf_can_ops;
     case NOS_SERVICE_I2S:
     case NOS_SERVICE_PWM:
     case NOS_SERVICE_RMT:
     case NOS_SERVICE_TIMER:
+#if SOC_MCPWM_SUPPORTED
     case NOS_SERVICE_MCPWM:
+#endif
+#if SOC_PCNT_SUPPORTED
     case NOS_SERVICE_COUNTER:
+#endif
     case NOS_SERVICE_ADC:
     case NOS_SERVICE_TEMPERATURE:
+#if SOC_SDMMC_HOST_SUPPORTED
     case NOS_SERVICE_SDMMC:
+#endif
     case NOS_SERVICE_SDSPI:
+#if SOC_LCD_RGB_SUPPORTED
     case NOS_SERVICE_DISPLAY:
+#endif
         return &idf_auxiliary_ops;
 #endif
     default:
@@ -190,22 +207,22 @@ int nos_idf_device_create(const struct nos_idf_device_config *config, struct nos
         pins = 1;
         break;
     case NOS_SERVICE_UART:
-        if (config->instance < 1 || config->instance > 2)
+        if (config->instance < 1 || config->instance >= SOC_UART_NUM)
             return -NOS_DRV_EINVAL;
         pins = 4;
         break;
     case NOS_SERVICE_SPI:
-        if (config->instance < 2 || config->instance > 3 || !config->hz || config->hz > 40000000)
+        if (config->instance < 2 || config->instance > SOC_SPI_PERIPH_NUM || !config->hz || config->hz > 40000000)
             return -NOS_DRV_EINVAL;
         pins = 4;
         break;
     case NOS_SERVICE_I2C:
-        if (config->instance > 1 || !config->hz || config->hz > 400000)
+        if (config->instance >= SOC_I2C_NUM || !config->hz || config->hz > 400000)
             return -NOS_DRV_EINVAL;
         pins = 2;
         break;
     case NOS_SERVICE_I2S:
-        if (config->instance > 1 || config->hz < 8000 || config->hz > 96000)
+        if (config->instance >= SOC_I2S_NUM || config->hz < 8000 || config->hz > 96000)
             return -NOS_DRV_EINVAL;
         pins = 4;
         break;
@@ -215,12 +232,12 @@ int nos_idf_device_create(const struct nos_idf_device_config *config, struct nos
         pins = 1;
         break;
     case NOS_SERVICE_RMT:
-        if (config->instance > 3 || config->hz < 1000000 || config->hz > 20000000)
+        if (config->instance >= SOC_RMT_TX_CANDIDATES_PER_GROUP || config->hz < 1000000 || config->hz > 20000000)
             return -NOS_DRV_EINVAL;
         pins = 1;
         break;
     case NOS_SERVICE_TIMER:
-        if (config->instance > 3 || !config->hz || config->hz > 10000000)
+        if (config->instance >= SOC_TIMER_GROUP_TOTAL_TIMERS || !config->hz || config->hz > 10000000)
             return -NOS_DRV_EINVAL;
         break;
     case NOS_SERVICE_MCPWM:
@@ -244,7 +261,7 @@ int nos_idf_device_create(const struct nos_idf_device_config *config, struct nos
         pins = 3;
         break;
     case NOS_SERVICE_SDSPI:
-        if (config->instance < 2 || config->instance > 3)
+        if (config->instance < 2 || config->instance > SOC_SPI_PERIPH_NUM)
             return -NOS_DRV_EINVAL;
         pins = 4;
         break;
@@ -288,7 +305,8 @@ int nos_idf_device_create(const struct nos_idf_device_config *config, struct nos
     d->backend = ops;
     /* Host/Device alias the SAME physical USB controller and GPIO19/20. */
     unsigned identity =
-        config->kind == NOS_SERVICE_USB_DEVICE || config->kind == NOS_SERVICE_USB_OTG
+        config->kind == NOS_SERVICE_USB_DEVICE || config->kind == NOS_SERVICE_USB_OTG ||
+        config->kind == NOS_SERVICE_USB_SERIAL_JTAG
             ? NOS_SERVICE_USB_HOST
             : config->kind;
     if (config->kind == NOS_SERVICE_SDSPI)
@@ -301,9 +319,14 @@ int nos_idf_device_create(const struct nos_idf_device_config *config, struct nos
             d->resources[count++] =
                 (struct nos_resource){.id = config->pins[i], .type = NOS_RESOURCE_PINCTRL};
     if (config->kind == NOS_SERVICE_USB_HOST || config->kind == NOS_SERVICE_USB_DEVICE ||
-        config->kind == NOS_SERVICE_USB_OTG) {
+        config->kind == NOS_SERVICE_USB_OTG || config->kind == NOS_SERVICE_USB_SERIAL_JTAG) {
+#if CONFIG_IDF_TARGET_ESP32C3
+        d->resources[count++] = (struct nos_resource){.id = 18, .type = NOS_RESOURCE_PINCTRL};
+        d->resources[count++] = (struct nos_resource){.id = 19, .type = NOS_RESOURCE_PINCTRL};
+#else
         d->resources[count++] = (struct nos_resource){.id = 19, .type = NOS_RESOURCE_PINCTRL};
         d->resources[count++] = (struct nos_resource){.id = 20, .type = NOS_RESOURCE_PINCTRL};
+#endif
     }
     if (config->kind == NOS_SERVICE_USB_OTG) {
         const struct nos_idf_usb_otg_config *o = config->usb_otg;

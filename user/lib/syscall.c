@@ -6,9 +6,9 @@
 
 intptr_t nos_syscall(uintptr_t number, uintptr_t a, uintptr_t b, uintptr_t c)
 {
-#if defined(NOS_XTENSA)
-    extern intptr_t nos_xtensa_syscall(uintptr_t, uintptr_t, uintptr_t, uintptr_t);
-    return nos_xtensa_syscall(number, a, b, c);
+#if defined(NOS_ESP_IDF)
+    extern intptr_t nos_idf_syscall(uintptr_t, uintptr_t, uintptr_t, uintptr_t);
+    return nos_idf_syscall(number, a, b, c);
 #elif defined(NOS_ARM64)
     register uintptr_t r0 __asm__("x0") = a, r1 __asm__("x1") = b, r2 __asm__("x2") = c;
     register uintptr_t nr __asm__("x8") = number;
@@ -26,7 +26,7 @@ intptr_t nos_syscall(uintptr_t number, uintptr_t a, uintptr_t b, uintptr_t c)
 #endif
     __asm__ volatile("svc #0" : "+r"(r0) : "r"(r1), "r"(r2), "r"(nr) : "memory", "cc");
 #endif
-#ifndef NOS_XTENSA
+#ifndef NOS_ESP_IDF
     return (intptr_t)r0;
 #endif
 }

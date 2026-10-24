@@ -246,3 +246,12 @@ AS 限额见下方已完成批次；下一批优先完善稳定进程/地址空�
 - [ ] GATT 射频配对/收发、S3 USB 枚举与真实供电验证；官方 S3 QEMU 没有相应硬件模型。
 
 接口与验证范围见 [ESP32_S3_CONNECTIVITY.md](ESP32_S3_CONNECTIVITY.md)。
+
+## ESP32-C3 适配
+
+- [x] 复用固定 IDF/Newlib，接入原始 RISC-V port/中断/TLS 和 NOS 任务/调度；SDK 原 tasks.c 不参与构建。
+- [x] 共用受管理设备后端，按 SOC 能力与实例数裁剪；C3 不存在的控制器返回 ENOTSUP。新增固定 USB Serial/JTAG 服务，与 S3 OTG 仲裁同一 PHY。
+- [x] 为 C3 配置16任务/20页预算，保留 Flash/电源/控制台引脚，拒绝依赖 SDK 旧 TCB 偏移的硬件栈保护配置。
+- [x] 官方 C3 QEMU 下载/校验、正常/回归/生态构建路径、共享的跨芯片专项和 USB 串口故障模型；开发启动验证通过。
+- [ ] 同一冻结源码的 C3/S3 最终专项及公共代码完整验收，结束后按 [验证记录](ESP32_C3_VALIDATION.md) 补录报告。
+- [ ] 实板 RF、USB CDC 枚举、外接总线与故障恢复、低功耗/看门狗、NLP/nshell 绑定；当前没有可访问实板。

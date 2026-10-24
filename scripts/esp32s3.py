@@ -29,6 +29,26 @@ QEMU_VERSION = "esp-develop-9.2.2-20260417"
 QEMU_ARCHIVE = "qemu-xtensa-softmmu-esp_develop_9.2.2_20260417-x86_64-linux-gnu.tar.xz"
 QEMU_SHA256 = "0eecb2a34a5586c0e59110f77b9343b7b336e82fdb0e1a30e1dc1bab8a547e35"
 QEMU_URL = f"https://github.com/espressif/qemu/releases/download/{QEMU_VERSION}/{QEMU_ARCHIVE}"
+TARGET = "esp32s3"
+COMPILER_FAMILY = "xtensa-esp"
+COMPILER_PREFIX = "xtensa-esp32s3"
+QEMU_DIRECTORY = "qemu-s3"
+QEMU_EXECUTABLE = "qemu-system-xtensa"
+
+
+def configure_target(target):
+    """Select one audited SDK port before running setup/build/tests."""
+    global TARGET, COMPILER_FAMILY, COMPILER_PREFIX
+    global QEMU_DIRECTORY, QEMU_EXECUTABLE, QEMU_ARCHIVE, QEMU_SHA256, QEMU_URL
+    if target != "esp32c3":
+        raise ValueError("Only the ESP32-C3 wrapper may override the S3 defaults")
+    TARGET = target
+    COMPILER_FAMILY = COMPILER_PREFIX = "riscv32-esp"
+    QEMU_DIRECTORY = "qemu-c3"
+    QEMU_EXECUTABLE = "qemu-system-riscv32"
+    QEMU_ARCHIVE = "qemu-riscv32-softmmu-esp_develop_9.2.2_20260417-x86_64-linux-gnu.tar.xz"
+    QEMU_SHA256 = "547f03e04701a92cbb699f7f7d015adc1f5b5ef93cbb94c0dd9b7107e2d84e77"
+    QEMU_URL = f"https://github.com/espressif/qemu/releases/download/{QEMU_VERSION}/{QEMU_ARCHIVE}"
 
 
 def source_identity():
@@ -62,7 +82,7 @@ def environment():
     venv = python_environment()
     paths = [
         venv / "bin",
-        TOOLS / "tools/xtensa-esp-elf" / XTENSA_VERSION / "xtensa-esp-elf/bin",
+        TOOLS / f"tools/{COMPILER_FAMILY}-elf" / XTENSA_VERSION / f"{COMPILER_FAMILY}-elf/bin",
         TOOLS / "tools/cmake" / CMAKE_VERSION / "bin",
         TOOLS / "tools/esp32ulp-elf" / ULP_VERSION / "esp32ulp-elf/bin",
     ]
@@ -175,7 +195,7 @@ def setup():
             sys.executable,
             IDF / "tools/idf_tools.py",
             "install",
-            "xtensa-esp-elf",
+            f"{COMPILER_FAMILY}-elf",
             "esp32ulp-elf",
             "cmake",
             "esp-rom-elfs",
@@ -198,7 +218,7 @@ def setup():
         ],
         env=env,
     )
-    qemu_dir = SDK_ROOT / "qemu-s3"
+    qemu_dir = SDK_ROOT / QEMU_DIRECTORY
     qemu_dir.mkdir(exist_ok=True)
     archive = qemu_dir / QEMU_ARCHIVE
     if not archive.exists():
@@ -224,26 +244,38 @@ def setup():
         json.dumps({"url": QEMU_URL, "sha256": QEMU_SHA256}, indent=2) + "\n"
     )
     run([qemu_binary(), "--version"], env=env)
-    print("ESP32-S3 SDK ready; run: make PLATFORM=esp32s3 firmware")
+    print(f"{TARGET} SDK ready; run: make PLATFORM={TARGET} firmware")
 
 
 def qemu_binary():
-    return Path(os.environ.get("NOS_ESP_QEMU", SDK_ROOT / "qemu-s3/qemu/bin/qemu-system-xtensa"))
+    return Path(
+        os.environ.get("NOS_ESP_QEMU", SDK_ROOT / QEMU_DIRECTORY / "qemu/bin" / QEMU_EXECUTABLE)
+    )
+
+
+def sdkconfig_defaults(profile="runtime"):
+    defaults = [ROOT / "ports/esp_idf/project/sdkconfig.defaults"]
+    target_defaults = ROOT / "ports/esp_idf/project" / f"sdkconfig.{TARGET}.defaults"
+    if target_defaults.exists():
+        defaults.append(target_defaults)
+    if profile == "ecosystem":
+        defaults.append(ROOT / "ports/esp_idf/project/sdkconfig.ecosystem.defaults")
+        if TARGET == "esp32s3":
+            defaults.append(ROOT / "ports/esp_idf/project/sdkconfig.usb.defaults")
+    return defaults
 
 
 def build(profile="runtime", output=None, action="build", port=None, regression=False):
     verify_sdk()
-    if profile == "ecosystem":
+    if profile == "ecosystem" and TARGET == "esp32s3":
         verify_usb()
     env = environment()
     python = python_environment() / "bin/python"
     if not python.exists():
         raise RuntimeError("SDK Python environment missing; run scripts/esp32s3.py setup")
-    output = Path(output or ROOT / "out/esp32s3" / profile).resolve()
+    output = Path(output or ROOT / "out" / TARGET / profile).resolve()
     output.mkdir(parents=True, exist_ok=True)
-    defaults = [ROOT / "ports/esp_idf/project/sdkconfig.defaults"]
-    if profile == "ecosystem":
-        defaults.append(ROOT / "ports/esp_idf/project/sdkconfig.ecosystem.defaults")
+    defaults = sdkconfig_defaults(profile)
     command = [
         python,
         IDF / "tools/idf.py",
@@ -251,7 +283,7 @@ def build(profile="runtime", output=None, action="build", port=None, regression=
         ROOT / "ports/esp_idf/project",
         "-B",
         output / "build",
-        "-DIDF_TARGET=esp32s3",
+        f"-DIDF_TARGET={TARGET}",
         f"-DSDKCONFIG={output / 'sdkconfig'}",
         "-DSDKCONFIG_DEFAULTS=" + ";".join(map(str, defaults)),
         "-DNOS_IDF_ECOSYSTEM=" + ("ON" if profile == "ecosystem" else "OFF"),
@@ -262,21 +294,24 @@ def build(profile="runtime", output=None, action="build", port=None, regression=
     before = source_identity()
     run(command + [action], cwd=ROOT, env=env)
     if before != source_identity():
-        raise RuntimeError("Repository inputs changed during ESP32-S3 build")
+        raise RuntimeError("Repository inputs changed during ESP-IDF build")
     verify_sdk()
-    if profile == "ecosystem":
+    if profile == "ecosystem" and TARGET == "esp32s3":
         verify_usb()
     target = output / "build"
     compiler = (
         TOOLS
-        / "tools/xtensa-esp-elf"
+        / f"tools/{COMPILER_FAMILY}-elf"
         / XTENSA_VERSION
-        / "xtensa-esp-elf/bin/xtensa-esp32s3-elf-gcc"
+        / f"{COMPILER_FAMILY}-elf/bin/{COMPILER_PREFIX}-elf-gcc"
     )
     manifest = {
         "source": before,
+        "target": TARGET,
         "idf_commit": IDF_COMMIT,
-        "esp_usb_commit": ESP_USB_COMMIT if profile == "ecosystem" else None,
+        "esp_usb_commit": (
+            ESP_USB_COMMIT if profile == "ecosystem" and TARGET == "esp32s3" else None
+        ),
         "profile": profile,
         "regression": regression,
         "compiler_version": subprocess.check_output(
@@ -285,7 +320,7 @@ def build(profile="runtime", output=None, action="build", port=None, regression=
         "python_lock_sha256": hashlib.sha256(
             (ROOT / "ports/esp_idf/python-requirements.lock").read_bytes()
         ).hexdigest(),
-        "elf_sha256": hashlib.sha256((target / "nos_esp32s3.elf").read_bytes()).hexdigest(),
+        "elf_sha256": hashlib.sha256((target / f"nos_{TARGET}.elf").read_bytes()).hexdigest(),
     }
     (target / "nos-build.json").write_text(json.dumps(manifest, indent=2) + "\n")
     return target
@@ -324,7 +359,7 @@ def main():
             if name in env:
                 print(f"export {name}={shlex.quote(env[name])}")
     elif args.action == "test":
-        run([sys.executable, ROOT / "tests/esp32s3.py"], cwd=ROOT)
+        run([sys.executable, ROOT / "tests" / f"{TARGET}.py"], cwd=ROOT)
     else:
         if args.action == "flash" and not args.port:
             parser.error("flash requires an explicit --port")

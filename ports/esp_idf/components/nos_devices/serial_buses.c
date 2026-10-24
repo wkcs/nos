@@ -202,8 +202,12 @@ static int spi_message(void *context, const struct nos_spi_config *config,
                 /* CPU FIFO only, no DMA. Reset via IDF, then retire SDK polling
                  * bookkeeping. The synthetic done bit is cleanup, never a
                  * successful transfer. Force close/reopen after this fault. */
-                periph_module_reset(spi_host(d) == SPI2_HOST ? PERIPH_SPI2_MODULE
-                                                             : PERIPH_SPI3_MODULE);
+                periph_module_t module = PERIPH_SPI2_MODULE;
+#if SOC_SPI_PERIPH_NUM > 2
+                if (spi_host(d) != SPI2_HOST)
+                    module = PERIPH_SPI3_MODULE;
+#endif
+                periph_module_reset(module);
                 spi_ll_set_int_stat(SPI_LL_GET_HW(spi_host(d)));
                 d->faulted = 1;
                 rc = -NOS_DRV_ETIMEDOUT;

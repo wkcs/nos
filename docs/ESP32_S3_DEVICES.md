@@ -29,7 +29,7 @@ IDF 后端使用同一个递归互斥量串行化管理和请求，拒绝 ISR/�
 
 ## 已接入的服务种类
 
-`runtime` 构建包含 GPIO、UART、SPI、I2C、NVS 和 OTA。`ecosystem` 额外包含其余后端及自动 OTG 管理服务；共23类，新增连接接口见 [ESP32_S3_CONNECTIVITY.md](ESP32_S3_CONNECTIVITY.md)。全部后端都有实际 SDK 创建、请求和停止代码；下表同时列出当前实现的功能边界，不能据此推断 SDK 的全部 API 已有 NOS 等价接口。
+`runtime` 构建包含 GPIO、UART、SPI、I2C、NVS 和 OTA。`ecosystem` 额外包含其余后端及自动 OTG 管理服务；共24类（含固定 USB Serial/JTAG），新增连接接口见 [ESP32_S3_CONNECTIVITY.md](ESP32_S3_CONNECTIVITY.md)。全部后端都有实际 SDK 创建、请求和停止代码；下表同时列出当前实现的功能边界，不能据此推断 SDK 的全部 API 已有 NOS 等价接口。
 
 | 服务 | 当前 NOS 请求与限制 |
 | --- | --- |
@@ -41,6 +41,7 @@ IDF 后端使用同一个递归互斥量串行化管理和请求，拒绝 ISR/�
 | OTA | 非运行槽开始、写入、校验结束、取消；不会自动选择启动槽 |
 | Wi-Fi | 官方 STA 初始化、RAM 凭据配置、连接/断开、关联状态/RSSI；连接受理不表示 DHCP 已完成；尚无 AP/扫描/事件订阅接口 |
 | BLE | 官方控制器/NimBLE，GATT 服务端、特征/描述符、广播、订阅/通知/indication、MTU、配对和 bond store；central/GATT client 与 OOB 未实现 |
+| USB Serial/JTAG | SDK 固定 CDC 串口，READ/WRITE 短传输与 EAGAIN、COMMIT 有界等待；不支持自定义描述符；与 OTG 共用 PHY，必须独占 |
 | USB Host | SDK 枚举及 URB，复用 NOS boot HID/MSC BOT 类；支持 generation、拔插、短传输、取消失败保留、同步/恢复 |
 | USB Device | TinyUSB 默认 CDC/Vendor 描述符，Vendor 短读写与卸载；尚未连接 NLP、nshell 或键盘 HID |
 | USB OTG | NOS 任务自动采样明确的板级 ID/VBUS/过流输入，保护供电、去抖、放电及单角色切换；经典 OTG，不是 PD/CC |

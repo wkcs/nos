@@ -2,12 +2,12 @@
 PYTHON ?= python3
 ESP_IDF_PROFILE ?= runtime
 ifneq ($(LIBC),idf)
-$(error esp32s3 uses LIBC=idf, the ESP-IDF Newlib ABI)
+$(error $(PLATFORM) uses LIBC=idf, the ESP-IDF Newlib ABI)
 endif
 .PHONY: all firmware qemu-test setup-env
 all firmware:
-	$(PYTHON) scripts/esp32s3.py build --profile $(ESP_IDF_PROFILE) --output $(O)
+	$(PYTHON) scripts/$(PLATFORM).py build --profile $(ESP_IDF_PROFILE) --output $(O)
 qemu-test:
-	$(PYTHON) tests/esp32s3.py
+	$(PYTHON) tests/$(PLATFORM).py
 setup-env:
-	$(PYTHON) scripts/esp32s3.py setup
+	$(PYTHON) scripts/$(PLATFORM).py setup

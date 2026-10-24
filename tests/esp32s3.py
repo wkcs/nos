@@ -43,11 +43,13 @@ def digest(path):
 
 
 def emulator_probe(report):
-    archive = port.SDK_ROOT / "qemu-s3" / port.QEMU_ARCHIVE
+    archive = port.SDK_ROOT / port.QEMU_DIRECTORY / port.QEMU_ARCHIVE
     assert digest(archive) == port.QEMU_SHA256, "Emulator download changed"
     binary = port.qemu_binary()
     with tarfile.open(archive) as package:
-        member = next(m for m in package.getmembers() if m.name.endswith("/bin/qemu-system-xtensa"))
+        member = next(
+            m for m in package.getmembers() if m.name.endswith("/bin/" + port.QEMU_EXECUTABLE)
+        )
         selected_from_archive = hashlib.sha256(
             package.extractfile(member).read()
         ).hexdigest() == digest(binary)
@@ -56,7 +58,7 @@ def emulator_probe(report):
     command = [
         str(binary),
         "-M",
-        "esp32s3",
+        port.TARGET,
         "-S",
         "-display",
         "none",
@@ -79,21 +81,28 @@ def emulator_probe(report):
         "download_url": port.QEMU_URL,
         "archive_sha256": port.QEMU_SHA256,
         "binary_sha256": digest(binary),
-        "machine": "esp32s3",
+        "machine": port.TARGET,
         "qtree_exit_code": 0,
         "selected_from_verified_archive": selected_from_archive,
         "usb_controller_model": "dwc2" in result.stdout.lower(),
-        "rf_models": "not implemented by the pinned S3 machine; inspected official hw/xtensa/esp32s3.c",
+        "rf_models": "not implemented by the pinned machine; no RF hardware claim",
     }
 
 
 def audit(build, ecosystem=False, regression=True):
     manifest = json.loads((build / "nos-build.json").read_text())
     assert manifest["source"] == port.source_identity(), "Stale build source identity"
+    assert manifest["target"] == port.TARGET
+    config = json.loads((build / "config/sdkconfig.json").read_text())
+    assert config["IDF_TARGET"] == port.TARGET
+    assert config["FREERTOS_UNICORE"] and config["FREERTOS_HZ"] == 100
+    assert not config.get("ESP_SYSTEM_HW_STACK_GUARD", False)
     assert manifest["regression"] == regression and manifest["profile"] == (
         "ecosystem" if ecosystem else "runtime"
     )
-    assert manifest["elf_sha256"] == digest(build / "nos_esp32s3.elf"), "ELF changed since build"
+    assert manifest["elf_sha256"] == digest(
+        build / f"nos_{port.TARGET}.elf"
+    ), "ELF changed since build"
     commands = json.loads((build / "compile_commands.json").read_text())
     files = {Path(item["file"]).resolve() for item in commands}
     forbidden = [str(p) for p in files if p.name == "tasks.c"]
@@ -103,7 +112,7 @@ def audit(build, ecosystem=False, regression=True):
         "kernel/sched/task.c",
         "kernel/mm/memory.c",
         "kernel/ipc/ipc.c",
-        "arch/xtensa/platform.c",
+        "arch/esp_idf/platform.c",
         "ports/esp_idf/components/freertos/nos_tasks.c",
         "servers/drivers/framework/device.c",
         "servers/drivers/framework/service.c",
@@ -115,15 +124,25 @@ def audit(build, ecosystem=False, regression=True):
         "servers/usb/host/otg.c",
     ]
     assert all((ROOT / p).resolve() in files for p in required)
+    selected_arch = "riscv" if port.TARGET == "esp32c3" else "xtensa"
+    other_arch = "xtensa" if selected_arch == "riscv" else "riscv"
+    for filename in ("port.c", "portasm.S"):
+        assert (
+            port.IDF / "components/freertos/FreeRTOS-Kernel/portable" / selected_arch / filename
+        ).resolve() in files
+    assert not any(f"/portable/{other_arch}/" in str(p) for p in files)
+    elf = (build / f"nos_{port.TARGET}.elf").read_bytes()
+    assert elf[:6] == b"\x7fELF\x01\x01"
+    assert int.from_bytes(elf[18:20], "little") == (243 if selected_arch == "riscv" else 94)
     nm = (
         port.TOOLS
-        / "tools/xtensa-esp-elf"
+        / f"tools/{port.COMPILER_FAMILY}-elf"
         / port.XTENSA_VERSION
-        / "xtensa-esp-elf/bin/xtensa-esp32s3-elf-nm"
+        / f"{port.COMPILER_FAMILY}-elf/bin/{port.COMPILER_PREFIX}-elf-nm"
     )
-    symbols = subprocess.check_output([nm, build / "nos_esp32s3.elf"], text=True)
+    symbols = subprocess.check_output([nm, build / f"nos_{port.TARGET}.elf"], text=True)
     names = {line.split()[-1] for line in symbols.splitlines() if line.split()}
-    for name in ("select_task", "scheduler_tick", "nos_xtensa_syscall", "vTaskSwitchContext"):
+    for name in ("select_task", "scheduler_tick", "nos_idf_syscall", "vTaskSwitchContext"):
         assert name in names, f"Missing NOS scheduler mechanism: {name}"
     assert not any(name.startswith("nos_sdk_unused_") for name in names)
     assert "vPortTCBPreDeleteHook" not in names, "SDK cleanup assumes a different TCB layout"
@@ -138,14 +157,13 @@ def audit(build, ecosystem=False, regression=True):
     for name in mechanisms:
         assert name in names, f"Missing managed device mechanism: {name}"
     checked = []
+    c3 = port.TARGET == "esp32c3"
     if ecosystem:
         for path in (
             "auxiliary.c",
             "wireless.c",
             "ble.c",
-            "usb.c",
-            "usb_host.c",
-            "usb_otg.c",
+            "usb_serial.c",
             "can.c",
         ):
             assert (ROOT / "ports/esp_idf/components/nos_devices" / path).resolve() in files
@@ -153,17 +171,28 @@ def audit(build, ecosystem=False, regression=True):
             "idf_auxiliary_ops",
             "idf_wifi_ops",
             "idf_ble_ops",
-            "idf_usb_host_ops",
-            "idf_usb_device_ops",
+            "idf_usb_serial_ops",
             "idf_can_ops",
-            "idf_usb_otg_ops",
             "nos_usb_hid_open_transport",
-            "nos_usb_msc_open_transport",
         ):
             assert name in names, f"Missing managed SDK backend: {name}"
+        usb_ops = ("idf_usb_host_ops", "idf_usb_device_ops", "idf_usb_otg_ops")
+        if c3:
+            assert all(name not in names for name in usb_ops), "C3 cannot own an OTG controller"
+            absent = {"usb.c", "usb_host.c", "usb_otg.c"}
+            assert not any(p.name in absent and "nos_devices" in str(p) for p in files)
+        else:
+            assert all(name in names for name in (*usb_ops, "nos_usb_msc_open_transport"))
         source = (ROOT / "ports/esp_idf/components/nos_devices/ecosystem.c").read_text()
-        checked = re.findall(r"\(uintptr_t\)(\w+)", source)
-        assert len(checked) == 32 and all(name in names for name in checked)
+        checked = [name for name in re.findall(r"\(uintptr_t\)(\w+)", source) if name in names]
+        assert len(checked) == (26 if c3 else 35)
+        sized_symbols = subprocess.check_output(
+            [nm, "-S", build / f"nos_{port.TARGET}.elf"], text=True
+        )
+        table = next(
+            line.split() for line in sized_symbols.splitlines() if line.endswith(" entry_points")
+        )
+        assert int(table[1], 16) == len(checked) * 4, "SDK entry table does not match the audit"
     return {
         "build_manifest": manifest,
         "nos_scheduler": True,
@@ -172,19 +201,27 @@ def audit(build, ecosystem=False, regression=True):
         "original_tasks_c_compiled": False,
         "retained_sdk_collections": ["list", "queue", "timers", "event_groups", "stream_buffer"],
         "sdk_entry_points": checked,
-        "elf_sha256": digest(build / "nos_esp32s3.elf"),
-        "image_sha256": digest(build / "nos_esp32s3.bin"),
+        "elf_sha256": digest(build / f"nos_{port.TARGET}.elf"),
+        "image_sha256": digest(build / f"nos_{port.TARGET}.bin"),
     }
 
 
 def run_qemu(build, report, timeout, markers=None, calibrated_efuse=False):
     report.mkdir(parents=True, exist_ok=True)
     markers = MARKERS if markers is None else markers
+    markers = [
+        m.replace("esp32s3", port.TARGET).replace(
+            "_fpu_", "_fp_math_" if port.TARGET == "esp32c3" else "_fpu_"
+        )
+        for m in markers
+    ]
     qemu = port.qemu_binary()
     env = port.environment()
     version = subprocess.check_output([qemu, "--version"], text=True, env=env).splitlines()[0]
     machines = subprocess.check_output([qemu, "-machine", "help"], text=True, env=env)
-    assert re.search(r"^esp32s3\s", machines, re.M), "QEMU must model the actual ESP32-S3"
+    assert re.search(
+        r"^" + port.TARGET + r"\s", machines, re.M
+    ), "QEMU must model the selected ESP32 chip"
     flash = bytearray(b"\xff" * (4 * 1024 * 1024))
     entries = json.loads((build / "flasher_args.json").read_text())["flash_files"]
     ranges = []
@@ -205,12 +242,14 @@ def run_qemu(build, report, timeout, markers=None, calibrated_efuse=False):
         # factory ADC-calibration version (1). Zero deltas select SDK-defined
         # base codes. This models fused calibration, not ADC conversion.
         efuse[64] = 1
+        if port.TARGET == "esp32c3":
+            efuse[39] = 3  # Official C3 model default calibration revision 1.3.
     efuse_path = report / "efuse.bin"
     efuse_path.write_bytes(efuse)
     command = [
         str(qemu),
         "-M",
-        "esp32s3",
+        port.TARGET,
         "-nographic",
         "-monitor",
         "none",
@@ -219,7 +258,7 @@ def run_qemu(build, report, timeout, markers=None, calibrated_efuse=False):
         "-drive",
         f"file={efuse_path},if=none,format=raw,id=efuse",
         "-global",
-        "driver=nvram.esp32s3.efuse,property=drive,value=efuse",
+        f"driver=nvram.{port.TARGET}.efuse,property=drive,value=efuse",
     ]
     log = report / "qemu.log"
     deadline = time.monotonic() + timeout
@@ -259,7 +298,7 @@ def run_qemu(build, report, timeout, markers=None, calibrated_efuse=False):
         harness_stopped and process.returncode == 0
     ), f"Unexpected QEMU exit: {process.returncode}"
     return {
-        "machine": "esp32s3",
+        "machine": port.TARGET,
         "version": version,
         "command": command,
         "markers": markers,
@@ -313,9 +352,9 @@ def manager_smoke(report):
                 project,
                 "-B",
                 build,
-                "-DIDF_TARGET=esp32s3",
+                f"-DIDF_TARGET={port.TARGET}",
                 f"-DSDKCONFIG={report}/manager-sdkconfig",
-                f"-DSDKCONFIG_DEFAULTS={ROOT}/ports/esp_idf/project/sdkconfig.defaults",
+                "-DSDKCONFIG_DEFAULTS=" + ";".join(map(str, port.sdkconfig_defaults())),
                 "reconfigure",
             ],
             env=env,
@@ -341,7 +380,9 @@ def manager_smoke(report):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--output-root", type=Path, default=ROOT / "out/esp32s3/validation")
+    parser.add_argument(
+        "--output-root", type=Path, default=ROOT / "out" / port.TARGET / "validation"
+    )
     parser.add_argument("--timeout", type=int, default=45)
     parser.add_argument("--runtime-only", action="store_true")
     parser.add_argument("--no-build", action="store_true")
@@ -391,7 +432,7 @@ def main():
             if not args.no_build:
                 command = [
                     "python3",
-                    ROOT / "scripts/esp32s3.py",
+                    ROOT / "scripts" / f"{port.TARGET}.py",
                     "build",
                     "--profile",
                     profile,
@@ -411,7 +452,15 @@ def main():
                 output / "ecosystem/build",
                 report / "ecosystem",
                 args.timeout,
-                [*MARKERS, "PASS esp32s3_managed_otg_idle_worker"],
+                [
+                    *MARKERS,
+                    "PASS esp32s3_sdk_ecosystem_linkage",
+                    *(
+                        ["PASS esp32s3_target_capability_limits"]
+                        if port.TARGET == "esp32c3"
+                        else ["PASS esp32s3_managed_otg_idle_worker"]
+                    ),
+                ],
                 calibrated_efuse=True,
             )
         if not args.runtime_only:
@@ -427,7 +476,7 @@ def main():
     finally:
         (report / "results.json").write_text(json.dumps(result, indent=2) + "\n")
         print(report / "results.json", flush=True)
-    print("PASS ESP32-S3 NOS scheduler and SDK compatibility")
+    print(f"PASS {port.TARGET} NOS scheduler and SDK compatibility")
 
 
 if __name__ == "__main__":

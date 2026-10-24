@@ -402,10 +402,66 @@ static void otg_check(void)
     assert(!nos_service_unregister(&d.service));
     puts("PASS idf_otg_actual_adapter_debounce_no_backfeed_roles_overcurrent_worker_lifecycle");
 }
+static int serial_installed, serial_fail_stop, serial_result;
+int usb_serial_jtag_driver_install(usb_serial_jtag_driver_config_t *c)
+{
+    assert(c->rx_buffer_size >= 64 && c->tx_buffer_size >= 64);
+    assert(!serial_installed);
+    serial_installed = 1;
+    return ESP_OK;
+}
+int usb_serial_jtag_driver_uninstall(void)
+{
+    if (serial_fail_stop)
+        return ESP_FAIL;
+    serial_installed = 0;
+    return ESP_OK;
+}
+int usb_serial_jtag_read_bytes(void *p, uint32_t n, TickType_t wait)
+{
+    assert(serial_installed && p && n && !wait);
+    if (serial_result > 0 && (unsigned)serial_result <= n)
+        memset(p, 0x55, serial_result);
+    return serial_result;
+}
+int usb_serial_jtag_write_bytes(const void *p, size_t n, TickType_t wait)
+{
+    assert(serial_installed && p && n && !wait);
+    return serial_result;
+}
+int usb_serial_jtag_wait_tx_done(TickType_t wait)
+{
+    assert(serial_installed && wait == 1);
+    return ESP_ERR_TIMEOUT;
+}
+static void serial_check(void)
+{
+    struct idf_device d = {0};
+    assert(!idf_usb_serial_ops.start(&d));
+    char data[8] = {0};
+    struct nos_io_buffer b = {data, sizeof(data), 99};
+    serial_result = 0;
+    assert(idf_usb_serial_ops.call(&d, NOS_IO_READ, &b, sizeof(b)) == -NOS_DRV_EAGAIN && !b.actual);
+    serial_result = 3;
+    assert(!idf_usb_serial_ops.call(&d, NOS_IO_READ, &b, sizeof(b)) && b.actual == 3 && data[3] == 0);
+    assert(!idf_usb_serial_ops.call(&d, NOS_IO_WRITE, &b, sizeof(b)) && b.actual == 3);
+    serial_result = -1;
+    assert(idf_usb_serial_ops.call(&d, NOS_IO_WRITE, &b, sizeof(b)) == -NOS_DRV_EIO && !b.actual);
+    uint32_t timeout_us = 1;
+    assert(idf_usb_serial_ops.call(&d, NOS_IO_COMMIT, &timeout_us, sizeof(timeout_us)) == -NOS_DRV_ETIMEDOUT);
+    b.data = NULL;
+    assert(idf_usb_serial_ops.call(&d, NOS_IO_READ, &b, sizeof(b)) == -NOS_DRV_EINVAL);
+    serial_fail_stop = 1;
+    assert(idf_usb_serial_ops.stop(&d) == -NOS_DRV_EIO && d.installed);
+    serial_fail_stop = 0;
+    assert(!idf_usb_serial_ops.stop(&d) && !d.installed);
+    puts("PASS idf_usb_serial_actual_adapter_short_nonblocking_timeout_stop_retry");
+}
 int main(void)
 {
     for (unsigned i = 0; i < 6; i++)
         check(i);
     otg_check();
+    serial_check();
     puts("PASS idf_usb_actual_bridge_async_hid_hotplug_short_overflow_timeout_quarantine_ep0");
 }

@@ -7,8 +7,12 @@ set(sources "devices.c" "serial_buses.c" "storage.c" "${NOS_ROOT}/servers/blueto
 set(dependencies freertos esp_driver_gpio esp_driver_uart esp_driver_spi esp_driver_i2c
     esp_timer nvs_flash app_update)
 if(ecosystem)
-    list(APPEND sources "wireless.c" "ble.c" "usb.c" "usb_host.c" "usb_otg.c" "auxiliary.c" "can.c" "ecosystem.c")
-    list(APPEND dependencies esp_wifi bt esp_netif usb esp_tinyusb esp_driver_i2s esp_driver_ledc
+    list(APPEND sources "wireless.c" "ble.c" "usb_serial.c" "auxiliary.c" "can.c" "ecosystem.c")
+    if(IDF_TARGET STREQUAL "esp32s3")
+        list(APPEND sources "usb.c" "usb_host.c" "usb_otg.c")
+        list(APPEND dependencies usb esp_tinyusb)
+    endif()
+    list(APPEND dependencies esp_wifi bt esp_netif esp_driver_usb_serial_jtag esp_driver_i2s esp_driver_ledc
         esp_driver_rmt esp_driver_gptimer esp_driver_mcpwm esp_driver_pcnt esp_driver_tsens
         esp_driver_sdmmc esp_driver_sdspi esp_adc esp_lcd sdmmc driver fatfs esp-tls)
 endif()

@@ -357,10 +357,10 @@ static int fault_mapping_resolved(void)
     return 0;
 #endif
 }
-#ifdef NOS_XTENSA
+#ifdef NOS_ESP_IDF
 /* The shared-memory MCU profile enters C directly, using SDK context switching
- * to preserve windows/FPU/TLS. Capabilities and user copies still pass dispatch. */
-intptr_t nos_xtensa_syscall(uintptr_t number, uintptr_t a, uintptr_t b, uintptr_t c)
+ * to preserve registers/TLS. Capabilities and user copies still pass dispatch. */
+intptr_t nos_idf_syscall(uintptr_t number, uintptr_t a, uintptr_t b, uintptr_t c)
 {
     if (!current_task || !arch_syscall_ready()) return -NOS_EDEADLK;
     struct task *caller = current_task;
@@ -375,6 +375,12 @@ intptr_t nos_xtensa_syscall(uintptr_t number, uintptr_t a, uintptr_t b, uintptr_
     }
     return (intptr_t)caller->frame.result;
 }
+#ifdef NOS_XTENSA
+intptr_t nos_xtensa_syscall(uintptr_t number, uintptr_t a, uintptr_t b, uintptr_t c)
+{
+    return nos_idf_syscall(number, a, b, c);
+}
+#endif
 #endif
 struct arch_frame *kernel_trap(struct arch_frame *frame, unsigned event)
 {
@@ -421,7 +427,7 @@ struct arch_frame *kernel_trap(struct arch_frame *frame, unsigned event)
         }
     } else {
         uintptr_t nr, a, b, c;
-#if defined(NOS_XTENSA)
+#if defined(NOS_ESP_IDF)
         nr = frame->number; a = frame->r[0]; b = frame->r[1]; c = frame->r[2];
 #elif defined(NOS_ARM64)
         nr = frame->x[8]; a = frame->x[0]; b = frame->x[1]; c = frame->x[2];

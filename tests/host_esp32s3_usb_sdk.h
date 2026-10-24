@@ -20,6 +20,15 @@
 #define USB_TRANSFER_STATUS_NO_DEVICE 3
 typedef unsigned TickType_t;
 typedef void *TaskHandle_t;
+typedef struct {
+    unsigned rx_buffer_size, tx_buffer_size;
+} usb_serial_jtag_driver_config_t;
+int usb_serial_jtag_driver_install(usb_serial_jtag_driver_config_t *);
+int usb_serial_jtag_driver_uninstall(void);
+int usb_serial_jtag_read_bytes(void *, uint32_t, TickType_t);
+int usb_serial_jtag_write_bytes(const void *, size_t, TickType_t);
+int usb_serial_jtag_wait_tx_done(TickType_t);
+extern const struct nos_service_ops idf_usb_serial_ops;
 #define pdPASS 1
 #define pdMS_TO_TICKS(ms) ((ms) / 10)
 #define GPIO_MODE_INPUT 1

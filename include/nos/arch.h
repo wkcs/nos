@@ -3,11 +3,14 @@
 #define NOS_ARCH_H
 #include "abi.h"
 #define ARCH_MAP_PRIVILEGED 0x100u
-#if defined(NOS_XTENSA)
-/* Saved context uses ESP-IDF's Xtensa window/FPU/TLS frame on the task stack.
- * result is separate because solicited and interrupt frame layouts differ. */
+#if defined(NOS_ESP_IDF)
+/* The original SDK port owns its exception/TLS frame on the task stack. */
 struct arch_frame { uintptr_t context, stack_end, entry, argument, second, result, pc, sp, number, r[3]; };
+#ifdef NOS_IDF_RISCV
+#define ARCH_NAME "riscv32-esp32c3"
+#else
 #define ARCH_NAME "xtensa-esp32s3"
+#endif
 #define FRAME_RESULT(f) ((f)->result)
 #elif defined(NOS_ARM64)
 struct arch_frame { uintptr_t x[31], sp, pc, status, tls, padding; uint64_t q[64]; uintptr_t fpcr, fpsr; };
@@ -35,10 +38,13 @@ struct arch_frame { uintptr_t r[13], sp, lr, pc, status, tls; uint64_t d[32]; ui
 #define FRAME_RESULT(f) ((f)->r[0])
 #endif
 enum arch_event { ARCH_SYSCALL, ARCH_TIMER, ARCH_FAULT, ARCH_IRQ };
-#if defined(NOS_XTENSA)
+#if defined(NOS_ESP_IDF)
 _Static_assert(offsetof(struct arch_frame, context) == 0 && sizeof(uintptr_t) == 4,
-               "Xtensa context pointer ABI");
+               "IDF context pointer ABI");
+intptr_t nos_idf_syscall(uintptr_t number, uintptr_t a, uintptr_t b, uintptr_t c);
+#ifdef NOS_XTENSA
 intptr_t nos_xtensa_syscall(uintptr_t number, uintptr_t a, uintptr_t b, uintptr_t c);
+#endif
 int arch_shared_user_pointer(uintptr_t address, int write);
 int arch_syscall_ready(void);
 #elif defined(NOS_ARM64)

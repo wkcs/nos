@@ -11,7 +11,7 @@ void app_main(void)
     assert(nos_idf_devices_init() == 0);
     esp_chip_info_t chip;
     esp_chip_info(&chip);
-    printf("NOS ESP32-S3: chip=%d, physical cores=%d, scheduler cores=1, task=%ld\n", chip.model,
+    printf("NOS " CONFIG_IDF_TARGET ": chip=%d, physical cores=%d, scheduler cores=1, task=%ld\n", chip.model,
            chip.cores, (long)nos_syscall(NOS_SYS_GETPID, 0, 0, 0));
 #ifdef NOS_IDF_ECOSYSTEM
     extern unsigned nos_esp_idf_ecosystem_link_count(void);

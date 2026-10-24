@@ -8,7 +8,9 @@
 #include "freertos/timers.h"
 #include "esp_attr.h"
 #include "esp_newlib.h"
+#ifdef NOS_XTENSA
 #include "xtensa_context.h"
+#endif
 static struct nos_idf_task records[NOS_TASKS];
 void *pxCurrentTCBs[1];
 static unsigned started, suspended, pended_yield;

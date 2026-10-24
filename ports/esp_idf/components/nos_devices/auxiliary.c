@@ -5,18 +5,27 @@
 #include <string.h>
 #include <limits.h>
 #include "private.h"
+#include "soc/soc_caps.h"
 #include "driver/i2s_std.h"
 #include "driver/ledc.h"
 #include "driver/rmt_tx.h"
 #include "driver/rmt_encoder.h"
 #include "driver/gptimer.h"
+#if SOC_MCPWM_SUPPORTED
 #include "driver/mcpwm_prelude.h"
+#endif
+#if SOC_PCNT_SUPPORTED
 #include "driver/pulse_cnt.h"
+#endif
 #include "driver/temperature_sensor.h"
+#if SOC_SDMMC_HOST_SUPPORTED
 #include "driver/sdmmc_host.h"
+#endif
 #include "driver/sdspi_host.h"
 #include "esp_adc/adc_oneshot.h"
+#if SOC_LCD_RGB_SUPPORTED
 #include "esp_lcd_panel_rgb.h"
+#endif
 #include "esp_lcd_panel_ops.h"
 #include "sdmmc_cmd.h"
 struct auxiliary {
@@ -25,16 +34,22 @@ struct auxiliary {
     rmt_encoder_handle_t encoder;
     rmt_symbol_word_t *symbols;
     gptimer_handle_t timer;
+#if SOC_MCPWM_SUPPORTED
     mcpwm_timer_handle_t pwm_timer;
     mcpwm_oper_handle_t oper;
     mcpwm_cmpr_handle_t comparator;
     mcpwm_gen_handle_t generator;
+#endif
+#if SOC_PCNT_SUPPORTED
     pcnt_unit_handle_t counter;
     pcnt_channel_handle_t channel;
+#endif
     adc_oneshot_unit_handle_t adc;
     adc_channel_t adc_channel;
     temperature_sensor_handle_t temperature;
+#if SOC_LCD_RGB_SUPPORTED
     esp_lcd_panel_handle_t panel;
+#endif
     sdmmc_card_t card;
     sdspi_dev_handle_t sdspi;
     uint8_t enabled, running, bus_installed, host_installed, card_ready, pwm_channel;
@@ -71,7 +86,7 @@ static int auxiliary_start(void *context)
         rmt_tx_channel_config_t config = {.gpio_num = d->config.pins[0],
                                           .clk_src = RMT_CLK_SRC_DEFAULT,
                                           .resolution_hz = d->config.hz,
-                                          .mem_block_symbols = 64,
+                                          .mem_block_symbols = SOC_RMT_MEM_WORDS_PER_CHANNEL,
                                           .trans_queue_depth = 1};
         rc = idf_error(rmt_new_tx_channel(&config, &a->rmt));
         if (rc)
@@ -99,6 +114,7 @@ static int auxiliary_start(void *context)
             a->running = 1;
         return rc;
     }
+#if SOC_MCPWM_SUPPORTED
     case NOS_SERVICE_MCPWM: {
         mcpwm_timer_config_t timer = {.group_id = d->config.instance,
                                       .clk_src = MCPWM_TIMER_CLK_SRC_DEFAULT,
@@ -141,6 +157,8 @@ static int auxiliary_start(void *context)
             a->running = 1;
         return rc;
     }
+#endif
+#if SOC_PCNT_SUPPORTED
     case NOS_SERVICE_COUNTER: {
         pcnt_unit_config_t config = {.high_limit = 30000, .low_limit = -30000};
         rc = idf_error(pcnt_new_unit(&config, &a->counter));
@@ -164,6 +182,7 @@ static int auxiliary_start(void *context)
             a->running = 1;
         return rc;
     }
+#endif
     case NOS_SERVICE_ADC: {
         adc_unit_t unit;
         rc = idf_error(adc_oneshot_io_to_channel(d->config.pins[0], &unit, &a->adc_channel));
@@ -207,6 +226,7 @@ static int auxiliary_start(void *context)
             a->enabled = 1;
         return rc;
     }
+#if SOC_SDMMC_HOST_SUPPORTED
     case NOS_SERVICE_SDMMC: {
         rc = idf_error(sdmmc_host_init());
         if (rc)
@@ -229,6 +249,7 @@ static int auxiliary_start(void *context)
             a->card_ready = 1;
         return rc;
     }
+#endif
     case NOS_SERVICE_SDSPI: {
         spi_bus_config_t config = {.sclk_io_num = d->config.pins[0],
                                    .mosi_io_num = d->config.pins[1],
@@ -258,6 +279,7 @@ static int auxiliary_start(void *context)
             a->card_ready = 1;
         return rc;
     }
+#if SOC_LCD_RGB_SUPPORTED
     case NOS_SERVICE_DISPLAY: {
         esp_lcd_rgb_panel_config_t config = {.clk_src = LCD_CLK_SRC_DEFAULT,
                                              .timings = {.pclk_hz = d->config.hz,
@@ -286,6 +308,7 @@ static int auxiliary_start(void *context)
             rc = idf_error(esp_lcd_panel_init(a->panel));
         return rc;
     }
+#endif
     default:
         return -NOS_DRV_ENOTSUP;
     }
@@ -349,6 +372,7 @@ static int auxiliary_stop(void *context)
             a->timer = NULL;
         }
         break;
+#if SOC_MCPWM_SUPPORTED
     case NOS_SERVICE_MCPWM:
         if (a->running) {
             SDK_TRY(mcpwm_generator_set_force_level(a->generator, 0, true));
@@ -378,6 +402,8 @@ static int auxiliary_stop(void *context)
             a->pwm_timer = NULL;
         }
         break;
+#endif
+#if SOC_PCNT_SUPPORTED
     case NOS_SERVICE_COUNTER:
         if (a->running) {
             SDK_TRY(pcnt_unit_stop(a->counter));
@@ -396,6 +422,7 @@ static int auxiliary_stop(void *context)
             a->counter = NULL;
         }
         break;
+#endif
     case NOS_SERVICE_ADC:
         if (a->adc) {
             SDK_TRY(adc_oneshot_del_unit(a->adc));
@@ -422,12 +449,14 @@ static int auxiliary_stop(void *context)
             a->i2s = NULL;
         }
         break;
+#if SOC_SDMMC_HOST_SUPPORTED
     case NOS_SERVICE_SDMMC:
         if (a->host_installed) {
             SDK_TRY(sdmmc_host_deinit());
             a->host_installed = 0;
         }
         break;
+#endif
     case NOS_SERVICE_SDSPI:
         if (a->sdspi) {
             SDK_TRY(sdspi_host_remove_device(a->sdspi));
@@ -440,12 +469,14 @@ static int auxiliary_stop(void *context)
             a->bus_installed = 0;
         }
         break;
+#if SOC_LCD_RGB_SUPPORTED
     case NOS_SERVICE_DISPLAY:
         if (a->panel) {
             SDK_TRY(esp_lcd_panel_del(a->panel));
             a->panel = NULL;
         }
         break;
+#endif
     default:
         return -NOS_DRV_ENOTSUP;
     }
@@ -470,6 +501,7 @@ static int auxiliary_call(void *context, uint32_t op, void *request, size_t size
             return idf_error(ledc_update_duty(LEDC_LOW_SPEED_MODE, d->config.instance));
         }
         break;
+#if SOC_MCPWM_SUPPORTED
     case NOS_SERVICE_MCPWM:
         if (op == NOS_IO_CONFIGURE && size == sizeof(struct nos_io_pwm)) {
             unsigned duty = ((struct nos_io_pwm *)request)->duty_permille;
@@ -482,18 +514,21 @@ static int auxiliary_call(void *context, uint32_t op, void *request, size_t size
             return idf_error(mcpwm_generator_set_force_level(a->generator, -1, true));
         }
         break;
+#endif
     case NOS_SERVICE_TIMER:
         if (op == NOS_IO_READ && size == sizeof(uint64_t))
             return idf_error(gptimer_get_raw_count(a->timer, request));
         if (op == NOS_IO_WRITE && size == sizeof(uint64_t))
             return idf_error(gptimer_set_raw_count(a->timer, *(uint64_t *)request));
         break;
+#if SOC_PCNT_SUPPORTED
     case NOS_SERVICE_COUNTER:
         if (op == NOS_IO_READ && size == sizeof(int))
             return idf_error(pcnt_unit_get_count(a->counter, request));
         if (op == NOS_IO_ERASE && !size)
             return idf_error(pcnt_unit_clear_count(a->counter));
         break;
+#endif
     case NOS_SERVICE_ADC:
         if (op == NOS_IO_READ && size == sizeof(int))
             return idf_error(adc_oneshot_read(a->adc, a->adc_channel, request));
@@ -555,7 +590,9 @@ static int auxiliary_call(void *context, uint32_t op, void *request, size_t size
             return rc;
         }
         break;
+#if SOC_SDMMC_HOST_SUPPORTED
     case NOS_SERVICE_SDMMC:
+#endif
     case NOS_SERVICE_SDSPI:
         if (op == NOS_IO_STATUS && size == sizeof(struct nos_io_block_info)) {
             if (!a->card_ready)
@@ -580,6 +617,7 @@ static int auxiliary_call(void *context, uint32_t op, void *request, size_t size
             return rc;
         }
         break;
+#if SOC_LCD_RGB_SUPPORTED
     case NOS_SERVICE_DISPLAY:
         if (op == NOS_IO_WRITE && size == sizeof(struct nos_io_rectangle)) {
             struct nos_io_rectangle *r = request;
@@ -590,6 +628,7 @@ static int auxiliary_call(void *context, uint32_t op, void *request, size_t size
                                                        r->y + r->height, r->pixels));
         }
         break;
+#endif
     default:
         break;
     }

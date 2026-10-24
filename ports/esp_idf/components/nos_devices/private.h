@@ -8,6 +8,7 @@
 #include "driver/i2c_master.h"
 #include "nvs.h"
 #include "esp_ota_ops.h"
+#include "soc/soc_caps.h"
 struct idf_device {
     struct nos_service service;
     struct nos_idf_device_config config;
@@ -63,6 +64,6 @@ extern const struct nos_service_ops idf_storage_ops, idf_ota_ops;
 extern const struct nos_service_ops idf_wifi_ops, idf_ble_ops, idf_usb_host_ops, idf_usb_device_ops;
 extern const struct nos_service_ops idf_auxiliary_ops;
 extern const struct nos_service_ops idf_can_ops;
-extern const struct nos_service_ops idf_usb_otg_ops;
+extern const struct nos_service_ops idf_usb_otg_ops, idf_usb_serial_ops;
 #endif
 #endif
