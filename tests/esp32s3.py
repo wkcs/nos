@@ -173,6 +173,73 @@ def run_qemu(build, report, timeout, markers=None):
     }
 
 
+def manager_smoke(report):
+    """Exercise IDF 5.4's actual dependency-manager protocol in a scratch app."""
+    env = port.environment()
+    env["IDF_COMPONENT_MANAGER"] = "1"
+    python = port.python_environment() / "bin/python"
+    version = subprocess.check_output(
+        [
+            python,
+            "-c",
+            "import importlib.metadata; print(importlib.metadata.version('idf-component-manager'))",
+        ],
+        text=True,
+        env=env,
+    ).strip()
+    assert version == "2.5.2", f"Unexpected SDK component manager: {version}"
+    project = report / "manager-project"
+    (project / "main").mkdir(parents=True)
+    (project / "CMakeLists.txt").write_text(
+        "cmake_minimum_required(VERSION 3.16)\n"
+        f'set(EXTRA_COMPONENT_DIRS "{ROOT}/ports/esp_idf/components")\n'
+        "set(COMPONENTS main)\ninclude($ENV{IDF_PATH}/tools/cmake/project.cmake)\n"
+        "project(nos_manager_probe)\n"
+    )
+    (project / "main/CMakeLists.txt").write_text(
+        'idf_component_register(SRCS "main.c" REQUIRES freertos)\n'
+    )
+    (project / "main/main.c").write_text("void app_main(void) {}\n")
+    (project / "main/idf_component.yml").write_text('dependencies:\n  idf: ">=5.4,<5.5"\n')
+    (project / "partitions.csv").write_bytes(
+        (ROOT / "ports/esp_idf/project/partitions.csv").read_bytes()
+    )
+    build = report / "manager-build"
+    with (report / "manager-configure.log").open("wb") as log:
+        subprocess.run(
+            [
+                python,
+                port.IDF / "tools/idf.py",
+                "-C",
+                project,
+                "-B",
+                build,
+                "-DIDF_TARGET=esp32s3",
+                f"-DSDKCONFIG={report}/manager-sdkconfig",
+                f"-DSDKCONFIG_DEFAULTS={ROOT}/ports/esp_idf/project/sdkconfig.defaults",
+                "reconfigure",
+            ],
+            env=env,
+            cwd=ROOT,
+            stdout=log,
+            stderr=subprocess.STDOUT,
+            check=True,
+        )
+    commands = json.loads((build / "compile_commands.json").read_text())
+    assert not any(Path(c["file"]).name == "tasks.c" for c in commands)
+    assert any(Path(c["file"]).name == "nos_tasks.c" for c in commands)
+    ulp = subprocess.check_output(
+        ["esp32ulp-elf-as", "--version"], text=True, env=env
+    ).splitlines()[0]
+    return {
+        "version": version,
+        "idf_interface": 3,
+        "cmake_exit_code": 0,
+        "nos_component_override": True,
+        "ulp_assembler": ulp,
+    }
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output-root", type=Path, default=ROOT / "out/esp32s3/validation")
@@ -186,6 +253,7 @@ def main():
     before = port.source_identity()
     result = {"source": before, "idf_commit": port.IDF_COMMIT, "passed": False}
     try:
+        result["component_manager"] = manager_smoke(report)
         configurations = [("runtime", "runtime", True)]
         if not args.runtime_only:
             configurations = (

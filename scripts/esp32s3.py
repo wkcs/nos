@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import platform
+import shlex
 import subprocess
 import sys
 import tarfile
@@ -23,6 +24,7 @@ ESP_USB_COMMIT = "68bf7f9613dbb1a31094fdb903209ae3e4bf388d"
 ESP_USB = SDK_ROOT / "esp-usb"
 XTENSA_VERSION = "esp-14.2.0_20241119"
 CMAKE_VERSION = "3.30.2"
+ULP_VERSION = "2.38_20240113"
 QEMU_VERSION = "esp-develop-9.2.2-20260417"
 QEMU_ARCHIVE = "qemu-xtensa-softmmu-esp_develop_9.2.2_20260417-x86_64-linux-gnu.tar.xz"
 QEMU_SHA256 = "0eecb2a34a5586c0e59110f77b9343b7b336e82fdb0e1a30e1dc1bab8a547e35"
@@ -62,6 +64,7 @@ def environment():
         venv / "bin",
         TOOLS / "tools/xtensa-esp-elf" / XTENSA_VERSION / "xtensa-esp-elf/bin",
         TOOLS / "tools/cmake" / CMAKE_VERSION / "bin",
+        TOOLS / "tools/esp32ulp-elf" / ULP_VERSION / "esp32ulp-elf/bin",
     ]
     cloud = Path("/workspace/.nos-env/root/usr")
     if cloud.exists():
@@ -70,6 +73,7 @@ def environment():
             ":" + env["LD_LIBRARY_PATH"] if env.get("LD_LIBRARY_PATH") else ""
         )
     env["PIP_CACHE_DIR"] = str(SDK_ROOT / "pip-cache")
+    env["IDF_COMPONENT_CACHE_PATH"] = str(SDK_ROOT / "component-cache")
     env["PIP_DISABLE_PIP_VERSION_CHECK"] = "1"
     env["PIP_EXTRA_INDEX_URL"] = ""
     env["PATH"] = os.pathsep.join(map(str, paths)) + os.pathsep + env["PATH"]
@@ -289,7 +293,7 @@ def build(profile="runtime", output=None, action="build", port=None, regression=
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("setup", "build", "test", "flash"))
+    parser.add_argument("action", choices=("setup", "env", "build", "test", "flash"))
     parser.add_argument("--profile", choices=("runtime", "ecosystem"), default="runtime")
     parser.add_argument("--output", type=Path)
     parser.add_argument("--port")
@@ -301,6 +305,24 @@ def main():
     args = parser.parse_args()
     if args.action == "setup":
         setup()
+    elif args.action == "env":
+        verify_sdk()
+        env = environment()
+        for name in (
+            "PATH",
+            "LD_LIBRARY_PATH",
+            "IDF_PATH",
+            "IDF_TOOLS_PATH",
+            "IDF_PYTHON_ENV_PATH",
+            "ESP_IDF_VERSION",
+            "ESP_ROM_ELF_DIR",
+            "IDF_PYTHON_CHECK_CONSTRAINTS",
+            "IDF_COMPONENT_MANAGER",
+            "IDF_COMPONENT_CACHE_PATH",
+            "NOS_ESP_USB_PATH",
+        ):
+            if name in env:
+                print(f"export {name}={shlex.quote(env[name])}")
     elif args.action == "test":
         run([sys.executable, ROOT / "tests/esp32s3.py"], cwd=ROOT)
     else:

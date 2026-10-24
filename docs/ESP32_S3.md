@@ -1,5 +1,7 @@
 # ESP32-S3：NOS 调度器与 ESP-IDF 兼容层
 
+<!-- Copyright (C) 2026 NOS contributors -->
+
 当前提供 ESP32-S3 单核、共享内存的可运行移植，以及官方 SDK 外设生态的构建/链接审计。NOS 已实际接管任务管理和调度；**双核、无线收发、USB 枚举和全部物理外设尚未完成实板验收**，不能把链接通过称为“完整 ESP32 生态已验证”。
 
 ## 固定依赖与构建
@@ -13,7 +15,7 @@
 | Espressif QEMU | `esp-develop-9.2.2-20260417`，实际 `esp32s3` 机型 |
 | esp-usb / esp_tinyusb | `68bf7f9613dbb1a31094fdb903209ae3e4bf388d`，组件 3.0.0 |
 | TinyUSB 子模块 | esp-usb 固定的 `894ea01409e0407a7dbe0ee29b2d58a4691f9046` |
-| Python 包 | `ports/esp_idf/python-requirements.lock` |
+| Python 包 | `ports/esp_idf/python-requirements.lock`；组件管理器 2.5.2 对应 IDF 5.4 接口 |
 
 Linux x86_64、Python 3.12 环境：
 
@@ -22,6 +24,17 @@ python3 scripts/esp32s3.py setup
 make PLATFORM=esp32s3 firmware
 python3 tests/esp32s3.py
 ```
+
+其他 IDF 应用可复用环境和 NOS 组件覆盖：
+
+```sh
+eval "$(python3 scripts/esp32s3.py env)"
+# 在自有工程 CMake 的 EXTRA_COMPONENT_DIRS 加入本仓库 ports/esp_idf/components
+# 使用本 profile 的单核/100 Hz 配置约束，再按需开启注册表解析：
+IDF_COMPONENT_MANAGER=1 idf.py -C /path/to/application build
+```
+
+参考工程默认关闭在线组件解析、使用固定 Git 组件；组件管理器 3.x 已不接受 IDF 5.4 的接口版本，因此锁定 2.5.2。自动化会在独立项目实际开启组件管理器、解析 IDF 依赖并生成 NOS 覆盖组件的编译数据库；ULP FSM 汇编器也加入 PATH，但这不代表已验证 ULP 固件或低功耗。
 
 工具安装使用 SDK 自带校验清单，额外 QEMU 包核验 SHA-256。构建不联网取组件。脚本核对 SDK/esp-usb 的提交和本地改动；组件覆盖位于 `ports/esp_idf/components/freertos/`。云环境现有 `.nos-env` 的 Ninja、QEMU 动态库会被复用；其他 Linux 环境需提供 Ninja、Git、Python venv、libglib2.0 和 libslirp 等 QEMU 运行依赖。
 
