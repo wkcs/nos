@@ -1,0 +1,116 @@
+{
+  "version": 1,
+  "description": "Layer, host lock LED, modifier, tap/hold and macro feedback. Mod-tap feedback requires a configured mod-tap key.",
+  "dark_base": true,
+  "frame_ms": 40,
+  "zones": {
+    "fn-row": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11,
+      12,
+      13
+    ]
+  },
+  "rules": [
+    {
+      "when": "layer_active",
+      "match": {
+        "layer": 2
+      },
+      "target": {
+        "zone": "fn-row"
+      },
+      "effect": "wave",
+      "color": "#1020ff",
+      "color_to": "#ff5500",
+      "period_ms": 1800,
+      "priority": 10
+    },
+    {
+      "when": "press",
+      "conditions": {
+        "modifiers_any": [
+          "SHIFT"
+        ]
+      },
+      "target": "source",
+      "effect": "fade",
+      "color": "#ff0044",
+      "duration_ms": 450,
+      "priority": 20
+    },
+    {
+      "when": "tap",
+      "match": {
+        "action": "mod_tap"
+      },
+      "target": "source",
+      "effect": "pulse",
+      "color": "#00ff88",
+      "duration_ms": 300,
+      "period_ms": 300,
+      "priority": 30
+    },
+    {
+      "when": "hold_decided",
+      "match": {
+        "action": "mod_tap"
+      },
+      "target": "source",
+      "effect": "fade",
+      "color": "#ffaa00",
+      "duration_ms": 600,
+      "priority": 40
+    },
+    {
+      "when": "double_tap",
+      "match": {
+        "key": 56
+      },
+      "target": "all",
+      "effect": "wave",
+      "color": "#00aaff",
+      "color_to": "#ff00ff",
+      "duration_ms": 1200,
+      "period_ms": 600,
+      "single": true,
+      "priority": 50
+    },
+    {
+      "when": "macro_start",
+      "match": {
+        "macro": 0
+      },
+      "target": "source",
+      "effect": "breathe",
+      "color": "#aa00ff",
+      "duration_ms": 600,
+      "period_ms": 300,
+      "priority": 60
+    },
+    {
+      "when": "host_led_active",
+      "match": {
+        "host_led": 1
+      },
+      "target": {
+        "keys": [
+          28
+        ]
+      },
+      "effect": "solid",
+      "color": "#ff6600",
+      "priority": 200
+    }
+  ]
+}

@@ -1,0 +1,46 @@
+{
+  "version": 1,
+  "description": "A vertical background gradient, held WASD feedback, and self-only press fading.",
+  "dark_base": true,
+  "frame_ms": 40,
+  "zones": {
+    "wasd": [
+      16,
+      29,
+      30,
+      31
+    ]
+  },
+  "rules": [
+    {
+      "when": "always",
+      "target": "all",
+      "effect": "wave",
+      "axis": "y",
+      "color": "#100020",
+      "color_to": "#002060",
+      "period_ms": 3000,
+      "priority": 0
+    },
+    {
+      "when": "held",
+      "match": {
+        "zone": "wasd"
+      },
+      "threshold_ms": 50,
+      "target": "source",
+      "effect": "solid",
+      "color": "#ff3300",
+      "priority": 10
+    },
+    {
+      "when": "press",
+      "target": "source",
+      "effect": "fade",
+      "color": "#ffffff",
+      "duration_ms": 250,
+      "blend": "max",
+      "priority": 20
+    }
+  ]
+}

@@ -43,7 +43,7 @@ void nk60_light_disconnect(void *context, uint32_t session)
 {
     struct nk60_service *s = context;
     if (s->link.frame_active && s->link.frame_owner == session) {
-        memset(s->link.frame, 0, sizeof(s->link.frame));
+        memset(s->link.program, 0, sizeof(s->link.program));
         s->link.frame_active = 0;
         s->link.frame_received = 0;
     }
@@ -57,15 +57,17 @@ void nk60_light_poll(struct nk60_service *s)
 static int lighting(void *context, struct nlp_binding *b, unsigned op, const uint8_t *in,
                     size_t size, uint8_t *out, size_t *used)
 {
+    if (op >= NLP_LIGHTING_GET_PROGRAM_INFO)
+        return nk60_link_program(context, b, op, in, size, out, used);
     struct nk60_service *s = context;
     struct nk60_link *l = &s->link;
     struct kb_light_settings *p = &s->lighting.settings;
     if (op == NLP_LIGHTING_GET_INFO && !size && *used >= 8) {
         nlp_put16(out, KB_KEYS);
-        nlp_put16(out + 2, 1000 / KB_LIGHT_INTERVAL_MS);
+        nlp_put16(out + 2, 1000 / kb_fx_interval(&s->lighting.fx));
         out[4] = 255;
         out[5] = KB_LIGHT_MODE_MASK;
-        nlp_put16(out + 6, 31);
+        nlp_put16(out + 6, 63);
         *used = 8;
         return 0;
     }
@@ -174,7 +176,7 @@ static int lighting(void *context, struct nlp_binding *b, unsigned op, const uin
     }
     if (op < NLP_LIGHTING_WRITE_FRAME || op > NLP_LIGHTING_ABORT_FRAME)
         return -NLP_UNSUPPORTED;
-    if (size < 8 || !l->frame_active || l->frame_owner != b->session.id ||
+    if (size < 8 || l->frame_active != 1 || l->frame_owner != b->session.id ||
         nlp_get64(in) != l->frame_id)
         return -NLP_STALE;
     if (op == NLP_LIGHTING_ABORT_FRAME && size == 8) {
@@ -235,7 +237,7 @@ int nk60_link_capabilities(struct nk60_service *s)
 {
     const struct nlp_keymap_ops ops = {s,      generation,  snapshot,  validate,
                                        commit, persistence, authorized};
-    struct nlp_capability light = {NLP_UUID_LIGHTING,       4, 1,        1, 1,
+    struct nlp_capability light = {NLP_UUID_LIGHTING,       4, 1,        2, 1,
                                    NLP_PERMISSION_DISCOVER, 1, lighting, s, nk60_light_disconnect};
     int error = nlp_keymap_register(&s->link.keymap, &s->link.endpoint, 3, &ops);
     if (!error && s->rgb_ready)

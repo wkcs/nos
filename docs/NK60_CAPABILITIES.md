@@ -13,8 +13,8 @@ NK60 当前硬件按 61 键 ANSI 60%、61 颗逐键 RGB、SPI NOR 和 USB 实现
 | 60%常用行为 | 默认Esc为Grave Escape：普通Esc，Shift或GUI修饰时为Grave；同一扫描同时按下也正确。Fn+Caps切换Caps Word，字母/减号自动Shift，数字/退格/Delete继续，空格等终止，空闲5秒关闭 |
 | 逐键灯光 | off、static、layer、breathe、rainbow、wave、reactive、custom；速度、RGB、亮度、每键颜色、Caps Lock/Caps Word指示 |
 | 电源策略 | 未配置或USB挂起立即断灯；亮度0断灯；默认空闲300秒熄灯，按键恢复、持续按住不睡；允许配置0禁用空闲熄灯 |
-| 输出限制 | 最高10帧/秒，渲染不分配堆；每通道输出上限16/255，统一经过估算电流预算，不允许远端绕过 |
-| 配置保存 | 键位1056字节与灯光224字节扩展共同双槽提交；旧记录默认补齐灯光设置，写失败保留上一完整代次 |
+| 输出限制 | 基础模式10帧/秒，启用规则可配置最高25帧/秒，渲染不分配堆；每通道输出上限16/255，统一经过估算电流预算，不允许远端绕过 |
+| 配置保存 | 键位1056字节与灯光/规则624字节扩展共同双槽提交；旧记录默认补齐灯光设置，写失败保留上一完整代次 |
 | 上位机 | NLP发现、布局、NOR布局、健康信息、改键、策略和61色整帧事务；HID仍是独立接口0 |
 
 Caps Word是NOS明确子集，不声明兼容全部QMK选项：自动Shift绑定到该次按下并在释放时消失，不用操作系统Caps Lock；不改变宏、媒体或tap-hold的既有含义。旧配置不会被自动重映射，恢复默认才获得新的默认Esc/Fn+Caps绑定。
@@ -31,7 +31,7 @@ Caps Word是NOS明确子集，不声明兼容全部QMK选项：自动Shift绑定
 | boot journal | `[C-16384,C-8192)` | NLP持久启动计数，两个4KiB扇区 |
 | configuration journal | `[C-8192,C)` | 键位与灯光共同配置，两个4KiB扇区 |
 
-配置记录v1仍为24字节头+1056载荷。记录v2为24字节头+1056键位+最多256字节opaque扩展；头中的payload长度、CRC和最终commit覆盖整个记录。当前224字节`KBL1`扩展包含版本、速度、指示开关、空闲/电流策略、静态颜色和61×RGB，尾部25字节为零保留。公开keymap canonical wire仍是1056字节。
+配置记录v1仍为24字节头+1056载荷。记录v2为24字节头+1056键位+最多640字节opaque扩展；头中的payload长度、CRC和最终commit覆盖整个记录。原224字节`KBL1`扩展包含版本、速度、指示开关、空闲/电流策略、静态颜色和61×RGB，尾部25字节为零保留。新记录再附400字节KLFX规则程序，总偏好624字节；224字节旧偏好保留并关闭规则。公开keymap canonical wire仍是1056字节。
 
 新代码的旧save API会保留已存在的扩展，不会因只改键就丢失灯光。未知扩展格式原样保留，并禁止自动/显式保存；物理解锁后显式`defaults`才重置全部设置并允许再次保存。此行为不是旧固件二进制的前向兼容保证；降级固件前应备份配置。
 
@@ -48,9 +48,9 @@ Caps Word是NOS明确子集，不声明兼容全部QMK选项：自动Shift绑定
 | GET_STORAGE(3) | 响应56字节：capacity:u32,sector:u16,page:u16,count:u8,reserved[3]；最多3个12字节分区kind:u16,flags:u16,offset:u32,bytes:u32；最后generation:u32,dirty/schema_locked/saving/reserved各u8 |
 | GET_DIAGNOSTICS(4) | 响应48字节：uptime_us:u64，scan_overruns/scan_errors/report_overflows/usb_errors/save_errors/rgb_errors/bad_nlp_frames/uart_dropped各u32，estimated_LED_mA:u16，configured/suspended/schema_locked/unlocked/channel_limit/flash_available各u8 |
 
-active_features bit0布局、1诊断、2 NKRO、3改键、4逐键RGB、5配置持久化、6 Caps Word、7 Grave Escape。按外设初始化结果屏蔽不可用RGB/Flash。reserved_features是未来类型组，不是已启用功能，见下一节。分区flags bit0 NOS拥有、1原子journal、2保留未分配；kind0 preserved、1 boot、2 config。没有Flash时容量/分区数为0。
+active_features bit0布局、1诊断、2 NKRO、3改键、4逐键RGB、5配置持久化、6 Caps Word、7 Grave Escape、8声明式灯效规则。按外设初始化结果屏蔽不可用RGB/Flash。reserved_features是未来类型组，不是已启用功能，见下一节。分区flags bit0 NOS拥有、1原子journal、2保留未分配；kind0 preserved、1 boot、2 config。没有Flash时容量/分区数为0。
 
-lighting major1/minor1 保留GET_INFO(1)/SET(2)/GET_STATE(3)，增加：
+lighting major1/minor2保留GET_INFO(1)/SET(2)/GET_STATE(3)，增加：
 
 | 操作 | 格式 |
 | --- | --- |
@@ -114,3 +114,5 @@ python3 scripts/nlp_host.py --usb 0eff:0001 --physical leds-put --file /tmp/nk60
 `leds-get --file`拒绝覆盖已有文件；上面的USB命令用于首次实板验收，尚未在实板运行。自动化已经用独立Python CLI连接真实C NK60服务执行同样的协议；夹具模拟USB/Flash及物理解锁按键，不证明电气或真实人在场。
 
 冻结验收运行 `tests/acceptance.py --section boards --require-frozen-source`，包含实际引擎10万状态扫描、逐字节掉电、service模型/独立CLI、USB/硬件/权限模型、MPU0/1固件与stock QEMU用户启动专项。固件记录用户静态区、bin、已知配置调用链的编译器栈帧预算；不把静态统计称为真实高水位。
+
+可组合动画、按键行为绑定、JSON示例及lighting minor2程序操作见 [自定义灯效](NK60_LIGHTING.md)。

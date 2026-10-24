@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "../servers/keyboard/keyboard.h"
+#include "../servers/keyboard/lighting_fx.h"
 #define CHECK(x)                                                                                   \
     do {                                                                                           \
         if (!(x)) {                                                                                \
@@ -428,7 +429,7 @@ static void extended_persistence(void)
     struct flash f, old;
     struct kb_store store = {&f, read_flash, erase_flash, write_flash};
     struct kb_config loaded;
-    uint8_t extra[224], out[256];
+    uint8_t extra[624], out[640];
     size_t size;
     uint32_t generation = 0, got;
     reset();
@@ -454,6 +455,17 @@ static void extended_persistence(void)
     size = 1;
     assert(kb_config_load_extended(&store, 0, &loaded, &got, out, &size) == -KB_ENOSPC);
     assert(loaded.brightness == 71 && got == 123 && size == 1);
+    union {
+        struct kb_config config;
+        uint8_t bytes[KB_CONFIG_WIRE_BYTES + 8];
+    } alias;
+    assert(!kb_config_encode(&c, alias.bytes, KB_CONFIG_WIRE_BYTES));
+    assert(!kb_config_decode(&alias.config, alias.bytes, KB_CONFIG_WIRE_BYTES));
+    assert(!memcmp(&alias.config, &c, sizeof(c)));
+    assert(!kb_config_encode(&c, alias.bytes, KB_CONFIG_WIRE_BYTES));
+    struct kb_config *overlap = (struct kb_config *)(void *)(alias.bytes + 4);
+    assert(!kb_config_decode(overlap, alias.bytes, KB_CONFIG_WIRE_BYTES));
+    assert(!memcmp(overlap, &c, sizeof(c)));
     extra[0] ^= 1;
     for (unsigned cut = 0; cut < 1080 + sizeof(extra); ++cut) {
         f = old;
@@ -476,6 +488,7 @@ static void extended_persistence(void)
     puts("PASS keyboard_atomic_extended_preferences_legacy_preservation_and_every_byte_power_cut");
 }
 void keyboard_features(void);
+void keyboard_lighting_fx(void);
 static void randomized(void)
 {
     uint32_t seed = 0x1badb002;
@@ -496,9 +509,24 @@ static void randomized(void)
     CHECK(!k.current.boot[0] && !k.current.boot[2] && !k.current.consumer[0]);
     puts("PASS keyboard_stateful_fuzz_100000");
 }
-int main(void)
+int main(int argc, char **argv)
 {
+    if (argc == 3 && !strcmp(argv[1], "--fx-check")) {
+        uint8_t program[KB_FX_PROGRAM_BYTES];
+        CHECK(strlen(argv[2]) == sizeof(program) * 2);
+        const char *digits = "0123456789abcdef";
+        for (unsigned i = 0; i < sizeof(program); ++i) {
+            const char *hi = strchr(digits, argv[2][i * 2]);
+            const char *lo = strchr(digits, argv[2][i * 2 + 1]);
+            CHECK(hi && lo);
+            program[i] = (uint8_t)((hi - digits) * 16 + lo - digits);
+        }
+        printf("fx %d\n", kb_fx_validate(program, sizeof(program)));
+        return 0;
+    }
+    CHECK(argc == 1);
     keyboard_features();
+    keyboard_lighting_fx();
     extended_persistence();
     debounce();
     layers();

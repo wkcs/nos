@@ -134,7 +134,7 @@ endif
 ifeq ($(PLATFORM),nk60_v2)
 KERNEL_SRC += boards/nk60_v2/boot.c
 USER_SRC := user/lib/syscall.c user/lib/string.c user/lib/process.c
-USER_SRC += servers/keyboard/keyboard.c servers/keyboard/keymap.c servers/keyboard/config.c servers/keyboard/service.c servers/keyboard/link.c servers/keyboard/link_caps.c servers/keyboard/lighting.c servers/keyboard/layout.c servers/keyboard/device.c
+USER_SRC += servers/keyboard/keyboard.c servers/keyboard/keymap.c servers/keyboard/config.c servers/keyboard/service.c servers/keyboard/link.c servers/keyboard/link_caps.c servers/keyboard/lighting.c servers/keyboard/lighting_fx.c servers/keyboard/link_fx.c servers/keyboard/layout.c servers/keyboard/device.c
 USER_SRC += $(wildcard servers/nlp/*/*.c)
 USERFLAGS += -Ithird_party/tinycrypt/lib/include
 NLP_VENDOR_OBJECTS := $(O)/servers/nlp/vendor/sha256.o $(O)/servers/nlp/vendor/utils.o

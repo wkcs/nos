@@ -1,0 +1,47 @@
+{
+  "version": 1,
+  "description": "Each press launches a cyan-to-violet ripple; tap highlights its key; Caps Word stays amber.",
+  "enabled": true,
+  "dark_base": true,
+  "frame_ms": 40,
+  "palette": {
+    "ice": "#00cfff",
+    "violet": "#8b22ff",
+    "amber": "#ff8800"
+  },
+  "rules": [
+    {
+      "when": "press",
+      "target": "all",
+      "effect": "ripple",
+      "color": "@ice",
+      "color_to": "@violet",
+      "duration_ms": 800,
+      "period_ms": 800,
+      "blend": "add",
+      "priority": 10,
+      "opacity": 210
+    },
+    {
+      "when": "tap",
+      "target": "source",
+      "effect": "fade",
+      "color": "#ffffff",
+      "duration_ms": 350,
+      "threshold_ms": 200,
+      "blend": "max",
+      "priority": 20
+    },
+    {
+      "when": "caps_word_active",
+      "target": {
+        "keys": [
+          28
+        ]
+      },
+      "effect": "solid",
+      "color": "@amber",
+      "priority": 200
+    }
+  ]
+}

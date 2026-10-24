@@ -4,6 +4,7 @@
 #include "nlp/capabilities.h"
 #include "nlp/keymap.h"
 #include "config.h"
+#include "lighting_fx.h"
 #include "../../boards/nk60_v2/hardware.h"
 struct nk60_service;
 struct nk60_link {
@@ -13,7 +14,11 @@ struct nk60_link {
     struct nlp_log log;
     struct nlp_keymap keymap;
     uint8_t unlocked_uid[16], last_unlocked;
-    struct nk60_rgb frame[KB_KEYS];
+    union {
+        struct nk60_rgb frame[KB_KEYS];
+        uint8_t program[KB_FX_PROGRAM_BYTES];
+    };
+    uint16_t program_offset;
     uint64_t frame_received, frame_id;
     uint32_t frame_owner, frame_generation, frame_next, frame_deadline;
     uint8_t frame_active;
@@ -23,6 +28,8 @@ struct nk60_link {
     uint8_t rx_size, rx_at, ready, configured, suspended;
     uint32_t generation;
 };
+int nk60_link_program(void *, struct nlp_binding *, unsigned, const uint8_t *, size_t, uint8_t *,
+                      size_t *);
 int nk60_link_capabilities(struct nk60_service *);
 int nk60_link_authorized(struct nk60_service *, const struct nlp_binding *);
 int nk60_link_init(struct nk60_service *);

@@ -35,9 +35,42 @@ static struct kb_action resolve(const struct keyboard *k, unsigned position)
     return (struct kb_action){KB_NONE, 0, 0};
 }
 
+static unsigned held_modifiers(const struct keyboard *);
+void kb_set_event_handler(struct keyboard *k, kb_event_fn event, void *context)
+{
+    if (k) {
+        k->event = event;
+        k->event_context = context;
+    }
+}
+static void notify(struct keyboard *k, unsigned type, unsigned key, uint32_t now)
+{
+    if (!k->event)
+        return;
+    struct kb_event e = {.now_ms = now, .type = (uint8_t)type, .key = (uint8_t)key};
+    if (key < KB_KEYS) {
+        const struct kb_key_state *s = &k->key[key];
+        e.duration_ms = now - s->pressed_ms;
+        e.action = s->origin_type;
+        e.parameter = s->action.parameter;
+        e.code = s->action.code;
+    }
+    if (type == KB_EVENT_MACRO_START || type == KB_EVENT_MACRO_END) {
+        e.action = KB_MACRO;
+        e.parameter = k->macro_index;
+        e.duration_ms = now - k->macro_started_ms;
+    }
+    e.modifiers = (uint8_t)(held_modifiers(k) | k->oneshot);
+    for (unsigned i = 0; i < KB_KEYS; ++i)
+        if (k->key[i].stable && k->key[i].active && !k->key[i].pending)
+            e.modifiers |= k->key[i].oneshot;
+    e.layers = (uint8_t)kb_active_layers(k);
+    k->event(k->event_context, &e);
+}
 static void logical_clear(struct keyboard *k)
 {
     unsigned i;
+    notify(k, KB_EVENT_RESET, 255, k->last_ms);
     for (i = 0; i < KB_KEYS; ++i) {
         k->key[i].active = k->key[i].pending = k->key[i].oneshot = 0;
         k->key[i].action = (struct kb_action){KB_NONE, 0, 0};
@@ -164,11 +197,15 @@ uint32_t kb_take_local_events(struct keyboard *k)
     return events;
 }
 
-static void promote_pending(struct keyboard *k)
+static void promote_pending(struct keyboard *k, uint32_t now)
 {
     unsigned i;
-    for (i = 0; i < KB_KEYS; ++i)
-        k->key[i].pending = 0;
+    for (i = 0; i < KB_KEYS; ++i) {
+        if (k->key[i].pending) {
+            k->key[i].pending = 0;
+            notify(k, KB_EVENT_HOLD, i, now);
+        }
+    }
 }
 
 static unsigned held_modifiers(const struct keyboard *k)
@@ -192,6 +229,7 @@ static int press(struct keyboard *k, unsigned position, uint32_t now)
 {
     struct kb_key_state *s = &k->key[position];
     s->action = resolve(k, position);
+    s->origin_type = s->action.type;
     if (s->action.type == KB_GRAVE_ESCAPE)
         s->action = (struct kb_action){KB_KEY, 0, held_modifiers(k) & 0xaau ? KB_GRAVE : KB_ESCAPE};
     s->pressed_ms = now;
@@ -219,11 +257,16 @@ static int press(struct keyboard *k, unsigned position, uint32_t now)
         }
         break;
     case KB_MACRO:
-        if (k->macro_running)
+        if (k->macro_running) {
+            notify(k, KB_EVENT_PRESS, position, now);
             return -KB_EBUSY;
+        }
         if (k->config.macro_length[s->action.parameter]) {
             k->macro_running = k->macro_on = 1;
             k->macro_index = s->action.parameter;
+            k->macro_key = (uint8_t)position;
+            k->macro_started_ms = now;
+            notify(k, KB_EVENT_MACRO_START, position, now);
             k->macro_step = 0;
             k->macro_usage = k->config.macros[k->macro_index][0];
             k->macro_changed_ms = now;
@@ -254,6 +297,7 @@ static int press(struct keyboard *k, unsigned position, uint32_t now)
     default:
         break;
     }
+    notify(k, KB_EVENT_PRESS, position, now);
     return 0;
 }
 
@@ -292,8 +336,10 @@ int kb_scan(struct keyboard *k, uint64_t pressed, uint32_t now)
             else
                 up |= (uint64_t)1 << i;
         }
-        if (s->pending && elapsed(now, s->pressed_ms) >= k->config.tapping_ms)
+        if (s->pending && elapsed(now, s->pressed_ms) >= k->config.tapping_ms) {
             s->pending = 0;
+            notify(k, KB_EVENT_HOLD, i, now);
+        }
     }
     /* Releases always use their press-time binding. A quick tap contributes a
      * queued down/up pulse even if the USB transport is temporarily busy. */
@@ -304,6 +350,11 @@ int kb_scan(struct keyboard *k, uint64_t pressed, uint32_t now)
             unsigned mods = tap ? k->oneshot : 0;
             if (tap)
                 k->oneshot = 0;
+            if (s->active) {
+                if (s->pending || (s->action.type != KB_MOD_TAP && s->action.type != KB_LAYER_TAP))
+                    notify(k, KB_EVENT_TAP, i, now);
+                notify(k, KB_EVENT_RELEASE, i, now);
+            }
             s->active = s->pending = s->oneshot = 0;
             if (tap) {
                 result = emit(k, tap, mods);
@@ -317,7 +368,7 @@ int kb_scan(struct keyboard *k, uint64_t pressed, uint32_t now)
     if (down) {
         uint64_t edges = down;
         /* Another switch promotes pending tap/holds before its layer lookup. */
-        promote_pending(k);
+        promote_pending(k, now);
         /* Bind layer keys first, including a simultaneous FN+key chord. */
         for (i = 0; i < KB_KEYS; ++i)
             if (down & ((uint64_t)1 << i)) {
@@ -332,7 +383,7 @@ int kb_scan(struct keyboard *k, uint64_t pressed, uint32_t now)
             }
         /* A simultaneous other key makes a newly pressed layer-tap a hold. */
         if (down || (edges & (edges - 1)))
-            promote_pending(k);
+            promote_pending(k, now);
         for (i = 0; i < KB_KEYS; ++i)
             if (down & ((uint64_t)1 << i)) {
                 result = press(k, i, now);
@@ -349,8 +400,10 @@ int kb_scan(struct keyboard *k, uint64_t pressed, uint32_t now)
         else if (++k->macro_step < k->config.macro_length[k->macro_index]) {
             k->macro_usage = k->config.macros[k->macro_index][k->macro_step];
             k->macro_on = 1;
-        } else
+        } else {
+            notify(k, KB_EVENT_MACRO_END, k->macro_key, now);
             k->macro_running = 0;
+        }
     }
     result = emit(k, 0, 0);
     return result ? result : error;

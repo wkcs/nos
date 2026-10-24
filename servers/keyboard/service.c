@@ -307,6 +307,7 @@ void nk60_service_command(struct nk60_service *s, const char *line)
     if (same(command, "defaults") && parse_end(p)) {
         kb_default_config(&s->candidate);
         kb_light_defaults(&s->lighting.settings);
+        kb_fx_defaults(&s->lighting.fx);
         s->settings_locked = 0;
     } else if (same(command, "nkro") && !parse_uint(&p, &a) && parse_end(p) && a <= 1u) {
         s->candidate.nkro = (uint8_t)a;
@@ -513,12 +514,16 @@ static void service_runtime(struct nk60_service *s)
             s->rgb_pending = 1;
         }
     }
+    kb_fx_observe(&s->lighting.fx, &s->keyboard, kb_active_layers(&s->keyboard), s->last_leds,
+                  s->usb_ready && s->configured && !s->suspended, s->lighting.last_activity_ms,
+                  s->now_ms);
 }
 
 static void lighting(struct nk60_service *s)
 {
     int error;
-    if (!s->rgb_ready || !s->hooks.dma_tx || s->now_ms - s->last_rgb_ms < SERVICE_RGB_MS)
+    if (!s->rgb_ready || !s->hooks.dma_tx ||
+        s->now_ms - s->last_rgb_ms < kb_fx_interval(&s->lighting.fx))
         return;
     s->last_rgb_ms = s->now_ms;
     s->rgb_pending = 0;
@@ -554,8 +559,8 @@ static void persist(struct nk60_service *s)
     edits = s->edits;
     /* Stable snapshot: progress may scan local keys and change live config. */
     s->candidate = s->keyboard.config;
-    uint8_t preferences[KB_LIGHT_SETTINGS_BYTES];
-    error = kb_light_encode(&s->lighting.settings, preferences);
+    uint8_t preferences[KB_LIGHT_PREFERENCES_BYTES];
+    error = kb_light_preferences_encode(&s->lighting, preferences);
     if (!error)
         error = kb_config_save_extended(&s->store, s->store_base, &s->candidate, &s->generation,
                                         preferences, sizeof(preferences));
@@ -586,6 +591,7 @@ int nk60_service_init(struct nk60_service *s, const struct nk60_io *io,
     s->next_scan_us = s->last_us;
     kb_default_config(&s->candidate);
     kb_light_defaults(&s->lighting.settings);
+    kb_fx_defaults(&s->lighting.fx);
     s->store = (struct kb_store){s, store_read, store_erase, store_write};
     error = nk60_flash_init(&s->hardware);
     if (!error && s->hardware.flash_bytes >= 2u * KB_CONFIG_SLOT_BYTES) {
@@ -595,7 +601,7 @@ int nk60_service_init(struct nk60_service *s, const struct nk60_io *io,
         size_t size = sizeof(preferences);
         if (!kb_config_load_extended(&s->store, s->store_base, &s->candidate, &s->generation,
                                      preferences, &size) &&
-            size && kb_light_decode(&s->lighting.settings, preferences, size)) {
+            size && kb_light_preferences_decode(&s->lighting, preferences, size)) {
             s->settings_locked = 1;
             output(s, "WARN unknown preference schema preserved; save disabled until defaults\r\n");
         }
@@ -604,6 +610,8 @@ int nk60_service_init(struct nk60_service *s, const struct nk60_io *io,
     }
     if (kb_init(&s->keyboard, &s->candidate))
         return -SERVICE_EINVAL;
+    s->lighting.fx.keyboard = &s->keyboard;
+    kb_set_event_handler(&s->keyboard, kb_fx_keyboard_event, &s->lighting.fx);
     s->matrix_ready = nk60_matrix_init(&s->hardware) == 0;
     s->rgb_ready = nk60_rgb_init(&s->hardware) == 0;
     if (s->rgb_ready)

@@ -3,9 +3,10 @@
 import json
 import struct
 import nlp_codec as wire
+import nlp_lighting
 
-READ_COMMANDS = {"info", "layout", "storage", "health", "lighting", "leds-get"}
-WRITE_COMMANDS = {"lighting-set", "lighting-policy", "leds-put"}
+READ_COMMANDS = {"info", "layout", "storage", "health", "lighting", "leds-get", "fx-info", "fx-get"}
+WRITE_COMMANDS = {"lighting-set", "lighting-policy", "leds-put", "fx-put", "fx-clear"}
 PRODUCT_COMMANDS = {"info", "layout", "storage", "health"}
 MODES = ["off", "static", "layer", "breathe", "rainbow", "wave", "reactive", "custom"]
 
@@ -17,6 +18,8 @@ def exact(data, size):
 
 
 def command(client, session, args):
+    if args.command.startswith("fx-"):
+        return nlp_lighting.client_command(client, session, args)
     action = args.command
     if action == "info":
         data = exact(client.call(session, 1), 32)

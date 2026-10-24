@@ -318,7 +318,7 @@
       "name": "lighting",
       "type_uuid": "9607c1fb-1ae8-5c37-859d-19a304ed50a8",
       "major": 1,
-      "minor": 1,
+      "minor": 2,
       "definition": "experimental-implemented",
       "operations": {
         "GET_INFO": 1,
@@ -330,7 +330,13 @@
         "BEGIN_FRAME": 7,
         "WRITE_FRAME": 8,
         "COMMIT_FRAME": 9,
-        "ABORT_FRAME": 10
+        "ABORT_FRAME": 10,
+        "GET_PROGRAM_INFO": 11,
+        "READ_PROGRAM": 12,
+        "BEGIN_PROGRAM": 13,
+        "WRITE_PROGRAM": 14,
+        "COMMIT_PROGRAM": 15,
+        "ABORT_PROGRAM": 16
       }
     },
     {

@@ -69,6 +69,8 @@ JEDEC 探测确认容量后，服务保留外置 Flash **最后两个 4 KiB 扇�
 
 ## 逐键RGB与偏好扩展
 
-`lighting.c/layout.c`提供61键真实宽度、独立RGB、7种点亮模式及关闭，10fps上限、Caps Lock/Caps Word指示、按键响应、待机熄灯与估算电流限制。`color R G B`、`led key R G B`、`effect speed idle_seconds LED_mA`沿用物理解锁。`rgb mode brightness`现在接受mode0..7。`defaults`同时重置键位与灯光，并显式解除未知偏好schema的保存锁定。
+`lighting.c/layout.c`提供61键真实宽度、独立RGB、7种点亮模式及关闭，基础模式10fps、启用规则最高25fps、Caps Lock/Caps Word指示、按键响应、待机熄灯与估算电流限制。`color R G B`、`led key R G B`、`effect speed idle_seconds LED_mA`沿用物理解锁。`rgb mode brightness`现在接受mode0..7。`defaults`同时重置键位与灯光，并显式解除未知偏好schema的保存锁定。
 
-灯光参数与逐键配色作为224字节扩展和1056字节键位共同双槽提交，旧记录加载默认灯光；新代码旧save接口保留扩展。未知扩展禁止覆盖保存。RGB tuple不再只存在RAM。产品只读NLP能力和逐键帧事务、命令例子、扩展插槽见 [能力与扩展](NK60_CAPABILITIES.md)。
+灯光参数与逐键配色作为624字节扩展和1056字节键位共同双槽提交，旧记录加载默认灯光；新代码旧save接口保留扩展。未知扩展禁止覆盖保存。RGB tuple不再只存在RAM。产品只读NLP能力和逐键帧事务、命令例子、扩展插槽见 [能力与扩展](NK60_CAPABILITIES.md)。
+
+声明式规则在 `lighting_fx.c` 匹配实际输入/状态并混合颜色；`link_fx.c`提供有界原子上传。旧偏好可迁移，规则与键位/配色共同提交，单次程序400字节、最多12规则/16瞬态实例。详见 [灯效配置](NK60_LIGHTING.md)。

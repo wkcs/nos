@@ -14,6 +14,7 @@ INPUTS = [
     "tests/host_nk60_link.py",
     "scripts/nlp_host.py",
     "scripts/nlp_keyboard.py",
+    "scripts/nlp_lighting.py",
     "scripts/nlp_codec.py",
     "scripts/nlp_crypto.py",
     "protocols/nlp/v1/registry.json",
@@ -32,6 +33,7 @@ INPUTS = [
     "boards/nk60_v2/nk60_usb.h",
 ]
 REQUIRED = {
+    "nk60_nlp_lighting_program_atomic_upload_behavior_render_save_validation_and_disconnect",
     "nk60_nlp_product_layout_storage_diagnostics_and_atomic_per_key_lighting_owner_timeout",
     "nk60_preferences_reboot_combined_save_unknown_schema_preserved_and_explicit_defaults",
     "nk60_nlp_real_service_discovery_keymap_sha_commit_and_peer_bound_unlock",
@@ -48,15 +50,21 @@ def main():
     out = ROOT / "out/microkernel/host-nk60-service" / str(time.time_ns())
     out.mkdir(parents=True)
     INPUTS.extend(
+        str(p.relative_to(ROOT)) for p in sorted((ROOT / "examples/nk60/lighting").glob("*.json"))
+    )
+    INPUTS.extend(
         sorted(
             glob.glob("servers/nlp/*/*.c")
             + glob.glob("include/nos/nlp/*.h")
             + [
                 "servers/keyboard/link.c",
                 "servers/keyboard/link_caps.c",
+                "servers/keyboard/link_fx.c",
                 "servers/keyboard/link.h",
                 "servers/keyboard/lighting.c",
+                "servers/keyboard/lighting_fx.c",
                 "servers/keyboard/lighting.h",
+                "servers/keyboard/lighting_fx.h",
                 "servers/keyboard/layout.c",
                 "servers/keyboard/layout.h",
                 "servers/keyboard/device.c",
@@ -65,6 +73,7 @@ def main():
             + glob.glob("third_party/tinycrypt/lib/include/tinycrypt/*.h")
         )
     )
+    INPUTS[:] = list(dict.fromkeys(INPUTS))
     hashes = {name: hashlib.sha256((ROOT / name).read_bytes()).hexdigest() for name in INPUTS}
     command = [
         "gcc",
@@ -86,7 +95,9 @@ def main():
         "servers/usb/keyboard_usb.c",
         "servers/keyboard/link.c",
         "servers/keyboard/link_caps.c",
+        "servers/keyboard/link_fx.c",
         "servers/keyboard/lighting.c",
+        "servers/keyboard/lighting_fx.c",
         "servers/keyboard/layout.c",
         "servers/keyboard/device.c",
         "third_party/tinycrypt/lib/source/sha256.c",

@@ -20,7 +20,7 @@ static int call(void *context, struct nlp_binding *b, unsigned op, const uint8_t
         nlp_put32(out + 12, NK60_SERVICE_SCAN_US);
         nlp_put32(out + 16, s->hardware.flash_bytes);
         /* Actual: layout, diagnostics, NKRO, keymap, per-key RGB, persistence. */
-        nlp_put32(out + 20, 207u | (s->rgb_ready ? 16u : 0u) | (s->flash_ready ? 32u : 0u));
+        nlp_put32(out + 20, 207u | (s->rgb_ready ? 272u : 0u) | (s->flash_ready ? 32u : 0u));
         /* Reserved extension groups are explicitly NOT active capabilities. */
         nlp_put32(out + 24, 127u);
         nlp_put32(out + 28, s->edits);

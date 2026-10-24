@@ -72,6 +72,31 @@ int kb_light_decode(struct kb_light_settings *s, const uint8_t *in, size_t size)
     *s = candidate;
     return 0;
 }
+int kb_light_preferences_encode(const struct kb_lighting *l,
+                                uint8_t out[KB_LIGHT_PREFERENCES_BYTES])
+{
+    if (!l || !out || kb_fx_validate(l->fx.program, KB_FX_PROGRAM_BYTES))
+        return -KB_EINVAL;
+    int error = kb_light_encode(&l->settings, out);
+    if (!error)
+        memcpy(out + KB_LIGHT_SETTINGS_BYTES, l->fx.program, KB_FX_PROGRAM_BYTES);
+    return error;
+}
+int kb_light_preferences_decode(struct kb_lighting *l, const uint8_t *in, size_t size)
+{
+    struct kb_light_settings settings;
+    if (!l || !in || (size != KB_LIGHT_SETTINGS_BYTES && size != KB_LIGHT_PREFERENCES_BYTES) ||
+        kb_light_decode(&settings, in, KB_LIGHT_SETTINGS_BYTES) ||
+        (size == KB_LIGHT_PREFERENCES_BYTES &&
+         kb_fx_validate(in + KB_LIGHT_SETTINGS_BYTES, KB_FX_PROGRAM_BYTES)))
+        return -KB_EINVAL;
+    l->settings = settings;
+    if (size == KB_LIGHT_SETTINGS_BYTES)
+        kb_fx_defaults(&l->fx);
+    else
+        kb_fx_set(&l->fx, in + KB_LIGHT_SETTINGS_BYTES, KB_FX_PROGRAM_BYTES);
+    return 0;
+}
 void kb_light_activity(struct kb_lighting *l, uint64_t pressed, uint32_t now)
 {
     uint64_t down = pressed & ~l->pressed;
@@ -137,11 +162,18 @@ int kb_light_render(struct kb_lighting *l, unsigned mode, uint8_t brightness, un
             c = (struct nk60_rgb){255, 255, 255};
             strength = 255;
         }
-        unsigned level = (unsigned)brightness * KB_LIGHT_CHANNEL_LIMIT / 255;
+        unsigned level = 255;
         out[i].r = (uint8_t)((unsigned)c.r * level * strength / (255u * 255));
         out[i].g = (uint8_t)((unsigned)c.g * level * strength / (255u * 255));
         out[i].b = (uint8_t)((unsigned)c.b * level * strength / (255u * 255));
         sum += out[i].r + out[i].g + out[i].b;
+    }
+    kb_fx_render(&l->fx, now, out);
+    unsigned level = (unsigned)brightness * KB_LIGHT_CHANNEL_LIMIT / 255;
+    for (unsigned i = 0; i < KB_KEYS; ++i) {
+        out[i].r = (uint8_t)((unsigned)out[i].r * level / 255);
+        out[i].g = (uint8_t)((unsigned)out[i].g * level / 255);
+        out[i].b = (uint8_t)((unsigned)out[i].b * level / 255);
     }
     /* Model: 1mA idle per LED and 20mA at full-scale per RGB channel. */
     unsigned allowance = (l->settings.current_ma - KB_KEYS) * 255u / 20u;

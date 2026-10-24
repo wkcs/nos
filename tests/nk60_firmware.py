@@ -69,7 +69,7 @@ def main():
         config = json.loads((output / "build-config.json").read_text())
         stack_out = output / "stack-usage"
         stack_out.mkdir()
-        for module in ("config", "service", "keyboard", "lighting"):
+        for module in ("config", "service", "keyboard", "lighting", "lighting_fx"):
             subprocess.run(
                 [
                     config["compiler"]["path"],
@@ -110,7 +110,7 @@ def main():
                 "save_record",
             )
         )
-        assert load_chain <= 3072 and save_core <= 2560, "known core chain lost 4KiB stack reserve"
+        assert load_chain <= 3072 and save_core <= 2816, "known core chain lost 4KiB stack reserve"
         results.append(
             {
                 "mpu": bool(mpu),

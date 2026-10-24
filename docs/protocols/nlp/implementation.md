@@ -32,7 +32,7 @@ NLP v1 是实验实现，已接入 NK60 用户态键盘服务。协议栈、独�
 | 安全 | Noise XX、JOIN HMAC、按能力/方向/通道派生 AEAD；OpenSSL 与独立 Python 双向互通 | 固定公钥配对 UI、设备熵、密钥存储、独立安全审计 |
 | 发现/级联 | HELLO/JOIN、目录分页、GET_TOPOLOGY、8层两阶段路由、租约、父节点消失清理 | 多端口物理集成；拓扑推送、运行中能力增删尚未实现 |
 | keyboard/input | 状态快照、短租约、全释放屏障、来源合并、按钮/旋钮提供端、owner | 扩展模块到 NK60 动作/层/宏的持久映射 UI 与具体硬件 |
-| keymap/lighting | SHA256 事务、generation、原子配置提交、持久状态；NK60 模式/亮度/RGB | 远程配置 GUI；逐键配色的实际电气/掉电实测 |
+| keymap/lighting | SHA256 事务、generation、原子配置提交、持久状态；NK60 模式/亮度/RGB与行为绑定规则 | 远程配置 GUI；逐键配色的实际电气/掉电实测 |
 | log | UTF-8 边界、有界 ring、过滤、限速、可选可靠订阅 | 平台日志源接入与隐私策略 |
 | display | bounds/CRC tile、progressive/atomic 后端、owner、断开取消 | 指定屏幕驱动与显存策略 |
 | shell | 可靠字节流、尺寸、INT/TERM、退出与断线清理；主机真实 POSIX PTY | NOS-native nshell/VFS/TTY 后端；NK60 不注册 shell |

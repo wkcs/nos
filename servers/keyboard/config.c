@@ -165,13 +165,24 @@ static int unpack(struct kb_config *c, const uint8_t *p, size_t bytes)
     return kb_config_validate(candidate);
 }
 
-int kb_config_decode(struct kb_config *c, const uint8_t *p, size_t bytes)
+/* Keep the rare overlapping-buffer temporary off the normal MCU call chain. */
+__attribute__((noinline)) static int decode_overlap(struct kb_config *c, const uint8_t *p,
+                                                    size_t bytes)
 {
     struct kb_config candidate;
-    if (!c || unpack(&candidate, p, bytes))
+    int error = unpack(&candidate, p, bytes);
+    if (!error)
+        *c = candidate;
+    return error;
+}
+int kb_config_decode(struct kb_config *c, const uint8_t *p, size_t bytes)
+{
+    if (!c || !p || bytes != KB_CONFIG_WIRE_BYTES || !wire_valid(p))
         return -KB_EINVAL;
-    *c = candidate;
-    return 0;
+    uintptr_t target = (uintptr_t)c, source = (uintptr_t)p;
+    if (target <= source ? source - target < sizeof(*c) : target - source < bytes)
+        return decode_overlap(c, p, bytes);
+    return unpack(c, p, bytes);
 }
 
 uint32_t kb_crc32(const void *data, size_t bytes)

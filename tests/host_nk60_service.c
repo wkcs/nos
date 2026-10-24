@@ -662,6 +662,117 @@ static void close_cap(void)
     assert(!link_rpc(&link_clients[0], NLP_OP_CLOSE, id, sizeof(id)));
     nlp_session_close(&link_clients[1].session, NLP_DISCONNECTED);
 }
+static void make_program(uint8_t program[KB_FX_PROGRAM_BYTES])
+{
+    memset(program, 0, KB_FX_PROGRAM_BYTES);
+    memcpy(program, "KLFX", 4);
+    program[4] = 1;
+    program[5] = 1;
+    nlp_put16(program + 6, KB_FX_ENABLED | KB_FX_DARK_BASE);
+    nlp_put16(program + 8, 40);
+    uint8_t *r = program + 16;
+    r[0] = KB_FX_PRESS;
+    r[1] = KB_FX_KEY;
+    nlp_put16(r + 2, 29);
+    r[4] = KB_FX_SELF;
+    r[5] = KB_FX_SOLID;
+    r[8] = r[11] = 255;
+    nlp_put16(r + 14, 500);
+    nlp_put16(r + 16, 500);
+    r[29] = 255;
+    assert(!kb_fx_validate(program, KB_FX_PROGRAM_BYTES));
+}
+static void test_link_program(void)
+{
+    static const uint8_t light[16] = NLP_UUID_LIGHTING;
+    uint8_t program[KB_FX_PROGRAM_BYTES], body[120];
+    make_program(program);
+    close_cap();
+    open_cap(7, 4, light, 2, 9, 0);
+    assert(!link_rpc(&link_clients[1], NLP_LIGHTING_GET_PROGRAM_INFO, NULL, 0));
+    assert(link_clients[1].response[10] == 12 && nlp_get16(link_clients[1].response + 12) == 400);
+    uint32_t generation = service.edits;
+    nlp_put32(body, generation);
+    assert(!link_rpc(&link_clients[1], NLP_LIGHTING_BEGIN_PROGRAM, body, 4));
+    uint64_t tx = nlp_get64(link_clients[1].response + 8);
+    nlp_put32(body, generation);
+    assert(link_rpc(&link_clients[1], NLP_LIGHTING_BEGIN_FRAME, body, 4) == NLP_BUSY);
+    memset(body, 0, 16);
+    nlp_put64(body, tx);
+    nlp_put32(body + 8, generation);
+    assert(link_rpc(&link_clients[1], NLP_LIGHTING_COMMIT_PROGRAM, body, 16) == NLP_BUSY);
+    nlp_put64(body, tx);
+    nlp_put16(body + 8, 1);
+    nlp_put16(body + 10, 1);
+    body[12] = 0;
+    assert(link_rpc(&link_clients[1], NLP_LIGHTING_WRITE_PROGRAM, body, 13) == NLP_RANGE);
+    for (unsigned offset = 0; offset < 400; offset += 100) {
+        nlp_put64(body, tx);
+        nlp_put16(body + 8, offset);
+        nlp_put16(body + 10, 100);
+        memcpy(body + 12, program + offset, 100);
+        assert(!link_rpc(&link_clients[1], NLP_LIGHTING_WRITE_PROGRAM, body, 112));
+        assert(!link_rpc(&link_clients[1], NLP_LIGHTING_WRITE_PROGRAM, body, 112));
+        body[12] ^= 1;
+        assert(link_rpc(&link_clients[1], NLP_LIGHTING_WRITE_PROGRAM, body, 112) == NLP_CONFLICT);
+    }
+    memset(body, 0, 16);
+    nlp_put64(body, tx);
+    nlp_put32(body + 8, generation);
+    body[12] = 1;
+    assert(!link_rpc(&link_clients[1], NLP_LIGHTING_COMMIT_PROGRAM, body, 16));
+    assert(service.edits == generation + 1 && !memcmp(service.lighting.fx.program, program, 400));
+    for (unsigned offset = 0; offset < 400;) {
+        unsigned count = 400 - offset;
+        if (count > 100)
+            count = 100;
+        nlp_put16(body, offset);
+        nlp_put16(body + 2, count);
+        nlp_put32(body + 4, service.edits);
+        assert(!link_rpc(&link_clients[1], NLP_LIGHTING_READ_PROGRAM, body, 8));
+        assert(!memcmp(link_clients[1].response + 16, program + offset, count));
+        offset += count;
+    }
+    m.pressed = UINT64_C(1) << 29;
+    for (unsigned i = 0; i < 20; ++i)
+        link_drive();
+    assert(service.colors[29].r && !service.colors[30].r && !service.colors[29].g);
+    m.pressed = 0;
+    for (unsigned i = 0; i < 10; ++i)
+        link_drive();
+    struct kb_config saved;
+    uint8_t preferences[KB_CONFIG_EXTRA_BYTES];
+    size_t size = sizeof(preferences);
+    uint32_t durable;
+    assert(!kb_config_load_extended(&service.store, service.store_base, &saved, &durable,
+                                    preferences, &size));
+    assert(size == KB_LIGHT_PREFERENCES_BYTES &&
+           !memcmp(preferences + KB_LIGHT_SETTINGS_BYTES, program, 400));
+    /* An invalid program is rejected atomically and disconnect clears staging. */
+    nlp_put32(body, service.edits);
+    assert(!link_rpc(&link_clients[1], NLP_LIGHTING_BEGIN_PROGRAM, body, 4));
+    tx = nlp_get64(link_clients[1].response + 8);
+    program[4] = 2;
+    for (unsigned offset = 0; offset < 400; offset += 100) {
+        nlp_put64(body, tx);
+        nlp_put16(body + 8, offset);
+        nlp_put16(body + 10, 100);
+        memcpy(body + 12, program + offset, 100);
+        assert(!link_rpc(&link_clients[1], NLP_LIGHTING_WRITE_PROGRAM, body, 112));
+    }
+    memset(body, 0, 16);
+    nlp_put64(body, tx);
+    nlp_put32(body + 8, service.edits);
+    assert(link_rpc(&link_clients[1], NLP_LIGHTING_COMMIT_PROGRAM, body, 16) == NLP_INVALID);
+    assert(service.lighting.fx.program[4] == 1);
+    close_cap();
+    assert(!service.link.frame_active);
+    open_cap(8, 4, light, 2, 9, 0);
+    nlp_put64(body, tx);
+    assert(link_rpc(&link_clients[1], NLP_LIGHTING_ABORT_PROGRAM, body, 8) == NLP_STALE);
+    puts("PASS "
+         "nk60_nlp_lighting_program_atomic_upload_behavior_render_save_validation_and_disconnect");
+}
 static void test_link_product(void)
 {
     static const uint8_t product[16] = NLP_UUID_KEYBOARD_CONTROL, light[16] = NLP_UUID_LIGHTING;
@@ -837,6 +948,7 @@ static void test_nlp_link(void)
     for (unsigned i = 0; i < 10; ++i)
         link_drive();
     test_link_product();
+    test_link_program();
     /* A new software peer boot cannot inherit the old 30-second physical grant. */
     nlp_session_close(&link_clients[0].session, NLP_DISCONNECTED);
     nlp_session_close(&link_clients[1].session, NLP_DISCONNECTED);
@@ -877,6 +989,9 @@ static void test_preference_reboot(void)
     setup();
     steps(3);
     unlock();
+    uint8_t program[KB_FX_PROGRAM_BYTES];
+    make_program(program);
+    assert(!kb_fx_set(&service.lighting.fx, program, sizeof(program)));
     nk60_service_command(&service, "rgb 7 210");
     nk60_service_command(&service, "color 1 2 3");
     nk60_service_command(&service, "led 29 91 92 93");
@@ -888,6 +1003,7 @@ static void test_preference_reboot(void)
     const struct nk60_service_hooks hooks = {&m, uart_read, uart_write, dma};
     assert(!nk60_service_init(&service, &io, &hooks));
     assert(service.keyboard.config.rgb_mode == 7 && service.keyboard.config.brightness == 210);
+    assert(!memcmp(service.lighting.fx.program, program, sizeof(program)));
     assert(service.lighting.settings.color.r == 1 && service.lighting.settings.custom[29].b == 93);
     assert(service.lighting.settings.speed == 77 && service.lighting.settings.idle_seconds == 180 &&
            service.lighting.settings.current_ma == 150);

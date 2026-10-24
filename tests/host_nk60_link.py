@@ -100,6 +100,31 @@ def interoperability(binary, output, environment):
             incoming.write_text(json.dumps([[256, 0, 0]] * 61))
             call("leds-put", "--file", incoming, "--wait-unlock", 10, success=False)
             assert call("leds-get")["colors"] == colors
+            examples = ROOT / "examples/nk60/lighting"
+            info = call("fx-info")
+            assert info["max_rules"] == 12 and info["wire_bytes"] == 400
+            for example in sorted(examples.glob("*.json")):
+                call("fx-put", "--file", example, "--save", "--wait-unlock", 10)
+                from importlib import import_module
+
+                sys.path.insert(0, str(ROOT / "scripts"))
+                compiler = import_module("nlp_lighting")
+                expected = compiler.decode_program(
+                    compiler.compile_program(json.loads(example.read_text()))
+                )
+                actual = call("fx-get")["program"]
+                assert actual == expected
+            previous = call("fx-get")["program"]
+            invalid = output / "bad-program.json"
+            invalid.write_text(json.dumps({"rules": [{"when": "press", "evil_opcode": 1}]}))
+            call("fx-put", "--file", invalid, "--wait-unlock", 10, success=False)
+            assert call("fx-get")["program"] == previous
+            call("fx-clear", "--save", "--wait-unlock", 10)
+            assert not call("fx-get")["program"]["enabled"]
+            print(
+                "PASS nk60_independent_python_json_effect_program_upload_readback_presets_and_atomic_rejection",
+                flush=True,
+            )
             print(
                 "PASS nk60_independent_python_cli_actual_c_product_layout_storage_policy_atomic_leds_and_permissions",
                 flush=True,

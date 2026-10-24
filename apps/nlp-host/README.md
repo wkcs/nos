@@ -75,3 +75,10 @@ requires exactly61 RGB byte triples and commits a complete frame atomically;
 `--wait-unlock 60` keeps the same peer connected for the physical chord.
 Examples, power limits and expansion boundaries are in
 [NK60 capabilities](../../docs/NK60_CAPABILITIES.md).
+
+Lighting minor2 adds `fx-info`, `fx-get`, `fx-put --file FILE --save --wait-unlock 60`,
+and `fx-clear`. Offline validation uses `python3 scripts/nlp_lighting.py FILE`.
+The bounded JSON compiler supports named zones/palettes, behavior triggers,
+layer/modifier conditions, blend priority and overlapping animations. See
+[lighting configuration](../../docs/NK60_LIGHTING.md) and the three ready-to-edit
+[examples](../../examples/nk60/lighting).

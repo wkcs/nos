@@ -140,3 +140,5 @@ display GET_INFO响应固定16字节：`width:u16 | height:u16 | formats:u16 | m
 尚未逐字段冻结的扩展（完整keymap action schema、固件目标目录与bootloader metadata、日志过滤/统计细项、power/time、产品专用功能位）必须在相应P阶段补充独立格式表和向量后才能声明互通。它们不影响本次固定wire/发现与核心输入格式检查，也不能因有type UUID就宣传为已实现能力。
 
 NK60的lighting minor1扩展与keyboard_control能力的完整布局、逐键事务和存储格式见 [NK60能力](../../NK60_CAPABILITIES.md)。未注册扩展能力不表示可用；实例ID不得当类型硬编码。
+
+lighting minor2增加400字节声明式程序的查询/分页读取/原子上传，支持输入动作和状态绑定、条件、区域和混合；协议格式见 [自定义灯效](../../NK60_LIGHTING.md)。
