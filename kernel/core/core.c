@@ -207,8 +207,8 @@ static intptr_t dispatch(uintptr_t nr, uintptr_t a, uintptr_t b, uintptr_t c)
         task_finish(peer, -NOS_EINTR); return 0;
     }
     case NOS_SYS_SERVICE_RESTART:
-#ifdef NOS_NK60_V2
-        /* This firmware has no VFS service or process supervisor. */
+#if defined(NOS_NK60_V2) || defined(NOS_ESP_IDF)
+        /* This profile has no native VFS service or process supervisor. */
         return -NOS_ENOTSUP;
 #else
         if (!(current_task->caps & NOS_CAP_SPAWN) || a) return -NOS_EACCES;
@@ -357,6 +357,25 @@ static int fault_mapping_resolved(void)
     return 0;
 #endif
 }
+#ifdef NOS_XTENSA
+/* The shared-memory MCU profile enters C directly, using SDK context switching
+ * to preserve windows/FPU/TLS. Capabilities and user copies still pass dispatch. */
+intptr_t nos_xtensa_syscall(uintptr_t number, uintptr_t a, uintptr_t b, uintptr_t c)
+{
+    if (!current_task || !arch_syscall_ready()) return -NOS_EDEADLK;
+    struct task *caller = current_task;
+    uintptr_t irq = spin_lock_irqsave(&kernel_lock);
+    reschedule = 0;
+    caller->frame.result = dispatch(number, a, b, c);
+    unsigned yield = reschedule || caller->state != TASK_READY;
+    spin_unlock_irqrestore(&kernel_lock, irq);
+    if (yield) {
+        extern void vPortYield(void);
+        vPortYield();
+    }
+    return (intptr_t)caller->frame.result;
+}
+#endif
 struct arch_frame *kernel_trap(struct arch_frame *frame, unsigned event)
 {
     if (!current_task) kernel_fail("trap before task initialization");
@@ -402,7 +421,9 @@ struct arch_frame *kernel_trap(struct arch_frame *frame, unsigned event)
         }
     } else {
         uintptr_t nr, a, b, c;
-#if defined(NOS_ARM64)
+#if defined(NOS_XTENSA)
+        nr = frame->number; a = frame->r[0]; b = frame->r[1]; c = frame->r[2];
+#elif defined(NOS_ARM64)
         nr = frame->x[8]; a = frame->x[0]; b = frame->x[1]; c = frame->x[2];
 #elif defined(NOS_RISCV)
         nr = frame->x[17]; a = frame->x[10]; b = frame->x[11]; c = frame->x[12];
@@ -485,7 +506,10 @@ void kernel_start(void)
 #if NOS_SMP > 1
     caps |= NOS_CAP_SMP;
 #endif
-#ifdef NOS_NK60_V2
+#ifdef NOS_ESP_IDF
+    extern void nos_esp_idf_boot(void);
+    nos_esp_idf_boot();
+#elif defined(NOS_NK60_V2)
     extern void nos_keyboard_service(uintptr_t unused);
     if (create_task(0, (uintptr_t)nos_keyboard_service, 0, 4,
         device_service_caps(caps), UINT32_MAX) < 0)
@@ -508,6 +532,10 @@ void kernel_start(void)
         tasks[slot].pin_cpu = cpu;
     }
     ipc_init();
+#ifdef NOS_ESP_IDF
+    extern void nos_idf_flush_pending(void);
+    nos_idf_flush_pending();
+#endif
 #if defined(NOS_SELFTEST) && defined(NOS_LINUX_COMPAT)
     if (!ipc_capacity_selftest()) kernel_fail("IPC high task slot regression");
     kernel_print("PASS ipc_capacity_high_slots\n");

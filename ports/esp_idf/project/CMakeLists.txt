@@ -1,0 +1,13 @@
+# Copyright (C) 2026 NOS contributors.
+cmake_minimum_required(VERSION 3.16)
+set(EXTRA_COMPONENT_DIRS "${CMAKE_CURRENT_LIST_DIR}/../components")
+if(EXISTS "$ENV{NOS_ESP_USB_PATH}/device/esp_tinyusb/CMakeLists.txt")
+    list(APPEND EXTRA_COMPONENT_DIRS "$ENV{NOS_ESP_USB_PATH}/device/esp_tinyusb")
+endif()
+set(COMPONENTS main)
+include($ENV{IDF_PATH}/tools/cmake/project.cmake)
+option(NOS_IDF_ECOSYSTEM "Retain broad SDK entry points for a link audit" OFF)
+option(NOS_IDF_REGRESSION "Build the hardware-mutating regression application" OFF)
+idf_build_set_property(NOS_IDF_REGRESSION "${NOS_IDF_REGRESSION}")
+idf_build_set_property(NOS_IDF_ECOSYSTEM "${NOS_IDF_ECOSYSTEM}")
+project(nos_esp32s3)

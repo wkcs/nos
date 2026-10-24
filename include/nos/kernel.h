@@ -108,6 +108,10 @@ struct task {
     struct arch_frame frame;
     enum task_state state;
     unsigned id, priority, base_priority, caps, generation, parent, mutex_caps;
+#ifdef NOS_ESP_IDF
+    /* SDK synchronization and short priority ceilings coexist with native IPC donation. */
+    unsigned compat_priority;
+#endif
     unsigned space_id, space_owner, run_cpu, pin_cpu, is_thread, endpoint_rights[NOS_ENDPOINTS];
     uintptr_t clear_tid, tls_memory, futex_address;
     unsigned futex_value, cancel_pending;

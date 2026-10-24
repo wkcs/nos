@@ -20,7 +20,13 @@ struct task *task_dependency(struct task *task)
 }
 void mutex_recompute(void)
 {
-    for (unsigned i = 0; i < NOS_TASKS; i++) tasks[i].priority = tasks[i].base_priority;
+    for (unsigned i = 0; i < NOS_TASKS; i++) {
+        tasks[i].priority = tasks[i].base_priority;
+#ifdef NOS_ESP_IDF
+        if (tasks[i].compat_priority < tasks[i].priority)
+            tasks[i].priority = tasks[i].compat_priority;
+#endif
+    }
     /* Acyclic donation reaches a fixed point in at most TASKS passes. */
     for (unsigned pass = 0; pass < NOS_TASKS; pass++) {
         unsigned changed = 0;

@@ -17,7 +17,9 @@ struct elf_header { unsigned char ident[16]; uint16_t type, machine; uint32_t ve
 struct elf_segment { uint32_t type, offset, va, pa, filesz, memsz, flags, align; };
 #define ELF_CLASS 1
 #endif
-#if defined(NOS_ARM64)
+#if defined(NOS_XTENSA)
+#define ELF_MACHINE 94
+#elif defined(NOS_ARM64)
 #define ELF_MACHINE 183
 #elif defined(NOS_RISCV)
 #define ELF_MACHINE 243

@@ -24,6 +24,8 @@
 #define NOS_PROCESSES 40u
 /* Linux robust futex words reserve the upper two TID bits. */
 #define NOS_TID_MAX 0x3fffffffu
+#elif defined(NOS_ESP_IDF)
+#define NOS_TASKS 24u
 #elif defined(NOS_NK60_V2)
 /* Dedicated keyboard image: one device service and one idle task. */
 #define NOS_TASKS 4u

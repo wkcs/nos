@@ -3,7 +3,13 @@
 #define NOS_ARCH_H
 #include "abi.h"
 #define ARCH_MAP_PRIVILEGED 0x100u
-#if defined(NOS_ARM64)
+#if defined(NOS_XTENSA)
+/* Saved context uses ESP-IDF's Xtensa window/FPU/TLS frame on the task stack.
+ * result is separate because solicited and interrupt frame layouts differ. */
+struct arch_frame { uintptr_t context, stack_end, entry, argument, second, result, pc, sp, number, r[3]; };
+#define ARCH_NAME "xtensa-esp32s3"
+#define FRAME_RESULT(f) ((f)->result)
+#elif defined(NOS_ARM64)
 struct arch_frame { uintptr_t x[31], sp, pc, status, tls, padding; uint64_t q[64]; uintptr_t fpcr, fpsr; };
 #define ARCH_NAME "arm64"
 #define FRAME_RESULT(f) ((f)->x[0])
@@ -29,7 +35,13 @@ struct arch_frame { uintptr_t r[13], sp, lr, pc, status, tls; uint64_t d[32]; ui
 #define FRAME_RESULT(f) ((f)->r[0])
 #endif
 enum arch_event { ARCH_SYSCALL, ARCH_TIMER, ARCH_FAULT, ARCH_IRQ };
-#if defined(NOS_ARM64)
+#if defined(NOS_XTENSA)
+_Static_assert(offsetof(struct arch_frame, context) == 0 && sizeof(uintptr_t) == 4,
+               "Xtensa context pointer ABI");
+intptr_t nos_xtensa_syscall(uintptr_t number, uintptr_t a, uintptr_t b, uintptr_t c);
+int arch_shared_user_pointer(uintptr_t address, int write);
+int arch_syscall_ready(void);
+#elif defined(NOS_ARM64)
 _Static_assert(offsetof(struct arch_frame, sp) == 248 && offsetof(struct arch_frame, tls) == 272 &&
                offsetof(struct arch_frame, q) == 288 && sizeof(struct arch_frame) == 816, "AArch64 trap ABI");
 #elif defined(NOS_RISCV32)

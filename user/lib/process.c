@@ -23,8 +23,13 @@ void nos_process_exit(int status)
 void nos_idle(uintptr_t unused)
 {
     (void)unused;
-    for (;;)
+    for (;;) {
+#ifdef NOS_ESP_IDF
+        extern void nos_idf_idle(void);
+        nos_idf_idle();
+#endif
         nos_syscall(NOS_SYS_YIELD, 0, 0, 0);
+    }
 }
 
 void nos_process_start(uintptr_t entry, uintptr_t argument)

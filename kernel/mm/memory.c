@@ -413,6 +413,9 @@ static uintptr_t translate(struct task *task, uintptr_t p, int write)
         inside(p, 1, task->heap, task->heap_limit - task->heap) ||
         inside(p, 1, (uintptr_t)__user_data_start, (size_t)(__user_bss_end - __user_data_start))) return p;
 #endif
+#ifdef NOS_XTENSA
+    if (arch_shared_user_pointer(p, write)) return p;
+#endif
     for (unsigned i = 0; i < VMA_SLOTS; i++) {
         struct vma *v = &s->vma[i];
         if (vma_backed(v) && inside(p, 1, v->va, v->size) &&

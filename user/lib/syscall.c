@@ -6,7 +6,10 @@
 
 intptr_t nos_syscall(uintptr_t number, uintptr_t a, uintptr_t b, uintptr_t c)
 {
-#if defined(NOS_ARM64)
+#if defined(NOS_XTENSA)
+    extern intptr_t nos_xtensa_syscall(uintptr_t, uintptr_t, uintptr_t, uintptr_t);
+    return nos_xtensa_syscall(number, a, b, c);
+#elif defined(NOS_ARM64)
     register uintptr_t r0 __asm__("x0") = a, r1 __asm__("x1") = b, r2 __asm__("x2") = c;
     register uintptr_t nr __asm__("x8") = number;
     __asm__ volatile("svc #0" : "+r"(r0) : "r"(r1), "r"(r2), "r"(nr) : "memory", "cc");
@@ -23,7 +26,9 @@ intptr_t nos_syscall(uintptr_t number, uintptr_t a, uintptr_t b, uintptr_t c)
 #endif
     __asm__ volatile("svc #0" : "+r"(r0) : "r"(r1), "r"(r2), "r"(nr) : "memory", "cc");
 #endif
+#ifndef NOS_XTENSA
     return (intptr_t)r0;
+#endif
 }
 
 int nos_user_check(const void *pointer, size_t size, unsigned protection)

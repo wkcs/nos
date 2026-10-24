@@ -1,0 +1,2 @@
+# Copyright (C) 2026 NOS contributors.
+source "$IDF_PATH/components/freertos/Kconfig"

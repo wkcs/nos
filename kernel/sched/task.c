@@ -31,6 +31,9 @@ static void task_prepare(struct task *t, unsigned slot, unsigned priority, unsig
     t->space_id = NOS_SPACES; t->space_owner = t->id;
     t->run_cpu = t->pin_cpu = UINT32_MAX;
     t->priority = t->base_priority = priority; t->caps = caps; t->parent = parent;
+#ifdef NOS_ESP_IDF
+    t->compat_priority = 31;
+#endif
 #ifndef NOS_MMU
     for (unsigned i = 0; i < NOS_TASKS; i++)
         if (tasks[i].state != TASK_UNUSED && tasks[i].state != TASK_DEAD) t->mutex_caps |= tasks[i].mutex_caps;
