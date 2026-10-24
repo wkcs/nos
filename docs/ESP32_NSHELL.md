@@ -2,7 +2,7 @@
 
 <!-- Copyright (C) 2026 NOS contributors -->
 
-普通固件现在在 IDF 完成硬件启动、NOS 调度器和设备域就绪后进入常驻 nshell。`app_main()` 不再只打印一行后返回。ESP profile 复用 `user/shell/parser.c` 与 `editor.c` 的实际解析、行编辑和历史记录；命令适配位于 `ports/esp_idf/components/nos_shell/`。
+普通固件由 [NOS 自己的启动链与 init](ESP32_ARCHITECTURE.md) 初始化硬件支持库、内核和设备域后进入常驻 nshell；没有 IDF `app_main()` / `main_task` 派发。ESP profile 复用 `user/shell/parser.c` 与 `editor.c` 的实际解析、行编辑和历史记录；命令适配位于 `ports/esp32/components/nos_shell/`。
 
 ## 启动与连接
 
@@ -35,6 +35,6 @@ shell 通过 `nos_idf_console_call()` 提交非阻塞 READ/WRITE，处理实际�
 
 ## 自动化验证
 
-`python3 tests/esp32c3.py` 和 `python3 tests/esp32s3.py` 重新构建三种镜像。普通镜像通过真实 UART0 的 QEMU stdin/stdout 交互，逐条验证15项命令/编辑/错误恢复，检查输出属于本次请求而不是启动日志或输入回显；还检查 `app_main()` 没有返回。回归镜像保持独立，验证 NOS 调度、IPC、设备容量/回收及生态后端。
+`python3 tests/esp32c3.py` 和 `python3 tests/esp32s3.py` 重新构建三种镜像。普通镜像通过真实 UART0 的 QEMU stdin/stdout 交互，逐条验证15项命令/编辑/错误恢复，检查输出属于本次请求而不是启动日志或输入回显；编译与符号审计排除 SDK 的 OS 启动、`app_main()` 和 `main_task`。回归镜像保持独立，验证 NOS 调度、IPC、设备容量/回收及生态后端。
 
 两个芯片的 UART 模型均实际触发 SDK RX 中断、ringbuffer 和 NOS 任务切换。测试结束后 harness 主动终止模拟器；完整命令、输入字节、必需输出、源码身份与原始 UART 日志保存在专项报告中。此前不含 shell 的 `eae2305` 日志属于历史镜像，不能作为这个启动流程的证明；此前公共89组验收在41组后被中断，没有完整成功收据，不计为89/89通过。

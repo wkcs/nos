@@ -2,7 +2,7 @@
 
 <!-- Copyright (C) 2026 NOS contributors -->
 
-硬件实现继续使用固定版本 ESP-IDF 的驱动、HAL、Wi-Fi 库、NimBLE 和 USB 栈。板级代码通过 `nos_idf_device_create()` 声明设备；业务代码使用无 SDK 类型的 `nos_service_call()` 请求。SDK 句柄仅存在于 `ports/esp_idf/components/nos_devices/`，应用不直接初始化、卸载或操作厂商驱动。
+硬件实现继续使用固定版本 ESP-IDF 的驱动、HAL、Wi-Fi 库、NimBLE 和 USB 栈。板级代码通过 `nos_idf_device_create()` 声明设备；业务代码使用无 SDK 类型的 `nos_service_call()` 请求。SDK 句柄仅存在于 `ports/esp32/components/nos_devices/`，应用不直接初始化、卸载或操作厂商驱动。
 
 ```text
 NOS 应用 / 后续 NLP、nshell 服务

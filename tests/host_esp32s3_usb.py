@@ -13,13 +13,13 @@ ROOT = Path(__file__).resolve().parents[1]
 def main():
     out = ROOT / "out/esp32s3/usb-host-model" / str(time.time_ns())
     out.mkdir(parents=True)
-    source = (ROOT / "ports/esp_idf/components/nos_devices/usb_host.c").read_text()
+    source = (ROOT / "ports/esp32/components/nos_devices/usb_host.c").read_text()
     source = re.sub(r'^#include "[^\n]+"\n', "", source, flags=re.M)
     (out / "bridge.c").write_text('#include "host_esp32s3_usb_sdk.h"\n' + source)
-    otg = (ROOT / "ports/esp_idf/components/nos_devices/usb_otg.c").read_text()
+    otg = (ROOT / "ports/esp32/components/nos_devices/usb_otg.c").read_text()
     otg = re.sub(r'^#include "[^\n]+"\n', "", otg, flags=re.M)
     (out / "otg.c").write_text('#include "host_esp32s3_usb_sdk.h"\n' + otg)
-    serial = (ROOT / "ports/esp_idf/components/nos_devices/usb_serial.c").read_text()
+    serial = (ROOT / "ports/esp32/components/nos_devices/usb_serial.c").read_text()
     serial = re.sub(r'^#include "[^\n]+"\n', "", serial, flags=re.M)
     (out / "serial.c").write_text('#include "host_esp32s3_usb_sdk.h"\n' + serial)
     subprocess.run(

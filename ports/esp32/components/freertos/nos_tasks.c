@@ -142,6 +142,12 @@ BaseType_t xTaskCreatePinnedToCore(TaskFunction_t f, const char *n, const uint32
 {
     return create(f, n, s, a, p, h, c, NULL, NULL, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
 }
+/* Native boot entry: vendor task APIs are clients of this NOS mechanism. */
+int nos_esp_create_init(TaskFunction_t entry, unsigned bytes, unsigned prio)
+{
+    return create(entry, "init", bytes, NULL, prio, NULL, 0, NULL, NULL,
+                  MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT) == pdPASS ? 0 : -NOS_ENOMEM;
+}
 TaskHandle_t xTaskCreateStaticPinnedToCore(TaskFunction_t f, const char *n, const uint32_t s,
                                            void *a, UBaseType_t p, StackType_t *stack,
                                            StaticTask_t *buffer, const BaseType_t core)
@@ -164,8 +170,8 @@ void vTaskDeleteWithCaps(TaskHandle_t h)
 void nos_idf_flush_pending(void)
 {
     for (unsigned i = 0; i < NOS_IDLE_FIRST; i++)
-        if (records[i].pending)
-            configASSERT(activate(i) == 0);
+        if (records[i].pending && activate(i))
+            kernel_fail("ESP compatibility task activation");
     struct nos_idf_task *idle = &records[NOS_IDLE_FIRST];
     idle->native = &tasks[NOS_IDLE_FIRST];
     idle->top = (StackType_t *)idle->native->frame.context;
@@ -178,7 +184,8 @@ void nos_idf_flush_pending(void)
     vListInitialiseItem(&idle->event);
     listSET_LIST_ITEM_OWNER(&idle->event, idle);
     esp_reent_init(&idle->reent);
-    configASSERT(xTimerCreateTimerTask() == pdPASS);
+    if (xTimerCreateTimerTask() != pdPASS)
+        kernel_fail("ESP compatibility timer worker");
 }
 void nos_idf_scheduler_ready(void)
 {

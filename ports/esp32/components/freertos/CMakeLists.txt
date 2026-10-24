@@ -11,10 +11,12 @@ endif()
 if(IDF_TARGET STREQUAL "esp32c3")
     set(sdk_arch riscv)
     set(nos_arch NOS_IDF_RISCV=1)
+    set(nos_cpu riscv32)
     set(nos_pages 20)
 else()
     set(sdk_arch xtensa)
     set(nos_arch NOS_XTENSA=1)
+    set(nos_cpu xtensa)
     set(nos_pages 28)
 endif()
 set(NOS_ROOT "${CMAKE_CURRENT_LIST_DIR}/../../../..")
@@ -22,8 +24,9 @@ set(SDK_RTOS "$ENV{IDF_PATH}/components/freertos")
 set(KERNEL "${SDK_RTOS}/FreeRTOS-Kernel")
 execute_process(COMMAND "${PYTHON}" "${NOS_ROOT}/scripts/embed_initramfs.py"
     --output "${CMAKE_CURRENT_BINARY_DIR}/empty_initramfs.c" COMMAND_ERROR_IS_FATAL ANY)
-set(SRCS "${CMAKE_CURRENT_BINARY_DIR}/empty_initramfs.c" "nos_tasks.c" "${NOS_ROOT}/arch/esp_idf/platform.c"
-    "${SDK_RTOS}/heap_idf.c" "${SDK_RTOS}/app_startup.c"
+set(SRCS "${NOS_ROOT}/arch/${nos_cpu}/esp_context.c" "${NOS_ROOT}/arch/${nos_cpu}/esp_entry.S"
+    "${CMAKE_CURRENT_BINARY_DIR}/empty_initramfs.c" "nos_tasks.c" "${NOS_ROOT}/ports/esp32/platform.c"
+    "${SDK_RTOS}/heap_idf.c" "${NOS_ROOT}/ports/esp32/startup.c"
     "${SDK_RTOS}/port_common.c" "${SDK_RTOS}/port_systick.c"
     "${KERNEL}/list.c" "${KERNEL}/queue.c" "${KERNEL}/timers.c"
     "${KERNEL}/event_groups.c" "${KERNEL}/stream_buffer.c"
@@ -61,7 +64,7 @@ set_source_files_properties("${KERNEL}/queue.c" "${KERNEL}/timers.c"
     "${KERNEL}/event_groups.c" "${KERNEL}/stream_buffer.c"
     PROPERTIES COMPILE_DEFINITIONS "_ESP_FREERTOS_INTERNAL")
 idf_component_set_property(freertos ORIG_INCLUDE_PATH "${KERNEL}/include/freertos/")
-target_link_libraries(${COMPONENT_LIB} INTERFACE "-u app_main" "-T${CMAKE_CURRENT_LIST_DIR}/shared.ld")
+target_link_libraries(${COMPONENT_LIB} INTERFACE "-u nos_esp_init" "-T${CMAKE_CURRENT_LIST_DIR}/shared.ld")
 
 # NOS internal quoted headers must not override SDK/Newlib system headers.
 target_compile_options(${COMPONENT_LIB} PRIVATE "-iquote${NOS_ROOT}/include/nos")
@@ -86,3 +89,12 @@ endif()
 if(NOT "${IDF_VERSION_MAJOR}.${IDF_VERSION_MINOR}.${IDF_VERSION_PATCH}" VERSION_EQUAL "5.4.2")
     message(FATAL_ERROR "NOS ESP-IDF requires the audited ESP-IDF 5.4.2 ABI")
 endif()
+
+# NOS owns the image entry and system startup. The vendor CPU routine is
+# retained only for reset/cache/clock/ROM/heap hardware bring-up.
+idf_build_get_property(nos_regression NOS_IDF_REGRESSION)
+if(nos_regression)
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE NOS_IDF_REGRESSION=1)
+endif()
+set_source_files_properties("${NOS_ROOT}/ports/esp32/startup.c"
+    PROPERTIES COMPILE_OPTIONS "-fno-stack-protector")

@@ -2,9 +2,9 @@
 
 <!-- Copyright (C) 2026 NOS contributors -->
 
-ESP32-C3 使用单核 RV32IMC、ESP-IDF 5.4.2/Newlib 和 NOS 任务/调度器。原始 SDK `tasks.c` 不参与构建；保留 SDK RISC-V `port.c/portasm.S` 的寄存器、GCC TLS、系统定时器和中断机制，以及原始队列/定时器等兼容集合。硬件驱动和无线二进制库继续使用 IDF 原件，应用通过 NOS 设备服务访问。
+ESP32-C3 由 [NOS 启动链与 init](ESP32_ARCHITECTURE.md) 主导运行，使用单核 RV32IMC、ESP-IDF 5.4.2/Newlib 和 NOS 任务/调度器。原始 SDK `tasks.c` 不参与构建；保留 SDK RISC-V `port.c/portasm.S` 的寄存器、GCC TLS、系统定时器和中断机制，以及原始队列/定时器等兼容集合。硬件驱动和无线二进制库继续使用 IDF 原件，应用通过 NOS 设备服务访问。
 
-这是与 S3 一样的可信共享固件地址空间，没有 MMU 进程隔离、独立 ELF/glibc、原生 NOS VFS/init 或完整 POSIX。C3 没有硬件 FPU；浮点运算回归使用工具链的软件浮点支持。正常固件已接入 [常驻 nshell](ESP32_NSHELL.md) 的 UART0 诊断 profile；NLP、低功耗、看门狗和实板无线互通仍需后续实现/验收。
+这是与 S3 一样的可信共享固件地址空间，没有 MMU 进程隔离、独立 ELF/glibc、原生 NOS VFS 或完整 POSIX。C3 没有硬件 FPU；浮点运算回归使用工具链的软件浮点支持。正常固件已接入 [常驻 nshell](ESP32_NSHELL.md) 的 UART0 诊断 profile；NLP、低功耗、看门狗和实板无线互通仍需后续实现/验收。
 
 原生系统调用和设备管理只接受可调度的任务上下文；ISR、SDK 调度暂停或 SDK 临界区内分别拒绝为 `EDEADLK` / `EBUSY`，避免在不允许切换时阻塞。
 
@@ -28,7 +28,7 @@ python3 scripts/esp32c3.py flash --profile ecosystem --port /dev/ttyACM0
 
 默认是4 MiB Flash、CPU0、100Hz、UART0 日志（TX21/RX20），正常应用不自动启动无线或外接外设。正常 runtime 固件为 `out/esp32c3/runtime/build/nos_esp32c3.bin`；烧录应同时使用同目录下的 bootloader、分区表和 OTA 初始化数据，由 `flash_args` 给出完整地址，不要只烧录应用 BIN。实际模组容量和接线需符合上述 profile。
 
-独立工程可执行 `eval "$(python3 scripts/esp32c3.py env)"`，添加 `ports/esp_idf/components`，设置目标为 `esp32c3`，并使用公共默认配置及 `sdkconfig.esp32c3.defaults`。SDK 默认的硬件栈保护依赖旧 TCB 字段偏移，当前明确禁用；自行启用会在 CMake 阶段拒绝。只接受默认 UART0、无第二控制台的已审计配置，避免设备管理与 SDK 控制台争用资源。
+独立工程可执行 `eval "$(python3 scripts/esp32c3.py env)"`，添加 `ports/esp32/components`，在 `project()` 后包含 `ports/esp32/cmake/hardware.cmake` 并实现 `nos_esp_init()`，设置目标为 `esp32c3`，并使用公共默认配置及 `sdkconfig.esp32c3.defaults`。SDK 默认的硬件栈保护依赖旧 TCB 字段偏移，当前明确禁用；自行启用会在 CMake 阶段拒绝。只接受默认 UART0、无第二控制台的已审计配置，避免设备管理与 SDK 控制台争用资源。
 
 依赖复用 S3 固定的 IDF、Python 锁和工具目录；RISC-V 工具链为 `esp-14.2.0_20241119`，官方 QEMU 为 `esp-develop-9.2.2-20260417`。RISC-V 模拟器包 SHA-256：`547f03e04701a92cbb699f7f7d015adc1f5b5ef93cbb94c0dd9b7107e2d84e77`。构建和专项保留源码身份、实际 ELF 架构、镜像哈希及命令，不修改 SDK/模拟器源码。
 

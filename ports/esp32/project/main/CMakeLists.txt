@@ -5,7 +5,7 @@ if(NOS_IDF_REGRESSION)
     set(sources "${CMAKE_CURRENT_LIST_DIR}/../../../../tests/guest/esp32s3_regression.c"
         "${CMAKE_CURRENT_LIST_DIR}/../../../../tests/guest/esp32s3_protocols.c")
 else()
-    set(sources "main.c")
+    set(sources "${CMAKE_CURRENT_LIST_DIR}/../../init.c")
 endif()
 execute_process(COMMAND "${PYTHON}" "${CMAKE_CURRENT_LIST_DIR}/../../../../scripts/check_idf_app_devices.py"
     ${sources} WORKING_DIRECTORY "${CMAKE_CURRENT_LIST_DIR}" COMMAND_ERROR_IS_FATAL ANY)

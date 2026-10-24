@@ -136,7 +136,7 @@ static void ipc_client(void *unused)
     xSemaphoreGive(done);
     vTaskDelete(NULL);
 }
-void app_main(void)
+void nos_esp_init(void)
 {
     extern void nos_esp32s3_protocol_regression(void);
     nos_esp32s3_protocol_regression();
@@ -144,7 +144,7 @@ void app_main(void)
     esp_chip_info(&chip);
     assert(chip.model == NOS_IDF_TEST_CHIP);
     assert(chip.cores == NOS_IDF_TEST_CORES);
-    printf("NOS " NOS_IDF_TEST_NAME " app_main chip=%d cores=%d\n", chip.model, chip.cores);
+    printf("NOS " NOS_IDF_TEST_NAME " regression init chip=%d cores=%d\n", chip.model, chip.cores);
 #ifdef NOS_IDF_ECOSYSTEM
     extern unsigned nos_esp_idf_ecosystem_link_count(void);
     assert(nos_esp_idf_ecosystem_link_count() == NOS_IDF_ECOSYSTEM_ENTRIES);

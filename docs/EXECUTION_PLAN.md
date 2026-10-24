@@ -264,3 +264,12 @@ AS 限额见下方已完成批次；下一批优先完善稳定进程/地址空�
 - [x] 实际启动输出 NOS 任务、页数、SDK heap、设备域与 shell 状态，支持诊断命令、历史/编辑与错误恢复。
 - [x] `afb0818` 最终冻结C3/S3三种镜像及各15项真实UART0交互通过，三个相关宿主runner同时通过，源码未变化；报告 `1792884401549386511` / `1792884403539264806`。
 - [ ] 原生 NOS VFS/ELF 与 NLP shell 绑定；诊断 profile 不能替代这些未完成能力。见 [ESP32_NSHELL.md](ESP32_NSHELL.md)。
+
+
+## ESP32 NOS 启动归属重构
+
+- NOS 自有镜像入口、启动阶段控制和 init；删除 SDK app_main/main_task 启动依赖。
+- 架构机制归入 Xtensa/RV32，ESP 硬件后端归入 ports/esp32。
+- 固件硬件依赖及无线库纳入 third_party/espressif 的校验归档。
+- 当前实现和验收边界见 [ESP32_ARCHITECTURE.md](ESP32_ARCHITECTURE.md)。
+- 独立 VFS/ELF、分配器统一、SMP、实板外设仍待继续实现/验收。

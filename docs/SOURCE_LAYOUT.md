@@ -13,7 +13,7 @@
 | `kernel/exec/` | ELF 装载与启动文件 |
 | `kernel/compat/linux/` | Linux 系统调用、进程与信号兼容机制 |
 | `arch/{arm,arm64,riscv,riscv32,xtensa}/` | 启动汇编、平台实现与链接脚本 |
-| `ports/esp_idf/` | ESP32-S3 SDK 组件覆盖、任务兼容层、参考应用与固定配置；SDK 下载在 `out/esp32-sdk/` |
+| `ports/esp32/` | ESP32-S3 SDK 组件覆盖、任务兼容层、参考应用与固定配置；SDK 下载在 `out/esp32-sdk/` |
 | `include/nos/` | 当前内核、用户 ABI 与运行库声明 |
 | `servers/` | 用户态 VFS、FatFs、UART 与 virtio 服务 |
 | `servers/keyboard/`、`servers/usb/` | 有界键盘动作/配置引擎、板级服务与 USB HID 协议 |
@@ -42,4 +42,4 @@ NK60 的 `boards/nk60_v2/boot.c` 为特权时钟/早期 UART/TIM2 初始化；�
 
 Git 历史保留删除前内容。`DEVELOPMENT_PLAN.md` 是早期审查记录，其中旧路径和行号只对应当时版本；当前定位以此文档和构建源清单为准。
 
-ESP32-S3 的 Xtensa profile 是显式共享可信固件，SDK 运行库/外设不是独立隔离用户服务。正常参考应用在 `ports/esp_idf/project/main/`，会写开发分区的专项回归在 `tests/guest/esp32s3_regression.c`，避免正常固件隐式运行硬件测试。边界见 [ESP32_S3.md](ESP32_S3.md)。
+ESP32-S3 的 Xtensa profile 是显式共享可信固件，SDK 运行库/外设不是独立隔离用户服务。正常参考应用在 `ports/esp32/project/main/`，会写开发分区的专项回归在 `tests/guest/esp32s3_regression.c`，避免正常固件隐式运行硬件测试。边界见 [ESP32_S3.md](ESP32_S3.md)。

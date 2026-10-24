@@ -1,64 +1,20 @@
-/* Copyright (C) 2026 NOS contributors. Original IDF context/IRQ mechanisms. */
+/* Copyright (C) 2026 NOS contributors. ESP SoC hardware hooks; CPU mechanisms live under arch/. */
 #include "nos_port.h"
 #include "esp_rom_sys.h"
 #include "esp_rom_uart.h"
 #include "esp_memory_utils.h"
 #include "esp_timer.h"
 #include "esp_cpu.h"
-#ifdef NOS_XTENSA
-#include "xtensa/hal.h"
-#include "xtensa_context.h"
-#endif
-extern void *pxCurrentTCBs[];
-extern void vPortYield(void);
-extern BaseType_t xPortStartScheduler(void);
-static void task_entry(void *argument) {
-    struct arch_frame *frame = argument;
-    ((void (*)(uintptr_t, uintptr_t))frame->entry)(frame->argument, frame->second);
-    nos_idf_syscall(NOS_SYS_EXIT, 0, 0, 0);
-    for (;;)
-        vPortYield();
-}
-void arch_frame_init(struct arch_frame *f, uintptr_t pc, uintptr_t sp, uintptr_t arg,
-                     uintptr_t second) {
-    k_memset(f, 0, sizeof(*f));
-    f->entry = f->pc = pc;
-    f->argument = arg;
-    f->second = second;
-    f->sp = sp;
-    sp &= ~(uintptr_t)15;
-    f->stack_end = sp;
-    f->context = (uintptr_t)pxPortInitialiseStack((StackType_t *)sp, task_entry, f);
-}
-struct arch_frame *arch_return_frame(struct arch_frame *f) {
-    return f;
-}
-void arch_enter_user(struct arch_frame *f) {
-    (void)f;
-    nos_idf_scheduler_ready();
-    xPortStartScheduler();
-    kernel_fail("IDF scheduler returned");
-}
+extern void nos_cpu_halt(void) __attribute__((noreturn));
 void arch_platform_init(void) {}
 void arch_putc(char c) {
     esp_rom_uart_tx_one_char((uint8_t)c);
 }
 void arch_shutdown(int failed) {
     esp_rom_printf("NOS HALT %d\n", failed);
-    for (;;) {
-#ifdef NOS_IDF_RISCV
-        __asm__ volatile("wfi");
-#else
-        __asm__ volatile("waiti 15");
-#endif
-    }
+    nos_cpu_halt();
 }
-uintptr_t arch_irq_save(void) {
-    return portSET_INTERRUPT_MASK_FROM_ISR();
-}
-void arch_irq_restore(uintptr_t value) {
-    portCLEAR_INTERRUPT_MASK_FROM_ISR(value);
-}
+
 unsigned arch_cpu_id(void) {
     return 0;
 }
@@ -102,13 +58,6 @@ unsigned arch_mapping_flags(unsigned id, uintptr_t va) {
     return 0;
 }
 void arch_tlb_sync(void) {}
-void arch_cache_sync(void) {
-#ifdef NOS_IDF_RISCV
-    __asm__ volatile("fence rw,rw\n\tfence.i" ::: "memory");
-#else
-    __asm__ volatile("memw" ::: "memory");
-#endif
-}
 unsigned arch_irq_claim(void) {
     return 0;
 }

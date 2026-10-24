@@ -1,5 +1,5 @@
 /* Copyright (C) 2026 NOS contributors.
- * IDF owns the image and its shared data. There is no private user-data image.
+ * NOS owns the image; the hardware linker layout supplies its shared data. There is no private user-data image.
  * DRAM/IRAM/DROM/PSRAM access is checked by the IDF shared-memory hook. */
 PROVIDE(__user_text_start = _text_start);
 PROVIDE(__user_text_end = _text_end);

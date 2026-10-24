@@ -20,7 +20,7 @@ def main():
     out = args.output or ROOT / "out/esp32s3/wireless-host" / str(time.time_ns())
     out = out.resolve()
     out.mkdir(parents=True)
-    source = ROOT / "ports/esp_idf/components/nos_devices/wireless.c"
+    source = ROOT / "ports/esp32/components/nos_devices/wireless.c"
     # Keep every Wi-Fi statement verbatim; replace includes with the SDK fault
     # model. The real Xtensa build separately checks official SDK declarations.
     original = source.read_text()

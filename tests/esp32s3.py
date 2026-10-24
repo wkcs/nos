@@ -105,21 +105,28 @@ def audit(build, ecosystem=False, regression=True):
     ), "ELF changed since build"
     commands = json.loads((build / "compile_commands.json").read_text())
     files = {Path(item["file"]).resolve() for item in commands}
-    forbidden = [str(p) for p in files if p.name == "tasks.c"]
+    forbidden = [
+        str(p)
+        for p in files
+        if p.name in ("tasks.c", "app_startup.c")
+        or p == (port.IDF / "components/esp_system/startup.c").resolve()
+    ]
     assert not forbidden, f"Original FreeRTOS scheduler compiled: {forbidden}"
     required = [
         "kernel/sched/scheduler.c",
         "kernel/sched/task.c",
         "kernel/mm/memory.c",
         "kernel/ipc/ipc.c",
-        "arch/esp_idf/platform.c",
-        "ports/esp_idf/components/freertos/nos_tasks.c",
+        "ports/esp32/platform.c",
+        "ports/esp32/startup.c",
+        "ports/esp32/components/freertos/nos_boot.c",
+        "ports/esp32/components/freertos/nos_tasks.c",
         "servers/drivers/framework/device.c",
         "servers/drivers/framework/service.c",
-        "ports/esp_idf/components/nos_devices/devices.c",
-        "ports/esp_idf/components/nos_devices/serial_buses.c",
-        "ports/esp_idf/components/nos_devices/storage.c",
-        "ports/esp_idf/components/nos_devices/console.c",
+        "ports/esp32/components/nos_devices/devices.c",
+        "ports/esp32/components/nos_devices/serial_buses.c",
+        "ports/esp32/components/nos_devices/storage.c",
+        "ports/esp32/components/nos_devices/console.c",
         "servers/bluetooth/gatt.c",
         "servers/usb/host/classes.c",
         "servers/usb/host/otg.c",
@@ -132,6 +139,18 @@ def audit(build, ecosystem=False, regression=True):
             port.IDF / "components/freertos/FreeRTOS-Kernel/portable" / selected_arch / filename
         ).resolve() in files
     assert not any(f"/portable/{other_arch}/" in str(p) for p in files)
+    cpu_arch = "riscv32" if selected_arch == "riscv" else "xtensa"
+    for name in ("esp_context.c", "esp_entry.S"):
+        assert (ROOT / "arch" / cpu_arch / name).resolve() in files
+    assert manifest["boot_owner"] == "NOS"
+    assert manifest["hardware_bundle"] == port.sources.package("esp-idf")["sha256"]
+    startup = next(
+        item
+        for item in commands
+        if Path(item["file"]).resolve()
+        == (port.IDF / "components/esp_system/port/cpu_start.c").resolve()
+    )
+    assert "call_start_cpu0=nos_esp_hal_cpu_init" in startup["command"]
     elf = (build / f"nos_{port.TARGET}.elf").read_bytes()
     assert elf[:6] == b"\x7fELF\x01\x01"
     assert int.from_bytes(elf[18:20], "little") == (243 if selected_arch == "riscv" else 94)
@@ -143,11 +162,30 @@ def audit(build, ecosystem=False, regression=True):
     )
     symbols = subprocess.check_output([nm, build / f"nos_{port.TARGET}.elf"], text=True)
     names = {line.split()[-1] for line in symbols.splitlines() if line.split()}
-    for name in ("select_task", "scheduler_tick", "nos_idf_syscall", "vTaskSwitchContext"):
+    entry = next(
+        line.split()
+        for line in symbols.splitlines()
+        if line.split() and line.split()[-1] == "call_start_cpu0"
+    )
+    assert int.from_bytes(elf[24:28], "little") == int(entry[0], 16), "Wrong image entry"
+    for name in (
+        "select_task",
+        "scheduler_tick",
+        "nos_idf_syscall",
+        "vTaskSwitchContext",
+        "start_cpu0",
+        "call_start_cpu0",
+        "nos_esp_hal_cpu_init",
+        "nos_esp_init",
+        "nos_esp_create_init",
+    ):
         assert name in names, f"Missing NOS scheduler mechanism: {name}"
+    assert "app_main" not in names and "esp_startup_start_app" not in names
+    assert "main_task" not in names and "start_cpu0_default" not in names
     assert not any(name.startswith("nos_sdk_unused_") for name in names)
     assert "vPortTCBPreDeleteHook" not in names, "SDK cleanup assumes a different TCB layout"
-    application = list((ROOT / "ports/esp_idf/project/main").glob("*.c")) + [
+    application = [
+        ROOT / "ports/esp32/init.c",
         ROOT / "tests/guest/esp32s3_regression.c",
         ROOT / "tests/guest/esp32s3_protocols.c",
     ]
@@ -166,7 +204,7 @@ def audit(build, ecosystem=False, regression=True):
         ):
             assert name in names, f"Missing interactive nshell mechanism: {name}"
         for path in (
-            "ports/esp_idf/components/nos_shell/shell.c",
+            "ports/esp32/components/nos_shell/shell.c",
             "user/shell/editor.c",
             "user/shell/parser.c",
         ):
@@ -181,7 +219,7 @@ def audit(build, ecosystem=False, regression=True):
             "usb_serial.c",
             "can.c",
         ):
-            assert (ROOT / "ports/esp_idf/components/nos_devices" / path).resolve() in files
+            assert (ROOT / "ports/esp32/components/nos_devices" / path).resolve() in files
         for name in (
             "idf_auxiliary_ops",
             "idf_wifi_ops",
@@ -198,7 +236,7 @@ def audit(build, ecosystem=False, regression=True):
             assert not any(p.name in absent and "nos_devices" in str(p) for p in files)
         else:
             assert all(name in names for name in (*usb_ops, "nos_usb_msc_open_transport"))
-        source = (ROOT / "ports/esp_idf/components/nos_devices/ecosystem.c").read_text()
+        source = (ROOT / "ports/esp32/components/nos_devices/ecosystem.c").read_text()
         checked = [name for name in re.findall(r"\(uintptr_t\)(\w+)", source) if name in names]
         assert len(checked) == (26 if c3 else 35)
         sized_symbols = subprocess.check_output(
@@ -298,7 +336,7 @@ def run_qemu(build, report, timeout, markers=None, calibrated_efuse=False, inter
             (
                 "native_tasks",
                 b"ps\r",
-                r"id=[0-9]+ name=main priority=[0-9]+ state=[0-9]+ stack_free=[0-9]+",
+                r"id=[0-9]+ name=init priority=[0-9]+ state=[0-9]+ stack_free=[0-9]+",
             ),
             (
                 "managed_console",
@@ -334,7 +372,7 @@ def run_qemu(build, report, timeout, markers=None, calibrated_efuse=False, inter
                 if "Guru Meditation" in text or "assert failed" in text or "FAIL " in text:
                     break
                 if interactive:
-                    if "Returned from app_main()" in text:
+                    if "NOS: regression init completed" in text:
                         break  # The normal application must keep the console alive.
                     ready = all(marker in text for marker in markers) and text.endswith("nos> ")
                     if exchange_start is None and ready:
@@ -364,7 +402,8 @@ def run_qemu(build, report, timeout, markers=None, calibrated_efuse=False, inter
                             process.stdin.write(exchanges[exchange_index][1])
                             process.stdin.flush()
                 elif (
-                    all(marker in text for marker in markers) and "Returned from app_main()" in text
+                    all(marker in text for marker in markers)
+                    and "NOS: regression init completed" in text
                 ):
                     completed = True
                     break
@@ -380,6 +419,8 @@ def run_qemu(build, report, timeout, markers=None, calibrated_efuse=False, inter
                 process.wait()
             process.stdin.close()
     text = log.read_text(errors="replace").replace("\r", "")
+    assert "Calling app_main()" not in text and "Returned from app_main()" not in text
+    assert "main_task:" not in text
     assert completed, f"ESP32-S3 regression failed; see {log}\n{text[-4000:]}"
     assert (
         harness_stopped and process.returncode == 0
@@ -422,17 +463,18 @@ def manager_smoke(report):
     (project / "main").mkdir(parents=True)
     (project / "CMakeLists.txt").write_text(
         "cmake_minimum_required(VERSION 3.16)\n"
-        f'set(EXTRA_COMPONENT_DIRS "{ROOT}/ports/esp_idf/components")\n'
+        f'set(EXTRA_COMPONENT_DIRS "{ROOT}/ports/esp32/components")\n'
         "set(COMPONENTS main)\ninclude($ENV{IDF_PATH}/tools/cmake/project.cmake)\n"
         "project(nos_manager_probe)\n"
+        f'include("{ROOT}/ports/esp32/cmake/hardware.cmake")\n'
     )
     (project / "main/CMakeLists.txt").write_text(
         'idf_component_register(SRCS "main.c" REQUIRES freertos)\n'
     )
-    (project / "main/main.c").write_text("void app_main(void) {}\n")
+    (project / "main/main.c").write_text("void nos_esp_init(void) {}\n")
     (project / "main/idf_component.yml").write_text('dependencies:\n  idf: ">=5.4,<5.5"\n')
     (project / "partitions.csv").write_bytes(
-        (ROOT / "ports/esp_idf/project/partitions.csv").read_bytes()
+        (ROOT / "ports/esp32/project/partitions.csv").read_bytes()
     )
     build = report / "manager-build"
     with (report / "manager-configure.log").open("wb") as log:
@@ -562,7 +604,10 @@ def main():
                 args.timeout,
                 [
                     "PASS page_allocator",
-                    "NOS IDF application ready",
+                    "NOS: init online; managed devices ready",
+                    "NOS: bootloader handoff",
+                    "NOS: hardware ready; starting NOS kernel",
+                    "NOS: init task running under NOS scheduler",
                     "[nos] nshell: starting",
                     "NOS SHELL READY",
                 ],

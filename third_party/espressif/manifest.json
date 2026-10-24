@@ -1,0 +1,70 @@
+{
+  "format": 1,
+  "packages": [
+    {
+      "name": "esp-idf",
+      "upstream": "https://github.com/espressif/esp-idf",
+      "commit": "f5c3654a1c2d2a01f7f67def7a0dc48e691f63c0",
+      "archive": "esp-idf-sources.tar.xz",
+      "sha256": "1e43011b76a28b2013fc46e13367ab3e4292ed2f607b543bfc61a2538bc470ce",
+      "bytes": 33729000,
+      "inventory": "esp-idf-inventory.json",
+      "inventory_sha256": "c6209c08f06de125545126aa8e6af65b28f08da87514736ccb5974ed71bbaeca",
+      "submodules": [
+        " 24c60e243580c7868f4334a1ba3123481fe1aa48 components/bootloader/subproject/components/micro-ecc/micro-ecc (24c60e2)",
+        " 6d007b7167146b31256b29fed31e04dc46989885 components/bt/controller/lib_esp32 (6d007b7)",
+        " 06c5ef1481e6e5ff9308d6abe9c1e576d60c946f components/bt/controller/lib_esp32c2/esp32c2-bt-lib (06c5ef1)",
+        " 72599d583c232ea78d6461b5b502426c6e5a1ec9 components/bt/controller/lib_esp32c3_family (72599d5)",
+        " 19bce59850e593a1e0231a1f051e24a1532c38d6 components/bt/controller/lib_esp32c5/esp32c5-bt-lib (19bce59)",
+        " 841466ff3cf6635bf061c18e836807ee7f99ce78 components/bt/controller/lib_esp32c6/esp32c6-bt-lib (841466f)",
+        " bd09406c74d135d1d4e68c5e578540a8bcffbcac components/bt/controller/lib_esp32h2/esp32h2-bt-lib (bd09406)",
+        " a62a98132cdec59d2f2745da7b0598964b38bdae components/bt/esp_ble_mesh/lib/lib (a62a981)",
+        " 0225775e49669cd4f070400908f73718bddce83b components/bt/host/nimble/nimble (0225775)",
+        " eeecc49ce8af123cf8ad40efdb9673e37b56230f components/cmock/CMock (eeecc49)",
+        "-71b47be7c950f1bf5f7e5303779fa99a16224bb6 components/cmock/CMock/vendor/c_exception",
+        "-cf949f45ca6d172a177b00da21310607b97bc7a7 components/cmock/CMock/vendor/unity",
+        " cb6667841f63457246d56a9170f3409917e9d5a8 components/esp_coex/lib (cb66678)",
+        " fc76520d481fc3d08cbc001ef47804a4457fffd7 components/esp_phy/lib (fc76520)",
+        " 206fe3e13e788b5fad8be6d39b5d9742e4bd9985 components/esp_wifi/lib (206fe3e)",
+        " 2867f6883a12920b1969ff9624c0ab0e4185c2ce components/heap/tlsf (2867f68)",
+        " 8f2beb57ddad1f94bed899790b00f46df893ccac components/json/cJSON (8f2beb5)",
+        " fa4dffdfac52587a26c1f29258376df750cf8474 components/lwip/lwip (fa4dffd)",
+        " 601990b1d81510a135da9bb0476d6ed3cb8c011b components/mbedtls/mbedtls (601990b)",
+        " cac1552e62b0474c162547b7cce345d7cd1aecfe components/mqtt/esp-mqtt (cac1552)",
+        " d4d4738d0d757dbcead167179ecf829a8c1d477b components/openthread/lib (d4d4738)",
+        " ec2b0d487356d2955346457a6515201039140037 components/openthread/openthread (ec2b0d4)",
+        " abc67a11c6db271bedbb9f58be85d6f4e2ea8389 components/protobuf-c/protobuf-c (abc67a1)",
+        " 0dbb3f71c5f6fae3747a9d935372773762baf852 components/spiffs/spiffs (0dbb3f7)",
+        " bf560290f6020737eafaa8b5cbd2177c3956c03f components/unity/unity (bf56029)"
+      ],
+      "excluded": [
+        ".git",
+        "__pycache__",
+        "*.pyc",
+        "examples",
+        "docs"
+      ],
+      "generated_files": {
+        "version.txt": "v5.4.2\n"
+      }
+    },
+    {
+      "name": "esp-usb",
+      "upstream": "https://github.com/espressif/esp-usb",
+      "commit": "68bf7f9613dbb1a31094fdb903209ae3e4bf388d",
+      "archive": "esp-usb-sources.tar.xz",
+      "sha256": "059ace9d2a06a64df34030d46222d1d49bd4ce00052f6ed81f2cb93a6d8dc664",
+      "bytes": 3367488,
+      "inventory": "esp-usb-inventory.json",
+      "inventory_sha256": "2464876c91ec7baa52576927e1d9e2ebec54da1aee61643adf65926dddc34e97",
+      "submodules": [
+        " 894ea01409e0407a7dbe0ee29b2d58a4691f9046 device/esp_tinyusb/tinyusb (894ea01)"
+      ],
+      "excluded": [
+        ".git",
+        "__pycache__",
+        "*.pyc"
+      ]
+    }
+  ]
+}

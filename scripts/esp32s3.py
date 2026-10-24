@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 # Copyright (C) 2026 NOS contributors.
-"""Pinned ESP32-S3 SDK setup and NOS builds; downloads stay under ignored out/."""
+"""NOS ESP32 builds with repository-owned hardware sources and pinned tools."""
 import argparse
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -16,12 +17,17 @@ import urllib.request
 
 ROOT = Path(__file__).resolve().parents[1]
 SDK_ROOT = Path(os.environ.get("NOS_ESP_SDK_ROOT", ROOT / "out/esp32-sdk")).resolve()
-IDF = SDK_ROOT / "esp-idf"
+_source_spec = importlib.util.spec_from_file_location(
+    "espressif_sources", ROOT / "scripts/espressif_sources.py"
+)
+sources = importlib.util.module_from_spec(_source_spec)
+_source_spec.loader.exec_module(sources)
+IDF = sources.location("esp-idf", SDK_ROOT)
 TOOLS = SDK_ROOT / "tools"
 IDF_COMMIT = "f5c3654a1c2d2a01f7f67def7a0dc48e691f63c0"
 IDF_VERSION = "5.4.2"
 ESP_USB_COMMIT = "68bf7f9613dbb1a31094fdb903209ae3e4bf388d"
-ESP_USB = SDK_ROOT / "esp-usb"
+ESP_USB = sources.location("esp-usb", SDK_ROOT)
 XTENSA_VERSION = "esp-14.2.0_20241119"
 CMAKE_VERSION = "3.30.2"
 ULP_VERSION = "2.38_20240113"
@@ -105,6 +111,7 @@ def environment():
         IDF_PYTHON_ENV_PATH=str(venv),
         IDF_PYTHON_CHECK_CONSTRAINTS="no",
         IDF_COMPONENT_MANAGER="0",
+        IDF_SKIP_CHECK_SUBMODULES="1",
         NOS_ESP_USB_PATH=str(ESP_USB),
         ESP_ROM_ELF_DIR=str(TOOLS / "tools/esp-rom-elfs/20241011") + "/",
     )
@@ -113,82 +120,23 @@ def environment():
 
 
 def verify_sdk():
-    actual = subprocess.check_output(
-        ["git", "-C", str(IDF), "rev-parse", "HEAD"], text=True
-    ).strip()
-    if actual != IDF_COMMIT:
-        raise RuntimeError(f"Expected ESP-IDF {IDF_COMMIT}, got {actual}")
-    changes = subprocess.check_output(
-        ["git", "-C", str(IDF), "status", "--porcelain", "--untracked-files=no"], text=True
-    )
-    if changes:
-        raise RuntimeError(
-            "ESP-IDF checkout has local changes; preserve them in a separate SDK path"
-        )
+    if sources.package("esp-idf")["commit"] != IDF_COMMIT:
+        raise RuntimeError("The vendored IDF revision is outside the audited ABI")
+    sources.prepare("esp-idf", SDK_ROOT)
 
 
 def verify_usb():
-    actual = subprocess.check_output(
-        ["git", "-C", str(ESP_USB), "rev-parse", "HEAD"], text=True
-    ).strip()
-    if actual != ESP_USB_COMMIT:
-        raise RuntimeError(f"Expected esp-usb {ESP_USB_COMMIT}, got {actual}")
-    changes = subprocess.check_output(
-        ["git", "-C", str(ESP_USB), "status", "--porcelain", "--untracked-files=no"], text=True
-    )
-    if changes:
-        raise RuntimeError("esp-usb checkout has local changes")
+    if sources.package("esp-usb")["commit"] != ESP_USB_COMMIT:
+        raise RuntimeError("The vendored USB revision is outside the audited ABI")
+    sources.prepare("esp-usb", SDK_ROOT)
 
 
 def setup():
     if platform.system() != "Linux" or platform.machine() not in ("x86_64", "amd64"):
         raise RuntimeError("This reproducible tool bundle targets Linux x86_64")
     SDK_ROOT.mkdir(parents=True, exist_ok=True)
-    if not IDF.exists():
-        run(
-            [
-                "git",
-                "clone",
-                "--depth",
-                "1",
-                "--branch",
-                "v5.4.2",
-                "--filter=blob:none",
-                "https://github.com/espressif/esp-idf.git",
-                IDF,
-            ]
-        )
     verify_sdk()
-    run(["git", "-C", IDF, "submodule", "update", "--init", "--depth", "1", "--jobs", "4"])
-    if not ESP_USB.exists():
-        run(["git", "init", ESP_USB])
-        run(
-            [
-                "git",
-                "-C",
-                ESP_USB,
-                "remote",
-                "add",
-                "origin",
-                "https://github.com/espressif/esp-usb.git",
-            ]
-        )
-        run(["git", "-C", ESP_USB, "fetch", "--depth", "1", "origin", ESP_USB_COMMIT])
-        run(["git", "-C", ESP_USB, "checkout", "--detach", "FETCH_HEAD"])
     verify_usb()
-    run(
-        [
-            "git",
-            "-C",
-            ESP_USB,
-            "submodule",
-            "update",
-            "--init",
-            "--depth",
-            "1",
-            "device/esp_tinyusb/tinyusb",
-        ]
-    )
     env = environment()
     run(
         [
@@ -214,7 +162,7 @@ def setup():
             "--index-url",
             "https://pypi.org/simple",
             "-r",
-            ROOT / "ports/esp_idf/python-requirements.lock",
+            ROOT / "ports/esp32/python-requirements.lock",
         ],
         env=env,
     )
@@ -254,14 +202,14 @@ def qemu_binary():
 
 
 def sdkconfig_defaults(profile="runtime"):
-    defaults = [ROOT / "ports/esp_idf/project/sdkconfig.defaults"]
-    target_defaults = ROOT / "ports/esp_idf/project" / f"sdkconfig.{TARGET}.defaults"
+    defaults = [ROOT / "ports/esp32/project/sdkconfig.defaults"]
+    target_defaults = ROOT / "ports/esp32/project" / f"sdkconfig.{TARGET}.defaults"
     if target_defaults.exists():
         defaults.append(target_defaults)
     if profile == "ecosystem":
-        defaults.append(ROOT / "ports/esp_idf/project/sdkconfig.ecosystem.defaults")
+        defaults.append(ROOT / "ports/esp32/project/sdkconfig.ecosystem.defaults")
         if TARGET == "esp32s3":
-            defaults.append(ROOT / "ports/esp_idf/project/sdkconfig.usb.defaults")
+            defaults.append(ROOT / "ports/esp32/project/sdkconfig.usb.defaults")
     return defaults
 
 
@@ -280,7 +228,7 @@ def build(profile="runtime", output=None, action="build", port=None, regression=
         python,
         IDF / "tools/idf.py",
         "-C",
-        ROOT / "ports/esp_idf/project",
+        ROOT / "ports/esp32/project",
         "-B",
         output / "build",
         f"-DIDF_TARGET={TARGET}",
@@ -309,6 +257,9 @@ def build(profile="runtime", output=None, action="build", port=None, regression=
         "source": before,
         "target": TARGET,
         "idf_commit": IDF_COMMIT,
+        "hardware_bundle": sources.package("esp-idf")["sha256"],
+        "boot_owner": "NOS",
+        "startup": "NOS entry -> vendor CPU HAL -> NOS startup -> NOS kernel -> NOS init",
         "esp_usb_commit": (
             ESP_USB_COMMIT if profile == "ecosystem" and TARGET == "esp32s3" else None
         ),
@@ -318,7 +269,7 @@ def build(profile="runtime", output=None, action="build", port=None, regression=
             [compiler, "--version"], text=True, env=env
         ).splitlines()[0],
         "python_lock_sha256": hashlib.sha256(
-            (ROOT / "ports/esp_idf/python-requirements.lock").read_bytes()
+            (ROOT / "ports/esp32/python-requirements.lock").read_bytes()
         ).hexdigest(),
         "elf_sha256": hashlib.sha256((target / f"nos_{TARGET}.elf").read_bytes()).hexdigest(),
     }
