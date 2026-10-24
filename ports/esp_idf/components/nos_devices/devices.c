@@ -3,6 +3,7 @@
 #include "private.h"
 #include "esp_err.h"
 #include "driver/gpio.h"
+#include "nos/arch.h"
 static struct nos_service_domain domain;
 static struct nos_device *entries[32];
 static SemaphoreHandle_t mutex;
@@ -18,7 +19,7 @@ static const uint8_t system_pins[] = {26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36
 static struct nos_resource reserved_pins[sizeof(system_pins)];
 static int lock(void *context)
 {
-    if (xPortInIsrContext() || xTaskGetSchedulerState() != taskSCHEDULER_RUNNING)
+    if (!arch_syscall_ready())
         return -NOS_DRV_EBUSY;
     return xSemaphoreTakeRecursive(context, portMAX_DELAY) ? 0 : -NOS_DRV_EBUSY;
 }
@@ -55,7 +56,7 @@ static int no_start(void *p)
 static const struct nos_service_ops reserve_ops = {no_start, no_start, NULL};
 int nos_idf_devices_init(void)
 {
-    if (xPortInIsrContext() || xTaskGetSchedulerState() != taskSCHEDULER_RUNNING)
+    if (!arch_syscall_ready())
         return -NOS_DRV_EBUSY;
     /* Creation uses static storage only. Publish the mutex under the CPU lock;
      * all slow registration work runs under the recursive domain mutex. */

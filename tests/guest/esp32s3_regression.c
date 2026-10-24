@@ -183,6 +183,11 @@ void app_main(void)
     done = xSemaphoreCreateCounting(8, 0);
     assert(done);
     assert(nos_syscall(NOS_SYS_GETPID, 0, 0, 0) >= 0);
+    portMUX_TYPE native_mux = portMUX_INITIALIZER_UNLOCKED;
+    portENTER_CRITICAL(&native_mux);
+    assert(nos_syscall(NOS_SYS_GETPID, 0, 0, 0) == -NOS_EDEADLK);
+    assert(nos_idf_devices_init() == -NOS_DRV_EBUSY);
+    portEXIT_CRITICAL(&native_mux);
     assert(nos_syscall(NOS_SYS_USER_CHECK, 0, 4, NOS_PROT_READ) == -NOS_EFAULT);
     char sample[8];
     assert(nos_syscall(NOS_SYS_USER_COPY, (uintptr_t)sample, (uintptr_t) "native", 7) == 0);
@@ -332,6 +337,10 @@ void app_main(void)
     struct nos_service *gpio, *other, *uart, *storage, *ota;
     assert(nos_idf_device_create(&config, &gpio) == 0);
     assert(nos_service_start(gpio) == 0);
+    portENTER_CRITICAL(&native_mux);
+    int critical_level;
+    assert(nos_service_call(gpio, NOS_IO_READ, &critical_level, sizeof(critical_level)) == -NOS_DRV_EBUSY);
+    portEXIT_CRITICAL(&native_mux);
     struct nos_idf_device_config conflict = {
         .name = "test.i2c-pin-conflict", .kind = NOS_SERVICE_I2C, .pins = {4, 5}, .hz = 100000};
     assert(nos_idf_device_create(&conflict, &other) == 0);

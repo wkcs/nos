@@ -139,5 +139,11 @@ int arch_shared_user_pointer(uintptr_t address, int write) {
 }
 
 int arch_syscall_ready(void) {
-    return xTaskGetSchedulerState() == taskSCHEDULER_RUNNING && !xPortInIsrContext();
+#ifdef NOS_IDF_RISCV
+    extern volatile UBaseType_t port_uxCriticalNesting[];
+#else
+    extern BaseType_t port_uxCriticalNesting[];
+#endif
+    return xTaskGetSchedulerState() == taskSCHEDULER_RUNNING && !xPortInIsrContext() &&
+           !port_uxCriticalNesting[0];
 }

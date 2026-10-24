@@ -63,7 +63,7 @@ python3 scripts/esp32s3.py flash --port /dev/ttyACM0
 
 ESP32-S3 在本移植中采用共享、可信固件地址空间，没有 MMU 进程隔离。SDK 驱动通过其原有 MMIO、中断分配和 DMA 机制工作；不能把这描述为已完成用户态外设能力隔离。
 
-原生 NOS 调用只允许正常运行的任务上下文；ISR、启动前或 SDK 调度暂停期间返回 `EDEADLK`，避免在不允许切换的上下文阻塞。原生 NOS 调用通过 `nos_idf_syscall()` 进入同一个内核分发和能力检查路径。用户复制允许 SDK 可按字节访问的 RAM、RTC 慢速 RAM 和只读 DROM；拒绝 MMIO、空指针和只读区写入。SDK 地址域本身共享，范围检查不会隔离应用与内核数据。
+原生 NOS 调用只允许正常运行的任务上下文；ISR、启动前、SDK 临界区或 SDK 调度暂停期间返回 `EDEADLK`，避免在不允许切换的上下文阻塞。原生 NOS 调用通过 `nos_idf_syscall()` 进入同一个内核分发和能力检查路径。用户复制允许 SDK 可按字节访问的 RAM、RTC 慢速 RAM 和只读 DROM；拒绝 MMIO、空指针和只读区写入。SDK 地址域本身共享，范围检查不会隔离应用与内核数据。
 
 当前原生 `arch_device_operation()` / `arch_irq_bind()` 返回 `ENOTSUP`。S3 应用通过 NOS 设备服务接口使用外设，由 `nos_devices` 后端调用官方 SDK 驱动，统一仲裁控制器、引脚及生命周期；接口覆盖范围、代码示例和未完成项目见 [ESP32_S3_DEVICES.md](ESP32_S3_DEVICES.md)。NLP、nshell 和 NK60 服务仍需要 S3 业务绑定。此 profile 使用 SDK VFS/Newlib；不启动原生 NOS VFS/init，也不提供 S3 上的 glibc、独立 ELF 进程或虚拟内存。
 
