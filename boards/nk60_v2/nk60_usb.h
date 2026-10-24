@@ -4,8 +4,11 @@
 #include "hardware.h"
 #include "../../servers/usb/keyboard_usb.h"
 #define NK60_USB_BASE ((uintptr_t)0x50000000u)
+/* After init, never move or copy this controller/class object. */
 struct nk60_usb {
     struct nk60_io io;
+    struct nos_device controller_device;
+    struct nos_usb_device_controller controller;
     struct usb_keyboard keyboard;
     uint8_t setup[8], out[64];
     uint8_t ready, setup_valid, tx_busy[3];

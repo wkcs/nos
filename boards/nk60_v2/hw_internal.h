@@ -28,6 +28,9 @@
 #define SPI_BSY (1u << 7)
 #define SPI_SPE (1u << 6)
 
+int nk60_controllers_init(struct nk60_hw *);
+int nk60_spi_start(struct nk60_hw *);
+
 static inline uint32_t hw_read(struct nk60_hw *hw, uintptr_t address)
 {
     return hw->io.read32(hw->io.context, address);
@@ -38,8 +41,7 @@ static inline void hw_write(struct nk60_hw *hw, uintptr_t address, uint32_t valu
     hw->io.write32(hw->io.context, address, value);
 }
 
-static inline void hw_update(struct nk60_hw *hw, uintptr_t address,
-                             uint32_t mask, uint32_t value)
+static inline void hw_update(struct nk60_hw *hw, uintptr_t address, uint32_t mask, uint32_t value)
 {
     hw_write(hw, address, (hw_read(hw, address) & ~mask) | value);
 }
@@ -56,21 +58,29 @@ static inline uint32_t hw_time(struct nk60_hw *hw)
 
 static inline int hw_valid(const struct nk60_hw *hw)
 {
-    return hw && hw->io.read32 && hw->io.write32 &&
-           hw->io.time_us && hw->io.delay_us;
+    return hw && hw->io.read32 && hw->io.write32 && hw->io.time_us && hw->io.delay_us;
 }
 
-static inline void hw_gpio_level(struct nk60_hw *hw, uintptr_t port,
-                                 unsigned int pin, int level)
+static inline void hw_gpio_level(struct nk60_hw *hw, uintptr_t port, unsigned int pin, int level)
 {
-    hw_write(hw, port + GPIO_BSRR, 1u << (pin + (level ? 0u : 16u)));
+    struct nos_gpio output = {&hw->gpio, (uint32_t)((port - NK60_GPIO_A) / 0x400u) * 16u + pin, 0};
+    (void)nos_gpio_write(&output, level != 0);
 }
 
-static inline void hw_gpio_config(struct nk60_hw *hw, uintptr_t port,
-                                  unsigned int pin, unsigned int mode,
-                                  unsigned int pull, unsigned int alternate)
+static inline void hw_gpio_config(struct nk60_hw *hw, uintptr_t port, unsigned int pin,
+                                  unsigned int mode, unsigned int pull, unsigned int alternate)
 {
     unsigned int shift = pin * 2u;
+
+    if (mode < 2) {
+        struct nos_gpio gpio = {&hw->gpio, (uint32_t)((port - NK60_GPIO_A) / 0x400u) * 16u + pin,
+                                0};
+        /* Preserve the output latch established before changing direction. */
+        unsigned int initial = (hw->gpio_output[(port - NK60_GPIO_A) / 0x400u] >> pin) & 1u;
+        struct nos_gpio_config config = {(uint8_t)mode, (uint8_t)pull, 0, (uint8_t)initial};
+        (void)nos_gpio_configure(&gpio, &config);
+        return;
+    }
 
     hw_update(hw, port + GPIO_OTYPER, 1u << pin, 0);
     hw_update(hw, port + GPIO_OSPEEDR, 3u << shift, 3u << shift);
@@ -84,8 +94,8 @@ static inline void hw_gpio_config(struct nk60_hw *hw, uintptr_t port,
     hw_update(hw, port + GPIO_MODER, 3u << shift, mode << shift);
 }
 
-static inline int hw_wait(struct nk60_hw *hw, uintptr_t address,
-                           uint32_t mask, uint32_t expected, uint32_t timeout_us)
+static inline int hw_wait(struct nk60_hw *hw, uintptr_t address, uint32_t mask, uint32_t expected,
+                          uint32_t timeout_us)
 {
     uint32_t start = hw_time(hw);
     unsigned int iterations;

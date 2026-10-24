@@ -32,6 +32,14 @@ INPUTS = [
     "boards/nk60_v2/hardware.h",
     "boards/nk60_v2/nk60_usb.h",
 ]
+INPUTS += [
+    "include/nos/driver/device.h",
+    "include/nos/driver/peripheral.h",
+    "servers/drivers/framework/device.c",
+    "servers/drivers/framework/peripheral.c",
+    "include/nos/driver/spi_nor.h",
+]
+
 REQUIRED = {
     "nk60_nlp_lighting_program_atomic_upload_behavior_render_save_validation_and_disconnect",
     "nk60_nlp_product_layout_storage_diagnostics_and_atomic_per_key_lighting_owner_timeout",

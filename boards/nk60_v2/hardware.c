@@ -6,21 +6,13 @@
 #include "hw_internal.h"
 
 const int8_t nk60_scan_to_key[NK60_SCAN_SLOTS] = {
-     0,  1,  2,  3,  4,  5,  6,  7,
-     8,  9, 10, 11, 12, 13, -1, -1,
-    14, 15, 16, 17, 18, 19, 20, 21,
-    22, 23, 24, 25, 26, 27, -1, -1,
-    36, 37, 38, 39, 40, -1, -1, -1,
-    49, 50, 51, 52, -1, -1, -1, -1,
-    53, 54, 55, 56, 57, 58, 59, 60,
-    41, 42, 43, 44, 45, 46, 47, 48,
-    28, 29, 30, 31, 32, 33, 34, 35
-};
+    0,  1,  2,  3,  4,  5,  6,  7,  8,  9,  10, 11, 12, 13, -1, -1, 14, 15, 16, 17, 18, 19, 20, 21,
+    22, 23, 24, 25, 26, 27, -1, -1, 36, 37, 38, 39, 40, -1, -1, -1, 49, 50, 51, 52, -1, -1, -1, -1,
+    53, 54, 55, 56, 57, 58, 59, 60, 41, 42, 43, 44, 45, 46, 47, 48, 28, 29, 30, 31, 32, 33, 34, 35};
 
 int nk60_hw_bind(struct nk60_hw *hw, const struct nk60_io *io)
 {
-    if (!hw || !io || !io->read32 || !io->write32 ||
-        !io->time_us || !io->delay_us)
+    if (!hw || !io || !io->read32 || !io->write32 || !io->time_us || !io->delay_us)
         return -HW_EINVAL;
     hw->io = *io;
     hw->progress = NULL;
@@ -30,7 +22,7 @@ int nk60_hw_bind(struct nk60_hw *hw, const struct nk60_io *io)
     hw->matrix_ready = 0;
     hw->rgb_ready = 0;
     hw->rgb_powered = 0;
-    return 0;
+    return nk60_controllers_init(hw);
 }
 
 void nk60_hw_set_progress(struct nk60_hw *hw, void (*progress)(void *), void *context)
@@ -99,8 +91,14 @@ int nk60_matrix_scan(struct nk60_hw *hw, uint64_t *pressed)
 
         shift_bit(hw, slot != 0);
         latch(hw);
-        if (key >= 0 && !(hw_read(hw, NK60_GPIO_B + GPIO_IDR) & (1u << 14)))
-            sample |= (uint64_t)1u << (unsigned int)key;
+        if (key >= 0) {
+            struct nos_gpio input = {&hw->gpio, 16u + 14u, 1};
+            int active, error = nos_gpio_read(&input, &active);
+            if (error)
+                return error;
+            if (active)
+                sample |= (uint64_t)1u << (unsigned int)key;
+        }
     }
     *pressed = sample;
     return 0;

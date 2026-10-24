@@ -4,6 +4,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include "driver/spi_nor.h"
 
 #define NK60_KEY_COUNT 61u
 #define NK60_SCAN_SLOTS 72u
@@ -39,8 +40,14 @@ struct nk60_io {
     void (*delay_us)(void *context, uint32_t microseconds);
 };
 
+/* After bind, this object contains self references: never move or copy it. */
 struct nk60_hw {
     struct nk60_io io;
+    struct nos_device gpio_device, spi_device;
+    struct nos_gpio_controller gpio;
+    struct nos_spi_bus spi;
+    struct nos_spi_nor nor;
+    uint16_t gpio_output[3];
     /* Optional USB/event progress, called only with flash CS deasserted. */
     void (*progress)(void *context);
     void *progress_context;
@@ -63,9 +70,8 @@ struct nk60_rgb {
  * must validate/pin the source buffer and enforce DMA1 stream4/channel0 bounds.
  * SPI shift-register draining and the LED reset interval are handled here.
  */
-typedef int (*nk60_dma_tx_fn)(void *context, uintptr_t destination,
-                              const uint8_t *source, size_t length,
-                              uint32_t timeout_us);
+typedef int (*nk60_dma_tx_fn)(void *context, uintptr_t destination, const uint8_t *source,
+                              size_t length, uint32_t timeout_us);
 
 extern const int8_t nk60_scan_to_key[NK60_SCAN_SLOTS];
 extern const uint8_t nk60_canvas_to_led[NK60_CANVAS_WIDTH * NK60_CANVAS_HEIGHT];
@@ -80,14 +86,12 @@ int nk60_flash_init(struct nk60_hw *hw);
 int nk60_flash_probe(struct nk60_hw *hw, uint32_t *jedec_id);
 int nk60_flash_read(struct nk60_hw *hw, uint32_t offset, void *data, size_t length);
 /* Program only previously erased bytes; erase is always a separate operation. */
-int nk60_flash_program(struct nk60_hw *hw, uint32_t offset,
-                       const void *data, size_t length);
+int nk60_flash_program(struct nk60_hw *hw, uint32_t offset, const void *data, size_t length);
 int nk60_flash_erase_sector(struct nk60_hw *hw, uint32_t offset);
 int nk60_rgb_init(struct nk60_hw *hw);
 int nk60_rgb_set_power(struct nk60_hw *hw, int enabled);
-int nk60_rgb_encode(const struct nk60_rgb *colors, size_t count,
-                     uint8_t *wave, size_t wave_bytes);
+int nk60_rgb_encode(const struct nk60_rgb *colors, size_t count, uint8_t *wave, size_t wave_bytes);
 int nk60_rgb_write(struct nk60_hw *hw, const uint8_t *wave, size_t wave_bytes,
-                    nk60_dma_tx_fn dma_tx, void *dma_context);
+                   nk60_dma_tx_fn dma_tx, void *dma_context);
 
 #endif

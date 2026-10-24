@@ -34,6 +34,12 @@ INPUTS = [
 INPUTS += ["scripts/nlp_lighting.py"] + [
     str(p.relative_to(ROOT)) for p in sorted((ROOT / "examples/nk60/lighting").glob("*.json"))
 ]
+INPUTS += [
+    "boards/nk60_v2/hardware.h",
+    "include/nos/driver/device.h",
+    "include/nos/driver/peripheral.h",
+    "include/nos/driver/spi_nor.h",
+]
 MARKERS = [
     "lighting_fx_macro_restart_rejection_preserves_real_start_and_end_time",
     "lighting_fx_newest_overlay_order_and_expired_instance_reclamation",
@@ -66,6 +72,7 @@ def main():
     command = [
         "gcc",
         "-std=c11",
+        "-Iinclude/nos",
         "-Wall",
         "-Wextra",
         "-Werror",

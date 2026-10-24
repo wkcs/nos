@@ -8,9 +8,22 @@ import subprocess
 import time
 
 ROOT = Path(__file__).resolve().parents[1]
-INPUTS = ["tests/host_usb_keyboard.c", "servers/usb/keyboard_usb.h",
-          "servers/usb/keyboard_usb.c", "boards/nk60_v2/nk60_usb.h",
-          "boards/nk60_v2/usb.c", "boards/nk60_v2/hardware.h"]
+INPUTS = [
+    "tests/host_usb_keyboard.c",
+    "servers/usb/keyboard_usb.h",
+    "servers/usb/keyboard_usb.c",
+    "boards/nk60_v2/nk60_usb.h",
+    "boards/nk60_v2/usb.c",
+    "boards/nk60_v2/hardware.h",
+]
+INPUTS += [
+    "include/nos/driver/device.h",
+    "include/nos/driver/peripheral.h",
+    "servers/drivers/framework/device.c",
+    "servers/drivers/framework/peripheral.c",
+    "include/nos/driver/spi_nor.h",
+]
+
 REQUIRED = {
     "usb_nlp_composite_bulk_backpressure_generation_reset_and_hid_independence",
     "usb_ep0_descriptor_layout_setup_cancel_address_led_stall",
@@ -25,33 +38,71 @@ def main():
     out = ROOT / "out/microkernel/host-usb-keyboard" / str(time.time_ns())
     out.mkdir(parents=True)
     hashes = {name: hashlib.sha256((ROOT / name).read_bytes()).hexdigest() for name in INPUTS}
-    command = [os.environ.get("CC", "gcc"), "-std=c11", "-Wall", "-Wextra", "-Werror",
-               "-g", "-O1", "-fsanitize=address,undefined", "-fno-omit-frame-pointer",
-               "-fno-pie", "-no-pie", "tests/host_usb_keyboard.c",
-               "servers/usb/keyboard_usb.c", "boards/nk60_v2/usb.c", "-o", str(out / "test")]
+    command = [
+        os.environ.get("CC", "gcc"),
+        "-std=c11",
+        "-Iinclude/nos",
+        "-Wall",
+        "-Wextra",
+        "-Werror",
+        "-g",
+        "-O1",
+        "-fsanitize=address,undefined",
+        "-fno-omit-frame-pointer",
+        "-fno-pie",
+        "-no-pie",
+        "tests/host_usb_keyboard.c",
+        "servers/usb/keyboard_usb.c",
+        "boards/nk60_v2/usb.c",
+        "servers/drivers/framework/device.c",
+        "servers/drivers/framework/peripheral.c",
+        "-o",
+        str(out / "test"),
+    ]
     with (out / "build.log").open("w") as stream:
-        build = subprocess.run(command, check=False, cwd=ROOT, stdout=stream, stderr=subprocess.STDOUT)
+        build = subprocess.run(
+            command, check=False, cwd=ROOT, stdout=stream, stderr=subprocess.STDOUT
+        )
     code = None
     if not build.returncode:
         environment = os.environ.copy()
-        environment.update(ASAN_OPTIONS="detect_leaks=1:abort_on_error=1",
-                           UBSAN_OPTIONS="halt_on_error=1:print_stacktrace=1")
+        environment.update(
+            ASAN_OPTIONS="detect_leaks=1:abort_on_error=1",
+            UBSAN_OPTIONS="halt_on_error=1:print_stacktrace=1",
+        )
         with (out / "host.log").open("w") as stream:
             try:
-                code = subprocess.run([str(out / "test")], check=False, cwd=ROOT, env=environment,
-                                      stdout=stream, stderr=subprocess.STDOUT, timeout=60).returncode
+                code = subprocess.run(
+                    [str(out / "test")],
+                    check=False,
+                    cwd=ROOT,
+                    env=environment,
+                    stdout=stream,
+                    stderr=subprocess.STDOUT,
+                    timeout=60,
+                ).returncode
             except subprocess.TimeoutExpired:
                 pass
     text = (out / "host.log").read_text() if (out / "host.log").exists() else ""
     checks = {line[5:] for line in text.splitlines() if line.startswith("PASS ")}
-    stable = hashes == {name: hashlib.sha256((ROOT / name).read_bytes()).hexdigest() for name in INPUTS}
-    good = build.returncode == 0 and code == 0 and stable and REQUIRED <= checks and "FAIL" not in text
-    result = {"passed": good,
-              "scope": "Actual freestanding USB keyboard protocol and STM32 DWC2 driver with injected transport/register model; no physical enumeration, electrical, clock or interoperability validation",
-              "build_command": command, "build_returncode": build.returncode, "returncode": code,
-              "required": sorted(REQUIRED), "missing": sorted(REQUIRED - checks),
-              "source_stable": stable, "source_sha256": hashes,
-              "sanitizers": ["address", "undefined", "leak"]}
+    stable = hashes == {
+        name: hashlib.sha256((ROOT / name).read_bytes()).hexdigest() for name in INPUTS
+    }
+    good = (
+        build.returncode == 0 and code == 0 and stable and REQUIRED <= checks and "FAIL" not in text
+    )
+    result = {
+        "passed": good,
+        "scope": "Actual freestanding USB keyboard protocol and STM32 DWC2 driver with injected transport/register model; no physical enumeration, electrical, clock or interoperability validation",
+        "build_command": command,
+        "build_returncode": build.returncode,
+        "returncode": code,
+        "required": sorted(REQUIRED),
+        "missing": sorted(REQUIRED - checks),
+        "source_stable": stable,
+        "source_sha256": hashes,
+        "sanitizers": ["address", "undefined", "leak"],
+    }
     (out / "results.json").write_text(json.dumps(result, indent=2) + "\n")
     print(json.dumps(result))
     if not good:

@@ -129,7 +129,7 @@ ifneq ($(PLATFORM),stm32)
 USER_SRC += servers/fatfs/ff.c
 endif
 ifeq ($(BUILD_MODE),selftest)
-USER_SRC += tests/guest/validation.c tests/guest/libc_regression.c tests/guest/kernel_regression.c tests/guest/arch_regression.c tests/guest/elf_regression.c tests/guest/vfs_regression.c
+USER_SRC += tests/guest/validation.c tests/guest/driver_regression.c tests/guest/libc_regression.c tests/guest/kernel_regression.c tests/guest/arch_regression.c tests/guest/elf_regression.c tests/guest/vfs_regression.c
 endif
 ifeq ($(PLATFORM),nk60_v2)
 KERNEL_SRC += boards/nk60_v2/boot.c
@@ -140,6 +140,7 @@ USERFLAGS += -Ithird_party/tinycrypt/lib/include
 NLP_VENDOR_OBJECTS := $(O)/servers/nlp/vendor/sha256.o $(O)/servers/nlp/vendor/utils.o
 USER_SRC += $(wildcard servers/usb/*.c) $(filter-out boards/nk60_v2/boot.c,$(wildcard boards/nk60_v2/*.c))
 endif
+USER_SRC += $(wildcard servers/drivers/framework/*.c) servers/drivers/spi/nor.c
 ifeq ($(NLP_TEST),1)
 USER_SRC += tests/guest/nlp_regression.c $(wildcard servers/nlp/*/*.c)
 USERFLAGS += -Ithird_party/tinycrypt/lib/include

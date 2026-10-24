@@ -6,12 +6,13 @@
 
 #include "hardware.h"
 
-#define CHECK(expression) do { \
-    if (!(expression)) { \
-        fprintf(stderr, "FAIL %s:%d: %s\n", __FILE__, __LINE__, #expression); \
-        exit(1); \
-    } \
-} while (0)
+#define CHECK(expression)                                                                          \
+    do {                                                                                           \
+        if (!(expression)) {                                                                       \
+            fprintf(stderr, "FAIL %s:%d: %s\n", __FILE__, __LINE__, #expression);                  \
+            exit(1);                                                                               \
+        }                                                                                          \
+    } while (0)
 
 struct mock_register {
     uintptr_t address;
@@ -79,8 +80,7 @@ static uint32_t read32(void *context, uintptr_t address)
         for (slot = 0; slot < NK60_SCAN_SLOTS; slot++) {
             int key = nk60_scan_to_key[slot];
 
-            if (!m->latched[slot] && key >= 0 &&
-                (m->pressed & ((uint64_t)1u << (unsigned int)key)))
+            if (!m->latched[slot] && key >= 0 && (m->pressed & ((uint64_t)1u << (unsigned int)key)))
                 return 0;
         }
         return 1u << 14;
@@ -171,8 +171,7 @@ static void write8(void *context, uintptr_t address, uint8_t value)
             CHECK(m->spi_address < sizeof(m->memory));
             m->spi_rx = m->memory[m->spi_address++];
         } else if (m->command == 0x02) {
-            uint32_t at = (m->spi_address & ~255u) |
-                          ((m->spi_address + m->program_bytes) & 255u);
+            uint32_t at = (m->spi_address & ~255u) | ((m->spi_address + m->program_bytes) & 255u);
 
             CHECK(at < sizeof(m->memory));
             CHECK(m->program_bytes < NK60_FLASH_PAGE_SIZE);
@@ -209,8 +208,8 @@ static void progress(void *context)
     m->progress_calls++;
 }
 
-static int dma_tx(void *context, uintptr_t destination, const uint8_t *source,
-                   size_t length, uint32_t timeout_us)
+static int dma_tx(void *context, uintptr_t destination, const uint8_t *source, size_t length,
+                  uint32_t timeout_us)
 {
     struct mock *m = context;
 
@@ -222,9 +221,8 @@ static int dma_tx(void *context, uintptr_t destination, const uint8_t *source,
     return m->dma_error;
 }
 
-static struct nk60_hw reset(void)
+static void reset(struct nk60_hw *hw)
 {
-    struct nk60_hw hw;
     struct nk60_io io = {
         .context = &mock,
         .read32 = read32,
@@ -238,14 +236,14 @@ static struct nk60_hw reset(void)
     memset(&mock, 0, sizeof(mock));
     memset(mock.memory, 0xff, sizeof(mock.memory));
     mock.jedec = 0xef4014;
-    CHECK(nk60_hw_bind(&hw, &io) == 0);
-    nk60_hw_set_progress(&hw, progress, &mock);
-    return hw;
+    CHECK(nk60_hw_bind(hw, &io) == 0);
+    nk60_hw_set_progress(hw, progress, &mock);
 }
 
 static void test_scan(void)
 {
-    struct nk60_hw hw = reset();
+    struct nk60_hw hw;
+    reset(&hw);
     uint64_t pressed;
     uint64_t seen = 0;
     unsigned int i;
@@ -276,7 +274,8 @@ static void test_scan(void)
 
 static void test_flash(void)
 {
-    struct nk60_hw hw = reset();
+    struct nk60_hw hw;
+    reset(&hw);
     uint8_t data[600], actual[600];
     unsigned int i, transactions;
     uint32_t id;
@@ -334,7 +333,8 @@ static void test_flash(void)
 
 static void test_rgb(void)
 {
-    struct nk60_hw hw = reset();
+    struct nk60_hw hw;
+    reset(&hw);
     struct nk60_rgb colors[NK60_LED_COUNT] = {{0}};
     uint8_t wave[NK60_RGB_WAVE_BYTES];
     unsigned int i;
