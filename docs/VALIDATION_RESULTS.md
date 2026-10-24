@@ -354,7 +354,11 @@ RISC-V UART 的一次真实停顿由 GDB 确认：ring 为空、接收线程等�
 
 ## ESP32-S3 / ESP-IDF
 
-设备管理接入 `6fa7a6e` 的冻结完整验收 `1792843580309736541` 为 **86/86 组通过，全部 runner 退出 0，源码未变化**。无线错误保护提交 `4db0927` 随后通过 S3 正常启动、16 个运行标记、32 SDK 入口与全部后端链接、Wi-Fi 实际适配代码故障模型和组件管理器检查，报告 `out/esp32s3/managed-validation/reports/1792846421120832933/results.json`。两提交间公共内核/架构/运行库/驱动框架完全相同；完整矩阵没有在后一个提交重复执行。22 类后端的功能子集、产物哈希与实板限制见 [设备接口](ESP32_S3_DEVICES.md) 和 [冻结验证](ESP32_S3_VALIDATION.md)。
+最新连接能力提交 `cc005897534b3265392b27d27d9af2dce1081890` 从干净工作区通过冻结专项：官方 S3 QEMU 的 normal/runtime/ecosystem 三次实际启动，runtime 19个、ecosystem 20个必需标记齐全、QEMU 均退出0；SDK 调度器替换、32个生态入口、全部后端及组件管理器审计通过。报告为 `out/esp32s3/connectivity-validation/reports/1792877237620117254/results.json`，开始/结束源码身份相同。
+
+同一冻结源码的四个相关 runner（USB Host/OTG sanitizer、stock QEMU DWC2 键盘/鼠标/存储、设备框架和受管理服务）均退出0；S3 专项内另含实际 SDK USB/OTG/Wi-Fi 适配代码故障模型和可移植 GATT 状态检查。汇总为 `out/esp32s3/connectivity-evidence.json`。完整生态通过 SDK 支持的虚拟出厂校准 eFuse 启动，没有修改 SDK/模拟器。官方 S3 machine 缺少 RF/USB OTG 模型，实板无线、USB 枚举/供电仍未验收；本轮未修改公共内核/架构/运行库源码，未重跑完整89组或宣称完整POSIX。接口、固件哈希和证据范围见 [连接能力](ESP32_S3_CONNECTIVITY.md) 与 [冻结验证](ESP32_S3_VALIDATION.md)。
+
+以下设备管理接入的历史完整验收：`6fa7a6e` 的冻结 `1792843580309736541` 为 **86/86 组通过，全部 runner 退出 0，源码未变化**。无线错误保护提交 `4db0927` 随后通过 S3 正常启动、16 个运行标记、32 SDK 入口与全部后端链接、Wi-Fi 实际适配代码故障模型和组件管理器检查，报告 `out/esp32s3/managed-validation/reports/1792846421120832933/results.json`。两提交间公共内核/架构/运行库/驱动框架完全相同；完整矩阵没有在后一个提交重复执行。
 
 以下为早期移植记录：
 

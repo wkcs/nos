@@ -242,6 +242,7 @@ AS 限额见下方已完成批次；下一批优先完善稳定进程/地址空�
 - [x] 枚举无关的 NOS USB 类传输接口，IDF Host 枚举/URB 桥接原有 boot HID/MSC BOT，短传输/拔插/取消与保留资源。
 - [x] 管理器中的 USB OTG 服务与 NOS 自动任务，明确的板级引脚、去抖、原始 VBUS 防倒灌、放电、故障恢复。
 - [x] 官方模拟器安装包与实际二进制校验、S3 device tree 探测、出厂校准 eFuse 支持完整 profile 启动；不修改 SDK 或模拟器。
+- [x] `cc00589` 冻结专项：S3 三种构建/启动、19/20必需标记及四组 USB/框架回归全部通过；报告 `1792877237620117254`，身份与边界见 [冻结验证](ESP32_S3_VALIDATION.md)。本轮未重跑完整 POSIX 矩阵。
 - [ ] GATT 射频配对/收发、S3 USB 枚举与真实供电验证；官方 S3 QEMU 没有相应硬件模型。
 
 接口与验证范围见 [ESP32_S3_CONNECTIVITY.md](ESP32_S3_CONNECTIVITY.md)。

@@ -2,9 +2,37 @@
 
 <!-- Copyright (C) 2026 NOS contributors -->
 
-最新设备模型接入已完成下列冻结验证；底层继续使用原始 ESP-IDF 驱动和无线库。接口功能子集见 [设备模型接入](ESP32_S3_DEVICES.md)，无线/USB/外接外设仍未实板验收。
+最新连接能力已完成下列冻结专项验证；底层继续使用原始 ESP-IDF 驱动和无线库。接口见 [设备模型接入](ESP32_S3_DEVICES.md) 和 [GATT/Host/OTG](ESP32_S3_CONNECTIVITY.md)，无线/USB/外接外设仍未实板验收。
 
-## 设备管理接入的最终记录
+## GATT、USB Host 与自动 OTG 的最终记录
+
+被测源码为干净提交 `cc005897534b3265392b27d27d9af2dce1081890`。专项期间源码、文档和构建输入冻结，开始/结束身份完全相同；下面五个 runner 均实际退出 0。本文是测试结束后的文档补录，不改变原报告身份。
+
+| 范围 | 结果 | 报告 |
+| --- | --- | --- |
+| S3 固件与官方模拟器 | 三种构建/启动通过；runtime 19 个、ecosystem 20 个必需标记齐全；normal 启动及 main 返回通过 | `out/esp32s3/connectivity-validation/reports/1792877237620117254/results.json` |
+| USB Host/OTG 宿主 sanitizer | 实际 HID/BOT/OTG/DWC2 代码，50000 份坏描述符与取消、故障保留等边界通过 | `out/microkernel/host-usb-host/1792877237821945725/results.json` |
+| stock QEMU DWC2 | keyboard、keyboard_fs、mouse、storage 四项通过，含 BOT 读写/同步与热拔插 | `out/microkernel/qemu-usb-host/1792877236630039757/results.json` |
+| 可移植设备框架 | 生命周期、资源、总线契约、NOR、16550 sanitizer 通过 | `out/microkernel/host-drivers/1792877236999766536/results.json` |
+| 受管理设备服务 | 回滚、停止失败保留/重试、重入、四线程4000次调用通过 | `out/microkernel/host-managed-devices/1792877236813871097/results.json` |
+
+证据汇总与各报告哈希在 `out/esp32s3/connectivity-evidence.json`。S3 专项还运行可移植 GATT/USB/OTG 的 ASan/UBSan/LSan 检查、实际 IDF USB/OTG 适配代码的异步 URB/板级信号故障模型，以及实际 Wi-Fi 适配代码的清理失败模型。原始 SDK 全生态后端和32个入口、NOS 调度器、应用厂商头文件限制、组件管理器2.5.2/接口3均通过审计；SDK 原 `tasks.c` 未进入固件。
+
+官方 QEMU `esp-develop-9.2.2-20260417` 安装包 SHA-256 为 `0eecb2a34a5586c0e59110f77b9343b7b336e82fdb0e1a30e1dc1bab8a547e35`，实际二进制 SHA-256 为 `50813d894756c1448b8742e1d8db21e3cce0f4e85b56fe53e36760b941cb7f17`，已确认与包内文件相同。三次运行均为真实 `esp32s3` machine，全部必需标记及 main 返回后由 harness 主动终止，QEMU 均退出0；不是模拟开发板自行关机。
+
+完整生态镜像使用虚拟出厂校准 eFuse：BLK2 bit128=1，零差值选用 SDK 定义的参考校准值；普通/运行镜像保留原空白校准数据。SDK、模拟器源码未打补丁。此方法使生态镜像实际启动，也执行真实 NOS OTG 空闲管理任务的创建/轮询/停止及任务栈回收检查；不验证 ADC 采样。S3 原生页池调整为28页，为 SDK GATT/bond store 留出16 KiB SRAM，原有任务耗尽/回滚和40轮回收检查仍通过。
+
+| `cc00589` 固件 | BIN 字节数 | SHA-256 |
+| --- | ---: | --- |
+| normal | 171280 | `2474382f6e844d12f1f1e9386f07b5fedf1c03d2659142d6ca6b06c1091e140b` |
+| runtime regression | 309776 | `2d6dbabb8a610fe850bc3a765322d9bbb65c3545aacb512c47b4cbab784c4e39` |
+| ecosystem regression | 1198608 | `e87558e22a4d19a6d2abba91491ecf48ad6c58202db6f4fa18df28758f7344ec` |
+
+正常固件归档为 `out/esp32s3/artifacts/nos-esp32s3-cc00589-normal.zip`，SHA-256 为 `96b9bf7659c7026e7caacb0e58793863c1d84d00f9892672a3437382283bc752`。包含烧录 BIN/ELF、参数、构建身份、报告及逐文件校验，已核对 CRC、烧录引用和所有文件哈希；未把会修改 NVS/OTA 槽的回归镜像作为正常固件打包。
+
+**验证边界：** 官方 S3 machine 没有 RF 和 USB OTG 控制器模型，因此没有证明 GATT 配对互通、无线收发、S3 USB 枚举或真实供电切换。DWC2 项是宿主 C HCD 经 qtest 访问 stock raspi3b 模型，不是 S3 硬件或 NOS Raspberry Pi 启动。新增 BLE 服务端不包含 central/GATT client/OOB/HID/NLP 业务绑定；USB 类为 boot HID/MSC BOT，OTG 为经典 ID/VBUS。公共内核、架构和运行库源码本轮未修改，采用上述相关专项；没有重跑或宣称新快照通过完整89组/POSIX验收。
+
+## 设备管理接入的历史记录
 
 | 范围 | 冻结源码 | 结果与报告 |
 | --- | --- | --- |
@@ -26,7 +54,7 @@ S3 回归将 GPIO/UART、NVS 与 OTA 改为通过 NOS 服务请求执行；新�
 
 正常固件归档为 `out/esp32s3/artifacts/nos-esp32s3-4db0927-normal.zip`，SHA-256 `1d9dbbbdf343f4d814ba06234eaf1b6125a129a0a0836569b1de2c5743118026`。包含完整烧录参数、BIN/ELF、两次报告、实现一致性证明和逐文件校验；CRC 和每个文件内容已核对。正常镜像不启动无线或 USB，也不是会改写外设/NVS/OTA 槽的回归镜像。
 
-完整生态仍仅做链接审计，ADC 自校准未被 QEMU 模型支持。22 类后端是当前功能子集，不表示全部 SDK API、自动 OTG、BLE GATT、USB Host 类桥接、独立设备 IPC server、低功耗或实板 DMA/故障恢复已完成。
+该历史快照的完整生态仅做链接审计，ADC 自校准未被 QEMU 模型支持。当时22类后端不包含自动 OTG、BLE GATT 和 USB Host 类桥接；这些能力的后续实现与验证见本文最新记录。独立设备 IPC server、低功耗和实板 DMA/故障恢复仍未验收。
 
 ## 早期调度移植记录
 
