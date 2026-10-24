@@ -212,4 +212,4 @@ VFS 保留 203 项完整 generation 候选快照，分成最多 64 项的系统�
 
 [NLP v1 草案](protocols/nlp/README.md) 定义设备与能力、多载体封装、树形级联、授权会话和NK60模块接入。协议业务计划放在用户态；本次仅有文档、注册表、固定向量和host参考格式检查，未增加内核ABI，也未启用固件NLP、网络shell或OTA。
 
-NLP 已作为用户态可移植协议栈接入 NK60 复合 USB，提供设备/能力发现、键盘、日志、事务改键和灯光。通用 SDK 还提供受权会话、级联路由及标准能力后端；NK60 没有广告安全 Noise、OTA 或通用 nshell。实现/平台限制见 [NLP](protocols/nlp/implementation.md)。
+NLP 已作为用户态可移植协议栈接入 NK60 复合 USB，提供设备/能力发现、键盘、日志、事务改键、逐键灯光以及布局/存储/诊断。通用 SDK 还提供受权会话、级联路由及标准能力后端；NK60 没有广告安全 Noise、OTA 或通用 nshell。实现/平台限制见 [NLP](protocols/nlp/implementation.md)。

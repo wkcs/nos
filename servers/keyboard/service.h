@@ -3,6 +3,7 @@
 #define NOS_NK60_KEYBOARD_SERVICE_H
 
 #include "keyboard.h"
+#include "lighting.h"
 #include "link.h"
 #include "../../boards/nk60_v2/hardware.h"
 #include "../../boards/nk60_v2/nk60_usb.h"
@@ -27,6 +28,7 @@ struct nk60_service {
     struct nk60_hw hardware;
     struct nk60_usb usb;
     struct keyboard keyboard;
+    struct kb_lighting lighting;
     struct kb_config candidate;
     struct kb_store store;
     struct nk60_service_hooks hooks;
@@ -46,7 +48,7 @@ struct nk60_service {
     uint8_t dirty, save_requested, saving, progress_busy;
     uint8_t usb_ready, matrix_ready, flash_ready, rgb_ready;
     uint8_t configured, suspended, unlock_held, unlocked;
-    uint8_t rgb_pending, last_leds, wake_requested;
+    uint8_t rgb_pending, last_leds, wake_requested, settings_locked;
 };
 
 /* Returns zero when scan+USB are ready; optional flash/RGB failures remain
@@ -57,5 +59,6 @@ void nk60_service_step(struct nk60_service *);
 /* UART command parser can be driven independently of the endless task loop. */
 void nk60_service_command(struct nk60_service *, const char *line);
 int nk60_service_commit_wire(struct nk60_service *, const uint8_t *, int persist);
+int nk60_service_changed(struct nk60_service *);
 void nos_keyboard_service(uintptr_t unused);
 #endif

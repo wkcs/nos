@@ -22,9 +22,9 @@ struct keyboard {
     struct kb_key_state key[KB_KEYS];
     struct kb_report reports[KB_REPORT_QUEUE], current;
     uint32_t last_ms, sequence, overflows, local_events;
-    uint32_t macro_changed_ms;
+    uint32_t macro_changed_ms, caps_word_ms;
     uint8_t head, count, toggled_layers, oneshot, blocked, clock_valid;
-    uint8_t macro_running, macro_index, macro_step, macro_on;
+    uint8_t macro_running, macro_index, macro_step, macro_on, caps_word;
     uint16_t macro_usage;
 };
 int kb_init(struct keyboard *keyboard, const struct kb_config *config);

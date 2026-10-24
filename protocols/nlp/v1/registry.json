@@ -318,12 +318,19 @@
       "name": "lighting",
       "type_uuid": "9607c1fb-1ae8-5c37-859d-19a304ed50a8",
       "major": 1,
-      "minor": 0,
-      "definition": "draft-defined",
+      "minor": 1,
+      "definition": "experimental-implemented",
       "operations": {
         "GET_INFO": 1,
         "SET": 2,
-        "GET_STATE": 3
+        "GET_STATE": 3,
+        "GET_SETTINGS": 4,
+        "SET_SETTINGS": 5,
+        "READ_LEDS": 6,
+        "BEGIN_FRAME": 7,
+        "WRITE_FRAME": 8,
+        "COMMIT_FRAME": 9,
+        "ABORT_FRAME": 10
       }
     },
     {
@@ -384,6 +391,19 @@
         "GET_INFO": 1,
         "GET_TIME": 2,
         "SYNC_SAMPLE": 3
+      }
+    },
+    {
+      "name": "keyboard_control",
+      "type_uuid": "df810977-303a-525c-9806-bf7735327d3f",
+      "major": 1,
+      "minor": 0,
+      "definition": "experimental-implemented",
+      "operations": {
+        "GET_INFO": 1,
+        "GET_LAYOUT": 2,
+        "GET_STORAGE": 3,
+        "GET_DIAGNOSTICS": 4
       }
     }
   ],
@@ -571,7 +591,8 @@
       "keyboard",
       "log",
       "keymap",
-      "lighting"
+      "lighting",
+      "keyboard_control"
     ],
     "host_crypto": "OpenSSL provider and independent Python cryptography client",
     "reserved_or_platform_pending": [

@@ -17,6 +17,7 @@ import sys
 import time
 import uuid
 import nlp_codec as wire
+import nlp_keyboard as keyboard
 
 
 class Link:
@@ -675,6 +676,7 @@ def main():
             "config-get",
             "config-put",
             "shell",
+            *sorted(keyboard.READ_COMMANDS | keyboard.WRITE_COMMANDS),
         ],
     )
     parser.add_argument(
@@ -682,6 +684,13 @@ def main():
         dest="terminal_command",
         help="terminal input; include exit if the remote shell should finish",
     )
+    parser.add_argument("--mode", choices=keyboard.MODES)
+    parser.add_argument("--brightness", type=int)
+    parser.add_argument("--rgb", type=lambda text: [int(v) for v in text.split(",")])
+    parser.add_argument("--speed", type=int)
+    parser.add_argument("--idle-seconds", type=int)
+    parser.add_argument("--led-budget", type=int)
+    parser.add_argument("--indicators", type=int, choices=[0, 1])
     parser.add_argument("--file", type=Path, help="canonical keymap input/output file")
     parser.add_argument(
         "--save", action="store_true", help="request durable keymap save, not just application"
@@ -690,7 +699,7 @@ def main():
         "--wait-unlock",
         type=int,
         default=0,
-        help="config-put: keep this connection for up to N seconds awaiting physical unlock",
+        help="write commands: keep this connection for up to N seconds awaiting physical unlock",
     )
     parser.add_argument("--count", type=int, default=10)
     args = parser.parse_args()
@@ -702,8 +711,20 @@ def main():
         )
     if not 1 <= args.count <= 10000:
         parser.error("count must be in 1..10000")
-    if not 0 <= args.wait_unlock <= 120 or (args.wait_unlock and args.command != "config-put"):
-        parser.error("--wait-unlock is config-put only and must be in 0..120 seconds")
+    if not 0 <= args.wait_unlock <= 120 or (
+        args.wait_unlock and args.command not in keyboard.WRITE_COMMANDS | {"config-put"}
+    ):
+        parser.error("--wait-unlock requires a write command and must be in 0..120 seconds")
+    for value, low, high, name in [
+        (args.brightness, 0, 255, "brightness"),
+        (args.speed, 1, 255, "speed"),
+        (args.idle_seconds, 0, 3600, "idle-seconds"),
+        (args.led_budget, 100, 350, "led-budget"),
+    ]:
+        if value is not None and not low <= value <= high:
+            parser.error(f"{name} must be in {low}..{high}")
+    if args.rgb is not None and (len(args.rgb) != 3 or any(not 0 <= v <= 255 for v in args.rgb)):
+        parser.error("--rgb must be three comma-separated bytes")
     uid = None
     if args.identity:
         if args.identity.exists():
@@ -749,24 +770,36 @@ def main():
             )["capabilities"]
         }
         name = (
-            "shell"
-            if args.command == "shell"
+            "keyboard_control"
+            if args.command in keyboard.PRODUCT_COMMANDS
             else (
-                "keymap"
-                if args.command.startswith("config-")
-                else "log" if args.command == "logs" else "keyboard"
+                "lighting"
+                if args.command in keyboard.READ_COMMANDS | keyboard.WRITE_COMMANDS
+                else (
+                    "shell"
+                    if args.command == "shell"
+                    else (
+                        "keymap"
+                        if args.command.startswith("config-")
+                        else "log" if args.command == "logs" else "keyboard"
+                    )
+                )
             )
         )
         cap = next((c for c in caps if c["type"] == types[name]), None)
         if cap is None:
             raise ValueError(f"{name} capability not advertised")
         permissions = (
-            32
-            if name == "shell"
+            9
+            if args.command in keyboard.WRITE_COMMANDS | {"config-put"}
             else (
-                (9 if args.command == "config-put" else 1)
-                if name == "keymap"
-                else 16 if name == "log" else 2
+                32
+                if name == "shell"
+                else (
+                    16
+                    if name == "log"
+                    else 1 if name in ("keymap", "lighting", "keyboard_control") else 2
+                )
             )
         )
         deadline = time.monotonic() + args.wait_unlock
@@ -787,6 +820,9 @@ def main():
                 retry_at = min(deadline, time.monotonic() + 0.25)
                 while time.monotonic() < retry_at:
                     client.pump()
+        if args.command in keyboard.READ_COMMANDS | keyboard.WRITE_COMMANDS:
+            print(json.dumps(keyboard.command(client, session, args), indent=2))
+            return
         if name == "shell":
             response = client.call(session, 1, struct.pack("<HHHH", 80, 24, 0, 5) + b"xterm")
             terminal_id = struct.unpack_from("<I", response)[0]

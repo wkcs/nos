@@ -124,3 +124,25 @@ VIA 官方 [Configuring QMK][V2] 当前说明：协议 12 及以前使用旧 `RG
 [N2]: https://github.com/wkcs/nos/blob/4c31189ffe24278449a12d7fd1dad11b03c98f09/drivers/misc/nk60_v2_led.c
 [N3]: https://github.com/wkcs/nos/blob/4c31189ffe24278449a12d7fd1dad11b03c98f09/app/display/nk60_display_server.c
 [N4]: https://github.com/wkcs/nos/blob/4c31189ffe24278449a12d7fd1dad11b03c98f09/drivers/spi/nk60_v2-w25qxx.c
+
+## 8. 逐键RGB与产品能力补全
+
+本次继续读取上述固定提交的QMK RGB Matrix/Caps Word/Grave Escape、ZMK hold-tap与Vial运行时配置源码。取舍是：先让61颗LED可独立配置并可靠保存，提供标准60%物理布局、灯效/休眠/预算、Grave Escape与Caps Word，再预留模块化扩展。QMK的可配置动效、指示覆盖和timeout用于功能参考；Vial的动态配置及物理解锁用于授权交互参考；ZMK明确区分hold-preferred/tap-preferred/balanced，NOS保留当前确定语义，未借相同名字冒称实现所有策略。实现独立编写，不复制这些项目固件代码。
+
+| 对照项 | 本次实现 | 保留后续 |
+| --- | --- | --- |
+| QMK逐键RGB | 61个独立颜色、位置波浪、呼吸/彩虹/响应、速度/锁灯/限流/睡眠、共同持久化 | 更多动画、可视化编辑器，不支持任意动画脚本 |
+| QMK 60%使用习惯 | Grave Escape、Fn+Caps Word及已有层/媒体/宏 | combo、tap dance、leader、mouse keys需独立仲裁 |
+| Vial动态设置与安全 | NLP独立客户端、布局预览数据、物理解锁绑定当前peer、整帧原子提交 | 不兼容Vial/VIA GUI/Raw HID，兼容层需独立验收 |
+| ZMK行为与扩展 | 保持输入/灯光/载体/能力边界，未知模块不自动注入 | 多tap-hold策略、独立显示/旋钮、无线和分体需要具体模块与协议profile |
+| SPI NOR | 现有双槽版本化扩展、旧API保留、未知schema保护、分区可查询 | 资源/多profile仓库须显式分区迁移，不自动格式化历史内容 |
+
+详细接口与扩展完成条件见 [NK60能力](NK60_CAPABILITIES.md)。以下为本次实际取回的固定源码摘要：
+
+| 来源 | 内容SHA256 |
+| --- | --- |
+| [qmk_rgb](https://raw.githubusercontent.com/qmk/qmk_firmware/180f394b489c238cb231c2bf8b080262155e03c0/docs/features/rgb_matrix.md) | `921a7d4e8c2b2a282b2f76a4592ec6a282abb9b07044264adc43f19fbd943160` |
+| [qmk_caps](https://raw.githubusercontent.com/qmk/qmk_firmware/180f394b489c238cb231c2bf8b080262155e03c0/docs/features/caps_word.md) | `4efccb00b1f49166e3ae8cf6ecf6971d88c677f61f7269ff1b35473ebef528f2` |
+| [qmk_grave](https://raw.githubusercontent.com/qmk/qmk_firmware/180f394b489c238cb231c2bf8b080262155e03c0/docs/features/grave_esc.md) | `f43a22af191473350cab893d6c011cc0fe337f398e59810773bc892d16599c7b` |
+| [zmk_holdtap](https://raw.githubusercontent.com/zmkfirmware/zmk/4dd95d7840eb3d5a3f59bb29fbf1ab054715ef85/docs/docs/keymaps/behaviors/hold-tap.mdx) | `7e5bdaba59800fad7564fb023645e3eb42b2a31a1814fabfb8dd75f21d6250e2` |
+| [vial](https://raw.githubusercontent.com/vial-kb/vial-qmk/dd43959ae5c08d8a28d38a1acf7b04e86b14a344/quantum/vial.c) | `713c5a9ba680a3bd39f25fea00cbff66d9506ef8951be33b36aed50b0cc4b52b` |

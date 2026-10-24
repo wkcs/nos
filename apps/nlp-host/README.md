@@ -67,3 +67,11 @@ for firmware/display/radio are available in the C SDK; this CLI does not provide
 a firmware flasher, display renderer or radio provisioning UI.
 
 Validation and exact platform limits: [NLP implementation](../../docs/protocols/nlp/implementation.md).
+
+NK60 product commands `info`, `layout`, `storage`, `health` read the typed
+keyboard_control capability. `lighting`, `lighting-set`, `lighting-policy`,
+`leds-get`, `leds-put` configure persistent per-key RGB. `leds-put --file FILE`
+requires exactly61 RGB byte triples and commits a complete frame atomically;
+`--wait-unlock 60` keeps the same peer connected for the physical chord.
+Examples, power limits and expansion boundaries are in
+[NK60 capabilities](../../docs/NK60_CAPABILITIES.md).

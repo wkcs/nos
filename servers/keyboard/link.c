@@ -69,7 +69,6 @@ int nk60_link_init(struct nk60_service *s)
         error = nk60_link_capabilities(s);
     if (error)
         return error;
-    memset(s->link.static_rgb, 255, 3);
     nlp_stream_init(&s->link.stream, NLP_FRAMING_TCP);
     s->link.ready = 1;
     nlp_log_write(&s->link.log, 2, 1, "NK60 NLP physical USB ready", 26, 0);
@@ -145,5 +144,6 @@ void nk60_link_step(struct nk60_service *s)
                         nlp_get16(s->keyboard.current.consumer), s->monotonic_us);
     nlp_keyboard_poll(&l->keyboard);
     nlp_log_poll(&l->log);
+    nk60_light_poll(s);
     flush(s);
 }

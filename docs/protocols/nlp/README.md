@@ -18,7 +18,7 @@ NLP 是运行在用户态的分布式软总线：同一设备可以通过 USB、
 | [机器可读注册表](../../../protocols/nlp/v1/registry.json) | 版本、字段、类型 UUID、操作码及资源上限 |
 | [协议向量](../../../protocols/nlp/v1/vectors.json) | 固定报文、CRC 与 UART/TCP 封装样例 |
 
-注册表位于仓库根目录 `protocols/nlp/v1/`，上表的相对链接按本目录定位。`servers/nlp/` 是有界、可移植 C 协议栈，`include/nos/nlp/` 是公共接口；`scripts/nlp_host.py` 是独立 Python 客户端，使用 `nlp_crypto.py` 完成认证加密。`scripts/nlp_codec.py` 仍只负责明文格式和分帧。NK60 已通过复合 USB 暴露设备、键盘、日志、改键和灯光能力；终端、固件、显示与无线能力由实际平台后端决定是否注册，见 [实现状态](implementation.md)。
+注册表位于仓库根目录 `protocols/nlp/v1/`，上表的相对链接按本目录定位。`servers/nlp/` 是有界、可移植 C 协议栈，`include/nos/nlp/` 是公共接口；`scripts/nlp_host.py` 是独立 Python 客户端，使用 `nlp_crypto.py` 完成认证加密。`scripts/nlp_codec.py` 仍只负责明文格式和分帧。NK60 已通过复合 USB 暴露设备、键盘、日志、改键、逐键灯光及产品布局/存储/诊断能力；终端、固件、显示与无线能力由实际平台后端决定是否注册，见 [实现状态](implementation.md)。
 
 ## 1. 设备与能力
 

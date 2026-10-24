@@ -1,6 +1,6 @@
 # nk60_v2 键盘引擎
 
-便携引擎位于 `servers/keyboard/`，运行在 NOS 键盘用户任务；STM32 驱动负责扫描、USB、灯光和外部 NOR。引擎不访问 MMIO，不分配动态内存。当前 `sizeof(struct keyboard)=2740` 字节，其中包含 1056 字节配置、61 个按键状态和 8 份输出快照。主机测试验证软件状态机；没有实板，不能据此声称电气时序、USB 枚举或灯光已经实测。
+便携引擎位于 `servers/keyboard/`，运行在 NOS 键盘用户任务；STM32 驱动负责扫描、USB、灯光和外部 NOR。引擎不访问 MMIO，不分配动态内存。当前 `sizeof(struct keyboard)=2748` 字节，其中包含 1056 字节配置、61 个按键状态和 8 份输出快照。主机测试验证软件状态机；没有实板，不能据此声称电气时序、USB 枚举或灯光已经实测。
 
 ## 物理布局与默认映射
 
@@ -16,7 +16,7 @@ LCtrl LGUI LAlt Space RAlt PN RCtrl FN
 
 扫描硬件是 72 位 HC595 单低电平选择器和一个 PB14 回读引脚，61 个位置独立选通，不是矩形行列矩阵。因此本引擎没有套用矩形矩阵的鬼键抑制：这种算法会错误丢弃正常和弦。硬件驱动应检测扫描错误并上报，不能把 I/O 故障当作有效键位。历史 64 次循环访问 61 项映射的越界已消除。
 
-基础层 0、PN 层 1、FN 层 2、用户层 3，激活时优先解析编号最高层。PN/FN 用按住切层，FN 优先级与历史实现一致。两层保留 `Esc→Grave`、数字行 F1–F12/Delete、W→Up、A/S/D→Left/Down/Right、反斜线→Insert、H/J/K→Print/Scroll/Pause、Quote→End。FN 保留逗号/句号→PageUp/PageDown、斜线→Up、右 Alt/PN/右 Ctrl→Left/Down/Right；新增 FN+B/N/M→音量减/音量加/静音。PN+N 切换灯光模式。未定义的覆盖层位置透传到低层，便于正常打字。
+基础层 0、PN 层 1、FN 层 2、用户层 3，激活时优先解析编号最高层。PN/FN 用按住切层，FN 优先级与历史实现一致。两层保留 `Esc→Grave`、数字行 F1–F12/Delete、W→Up、A/S/D→Left/Down/Right、反斜线→Insert、H/J/K→Print/Scroll/Pause、Quote→End。FN 保留逗号/句号→PageUp/PageDown、斜线→Up、右 Alt/PN/右 Ctrl→Left/Down/Right；新增 FN+B/N/M→音量减/音量加/静音。默认Esc现在为Grave Escape，Shift/GUI+Esc发送Grave；Fn+Caps切换Caps Word，详细行为见 [NK60能力](NK60_CAPABILITIES.md)。PN+N 切换灯光模式。未定义的覆盖层位置透传到低层，便于正常打字。
 
 ## 行为与边界
 
@@ -29,20 +29,22 @@ LCtrl LGUI LAlt Space RAlt PN RCtrl FN
 - Boot 6KRO 为标准 8 字节，超过六个不同普通键时六槽全部发送 ErrorRollOver，恢复到六键以内后正常恢复；NKRO 为 1 字节修饰键和 32 字节 usage 位图。E0–E7 只进入修饰字节，位图对应位置保持 0。消费者报告独立 2 字节小端。报告 ID 和 USB 协议切换由 USB 驱动负责。
 - 8 项快照 FIFO 保留快速敲击和宏的 down/up 边沿。调用方只有在 USB 接受整份快照后调用 `kb_report_pop()`。溢出返回 `-KB_ENOSPC`，清空逻辑状态并排入全释放报告，直到物理所有键释放才恢复，避免卡键。服务必须及时消费队列。
 - `kb_reconfigure()` 先验证配置，再一次性应用并发送全释放，等待物理全释放才接收下一次按键。无效配置不改变当前状态。`kb_release_all()` 用于断连/复位。
-- `KB_LOCAL` 事件位为 `1u << enum kb_local_action`；引擎同时更新 `config.rgb_mode`（0–2）、`brightness`（0–255、步长 16）或 `nkro`。服务通过 `kb_take_local_events()` 读取并清零事件，将新值应用到硬件并标记配置待保存。
+- `KB_LOCAL`中Caps Word只修改运行时状态，不产生配置保存事件；其余事件位为 `1u << enum kb_local_action`；引擎同时更新 `config.rgb_mode`（0–7）、`brightness`（0–255、步长 16）或 `nkro`。服务通过 `kb_take_local_events()` 读取并清零事件，将新值应用到硬件并标记配置待保存。
 
 ## 配置与掉电保存
 
-`kb_config_encode/decode()` 使用明确的小端 wire 格式，版本 1 载荷固定 1056 字节；不序列化 C 指针、结构 padding 或运行时状态。验证动作类型、参数、层/宏边界、时间范围和保留字段。解码失败保留调用方原配置。
+`kb_config_encode/decode()` 使用明确的小端 wire 格式，canonical载荷固定 1056 字节；不序列化 C 指针、结构 padding 或运行时状态。验证动作类型、参数、层/宏边界、时间范围和保留字段。解码失败保留调用方原配置。
 
-`kb_config_save/load()` 使用两个 4 KiB 对齐 NOR 扇区，每个记录 1080 字节：magic、格式版本、长度、32 位 generation、CRC32、保留字段、提交字和配置载荷。CRC 覆盖版本/长度/generation/保留字段/载荷（CRC 和提交字按零计算）。保存仅擦除较旧或无效槽，先写头和载荷，分块回读，再最后写提交字。读回失败返回错误；若失败发生在提交后的最终回读，新记录可能已经有效，下一次加载会选择它。读取介质失败时保存直接失败，避免误擦仍有效的槽。
+`kb_config_save/load()` 使用两个 4 KiB 对齐 NOR 扇区，原v1记录1080字节，扩展v2记录为1080+最多256字节：magic、格式版本、长度、32 位 generation、CRC32、保留字段、提交字和配置载荷及可选扩展。CRC 覆盖版本/长度/generation/保留字段/载荷（CRC 和提交字按零计算）。保存仅擦除较旧或无效槽，先写头和载荷，分块回读，再最后写提交字。读回失败返回错误；若失败发生在提交后的最终回读，新记录可能已经有效，下一次加载会选择它。读取介质失败时保存直接失败，避免误擦仍有效的槽。
 
 加载同时检查提交、CRC 和配置语义，回退到另一有效槽；使用串行序号比较处理 generation 回绕。无有效记录返回 `-KB_EIO`，调用方可以明确选择默认配置。回调必须返回 0 才代表完整成功；写回调必须自行处理 NOR 页边界且不得隐式擦除。
 
-为减少闪存磨损，服务应合并修改并至少延迟 60 秒，等所有键释放且报告队列排空后保存；NOR 擦写期间由板级进度钩子维持 USB 控制处理。推荐在未连接/挂起时保存，实际策略由服务实现。引擎没有写频率循环或自动隐式保存。主机 GCC `-O2 -fstack-usage` 测得保存调用链约 1.4 KiB（不含硬件回调），启动加载约 2.3 KiB；目标工具链和服务栈仍须独立核对。
+为减少闪存磨损，服务应合并修改并至少延迟 60 秒，等所有键释放且报告队列排空后保存；NOR 擦写期间由板级进度钩子维持 USB 控制处理。推荐在未连接/挂起时保存，实际策略由服务实现。引擎没有写频率循环或自动隐式保存。固件验收按实际Cortex-M编译选项统计已知核心加载/保存链的栈帧，并保留4KiB用户栈余量；该统计不等同所有间接硬件回调的最坏链路或实板高水位。
 
 ## 自动化验证与后续范围
 
 运行 `python3 tests/host_keyboard.py`。ASan、UBSan、LeakSanitizer 验证真实引擎源文件：抖动/计时回绕、层变更释放、透明层、切换层、6KRO 溢出恢复、重复 usage、修饰位图、tap-hold 和一次性修饰、消费者优先级、宏背压、报告队列故障收敛、重映射原子性、CRC/语义损坏回退、generation 回绕、每个存储回调故障、1080 个逐字节断电边界，以及固定种子 100000 次状态扫描。报告记录编译器、必需标记、退出码和输入源码 SHA256。
 
 该接口支持静态/维护命令重映射，不宣称兼容 VIA、Vial、QMK Raw HID 或其配置协议。暂未实现组合键、自动鼠标键、Unicode 输入、动态宏录制、无线/电池管理；组合键需要专门的延迟与冲突规则后再实现，避免影响普通打字。实板后续必须核对 HC595 位置/时序、USB boot/报告协议切换、LED 输出、NOR 掉电恢复及 RGB 电气效果。
+
+新增逐键灯光、224字节持久参数、布局和扩展协议见 [NK60能力](NK60_CAPABILITIES.md)。引擎测试还覆盖Grave Escape同时修饰、Caps Word结束/超时、61键几何、灯效/限流/休眠，以及扩展记录1304个逐字节断电边界和旧API保留扩展。

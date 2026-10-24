@@ -8,50 +8,105 @@ import subprocess
 import time
 
 ROOT = Path(__file__).resolve().parents[1]
-INPUTS = ['tests/host_keyboard.c', 'tests/host_keyboard.py'] + [
-    'servers/keyboard/' + name for name in
-    ['keyboard.c', 'keyboard.h', 'keymap.c', 'keycodes.h', 'config.c', 'config.h']]
-MARKERS = ['keyboard_symmetric_debounce_wrap', 'keyboard_layer_binding_transparent_toggle',
-           'keyboard_rollover_duplicate_modifier', 'keyboard_tap_hold_oneshot',
-           'keyboard_consumer_macro_backpressure_local', 'keyboard_queue_fail_closed_atomic_remap',
-           'keyboard_config_crc_dual_slot_fault_atomicity', 'keyboard_stateful_fuzz_100000',
-           'keyboard_all']
+INPUTS = ["tests/host_keyboard.c", "tests/host_keyboard_features.c", "tests/host_keyboard.py"] + [
+    "servers/keyboard/" + name
+    for name in [
+        "lighting.c",
+        "lighting.h",
+        "layout.c",
+        "layout.h",
+        "keyboard.c",
+        "keyboard.h",
+        "keymap.c",
+        "keycodes.h",
+        "config.c",
+        "config.h",
+    ]
+]
+MARKERS = [
+    "keyboard_ansi60_geometry_61_unique_per_key_leds",
+    "keyboard_per_key_effects_current_limit_idle_suspend_codec_and_wrap",
+    "keyboard_grave_escape_simultaneous_modifiers_caps_word_and_timeout",
+    "keyboard_atomic_extended_preferences_legacy_preservation_and_every_byte_power_cut",
+    "keyboard_symmetric_debounce_wrap",
+    "keyboard_layer_binding_transparent_toggle",
+    "keyboard_rollover_duplicate_modifier",
+    "keyboard_tap_hold_oneshot",
+    "keyboard_consumer_macro_backpressure_local",
+    "keyboard_queue_fail_closed_atomic_remap",
+    "keyboard_config_crc_dual_slot_fault_atomicity",
+    "keyboard_stateful_fuzz_100000",
+    "keyboard_all",
+]
 
 
 def main():
-    out = ROOT / 'out/microkernel/host-keyboard' / str(time.time_ns())
+    out = ROOT / "out/microkernel/host-keyboard" / str(time.time_ns())
     out.mkdir(parents=True)
-    command = ['gcc', '-std=c11', '-Wall', '-Wextra', '-Werror', '-O1', '-g',
-               '-fsanitize=address,undefined', '-fno-omit-frame-pointer', '-fno-pie', '-no-pie',
-               'tests/host_keyboard.c', 'servers/keyboard/keyboard.c',
-               'servers/keyboard/keymap.c', 'servers/keyboard/config.c', '-o', str(out / 'keyboard')]
-    with (out / 'build.log').open('w') as log:
+    command = [
+        "gcc",
+        "-std=c11",
+        "-Wall",
+        "-Wextra",
+        "-Werror",
+        "-O1",
+        "-g",
+        "-fsanitize=address,undefined",
+        "-fno-omit-frame-pointer",
+        "-fno-pie",
+        "-no-pie",
+        "tests/host_keyboard.c",
+        "tests/host_keyboard_features.c",
+        "servers/keyboard/lighting.c",
+        "servers/keyboard/layout.c",
+        "servers/keyboard/keyboard.c",
+        "servers/keyboard/keymap.c",
+        "servers/keyboard/config.c",
+        "-o",
+        str(out / "keyboard"),
+    ]
+    with (out / "build.log").open("w") as log:
         build = subprocess.run(command, cwd=ROOT, stdout=log, stderr=subprocess.STDOUT)
     code = None
     if build.returncode == 0:
         env = os.environ.copy()
-        env.update(ASAN_OPTIONS='detect_leaks=1:abort_on_error=1',
-                   UBSAN_OPTIONS='halt_on_error=1:print_stacktrace=1')
-        with (out / 'host.log').open('w') as log:
+        env.update(
+            ASAN_OPTIONS="detect_leaks=1:abort_on_error=1",
+            UBSAN_OPTIONS="halt_on_error=1:print_stacktrace=1",
+        )
+        with (out / "host.log").open("w") as log:
             try:
-                code = subprocess.run([str(out / 'keyboard')], env=env, cwd=ROOT,
-                                      stdout=log, stderr=subprocess.STDOUT, timeout=90).returncode
+                code = subprocess.run(
+                    [str(out / "keyboard")],
+                    env=env,
+                    cwd=ROOT,
+                    stdout=log,
+                    stderr=subprocess.STDOUT,
+                    timeout=90,
+                ).returncode
             except subprocess.TimeoutExpired:
                 pass
-    text = (out / 'host.log').read_text() if (out / 'host.log').exists() else ''
-    result = {'passed': build.returncode == 0 and code == 0 and 'FAIL' not in text and
-              all('PASS ' + marker in text for marker in MARKERS),
-              'scope': 'real portable keyboard engine and fake NOR faults; no GPIO, USB electrical or real-board verification',
-              'build_returncode': build.returncode, 'returncode': code,
-              'required_markers': MARKERS, 'iterations': 100000, 'fuzz_seed': '0x1badb002',
-              'sanitizers': ['address', 'undefined'],
-              'compiler': subprocess.check_output(['gcc', '--version'], text=True).splitlines()[0],
-              'source_sha256': {p: hashlib.sha256((ROOT / p).read_bytes()).hexdigest() for p in INPUTS}}
-    (out / 'results.json').write_text(json.dumps(result, indent=2) + '\n')
-    print(text if not build.returncode else (out / 'build.log').read_text())
-    print(out / 'results.json')
-    return 0 if result['passed'] else 1
+    text = (out / "host.log").read_text() if (out / "host.log").exists() else ""
+    result = {
+        "passed": build.returncode == 0
+        and code == 0
+        and "FAIL" not in text
+        and all("PASS " + marker in text for marker in MARKERS),
+        "scope": "real portable keyboard engine and fake NOR faults; no GPIO, USB electrical or real-board verification",
+        "build_returncode": build.returncode,
+        "returncode": code,
+        "required_markers": MARKERS,
+        "iterations": 100000,
+        "fuzz_seed": "0x1badb002",
+        "sanitizers": ["address", "undefined"],
+        "compiler": subprocess.check_output(["gcc", "--version"], text=True).splitlines()[0],
+        "source_sha256": {p: hashlib.sha256((ROOT / p).read_bytes()).hexdigest() for p in INPUTS},
+    }
+    (out / "results.json").write_text(json.dumps(result, indent=2) + "\n")
+    print(text if not build.returncode else (out / "build.log").read_text())
+    print(out / "results.json")
+    return 0 if result["passed"] else 1
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     raise SystemExit(main())

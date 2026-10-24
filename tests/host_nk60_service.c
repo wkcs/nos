@@ -1,5 +1,13 @@
 /* Copyright (C) 2026 NOS contributors. */
 #include <assert.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <netinet/in.h>
+#include <poll.h>
+#include <signal.h>
+#include <stdlib.h>
+#include <sys/socket.h>
+#include <unistd.h>
 #include <stdio.h>
 #include <string.h>
 #include "../servers/keyboard/service.h"
@@ -622,14 +630,15 @@ static unsigned link_rpc(struct link_client *c, unsigned op, const uint8_t *body
     assert(c->ready && c->response_size >= 8 && nlp_get32(c->response) == c->request);
     return nlp_get16(c->response + 4);
 }
-static void open_keymap(uint32_t proposed, unsigned permissions, unsigned expected_status)
+static void open_cap(uint32_t proposed, uint16_t cap, const uint8_t type[16], uint16_t minor,
+                     unsigned permissions, unsigned expected_status)
 {
-    static const uint8_t type[16] = NLP_UUID_KEYMAP;
     uint8_t body[52] = {0};
     nlp_put32(body, proposed);
-    nlp_put16(body + 4, 3);
+    nlp_put16(body + 4, cap);
     memcpy(body + 8, type, 16);
     nlp_put16(body + 24, 1);
+    nlp_put16(body + 26, minor);
     nlp_put32(body + 36, permissions);
     nlp_put16(body + 40, 128);
     body[42] = 1;
@@ -638,8 +647,116 @@ static void open_keymap(uint32_t proposed, unsigned permissions, unsigned expect
     nlp_put32(body + 48, 15000);
     assert(link_rpc(&link_clients[0], 14, body, 52) == expected_status);
     if (!expected_status)
-        client_start(&link_clients[1], nlp_get32(link_clients[0].response + 8), 3,
+        client_start(&link_clients[1], nlp_get32(link_clients[0].response + 8), cap,
                      service.link.endpoint.peer_node);
+}
+static void open_keymap(uint32_t proposed, unsigned permissions, unsigned expected_status)
+{
+    static const uint8_t type[16] = NLP_UUID_KEYMAP;
+    open_cap(proposed, 3, type, 0, permissions, expected_status);
+}
+static void close_cap(void)
+{
+    uint8_t id[4];
+    nlp_put32(id, link_clients[1].session.id);
+    assert(!link_rpc(&link_clients[0], NLP_OP_CLOSE, id, sizeof(id)));
+    nlp_session_close(&link_clients[1].session, NLP_DISCONNECTED);
+}
+static void test_link_product(void)
+{
+    static const uint8_t product[16] = NLP_UUID_KEYBOARD_CONTROL, light[16] = NLP_UUID_LIGHTING;
+    uint8_t body[120] = {0};
+    close_cap();
+    open_cap(4, 5, product, 0, 1, 0);
+    assert(!link_rpc(&link_clients[1], NLP_KEYBOARD_CONTROL_GET_INFO, NULL, 0));
+    assert(nlp_get16(link_clients[1].response + 10) == 61 &&
+           nlp_get16(link_clients[1].response + 12) == 61);
+    uint64_t seen = 0;
+    unsigned first = 0;
+    do {
+        nlp_put16(body, first);
+        nlp_put16(body + 2, 20);
+        nlp_put32(body + 4, 0);
+        assert(!link_rpc(&link_clients[1], NLP_KEYBOARD_CONTROL_GET_LAYOUT, body, 8));
+        const uint8_t *p = link_clients[1].response + 8;
+        unsigned count = nlp_get16(p + 2);
+        assert(nlp_get16(p) == first && nlp_get16(p + 6) == 61 && count);
+        for (unsigned i = 0; i < count; ++i) {
+            const uint8_t *entry = p + 8 + i * 12;
+            unsigned id = nlp_get16(entry);
+            assert(id == first + i && nlp_get16(entry + 2) == id);
+            assert(!(seen & (UINT64_C(1) << id)));
+            seen |= UINT64_C(1) << id;
+        }
+        first = nlp_get16(p + 4);
+    } while (first);
+    assert(seen == (UINT64_C(1) << 61) - 1);
+    assert(!link_rpc(&link_clients[1], NLP_KEYBOARD_CONTROL_GET_STORAGE, NULL, 0));
+    const uint8_t *p = link_clients[1].response + 8;
+    assert(nlp_get32(p) == sizeof(m.flash) && p[8] == 3);
+    assert(nlp_get32(p + 28) == sizeof(m.flash) - 16384 && nlp_get32(p + 32) == 8192);
+    assert(nlp_get32(p + 40) == sizeof(m.flash) - 8192 && nlp_get32(p + 44) == 8192);
+    assert(!link_rpc(&link_clients[1], NLP_KEYBOARD_CONTROL_GET_DIAGNOSTICS, NULL, 0));
+    assert(link_clients[1].response[54] == KB_LIGHT_CHANNEL_LIMIT);
+    assert(link_rpc(&link_clients[1], 99, NULL, 0) == NLP_UNSUPPORTED);
+    close_cap();
+    open_cap(5, 4, light, 1, 9, 0);
+    assert(!link_rpc(&link_clients[1], NLP_LIGHTING_GET_INFO, NULL, 0));
+    assert(link_clients[1].response[13] == 255);
+    uint32_t generation = service.edits;
+    nlp_put32(body, generation);
+    assert(!link_rpc(&link_clients[1], NLP_LIGHTING_BEGIN_FRAME, body, 4));
+    uint64_t tx = nlp_get64(link_clients[1].response + 8);
+    memset(body, 0, 16);
+    nlp_put64(body, tx);
+    nlp_put32(body + 8, generation);
+    assert(link_rpc(&link_clients[1], NLP_LIGHTING_COMMIT_FRAME, body, 16) == NLP_BUSY);
+    assert(service.edits == generation);
+    for (unsigned at = 0; at < 61;) {
+        unsigned count = 61 - at;
+        if (count > 32)
+            count = 32;
+        nlp_put64(body, tx);
+        nlp_put16(body + 8, at);
+        nlp_put16(body + 10, count);
+        for (unsigned i = 0; i < count; ++i) {
+            body[12 + i * 3] = at + i;
+            body[13 + i * 3] = 255 - at - i;
+            body[14 + i * 3] = 17;
+        }
+        assert(!link_rpc(&link_clients[1], NLP_LIGHTING_WRITE_FRAME, body, 12 + count * 3));
+        assert(!link_rpc(&link_clients[1], NLP_LIGHTING_WRITE_FRAME, body, 12 + count * 3));
+        body[12] ^= 1;
+        assert(link_rpc(&link_clients[1], NLP_LIGHTING_WRITE_FRAME, body, 12 + count * 3) ==
+               NLP_CONFLICT);
+        at += count;
+    }
+    memset(body, 0, 16);
+    nlp_put64(body, tx);
+    nlp_put32(body + 8, generation);
+    assert(!link_rpc(&link_clients[1], NLP_LIGHTING_COMMIT_FRAME, body, 16));
+    assert(service.edits == generation + 1 && service.keyboard.config.rgb_mode == KB_LIGHT_CUSTOM);
+    for (unsigned i = 0; i < 61; ++i)
+        assert(service.lighting.settings.custom[i].r == i &&
+               service.lighting.settings.custom[i].g == 255 - i);
+    nlp_put32(body, service.edits);
+    assert(!link_rpc(&link_clients[1], NLP_LIGHTING_BEGIN_FRAME, body, 4));
+    tx = nlp_get64(link_clients[1].response + 8);
+    close_cap();
+    assert(!service.link.frame_active);
+    open_cap(6, 4, light, 1, 9, 0);
+    nlp_put64(body, tx);
+    assert(link_rpc(&link_clients[1], NLP_LIGHTING_ABORT_FRAME, body, 8) == NLP_STALE);
+    nlp_put32(body, service.edits);
+    assert(!link_rpc(&link_clients[1], NLP_LIGHTING_BEGIN_FRAME, body, 4));
+    tx = nlp_get64(link_clients[1].response + 8);
+    m.now_us += 6000000;
+    link_drive();
+    assert(!service.link.frame_active);
+    nlp_put64(body, tx);
+    assert(link_rpc(&link_clients[1], NLP_LIGHTING_ABORT_FRAME, body, 8) == NLP_STALE);
+    puts("PASS "
+         "nk60_nlp_product_layout_storage_diagnostics_and_atomic_per_key_lighting_owner_timeout");
 }
 static void test_nlp_link(void)
 {
@@ -719,6 +836,7 @@ static void test_nlp_link(void)
     m.pressed = 0;
     for (unsigned i = 0; i < 10; ++i)
         link_drive();
+    test_link_product();
     /* A new software peer boot cannot inherit the old 30-second physical grant. */
     nlp_session_close(&link_clients[0].session, NLP_DISCONNECTED);
     nlp_session_close(&link_clients[1].session, NLP_DISCONNECTED);
@@ -754,8 +872,119 @@ static void test_nlp_link(void)
     puts("PASS nk60_nlp_real_service_discovery_keymap_sha_commit_and_peer_bound_unlock");
 }
 
-int main(void)
+static void test_preference_reboot(void)
 {
+    setup();
+    steps(3);
+    unlock();
+    nk60_service_command(&service, "rgb 7 210");
+    nk60_service_command(&service, "color 1 2 3");
+    nk60_service_command(&service, "led 29 91 92 93");
+    nk60_service_command(&service, "effect 77 180 150");
+    nk60_service_command(&service, "save");
+    steps(4);
+    assert(!service.dirty && service.generation == 1);
+    const struct nk60_io io = {&m, io_read32, io_write32, io_read8, io_write8, io_time, io_delay};
+    const struct nk60_service_hooks hooks = {&m, uart_read, uart_write, dma};
+    assert(!nk60_service_init(&service, &io, &hooks));
+    assert(service.keyboard.config.rgb_mode == 7 && service.keyboard.config.brightness == 210);
+    assert(service.lighting.settings.color.r == 1 && service.lighting.settings.custom[29].b == 93);
+    assert(service.lighting.settings.speed == 77 && service.lighting.settings.idle_seconds == 180 &&
+           service.lighting.settings.current_ma == 150);
+    struct kb_config config = service.keyboard.config;
+    uint32_t gen = service.generation;
+    const uint8_t unknown[] = "FUTURE-PREFERENCES";
+    assert(!kb_config_save_extended(&service.store, service.store_base, &config, &gen, unknown,
+                                    sizeof(unknown)));
+    assert(!nk60_service_init(&service, &io, &hooks) && service.settings_locked);
+    unsigned erases = m.erases;
+    service.dirty = service.save_requested = 1;
+    steps(3);
+    assert(m.erases == erases);
+    unlock();
+    nk60_service_command(&service, "defaults");
+    nk60_service_command(&service, "save");
+    steps(4);
+    assert(!service.settings_locked && !service.dirty && service.generation == gen + 1);
+    puts("PASS "
+         "nk60_preferences_reboot_combined_save_unknown_schema_preserved_and_explicit_defaults");
+}
+
+/* Loopback fixture: actual NK60 service; MMIO/USB/NOR and the physical unlock
+ * chord are modeled. This is never linked into firmware or a production host. */
+static int fixture(unsigned port)
+{
+    nlp_model = 1;
+    setup();
+    int listener = socket(AF_INET, SOCK_STREAM, 0), enabled = 1;
+    assert(listener >= 0 && port && port < 65536);
+    assert(!setsockopt(listener, SOL_SOCKET, SO_REUSEADDR, &enabled, sizeof(enabled)));
+    struct sockaddr_in address = {.sin_family = AF_INET,
+                                  .sin_port = htons((uint16_t)port),
+                                  .sin_addr = {htonl(INADDR_LOOPBACK)}};
+    assert(!bind(listener, (struct sockaddr *)&address, sizeof(address)) && !listen(listener, 1));
+    signal(SIGPIPE, SIG_IGN);
+    puts("NK60 NLP modeled USB fixture");
+    fflush(stdout);
+    for (;;) {
+        int client = accept(listener, NULL, NULL);
+        if (client < 0) {
+            if (errno == EINTR)
+                continue;
+            return 1;
+        }
+        assert(!fcntl(client, F_SETFL, O_NONBLOCK));
+        m.nlp_rx_at = m.nlp_rx_size = m.nlp_tx_size = 0;
+        service.unlocked = service.unlock_held = 0;
+        ++service.usb.nlp_generation;
+        unsigned chord = 0;
+        for (;;) {
+            struct pollfd fd = {client, POLLIN, 0};
+            if (poll(&fd, 1, 1) < 0 && errno != EINTR)
+                break;
+            if (fd.revents & (POLLERR | POLLHUP | POLLNVAL))
+                break;
+            if (fd.revents & POLLIN) {
+                if (m.nlp_rx_at) {
+                    memmove(m.nlp_rx, m.nlp_rx + m.nlp_rx_at, m.nlp_rx_size - m.nlp_rx_at);
+                    m.nlp_rx_size -= m.nlp_rx_at;
+                    m.nlp_rx_at = 0;
+                }
+                if (m.nlp_rx_size < sizeof(m.nlp_rx)) {
+                    ssize_t got =
+                        recv(client, m.nlp_rx + m.nlp_rx_size, sizeof(m.nlp_rx) - m.nlp_rx_size, 0);
+                    if (!got || (got < 0 && errno != EAGAIN && errno != EINTR))
+                        break;
+                    if (got > 0)
+                        m.nlp_rx_size += (size_t)got;
+                }
+            }
+            m.now_us += 4000;
+            m.pressed = 0;
+            if (service.link.endpoint.joined && chord++ < 520)
+                m.pressed = (UINT64_C(1) << 0) | (UINT64_C(1) << 58) | (UINT64_C(1) << 60);
+            nk60_service_step(&service);
+            if (m.nlp_tx_size) {
+                ssize_t sent = send(client, m.nlp_tx, m.nlp_tx_size, 0);
+                if (sent < 0 && errno != EAGAIN && errno != EINTR)
+                    break;
+                if (sent > 0) {
+                    memmove(m.nlp_tx, m.nlp_tx + sent, m.nlp_tx_size - (size_t)sent);
+                    m.nlp_tx_size -= (size_t)sent;
+                }
+            }
+        }
+        close(client);
+        nlp_endpoint_disconnect(&service.link.endpoint);
+    }
+}
+
+int main(int argc, char **argv)
+{
+    if (argc == 3 && !strcmp(argv[1], "--loopback"))
+        return fixture((unsigned)atoi(argv[2]));
+    assert(argc == 1);
+    test_preference_reboot();
     test_nlp_link();
     test_reports();
     test_backpressure();

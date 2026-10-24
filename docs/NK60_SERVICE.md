@@ -26,7 +26,7 @@ PA9/PA10、115200 8N1，命令和数字采用 ASCII、十进制。输入行最�
 | `macro M [usage ...]` | 设置宏 0–3，最多 8 个 usage；不带 usage 清空 |
 | `nkro 0` / `nkro 1` | 切换报告协议下的 6KRO/NKRO；Boot 协议始终 8 字节 |
 | `debounce MS` | 设置对称逐键消抖，合法范围 1–50 ms |
-| `rgb MODE BRIGHTNESS` | 模式 0 关闭、1 白色、2 层颜色；亮度 0–255 |
+| `rgb MODE BRIGHTNESS` | 模式0关闭、1静态RGB、2层色、3呼吸、4彩虹、5波浪、6响应、7逐键；亮度0–255 |
 | `save` | 将保存提前排队，仍等待全部松开和引擎 FIFO 排空 |
 
 `bind` 的层范围为 0–3，物理键范围为 0–60；行列和默认 Fn/PN 布局见 [键盘功能](KEYBOARD_FEATURES.md)。类型由 `config.h` 明确定义：0 禁用、1 透明、2 普通 usage、3 修饰位图、4 瞬时层、5 切换层、6 修饰/轻触、7 层/轻触、8 一次性修饰、9 Consumer usage、10 宏、11 本地控制。所有参数经过同一配置校验，再原子应用；修改后先释放按键并等待全部松开。
@@ -65,4 +65,10 @@ JEDEC 探测确认容量后，服务保留外置 Flash **最后两个 4 KiB 扇�
 
 ## NLP
 
-实际服务在 `link.c/link_caps.c` 初始化并合作式轮询 NLP。USB vendor 接收经严格分帧后进入用户态 endpoint，注册 device/keyboard/log/keymap/lighting。物理解锁将30秒配置权限绑定当时 UID/boot，对端改变、reset 或到期撤权。完整1056字节配置上传经过 SHA256、generation 与现有配置语义校验，原子提交后使用旧安全保存流程，响应区分易失和待保存。RGB tuple 易失，模式/亮度仍按旧格式持久化。模型新增实际字节流发现/读写/权限/断线回归；不声明实板验证。详见 [NLP](protocols/nlp/implementation.md)。
+实际服务在 `link.c/link_caps.c` 初始化并合作式轮询 NLP。USB vendor 接收经严格分帧后进入用户态 endpoint，注册 device/keyboard/log/keymap/lighting/keyboard_control。物理解锁将30秒配置权限绑定当时 UID/boot，对端改变、reset 或到期撤权。完整1056字节配置上传经过 SHA256、generation 与现有配置语义校验，原子提交后使用旧安全保存流程，响应区分易失和待保存。RGB tuple与61键颜色由新v2记录扩展共同持久化。模型新增实际字节流发现/读写/权限/断线回归；不声明实板验证。详见 [NLP](protocols/nlp/implementation.md)。
+
+## 逐键RGB与偏好扩展
+
+`lighting.c/layout.c`提供61键真实宽度、独立RGB、7种点亮模式及关闭，10fps上限、Caps Lock/Caps Word指示、按键响应、待机熄灯与估算电流限制。`color R G B`、`led key R G B`、`effect speed idle_seconds LED_mA`沿用物理解锁。`rgb mode brightness`现在接受mode0..7。`defaults`同时重置键位与灯光，并显式解除未知偏好schema的保存锁定。
+
+灯光参数与逐键配色作为224字节扩展和1056字节键位共同双槽提交，旧记录加载默认灯光；新代码旧save接口保留扩展。未知扩展禁止覆盖保存。RGB tuple不再只存在RAM。产品只读NLP能力和逐键帧事务、命令例子、扩展插槽见 [能力与扩展](NK60_CAPABILITIES.md)。

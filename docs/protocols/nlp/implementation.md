@@ -32,7 +32,7 @@ NLP v1 是实验实现，已接入 NK60 用户态键盘服务。协议栈、独�
 | 安全 | Noise XX、JOIN HMAC、按能力/方向/通道派生 AEAD；OpenSSL 与独立 Python 双向互通 | 固定公钥配对 UI、设备熵、密钥存储、独立安全审计 |
 | 发现/级联 | HELLO/JOIN、目录分页、GET_TOPOLOGY、8层两阶段路由、租约、父节点消失清理 | 多端口物理集成；拓扑推送、运行中能力增删尚未实现 |
 | keyboard/input | 状态快照、短租约、全释放屏障、来源合并、按钮/旋钮提供端、owner | 扩展模块到 NK60 动作/层/宏的持久映射 UI 与具体硬件 |
-| keymap/lighting | SHA256 事务、generation、原子配置提交、持久状态；NK60 模式/亮度/RGB | 远程配置 GUI；RGB 三元组目前易失，旧配置仅持久模式/亮度 |
+| keymap/lighting | SHA256 事务、generation、原子配置提交、持久状态；NK60 模式/亮度/RGB | 远程配置 GUI；逐键配色的实际电气/掉电实测 |
 | log | UTF-8 边界、有界 ring、过滤、限速、可选可靠订阅 | 平台日志源接入与隐私策略 |
 | display | bounds/CRC tile、progressive/atomic 后端、owner、断开取消 | 指定屏幕驱动与显存策略 |
 | shell | 可靠字节流、尺寸、INT/TERM、退出与断线清理；主机真实 POSIX PTY | NOS-native nshell/VFS/TTY 后端；NK60 不注册 shell |
@@ -46,7 +46,7 @@ power/time 为保留类型。没有后端的能力不注册；不对不支持的
 
 复合 USB 保留 interface0 HID/EP81，新增 interface1 vendor class FF/subclass4E/protocol1，EP02 OUT 与 EP82 IN；完整配置描述符57字节。HID 和 NLP 独立排队、背压和 halt。NLP 不向操作系统自动注入按键，不制造第二个 HID 键盘。UART 继续运行原维护文本命令，不能直接对该 UART 运行 NLP 客户端。
 
-NK60 在这条 USB 链路作为根节点1，提供 device、keyboard、log、keymap，以及 RGB 可用时的 lighting。出厂 UID96 与固定前缀组成 UID128。外置 NOR 最后16KiB明确分配为两扇区启动计数日志、两扇区旧配置日志。未知非空启动日志扇区保留原内容并禁用 NLP；不能自动擦除旧数据。计数写入并读回校验后才启用链路；无法获得持久 boot 时保留 HID/UART，关闭 NLP vendor。
+NK60 在这条 USB 链路作为根节点1，提供 device、keyboard、log、keymap，keyboard_control，以及 RGB 可用时的 lighting。出厂 UID96 与固定前缀组成 UID128。外置 NOR 最后16KiB明确分配为两扇区启动计数日志、两扇区旧配置日志。未知非空启动日志扇区保留原内容并禁用 NLP；不能自动擦除旧数据。计数写入并读回校验后才启用链路；无法获得持久 boot 时保留 HID/UART，关闭 NLP vendor。
 
 F401 没有经过验证的熵/crypto 后端，因此固件明确使用 PHYSICALLY_TRUSTED，不广告认证会话、shell、firmware 或 radio。初始仅允许发现、观察与日志。Esc+PN+Fn 按住两秒，将30秒 CONFIG_WRITE 权限授给当时连接的 UID/boot；更换对端、USB reset 或到期撤销。改键使用现有完整1056字节 canonical 配置，SHA256/语义检查后原子替换，返回易失/待保存状态；Flash 安全空闲保存规则仍生效。设备稳定 UID 和 CRC 日志不构成抗回滚安全存储。
 

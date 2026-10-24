@@ -2,7 +2,7 @@
 
 <!-- Copyright (C) 2026 NOS contributors -->
 
-C SDK 已实现 keyboard/log/input/keymap/display/shell/firmware/bluetooth/wifi 的有界处理器；lighting 接入 NK60。power/time 仍保留。能力处理器通过显式后端回调连接硬件和操作系统，仅在后端具备功能时注册。NK60 当前只公布 device/keyboard/log/keymap/lighting；没有宣传终端、OTA、屏幕或无线实板支持。
+C SDK 已实现 keyboard/log/input/keymap/display/shell/firmware/bluetooth/wifi 的有界处理器；lighting 接入 NK60。power/time 仍保留。能力处理器通过显式后端回调连接硬件和操作系统，仅在后端具备功能时注册。NK60 当前只公布 device/keyboard/log/keymap/lighting/keyboard_control；没有宣传终端、OTA、屏幕或无线实板支持。
 
 所有条目均为**待实现的标准接口设计**。稳定类型由 `UUIDv5(NAMESPACE_URL, "https://github.com/wkcs/nos/nlp/capability/" + name)` 生成，完整 UUID/操作码见注册表。厂商类型使用自己控制的名称空间；不占用下表类型后改变格式。同一类型可有多个实例。
 
@@ -91,7 +91,7 @@ BEGIN_FRAME 为 `frame_id:u32, tile_count:u16, mode:u8, reserved:u8`，mode=0渐
 
 ## 9. 灯光、蓝牙/Wi-Fi、供电和时间
 
-- `lighting`：GET_INFO(1)、SET(2)、GET_STATE(3)。SET body `generation:u32, mode:u8, brightness:u8, reserved:u16, rgb[3]`；mode0关闭/1静态/2设备明确公布的层色，未公布模式拒绝。描述符列灯数、最大刷新/亮度、功耗策略；NLP 不能绕过本地电流限制或 USB suspend 关灯。
+- `lighting`：GET_INFO(1)、SET(2)、GET_STATE(3)。SET body `generation:u32, mode:u8, brightness:u8, reserved:u16, rgb[3]`；mode0关闭/1静态/2层色，minor1新增3呼吸/4彩虹/5波浪/6按键响应/7逐键自定义，未公布模式拒绝。描述符列灯数、最大刷新/亮度、功耗策略；NLP 不能绕过本地电流限制或 USB suspend 关灯。
 - `bluetooth`：GET_INFO(1)、SCAN(2)、PAIR(3)、UNPAIR(4)、BIND(5)、GET_STATE(6)，事件 SCAN_RESULT(0x1001)、LINK_STATE(0x1002)、JOB_DONE(0x1003)。通过有界参数 TLV 选择角色/目标和已授权输入绑定；扫描时长、结果数和配对窗口有上限。蓝牙 HID sink 是模块实现的角色，不表示 NK60 自身具备蓝牙射频。
 - `wifi`：GET_INFO(1)、SCAN(2)、CONFIGURE(3)、CONNECT(4)、DISCONNECT(5)、GET_STATE(6)，事件 SCAN_RESULT(0x1001)、LINK_STATE(0x1002)、JOB_DONE(0x1003)。凭据只在已认证加密会话中提交，不回显到日志。可以把无线数据口作为新的 NLP 邻接载体，也可提供显式 host tunnel，不能自动把私有链路整个桥接到公网。
 - 无线控制使用下述有界TLV profile；芯片命令ABI留在模块内部。实际不支持的角色必须返回UNSUPPORTED。无线模块自己暴露的子设备遵循同一加入/授权/级联模型。
@@ -138,3 +138,5 @@ input GET_CONTROLS采用wire章节的12字节分页请求/响应头，每条目�
 display GET_INFO响应固定16字节：`width:u16 | height:u16 | formats:u16 | modes:u16 | max_tile_bytes:u16 | max_tiles:u16 | min_frame_interval_ms:u16 | reserved:u16=0`。formats bit0 RGB565LE / bit1 MONO1；modes bit0 PROGRESSIVE / bit1 ATOMIC；坐标和尺寸均为逻辑旋转后的面板坐标，v1不支持隐式旋转。max_tile_bytes含18字节TILE头，不得超过会话payload；max_tiles限制帧内tile数。SET_POWER为`state:u8,reserved[3]=0`，state0关1开；BEGIN的mode=0/1必须对应modes中已公布的bit0/bit1模式，END在最后一个tile被校验后才成功，实际扫描出屏延迟由面板决定。
 
 尚未逐字段冻结的扩展（完整keymap action schema、固件目标目录与bootloader metadata、日志过滤/统计细项、power/time、产品专用功能位）必须在相应P阶段补充独立格式表和向量后才能声明互通。它们不影响本次固定wire/发现与核心输入格式检查，也不能因有type UUID就宣传为已实现能力。
+
+NK60的lighting minor1扩展与keyboard_control能力的完整布局、逐键事务和存储格式见 [NK60能力](../../NK60_CAPABILITIES.md)。未注册扩展能力不表示可用；实例ID不得当类型硬编码。

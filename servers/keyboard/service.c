@@ -8,8 +8,7 @@
 #define SERVICE_UNLOCK_MASK ((UINT64_C(1) << 0) | (UINT64_C(1) << 58) | (UINT64_C(1) << 60))
 #define SERVICE_UNLOCK_MS 2000u
 #define SERVICE_UNLOCK_WINDOW_MS 30000u
-#define SERVICE_RGB_MS 100u
-#define SERVICE_RGB_LIMIT 16u
+#define SERVICE_RGB_MS KB_LIGHT_INTERVAL_MS
 
 static void service_runtime(struct nk60_service *s);
 
@@ -100,8 +99,19 @@ static void mark_dirty(struct nk60_service *s)
     s->rgb_pending = 1;
 }
 
+int nk60_service_changed(struct nk60_service *s)
+{
+    if (!s || s->edits == UINT32_MAX)
+        return -NLP_RANGE;
+    mark_dirty(s);
+    return 0;
+}
 static void apply_config(struct nk60_service *s)
 {
+    if (s->edits == UINT32_MAX) {
+        output(s, "ERR generation exhausted\r\n");
+        return;
+    }
     if (!kb_reconfigure(&s->keyboard, &s->candidate)) {
         (void)usb_keyboard_set_nkro(&s->usb.keyboard, s->candidate.nkro);
         mark_dirty(s);
@@ -113,15 +123,20 @@ static void apply_config(struct nk60_service *s)
 
 int nk60_service_commit_wire(struct nk60_service *s, const uint8_t *bytes, int persist)
 {
-    if (!s || !bytes || s->saving) return -NLP_BUSY;
-    if (persist && !s->flash_ready) return -NLP_UNSUPPORTED;
-    if (s->edits == UINT32_MAX) return -NLP_RANGE;
-    if (kb_config_decode(&s->candidate, bytes, KB_CONFIG_WIRE_BYTES) || kb_reconfigure(&s->keyboard, &s->candidate))
+    if (!s || !bytes || s->saving)
+        return -NLP_BUSY;
+    if (persist && (!s->flash_ready || s->settings_locked))
+        return -NLP_UNSUPPORTED;
+    if (s->edits == UINT32_MAX)
+        return -NLP_RANGE;
+    if (kb_config_decode(&s->candidate, bytes, KB_CONFIG_WIRE_BYTES) ||
+        kb_reconfigure(&s->keyboard, &s->candidate))
         return -NLP_INVALID;
     (void)usb_keyboard_set_nkro(&s->usb.keyboard, s->candidate.nkro);
     mark_dirty(s);
     if (persist) {
-        if (!s->flash_ready) return -NLP_UNSUPPORTED;
+        if (!s->flash_ready)
+            return -NLP_UNSUPPORTED;
         s->save_requested = 1;
     }
     return 0;
@@ -168,19 +183,36 @@ static void status(struct nk60_service *s)
 {
     output(s, "nk60_v2 keys=61 scan_us=4000 configured=");
     number(s, s->usb.keyboard.configured);
-    output(s, " suspended="); number(s, s->usb.keyboard.suspended);
-    output(s, " flash_bytes="); number(s, s->hardware.flash_bytes);
-    output(s, " generation="); number(s, s->generation);
-    output(s, " dirty="); number(s, s->dirty);
-    output(s, " layers="); number(s, kb_active_layers(&s->keyboard));
-    output(s, " scan_overruns="); number(s, s->scan_overruns);
-    output(s, " scan_errors="); number(s, s->scan_errors);
-    output(s, " report_overflows="); number(s, s->keyboard.overflows);
-    output(s, " usb_errors="); number(s, s->usb_errors);
-    output(s, " save_errors="); number(s, s->save_errors);
-    output(s, " rgb_errors="); number(s, s->rgb_errors);
-    output(s, " uart_dropped="); number(s, s->tx_dropped);
-    output(s, " unlocked="); number(s, s->unlocked);
+    output(s, " suspended=");
+    number(s, s->usb.keyboard.suspended);
+    output(s, " flash_bytes=");
+    number(s, s->hardware.flash_bytes);
+    output(s, " generation=");
+    number(s, s->generation);
+    output(s, " dirty=");
+    number(s, s->dirty);
+    output(s, " layers=");
+    number(s, kb_active_layers(&s->keyboard));
+    output(s, " scan_overruns=");
+    number(s, s->scan_overruns);
+    output(s, " scan_errors=");
+    number(s, s->scan_errors);
+    output(s, " report_overflows=");
+    number(s, s->keyboard.overflows);
+    output(s, " usb_errors=");
+    number(s, s->usb_errors);
+    output(s, " save_errors=");
+    number(s, s->save_errors);
+    output(s, " rgb_errors=");
+    number(s, s->rgb_errors);
+    output(s, " uart_dropped=");
+    number(s, s->tx_dropped);
+    output(s, " estimated_led_ma=");
+    number(s, s->lighting.estimated_ma);
+    output(s, " settings_locked=");
+    number(s, s->settings_locked);
+    output(s, " unlocked=");
+    number(s, s->unlocked);
     output(s, "\r\n");
 }
 
@@ -206,7 +238,8 @@ void nk60_service_command(struct nk60_service *s, const char *line)
     if (!length)
         return;
     if (same(command, "help") && parse_end(p)) {
-        output(s, "status | lock | save | defaults | nkro 0/1 | rgb mode brightness\r\n");
+        output(s, "status | lock | save | defaults | nkro 0/1 | rgb mode(0..7) brightness\r\n");
+        output(s, "color R G B | led key R G B | effect speed idle_seconds led_ma\r\n");
         output(s, "bind layer key type parameter code | debounce ms\r\n");
         output(s, "macro id [usage ...] (0..3, up to 8 steps); bind type10 parameter=id code0\r\n");
         output(s, "Changes: hold Esc+PN+Fn 2 seconds to unlock UART for 30 seconds.\r\n");
@@ -230,8 +263,8 @@ void nk60_service_command(struct nk60_service *s, const char *line)
         return;
     }
     if (same(command, "save") && parse_end(p)) {
-        if (!s->flash_ready) {
-            output(s, "ERR flash unavailable\r\n");
+        if (!s->flash_ready || s->settings_locked) {
+            output(s, "ERR flash unavailable or settings schema unknown\r\n");
             return;
         }
         if (!s->dirty) {
@@ -242,15 +275,46 @@ void nk60_service_command(struct nk60_service *s, const char *line)
         output(s, "OK save queued; release all keys\r\n");
         return;
     }
+    if (s->saving || s->edits == UINT32_MAX) {
+        output(s, "ERR busy or generation exhausted\r\n");
+        return;
+    }
+    if (same(command, "color") && !parse_uint(&p, &a) && !parse_uint(&p, &b) &&
+        !parse_uint(&p, &c) && parse_end(p) && a <= 255 && b <= 255 && c <= 255) {
+        s->lighting.settings.color = (struct nk60_rgb){a, b, c};
+        nk60_service_changed(s);
+        output(s, "OK color changed; save deferred\r\n");
+        return;
+    }
+    if (same(command, "led") && !parse_uint(&p, &a) && !parse_uint(&p, &b) && !parse_uint(&p, &c) &&
+        !parse_uint(&p, &d) && parse_end(p) && a < KB_KEYS && b <= 255 && c <= 255 && d <= 255) {
+        s->lighting.settings.custom[a] = (struct nk60_rgb){b, c, d};
+        nk60_service_changed(s);
+        output(s, "OK key color changed; save deferred\r\n");
+        return;
+    }
+    if (same(command, "effect") && !parse_uint(&p, &a) && !parse_uint(&p, &b) &&
+        !parse_uint(&p, &c) && parse_end(p) && a > 0 && a <= 255 && b <= 3600 && c >= 100 &&
+        c <= 350) {
+        s->lighting.settings.speed = a;
+        s->lighting.settings.idle_seconds = b;
+        s->lighting.settings.current_ma = c;
+        nk60_service_changed(s);
+        output(s, "OK effect policy changed; save deferred\r\n");
+        return;
+    }
     s->candidate = s->keyboard.config;
     if (same(command, "defaults") && parse_end(p)) {
         kb_default_config(&s->candidate);
+        kb_light_defaults(&s->lighting.settings);
+        s->settings_locked = 0;
     } else if (same(command, "nkro") && !parse_uint(&p, &a) && parse_end(p) && a <= 1u) {
         s->candidate.nkro = (uint8_t)a;
-    } else if (same(command, "debounce") && !parse_uint(&p, &a) && parse_end(p) && a <= UINT16_MAX) {
+    } else if (same(command, "debounce") && !parse_uint(&p, &a) && parse_end(p) &&
+               a <= UINT16_MAX) {
         s->candidate.debounce_ms = (uint16_t)a;
-    } else if (same(command, "rgb") && !parse_uint(&p, &a) && !parse_uint(&p, &b) &&
-               parse_end(p) && a <= UINT8_MAX && b <= UINT8_MAX) {
+    } else if (same(command, "rgb") && !parse_uint(&p, &a) && !parse_uint(&p, &b) && parse_end(p) &&
+               a <= UINT8_MAX && b <= UINT8_MAX) {
         s->candidate.rgb_mode = (uint8_t)a;
         s->candidate.brightness = (uint8_t)b;
     } else if (same(command, "macro")) {
@@ -269,9 +333,9 @@ void nk60_service_command(struct nk60_service *s, const char *line)
         }
         s->candidate.macro_length[a] = (uint8_t)steps;
     } else if (same(command, "bind") && !parse_uint(&p, &a) && !parse_uint(&p, &b) &&
-               !parse_uint(&p, &c) && !parse_uint(&p, &d) && !parse_uint(&p, &e) &&
-               parse_end(p) && a < KB_LAYERS && b < KB_KEYS &&
-               c <= UINT8_MAX && d <= UINT8_MAX && e <= UINT16_MAX) {
+               !parse_uint(&p, &c) && !parse_uint(&p, &d) && !parse_uint(&p, &e) && parse_end(p) &&
+               a < KB_LAYERS && b < KB_KEYS && c <= UINT8_MAX && d <= UINT8_MAX &&
+               e <= UINT16_MAX) {
         s->candidate.map[a][b] = (struct kb_action){(uint8_t)c, (uint8_t)d, (uint16_t)e};
     } else {
         output(s, "ERR arguments\r\n");
@@ -321,8 +385,7 @@ static void reports(struct nk60_service *s)
         report = kb_report_peek(&s->keyboard);
         if (!report)
             break;
-        if (usb_keyboard_submit(&s->usb.keyboard, report->boot,
-                                report->nkro, report->consumer))
+        if (usb_keyboard_submit(&s->usb.keyboard, report->boot, report->nkro, report->consumer))
             break;
         kb_report_pop(&s->keyboard);
     }
@@ -414,6 +477,13 @@ static void service_runtime(struct nk60_service *s)
         } else {
             clock_update(s);
             (void)kb_scan(&s->keyboard, s->pressed, s->now_ms);
+            uint64_t stable = 0;
+            for (unsigned i = 0; i < KB_KEYS; ++i)
+                if (s->keyboard.key[i].stable)
+                    stable |= UINT64_C(1) << i;
+            if (stable != s->lighting.pressed)
+                s->rgb_pending = 1;
+            kb_light_activity(&s->lighting, stable, s->now_ms);
             physical_unlock(s);
             if (!s->pressed)
                 s->wake_requested = 0;
@@ -447,46 +517,26 @@ static void service_runtime(struct nk60_service *s)
 
 static void lighting(struct nk60_service *s)
 {
-    uint8_t level;
-    unsigned layers;
     int error;
-    if (!s->rgb_ready || !s->hooks.dma_tx || !s->rgb_pending ||
-        s->now_ms - s->last_rgb_ms < SERVICE_RGB_MS)
+    if (!s->rgb_ready || !s->hooks.dma_tx || s->now_ms - s->last_rgb_ms < SERVICE_RGB_MS)
         return;
     s->last_rgb_ms = s->now_ms;
     s->rgb_pending = 0;
-    if (!s->configured || s->suspended || !s->keyboard.config.rgb_mode) {
-        error = nk60_rgb_set_power(&s->hardware, 0);
-        if (error)
+    int power = kb_light_render(&s->lighting, s->keyboard.config.rgb_mode,
+                                s->keyboard.config.brightness, kb_active_layers(&s->keyboard),
+                                s->last_leds | (s->keyboard.caps_word ? 2u : 0u), s->configured,
+                                s->suspended, s->now_ms, s->colors);
+    if (!power) {
+        if (s->hardware.rgb_powered && nk60_rgb_set_power(&s->hardware, 0))
             ++s->rgb_errors;
         return;
     }
-    level = (uint8_t)(((unsigned)s->keyboard.config.brightness * SERVICE_RGB_LIMIT) / 255u);
-    layers = kb_active_layers(&s->keyboard);
-    for (unsigned i = 0; i < NK60_LED_COUNT; ++i) {
-        s->colors[i].r = s->keyboard.config.rgb_mode == 1 ||
-                         (layers & (1u << KB_LAYER_FN)) ? level : 0;
-        s->colors[i].g = s->keyboard.config.rgb_mode == 1 ||
-                         (layers & (1u << KB_LAYER_PN)) ? level : 0;
-        s->colors[i].b = level;
-        if (s->keyboard.config.rgb_mode == 1 && s->link.ready) {
-            s->colors[i].r = (uint8_t)((unsigned)level * s->link.static_rgb[0] / 255);
-            s->colors[i].g = (uint8_t)((unsigned)level * s->link.static_rgb[1] / 255);
-            s->colors[i].b = (uint8_t)((unsigned)level * s->link.static_rgb[2] / 255);
-        }
-    }
-    /* Legacy canvas position x=0,y=2 corresponds to the physical Caps key. */
-    if (s->last_leds & 2u) {
-        unsigned caps = nk60_canvas_to_led[2u * NK60_CANVAS_WIDTH];
-        if (caps < NK60_LED_COUNT)
-            s->colors[caps] = (struct nk60_rgb){SERVICE_RGB_LIMIT, SERVICE_RGB_LIMIT, SERVICE_RGB_LIMIT};
-    }
-    error = nk60_rgb_set_power(&s->hardware, 1);
+    error = s->hardware.rgb_powered ? 0 : nk60_rgb_set_power(&s->hardware, 1);
     if (!error)
         error = nk60_rgb_encode(s->colors, NK60_LED_COUNT, s->wave, sizeof(s->wave));
     if (!error)
-        error = nk60_rgb_write(&s->hardware, s->wave, sizeof(s->wave),
-                               s->hooks.dma_tx, s->hooks.context);
+        error = nk60_rgb_write(&s->hardware, s->wave, sizeof(s->wave), s->hooks.dma_tx,
+                               s->hooks.context);
     if (error)
         ++s->rgb_errors;
 }
@@ -495,7 +545,7 @@ static void persist(struct nk60_service *s)
 {
     uint32_t edits;
     int error;
-    if (!s->flash_ready || s->saving || !s->dirty || s->pressed ||
+    if (!s->flash_ready || s->settings_locked || s->saving || !s->dirty || s->pressed ||
         kb_report_peek(&s->keyboard) || s->keyboard.macro_running ||
         (!s->save_requested && s->now_ms - s->last_edit_ms < NK60_SERVICE_SAVE_MS))
         return;
@@ -504,7 +554,11 @@ static void persist(struct nk60_service *s)
     edits = s->edits;
     /* Stable snapshot: progress may scan local keys and change live config. */
     s->candidate = s->keyboard.config;
-    error = kb_config_save(&s->store, s->store_base, &s->candidate, &s->generation);
+    uint8_t preferences[KB_LIGHT_SETTINGS_BYTES];
+    error = kb_light_encode(&s->lighting.settings, preferences);
+    if (!error)
+        error = kb_config_save_extended(&s->store, s->store_base, &s->candidate, &s->generation,
+                                        preferences, sizeof(preferences));
     s->saving = 0;
     if (error) {
         ++s->save_errors;
@@ -531,12 +585,20 @@ int nk60_service_init(struct nk60_service *s, const struct nk60_io *io,
     s->last_us = io->time_us(io->context);
     s->next_scan_us = s->last_us;
     kb_default_config(&s->candidate);
+    kb_light_defaults(&s->lighting.settings);
     s->store = (struct kb_store){s, store_read, store_erase, store_write};
     error = nk60_flash_init(&s->hardware);
     if (!error && s->hardware.flash_bytes >= 2u * KB_CONFIG_SLOT_BYTES) {
         s->flash_ready = 1;
         s->store_base = s->hardware.flash_bytes - 2u * KB_CONFIG_SLOT_BYTES;
-        (void)kb_config_load(&s->store, s->store_base, &s->candidate, &s->generation);
+        uint8_t preferences[KB_CONFIG_EXTRA_BYTES];
+        size_t size = sizeof(preferences);
+        if (!kb_config_load_extended(&s->store, s->store_base, &s->candidate, &s->generation,
+                                     preferences, &size) &&
+            size && kb_light_decode(&s->lighting.settings, preferences, size)) {
+            s->settings_locked = 1;
+            output(s, "WARN unknown preference schema preserved; save disabled until defaults\r\n");
+        }
     } else {
         output(s, "WARN external flash unavailable; configuration is volatile\r\n");
     }
@@ -632,8 +694,8 @@ static int device_output(void *unused, const char *bytes, size_t length)
     intptr_t result = nos_syscall(NOS_SYS_WRITE, (uintptr_t)bytes, length, 0);
     return result == (intptr_t)length ? 0 : result < 0 ? (int)result : -5;
 }
-static int device_dma(void *unused, uintptr_t destination, const uint8_t *bytes,
-                       size_t length, uint32_t timeout_us)
+static int device_dma(void *unused, uintptr_t destination, const uint8_t *bytes, size_t length,
+                      uint32_t timeout_us)
 {
     (void)unused;
     (void)timeout_us;
@@ -645,9 +707,8 @@ static int device_dma(void *unused, uintptr_t destination, const uint8_t *bytes,
 void nos_keyboard_service(uintptr_t unused)
 {
     static struct nk60_service service;
-    const struct nk60_io io = {NULL, device_read32, device_write32,
-                               device_read8, device_write8,
-                               device_time_us, device_delay_us};
+    const struct nk60_io io = {NULL,          device_read32,  device_write32, device_read8,
+                               device_write8, device_time_us, device_delay_us};
     const struct nk60_service_hooks hooks = {NULL, device_read_byte, device_output, device_dma};
     (void)unused;
     (void)nk60_service_init(&service, &io, &hooks);
