@@ -119,6 +119,7 @@ def audit(build, ecosystem=False, regression=True):
         "ports/esp_idf/components/nos_devices/devices.c",
         "ports/esp_idf/components/nos_devices/serial_buses.c",
         "ports/esp_idf/components/nos_devices/storage.c",
+        "ports/esp_idf/components/nos_devices/console.c",
         "servers/bluetooth/gatt.c",
         "servers/usb/host/classes.c",
         "servers/usb/host/otg.c",
@@ -156,6 +157,20 @@ def audit(build, ecosystem=False, regression=True):
         mechanisms += ["nos_service_call", "nos_service_stop", "nos_idf_devices_snapshot"]
     for name in mechanisms:
         assert name in names, f"Missing managed device mechanism: {name}"
+    if not regression:
+        for name in (
+            "nos_idf_shell_run",
+            "nos_shell_editor_feed",
+            "nos_shell_parse",
+            "nos_idf_console_call",
+        ):
+            assert name in names, f"Missing interactive nshell mechanism: {name}"
+        for path in (
+            "ports/esp_idf/components/nos_shell/shell.c",
+            "user/shell/editor.c",
+            "user/shell/parser.c",
+        ):
+            assert (ROOT / path).resolve() in files
     checked = []
     c3 = port.TARGET == "esp32c3"
     if ecosystem:
@@ -206,7 +221,7 @@ def audit(build, ecosystem=False, regression=True):
     }
 
 
-def run_qemu(build, report, timeout, markers=None, calibrated_efuse=False):
+def run_qemu(build, report, timeout, markers=None, calibrated_efuse=False, interactive=False):
     report.mkdir(parents=True, exist_ok=True)
     markers = MARKERS if markers is None else markers
     markers = [
@@ -263,6 +278,46 @@ def run_qemu(build, report, timeout, markers=None, calibrated_efuse=False):
     log = report / "qemu.log"
     deadline = time.monotonic() + timeout
     completed = False
+    exchanges = []
+    if interactive:
+        arch = "riscv32-esp32c3" if port.TARGET == "esp32c3" else "xtensa-esp32s3"
+        label = "C3" if port.TARGET == "esp32c3" else "S3"
+        exchanges = [
+            ("quoted_echo", f'echo "{label}" "console" "ok"\r'.encode(), rf"{label} console ok"),
+            ("version", b"version\r", rf"NOS arch={arch} abi=1 target={port.TARGET} scheduler=NOS"),
+            (
+                "help",
+                b"help\r",
+                r"nshell commands: help version uptime stats mem ps devices echo history clear",
+            ),
+            (
+                "native_stats",
+                b"stats\r",
+                r"tasks=[1-9][0-9]* mutexes=[0-9]+ endpoints=[0-9]+ free_pages=[1-9][0-9]*",
+            ),
+            (
+                "native_tasks",
+                b"ps\r",
+                r"id=[0-9]+ name=main priority=[0-9]+ state=[0-9]+ stack_free=[0-9]+",
+            ),
+            (
+                "managed_console",
+                b"devices\r",
+                r"system\.console kind=[0-9]+ state=running owned=[1-9][0-9]*",
+            ),
+            ("editing", b'echo "edit" baa\x7fr\r', r"edit bar"),
+            ("history_recall", b"\x1b[A\r", r"edit bar"),
+            ("history_list", b"history\r", r'echo "edit" bar'),
+            ("quote_error", b'echo "unterminated\r', r"parse: unmatched quote"),
+            ("line_overflow", b"echo " + b"x" * 300 + b"\r", r"command too long"),
+            ("cancel", b'echo "must not execute"\x03', r'echo "must not execute"\^C'),
+            ("unknown_command", b"__not_a_command\r", r"nshell: unknown command: __not_a_command"),
+            ("vfs_boundary", b"ls\r", r"ls: unsupported; NOS VFS/ELF is not bound on this profile"),
+            ("recovery", b'echo "shell" "still" "alive"\r', r"shell still alive"),
+        ]
+    exchange_index = 0
+    exchange_start = None
+    checks = []
     with log.open("wb") as output:
         process = subprocess.Popen(
             command,
@@ -278,7 +333,39 @@ def run_qemu(build, report, timeout, markers=None, calibrated_efuse=False):
                 text = log.read_text(errors="replace").replace("\r", "")
                 if "Guru Meditation" in text or "assert failed" in text or "FAIL " in text:
                     break
-                if all(marker in text for marker in markers) and "Returned from app_main()" in text:
+                if interactive:
+                    if "Returned from app_main()" in text:
+                        break  # The normal application must keep the console alive.
+                    ready = all(marker in text for marker in markers) and text.endswith("nos> ")
+                    if exchange_start is None and ready:
+                        exchange_start = len(text)
+                        process.stdin.write(exchanges[exchange_index][1])
+                        process.stdin.flush()
+                    elif exchange_start is not None:
+                        name, data, expected = exchanges[exchange_index]
+                        response = text[exchange_start:]
+                        if re.search(
+                            r"(?:^|\n)" + expected + r"\n", response
+                        ) and response.endswith("nos> "):
+                            assert not re.search(r"(?:^|\n)must not execute\n", response)
+                            checks.append(
+                                {
+                                    "name": name,
+                                    "input_hex": data.hex(),
+                                    "expected": expected,
+                                    "passed": True,
+                                }
+                            )
+                            exchange_index += 1
+                            if exchange_index == len(exchanges):
+                                completed = True
+                                break
+                            exchange_start = len(text)
+                            process.stdin.write(exchanges[exchange_index][1])
+                            process.stdin.flush()
+                elif (
+                    all(marker in text for marker in markers) and "Returned from app_main()" in text
+                ):
                     completed = True
                     break
                 time.sleep(0.05)
@@ -308,6 +395,11 @@ def run_qemu(build, report, timeout, markers=None, calibrated_efuse=False):
         "hardware_peripherals": "not verified",
         "wifi_ble_rf": "not verified",
         "factory_calibration_efuse": calibrated_efuse,
+        "interactive_console": {
+            "enabled": interactive,
+            "transport": "managed UART0",
+            "checks": checks,
+        },
     }
 
 
@@ -468,7 +560,13 @@ def main():
                 output / "normal/build",
                 report / "normal",
                 args.timeout,
-                ["PASS page_allocator", "NOS IDF application ready"],
+                [
+                    "PASS page_allocator",
+                    "NOS IDF application ready",
+                    "[nos] nshell: starting",
+                    "NOS SHELL READY",
+                ],
+                interactive=True,
             )
         result["source_after"] = port.source_identity()
         assert before == result["source_after"], "Sources changed during ESP32-S3 validation"

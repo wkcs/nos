@@ -10,6 +10,9 @@ endif()
 execute_process(COMMAND "${PYTHON}" "${CMAKE_CURRENT_LIST_DIR}/../../../../scripts/check_idf_app_devices.py"
     ${sources} WORKING_DIRECTORY "${CMAKE_CURRENT_LIST_DIR}" COMMAND_ERROR_IS_FATAL ANY)
 set(dependencies freertos esp_timer nos_devices)
+if(NOT NOS_IDF_REGRESSION)
+    list(APPEND dependencies nos_shell)
+endif()
 idf_component_register(SRCS ${sources} REQUIRES ${dependencies})
 add_custom_target(nos_device_api_policy
     COMMAND "${PYTHON}" "${CMAKE_CURRENT_LIST_DIR}/../../../../scripts/check_idf_app_devices.py" ${sources}

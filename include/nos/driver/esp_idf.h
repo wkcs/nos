@@ -30,6 +30,10 @@ struct nos_idf_device_config {
     const struct nos_idf_usb_otg_config *usb_otg;
 };
 int nos_idf_devices_init(void);
+/* Firmware-owned UART0: all terminal requests use the NOS service domain.
+ * READ/WRITE take nos_io_buffer and are nonblocking, with short transfers.
+ * The console cannot be stopped or taken over by application UART services. */
+int nos_idf_console_call(uint32_t command, void *request, size_t size);
 /* Create registers a STOPPED NOS device; start is explicit and may touch HW.
  * Configuration strings must outlive the device. No raw SDK handles escape. */
 int nos_idf_device_create(const struct nos_idf_device_config *, struct nos_service **);

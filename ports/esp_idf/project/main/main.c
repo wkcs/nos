@@ -5,6 +5,7 @@
 #include "freertos/task.h"
 #include "nos/abi.h"
 #include "nos/driver/esp_idf.h"
+#include "nos/esp_shell.h"
 #include <assert.h>
 void app_main(void)
 {
@@ -20,4 +21,5 @@ void app_main(void)
     puts("NOS IDF application ready");
     /* Register board devices through nos_idf_device_create(); applications
      * use NOS service requests, never vendor controller handles. */
+    nos_idf_shell_run();
 }

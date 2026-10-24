@@ -38,7 +38,7 @@ IDF_COMPONENT_MANAGER=1 idf.py -C /path/to/application build
 
 工具安装使用 SDK 自带校验清单，额外 QEMU 包核验 SHA-256。构建不联网取组件。脚本核对 SDK/esp-usb 的提交和本地改动；组件覆盖位于 `ports/esp_idf/components/freertos/`。云环境现有 `.nos-env` 的 Ninja、QEMU 动态库会被复用；其他 Linux 环境需提供 Ninja、Git、Python venv、libglib2.0 和 libslirp 等 QEMU 运行依赖。
 
-正常固件位于 `out/esp32s3/runtime/build/`。默认应用只打印 NOS/芯片信息，不配置 GPIO、UART1 或写入 NVS/OTA 分区。`LIBC=idf` 使用 SDK Newlib，其他平台的 `minimal/newlib/musl` 构建路径保持独立。
+正常固件位于 `out/esp32s3/runtime/build/`。默认应用初始化受管理的 UART0 控制台并进入常驻 nshell，不自动配置其他 GPIO/UART1 或写入 NVS/OTA 分区。`LIBC=idf` 使用 SDK Newlib，其他平台的 `minimal/newlib/musl` 构建路径保持独立。
 
 ```sh
 # 单独构建包含全部审计入口的固件，不会自动运行无线或 USB 设备
@@ -65,7 +65,7 @@ ESP32-S3 在本移植中采用共享、可信固件地址空间，没有 MMU 进
 
 原生 NOS 调用只允许正常运行的任务上下文；ISR、启动前、SDK 临界区或 SDK 调度暂停期间返回 `EDEADLK`，避免在不允许切换的上下文阻塞。原生 NOS 调用通过 `nos_idf_syscall()` 进入同一个内核分发和能力检查路径。用户复制允许 SDK 可按字节访问的 RAM、RTC 慢速 RAM 和只读 DROM；拒绝 MMIO、空指针和只读区写入。SDK 地址域本身共享，范围检查不会隔离应用与内核数据。
 
-当前原生 `arch_device_operation()` / `arch_irq_bind()` 返回 `ENOTSUP`。S3 应用通过 NOS 设备服务接口使用外设，由 `nos_devices` 后端调用官方 SDK 驱动，统一仲裁控制器、引脚及生命周期；接口覆盖范围、代码示例和未完成项目见 [ESP32_S3_DEVICES.md](ESP32_S3_DEVICES.md)。NLP、nshell 和 NK60 服务仍需要 S3 业务绑定。此 profile 使用 SDK VFS/Newlib；不启动原生 NOS VFS/init，也不提供 S3 上的 glibc、独立 ELF 进程或虚拟内存。
+当前原生 `arch_device_operation()` / `arch_irq_bind()` 返回 `ENOTSUP`。S3 应用通过 NOS 设备服务接口使用外设，由 `nos_devices` 后端调用官方 SDK 驱动，统一仲裁控制器、引脚及生命周期；接口覆盖范围、代码示例和未完成项目见 [ESP32_S3_DEVICES.md](ESP32_S3_DEVICES.md)。[nshell 的 UART0 诊断 profile](ESP32_NSHELL.md) 已接入；NLP 与 NK60 服务仍需要 S3 业务绑定。此 profile 使用 SDK VFS/Newlib；不启动原生 NOS VFS/init，也不提供 S3 上的 glibc、独立 ELF 进程或虚拟内存。
 
 任务池为 24 项，包含 idle、SDK esp_timer、软件定时器和 main；原生页池 28 × 4 KiB。每项原生任务内存之外另有 SDK 栈，应用必须为无线、USB 和缓冲区计算 RAM 预算。PSRAM、睡眠唤醒和多核需要指定模组后单独配置/验收。
 
@@ -90,7 +90,7 @@ USB Host 与 Device 共用 S3 OTG PHY，不能同时安装。现已通过 NOS �
 
 ## 自动化与实板复验
 
-`tests/esp32s3.py` 使用独立 `out/esp32s3/validation/`，构建正常应用和两种回归固件；运行正常应用、runtime 回归和使用出厂校准 eFuse 的完整生态回归，并审计完整生态链接。回归应用在 `tests/guest/esp32s3_regression.c`，与正常应用分开；构建时必须显式指定 `--regression`。
+`tests/esp32s3.py` 使用独立 `out/esp32s3/validation/`，构建正常应用和两种回归固件；对正常应用执行15项真实 UART0 命令/编辑交互，再运行 runtime 回归和使用出厂校准 eFuse 的完整生态回归，并审计完整生态链接。回归应用在 `tests/guest/esp32s3_regression.c`，与正常应用分开；构建时必须显式指定 `--regression`。
 
 覆盖原生系统调用/IPC、无主动 yield 的抢占、队列超时、两任务 TLS/errno/FPU、删除回调、软件/SDK 定时器与真实 ISR、优先级继承跨任务退出、静态任务、任务池耗尽回滚、40 次栈回收、GPIO/UART/NVS 和 OTA 无效镜像拒绝。测试要求所有标记、main 返回和 QEMU 退出状态正确；标准输入保持打开，避免 UART 后端 EOF 丢日志。结果记录提交身份、冻结源码检查、工具版本、命令和镜像哈希。构建清单绑定源码身份和 ELF 哈希，`--no-build` 也会拒绝旧快照或被替换的镜像。
 

@@ -31,3 +31,5 @@ ESP32-S3 外设通过 [NOS 设备服务模型](docs/ESP32_S3_DEVICES.md) 管理�
 ESP32-S3 的 GATT 服务端、USB Host HID/MSC 与自动 OTG 接口及官方 QEMU 验证方法见 [连接能力](docs/ESP32_S3_CONNECTIVITY.md)。
 
 ESP32-C3 单核 RISC-V 移植复用同一 NOS/IDF 桥接；构建、烧录、17类受管理服务和芯片限制见 [ESP32_C3.md](docs/ESP32_C3.md)。
+
+ESP32-C3/S3 正常固件启动受管理的 UART0 和常驻 [nshell 诊断控制台](docs/ESP32_NSHELL.md)，不再只打印最小应用信息后返回。

@@ -29,11 +29,12 @@ IDF 后端使用同一个递归互斥量串行化管理和请求，拒绝 ISR/�
 
 ## 已接入的服务种类
 
-`runtime` 构建包含 GPIO、UART、SPI、I2C、NVS 和 OTA。`ecosystem` 额外包含其余后端及自动 OTG 管理服务；共24类（含固定 USB Serial/JTAG），新增连接接口见 [ESP32_S3_CONNECTIVITY.md](ESP32_S3_CONNECTIVITY.md)。全部后端都有实际 SDK 创建、请求和停止代码；下表同时列出当前实现的功能边界，不能据此推断 SDK 的全部 API 已有 NOS 等价接口。
+`runtime` 构建包含 GPIO、UART、SPI、I2C、NVS 和 OTA。`ecosystem` 额外包含其余后端及自动 OTG 管理服务；共24类应用服务（含固定 USB Serial/JTAG），另有固件生命周期的 UART0 Console，新增连接接口见 [ESP32_S3_CONNECTIVITY.md](ESP32_S3_CONNECTIVITY.md)。全部后端都有实际 SDK 创建、请求和停止代码；下表同时列出当前实现的功能边界，不能据此推断 SDK 的全部 API 已有 NOS 等价接口。
 
 | 服务 | 当前 NOS 请求与限制 |
 | --- | --- |
 | GPIO | 单引脚配置、读写；尚无 GPIO IRQ 订阅接口 |
+| Console | 固件生命周期的 UART0、控制器与引脚租约、非阻塞 READ/WRITE；正常镜像启动 nshell，见 [启动控制台](ESP32_NSHELL.md) |
 | UART | UART1/2，配置、非阻塞短读写、就绪查询；UART0 保留控制台 |
 | SPI | SPI2/3，模式0–3、8位、MSB/LSB；一个片选、整消息合并，最多64字节；CPU FIFO，无 DMA |
 | I2C | I2C0/1，7位、单读/单写/同地址写后 repeated START 读；不支持任意多消息、10位或自动恢复；小于一个系统 tick 的超时返回 ENOTSUP；无法区分阶段的 NACK 返回 EIO |

@@ -4,7 +4,7 @@
 
 ESP32-C3 使用单核 RV32IMC、ESP-IDF 5.4.2/Newlib 和 NOS 任务/调度器。原始 SDK `tasks.c` 不参与构建；保留 SDK RISC-V `port.c/portasm.S` 的寄存器、GCC TLS、系统定时器和中断机制，以及原始队列/定时器等兼容集合。硬件驱动和无线二进制库继续使用 IDF 原件，应用通过 NOS 设备服务访问。
 
-这是与 S3 一样的可信共享固件地址空间，没有 MMU 进程隔离、独立 ELF/glibc、原生 NOS VFS/init 或完整 POSIX。C3 没有硬件 FPU；浮点运算回归使用工具链的软件浮点支持。NLP/nshell、低功耗、看门狗和实板无线互通仍需后续实现/验收。
+这是与 S3 一样的可信共享固件地址空间，没有 MMU 进程隔离、独立 ELF/glibc、原生 NOS VFS/init 或完整 POSIX。C3 没有硬件 FPU；浮点运算回归使用工具链的软件浮点支持。正常固件已接入 [常驻 nshell](ESP32_NSHELL.md) 的 UART0 诊断 profile；NLP、低功耗、看门狗和实板无线互通仍需后续实现/验收。
 
 原生系统调用和设备管理只接受可调度的任务上下文；ISR、SDK 调度暂停或 SDK 临界区内分别拒绝为 `EDEADLK` / `EBUSY`，避免在不允许切换时阻塞。
 

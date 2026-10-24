@@ -60,6 +60,7 @@ int idf_nvs_acquire(void);
 int idf_nvs_release(void);
 extern const struct nos_service_ops idf_gpio_ops, idf_uart_ops, idf_spi_ops, idf_i2c_ops;
 extern const struct nos_service_ops idf_storage_ops, idf_ota_ops;
+extern const struct nos_service_ops idf_console_ops;
 #ifdef NOS_IDF_ECOSYSTEM
 extern const struct nos_service_ops idf_wifi_ops, idf_ble_ops, idf_usb_host_ops, idf_usb_device_ops;
 extern const struct nos_service_ops idf_auxiliary_ops;

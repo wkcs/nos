@@ -394,8 +394,10 @@ void app_main(void)
     assert(nos_idf_device_destroy(&storage) == 0);
     struct nos_service_info devices[2];
     size_t device_count;
-    assert(nos_idf_devices_snapshot(devices, 2, &device_count) == 0 && device_count == 1);
-    assert(!strcmp(devices[0].name, "system.flash-psram-console"));
+    assert(nos_idf_devices_snapshot(devices, 2, &device_count) == 0 && device_count == 2);
+    assert(!strcmp(devices[0].name, "system.flash-psram"));
+    assert(!strcmp(devices[1].name, "system.console") &&
+           devices[1].kind == NOS_SERVICE_CONSOLE && devices[1].resources_owned);
     puts("PASS " NOS_IDF_TEST_NAME "_sdk_gpio_uart_flash_nvs");
     puts("PASS " NOS_IDF_TEST_NAME "_managed_devices");
     config = (struct nos_idf_device_config){.name = "test.ota", .kind = NOS_SERVICE_OTA};
@@ -413,16 +415,18 @@ void app_main(void)
 
     size_t device_heap = heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
     struct nos_service *slots[32] = {0};
-    char names[32][16];
+    char names[32][24];
     config = (struct nos_idf_device_config){.kind = NOS_SERVICE_GPIO, .pins = {4}};
-    for (unsigned i = 0; i < 31; i++) {
+    unsigned available_devices = 32 - device_count;
+    for (unsigned i = 0; i < available_devices; i++) {
         snprintf(names[i], sizeof(names[i]), "capacity.%u", i);
         config.name = names[i];
         assert(nos_idf_device_create(&config, &slots[i]) == 0);
     }
     config.name = "capacity.full";
-    assert(nos_idf_device_create(&config, &slots[31]) == -NOS_DRV_ENOSPC && !slots[31]);
-    for (unsigned i = 0; i < 31; i++)
+    assert(nos_idf_device_create(&config, &slots[available_devices]) == -NOS_DRV_ENOSPC &&
+           !slots[available_devices]);
+    for (unsigned i = 0; i < available_devices; i++)
         assert(nos_idf_device_destroy(&slots[i]) == 0 && !slots[i]);
     assert(heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT) == device_heap);
     puts("PASS " NOS_IDF_TEST_NAME "_device_capacity_no_leak");

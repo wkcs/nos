@@ -254,4 +254,12 @@ AS 限额见下方已完成批次；下一批优先完善稳定进程/地址空�
 - [x] 为 C3 配置16任务/20页预算，保留 Flash/电源/控制台引脚，拒绝依赖 SDK 旧 TCB 偏移的硬件栈保护配置。
 - [x] 官方 C3 QEMU 下载/校验、正常/回归/生态构建路径、共享的跨芯片专项和 USB 串口故障模型；开发启动验证通过。
 - [ ] 同一冻结源码的 C3/S3 最终专项及公共代码完整验收，结束后按 [验证记录](ESP32_C3_VALIDATION.md) 补录报告。
-- [ ] 实板 RF、USB CDC 枚举、外接总线与故障恢复、低功耗/看门狗、NLP/nshell 绑定；当前没有可访问实板。
+- [ ] 实板 RF、USB CDC 枚举、外接总线与故障恢复、低功耗/看门狗、NLP 绑定；当前没有可访问实板。
+
+## ESP C3 / S3 启动控制台
+
+- [x] 修正最小正常应用仅打印并返回的问题，接入常驻 nshell MCU profile，复用现有 parser/editor。
+- [x] 独立的 `system.console` 持有 UART0 控制器/引脚，SDK RX 中断与 ringbuffer，NOS 服务接口处理输入/短写；Flash 保留项单独管理。
+- [x] 实际启动输出 NOS 任务、页数、SDK heap、设备域与 shell 状态，支持诊断命令、历史/编辑与错误恢复。
+- [ ] 完成最终冻结 C3/S3 三种镜像及15项真实 UART0 交互验证；此前开发运行已通过，最终报告另存。
+- [ ] 原生 NOS VFS/ELF 与 NLP shell 绑定；诊断 profile 不能替代这些未完成能力。见 [ESP32_NSHELL.md](ESP32_NSHELL.md)。

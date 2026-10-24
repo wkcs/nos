@@ -11,10 +11,20 @@ static StaticSemaphore_t mutex_storage;
 static portMUX_TYPE init_lock = portMUX_INITIALIZER_UNLOCKED;
 static unsigned initialized;
 static struct nos_service reserved;
+static struct nos_service console;
 #if CONFIG_IDF_TARGET_ESP32C3
-static const uint8_t system_pins[] = {11, 12, 13, 14, 15, 16, 17, 20, 21};
+static const struct nos_resource console_resources[] = {
+    {.id = NOS_SERVICE_UART << 16, .type = NOS_RESOURCE_CONTROLLER},
+    {.id = 20, .type = NOS_RESOURCE_PINCTRL}, {.id = 21, .type = NOS_RESOURCE_PINCTRL}};
 #else
-static const uint8_t system_pins[] = {26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 43, 44};
+static const struct nos_resource console_resources[] = {
+    {.id = NOS_SERVICE_UART << 16, .type = NOS_RESOURCE_CONTROLLER},
+    {.id = 43, .type = NOS_RESOURCE_PINCTRL}, {.id = 44, .type = NOS_RESOURCE_PINCTRL}};
+#endif
+#if CONFIG_IDF_TARGET_ESP32C3
+static const uint8_t system_pins[] = {11, 12, 13, 14, 15, 16, 17};
+#else
+static const uint8_t system_pins[] = {26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37};
 #endif
 static struct nos_resource reserved_pins[sizeof(system_pins)];
 static int lock(void *context)
@@ -76,16 +86,25 @@ int nos_idf_devices_init(void)
             reserved_pins[i] = (struct nos_resource){.id = system_pins[i],
                                                      .type = NOS_RESOURCE_PINCTRL};
         if (!rc)
-            rc = nos_service_register(&domain, &reserved, "system.flash-psram-console",
+            rc = nos_service_register(&domain, &reserved, "system.flash-psram",
                                       NOS_SERVICE_STORAGE, reserved_pins, sizeof(system_pins), &reserve_ops, NULL);
         if (!rc)
             rc = nos_service_start(&reserved);
+        if (!rc)
+            rc = nos_service_register(&domain, &console, "system.console", NOS_SERVICE_CONSOLE,
+                                      console_resources, 3, &idf_console_ops, &console);
+        if (!rc)
+            rc = nos_service_start(&console);
         initialized = rc ? 2 : 1;
     }
     if (initialized != 1 && !rc)
         rc = -NOS_DRV_EIO;
     unlock(mutex);
     return rc;
+}
+int nos_idf_console_call(uint32_t command, void *request, size_t size)
+{
+    return nos_service_call(&console, command, request, size);
 }
 static const struct nos_service_ops *backend(enum nos_service_kind kind)
 {
@@ -350,7 +369,8 @@ int nos_idf_device_create(const struct nos_idf_device_config *config, struct nos
 }
 int nos_idf_device_destroy(struct nos_service **service)
 {
-    if (!service || !*service || (*service)->domain != &domain || *service == &reserved)
+    if (!service || !*service || (*service)->domain != &domain || *service == &reserved ||
+        *service == &console)
         return -NOS_DRV_EINVAL;
     struct idf_device *d = (struct idf_device *)*service;
     int rc = lock(mutex);
