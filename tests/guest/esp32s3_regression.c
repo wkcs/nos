@@ -15,6 +15,7 @@
 #include "esp_heap_caps.h"
 #include "nos/abi.h"
 #include "nos/driver/esp_idf.h"
+#include "nos/driver/usb_service.h"
 static QueueHandle_t queue;
 static SemaphoreHandle_t done;
 static EventGroupHandle_t events;
@@ -136,6 +137,8 @@ static void ipc_client(void *unused)
 }
 void app_main(void)
 {
+    extern void nos_esp32s3_protocol_regression(void);
+    nos_esp32s3_protocol_regression();
     esp_chip_info_t chip;
     esp_chip_info(&chip);
     assert(chip.model == CHIP_ESP32S3);
@@ -378,6 +381,27 @@ void app_main(void)
         assert(nos_idf_device_destroy(&slots[i]) == 0 && !slots[i]);
     assert(heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT) == device_heap);
     puts("PASS esp32s3_device_capacity_no_leak");
+#ifdef NOS_IDF_ECOSYSTEM
+    struct nos_idf_usb_otg_config otg_board = {.id_pin = -1,
+                                               .vbus_sense_pin = 4,
+                                               .vbus_enable_pin = -1,
+                                               .overcurrent_pin = -1,
+                                               .allowed = NOS_USB_ALLOW_DEVICE};
+    config = (struct nos_idf_device_config){
+        .name = "test.otg", .kind = NOS_SERVICE_USB_OTG, .usb_otg = &otg_board};
+    struct nos_service *otg_service;
+    assert(!nos_idf_device_create(&config, &otg_service));
+    assert(!nos_service_start(otg_service));
+    enum nos_usb_role auto_role = NOS_USB_ROLE_AUTO;
+    assert(!nos_service_call(otg_service, NOS_IO_USB_ROLE, &auto_role, sizeof(auto_role)));
+    vTaskDelay(5);
+    struct nos_usb_role_status role_status;
+    assert(
+        !nos_service_call(otg_service, NOS_IO_USB_OTG_STATUS, &role_status, sizeof(role_status)));
+    assert(role_status.active == NOS_USB_ROLE_NONE && !role_status.sourcing);
+    assert(!nos_idf_device_destroy(&otg_service));
+    puts("PASS esp32s3_managed_otg_idle_worker");
+#endif
 
     size_t before = heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
     for (unsigned i = 0; i < 40; i++) {

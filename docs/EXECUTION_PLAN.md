@@ -233,4 +233,15 @@ AS 限额见下方已完成批次；下一批优先完善稳定进程/地址空�
 - [x] `6fa7a6e` 完成冻结 86/86 组完整验收；SDK 私有无线失败保护 `4db0927` 完成 S3 专项复验，公共实现未变化。结果见 [冻结验证](ESP32_S3_VALIDATION.md)。
 - [ ] 双核、无线收发/并发预算、USB 枚举/板级 OTG、外接总线 DMA/故障恢复、电源管理/看门狗、独立设备 IPC server 与 NLP/nshell 绑定；新增后端的实板验收和各类完整业务接口。
 
-完整生态和实板功能尚未验收；ADC 启动校准超出当前 QEMU 模型，不能将其完整链接固件计为已运行通过。说明和命令见 [ESP32_S3.md](ESP32_S3.md)。
+实板功能尚未验收。完整生态在空白校准 eFuse 下受 ADC 模型限制；最新专项使用真实 SDK 支持的出厂校准数据运行，范围和命令见 [ESP32_S3_CONNECTIVITY.md](ESP32_S3_CONNECTIVITY.md)。
+
+
+## ESP32-S3 连接能力补齐
+
+- [x] 可移植 GATT 服务端状态、描述符、订阅/MTU/事件队列与 NimBLE 注册/回调、广播、通知、配对响应和 NVS bond store。
+- [x] 枚举无关的 NOS USB 类传输接口，IDF Host 枚举/URB 桥接原有 boot HID/MSC BOT，短传输/拔插/取消与保留资源。
+- [x] 管理器中的 USB OTG 服务与 NOS 自动任务，明确的板级引脚、去抖、原始 VBUS 防倒灌、放电、故障恢复。
+- [x] 官方模拟器安装包与实际二进制校验、S3 device tree 探测、出厂校准 eFuse 支持完整 profile 启动；不修改 SDK 或模拟器。
+- [ ] GATT 射频配对/收发、S3 USB 枚举与真实供电验证；官方 S3 QEMU 没有相应硬件模型。
+
+接口与验证范围见 [ESP32_S3_CONNECTIVITY.md](ESP32_S3_CONNECTIVITY.md)。

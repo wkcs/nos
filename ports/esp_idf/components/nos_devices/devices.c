@@ -105,6 +105,8 @@ static const struct nos_service_ops *backend(enum nos_service_kind kind)
         return &idf_usb_host_ops;
     case NOS_SERVICE_USB_DEVICE:
         return &idf_usb_device_ops;
+    case NOS_SERVICE_USB_OTG:
+        return &idf_usb_otg_ops;
     case NOS_SERVICE_CAN:
         return &idf_can_ops;
     case NOS_SERVICE_I2S:
@@ -163,6 +165,26 @@ int nos_idf_device_create(const struct nos_idf_device_config *config, struct nos
     const struct nos_service_ops *ops = backend(config->kind);
     if (!ops)
         return -NOS_DRV_ENOTSUP;
+    if (config->kind == NOS_SERVICE_USB_OTG) {
+        const struct nos_idf_usb_otg_config *o = config->usb_otg;
+        if (!o || !o->allowed || (o->allowed & ~3u) || o->source_allowed > 1 ||
+            o->id_active_low > 1 || o->vbus_active_low > 1 || o->enable_active_low > 1 ||
+            o->overcurrent_active_low > 1 || o->vbus_sense_pin < 0 ||
+            ((o->allowed & NOS_USB_ALLOW_HOST) && o->vbus_enable_pin < 0) || o->poll_ms > 1000 ||
+            o->debounce_ms > 1000)
+            return -NOS_DRV_EINVAL;
+        int pins[] = {o->id_pin, o->vbus_sense_pin, o->vbus_enable_pin, o->overcurrent_pin};
+        for (unsigned i = 0; i < 4; i++) {
+            if (pins[i] < -1 ||
+                (pins[i] >= 0 && (!GPIO_IS_VALID_GPIO(pins[i]) || pins[i] == 19 || pins[i] == 20)))
+                return -NOS_DRV_EINVAL;
+            for (unsigned j = 0; pins[i] >= 0 && j < i; j++)
+                if (pins[i] == pins[j])
+                    return -NOS_DRV_EINVAL;
+        }
+        if (o->vbus_enable_pin >= 0 && !GPIO_IS_VALID_OUTPUT_GPIO(o->vbus_enable_pin))
+            return -NOS_DRV_EINVAL;
+    }
     switch (config->kind) {
     case NOS_SERVICE_GPIO:
         pins = 1;
@@ -266,7 +288,9 @@ int nos_idf_device_create(const struct nos_idf_device_config *config, struct nos
     d->backend = ops;
     /* Host/Device alias the SAME physical USB controller and GPIO19/20. */
     unsigned identity =
-        config->kind == NOS_SERVICE_USB_DEVICE ? NOS_SERVICE_USB_HOST : config->kind;
+        config->kind == NOS_SERVICE_USB_DEVICE || config->kind == NOS_SERVICE_USB_OTG
+            ? NOS_SERVICE_USB_HOST
+            : config->kind;
     if (config->kind == NOS_SERVICE_SDSPI)
         identity = NOS_SERVICE_SPI;
     d->resources[0] = (struct nos_resource){.id = (identity << 16) | config->instance,
@@ -276,9 +300,18 @@ int nos_idf_device_create(const struct nos_idf_device_config *config, struct nos
         if (config->pins[i] >= 0)
             d->resources[count++] =
                 (struct nos_resource){.id = config->pins[i], .type = NOS_RESOURCE_PINCTRL};
-    if (config->kind == NOS_SERVICE_USB_HOST || config->kind == NOS_SERVICE_USB_DEVICE) {
+    if (config->kind == NOS_SERVICE_USB_HOST || config->kind == NOS_SERVICE_USB_DEVICE ||
+        config->kind == NOS_SERVICE_USB_OTG) {
         d->resources[count++] = (struct nos_resource){.id = 19, .type = NOS_RESOURCE_PINCTRL};
         d->resources[count++] = (struct nos_resource){.id = 20, .type = NOS_RESOURCE_PINCTRL};
+    }
+    if (config->kind == NOS_SERVICE_USB_OTG) {
+        const struct nos_idf_usb_otg_config *o = config->usb_otg;
+        int pins[] = {o->id_pin, o->vbus_sense_pin, o->vbus_enable_pin, o->overcurrent_pin};
+        for (unsigned i = 0; i < 4; i++)
+            if (pins[i] >= 0)
+                d->resources[count++] =
+                    (struct nos_resource){.id = pins[i], .type = NOS_RESOURCE_PINCTRL};
     }
     /* A GPIO service identity is its pin, allowing independent pins. */
     if (config->kind == NOS_SERVICE_GPIO)

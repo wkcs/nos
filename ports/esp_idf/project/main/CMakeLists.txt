@@ -2,7 +2,8 @@
 idf_build_get_property(NOS_IDF_ECOSYSTEM NOS_IDF_ECOSYSTEM)
 idf_build_get_property(NOS_IDF_REGRESSION NOS_IDF_REGRESSION)
 if(NOS_IDF_REGRESSION)
-    set(sources "${CMAKE_CURRENT_LIST_DIR}/../../../../tests/guest/esp32s3_regression.c")
+    set(sources "${CMAKE_CURRENT_LIST_DIR}/../../../../tests/guest/esp32s3_regression.c"
+        "${CMAKE_CURRENT_LIST_DIR}/../../../../tests/guest/esp32s3_protocols.c")
 else()
     set(sources "main.c")
 endif()

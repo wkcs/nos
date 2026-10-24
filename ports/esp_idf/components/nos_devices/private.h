@@ -12,6 +12,7 @@ struct idf_device {
     struct nos_service service;
     struct nos_idf_device_config config;
     const struct nos_service_ops *backend;
+    void *otg;
     struct nos_resource resources[NOS_DRIVER_MAX_RESOURCES];
     uint8_t installed, faulted, nvs_owned;
     union {
@@ -43,11 +44,13 @@ struct idf_device {
             uint8_t started, configured, attached;
         } wifi;
         struct {
+            void *gatt;
             TaskHandle_t task, stop_task;
             SemaphoreHandle_t done, stop_done;
             int stop_result;
             uint8_t stopped, host_signaled, stop_signaled;
         } ble;
+        void *usb;
         void *auxiliary;
     } u;
 };
@@ -60,5 +63,6 @@ extern const struct nos_service_ops idf_storage_ops, idf_ota_ops;
 extern const struct nos_service_ops idf_wifi_ops, idf_ble_ops, idf_usb_host_ops, idf_usb_device_ops;
 extern const struct nos_service_ops idf_auxiliary_ops;
 extern const struct nos_service_ops idf_can_ops;
+extern const struct nos_service_ops idf_usb_otg_ops;
 #endif
 #endif

@@ -1,17 +1,69 @@
 /* Copyright (C) 2026 NOS contributors. */
 #include "driver/usb_class.h"
-static struct nos_usb_interface *interface(struct nos_usb_host *h, uint32_t handle, uint8_t number)
+static int describe(const struct nos_usb_transport *io, uint32_t handle,
+                    struct nos_usb_class_info *info)
 {
-    unsigned i;
-    if (!h || !h->configured || !handle || handle != h->generation)
-        return NULL;
-    for (i = 0; i < h->interface_count; i++)
-        if (h->interfaces[i].number == number)
-            return &h->interfaces[i];
+    if (!io || !io->ops || !io->ops->describe || !io->ops->control || !io->ops->transfer ||
+        !io->ops->clear_halt || !handle)
+        return -NOS_DRV_EINVAL;
+    int rc = nos_driver_status(io->ops->describe(io->context, handle, info));
+    if (rc)
+        return rc;
+    if (info->interface_count > NOS_USB_INTERFACES || info->endpoint_count > NOS_USB_ENDPOINTS ||
+        !info->max_transfer || info->max_transfer > NOS_DRIVER_MAX_TRANSFER)
+        return -NOS_DRV_EIO;
+    return 0;
+}
+static struct nos_usb_interface *interface(struct nos_usb_class_info *info, uint8_t number)
+{
+    for (unsigned i = 0; i < info->interface_count; i++)
+        if (info->interfaces[i].number == number)
+            return &info->interfaces[i];
     return NULL;
 }
-static int class_request(struct nos_usb_host *h, uint32_t handle, uint8_t type, uint8_t req,
-                         uint16_t value, uint16_t index, void *data, uint16_t length,
+static int native_describe(void *context, uint32_t handle, struct nos_usb_class_info *info)
+{
+    struct nos_usb_host *h = context;
+    if (!h || !h->configured || !handle || handle != h->generation)
+        return -NOS_DRV_ENODEV;
+    if (h->interface_count > NOS_USB_INTERFACES || h->endpoint_count > NOS_USB_ENDPOINTS)
+        return -NOS_DRV_EIO;
+    *info = (struct nos_usb_class_info){.max_transfer = h->controller.max_transfer,
+                                        .interface_count = h->interface_count,
+                                        .endpoint_count = h->endpoint_count};
+    for (unsigned i = 0; i < h->interface_count; i++)
+        info->interfaces[i] = h->interfaces[i];
+    for (unsigned i = 0; i < h->endpoint_count; i++)
+        info->endpoints[i] = h->endpoints[i];
+    return 0;
+}
+static int native_control(void *c, uint32_t g, const uint8_t s[8], void *d, size_t n, size_t *a,
+                          uint32_t t)
+{
+    return nos_usb_host_control(c, g, s, d, n, a, t);
+}
+static int native_transfer(void *c, uint32_t g, uint8_t e, void *d, size_t n, size_t *a, uint32_t t)
+{
+    return nos_usb_host_transfer(c, g, e, d, n, a, t);
+}
+static int native_clear(void *c, uint32_t g, uint8_t e)
+{
+    return nos_usb_host_clear_halt(c, g, e);
+}
+static const struct nos_usb_transport_ops native_ops = {native_describe, native_control,
+                                                        native_transfer, native_clear};
+static int class_transfer(const struct nos_usb_transport *io, uint32_t g, uint8_t ep, void *data,
+                          size_t length, size_t *actual, uint32_t timeout)
+{
+    *actual = 0;
+    int rc =
+        nos_driver_status(io->ops->transfer(io->context, g, ep, data, length, actual, timeout));
+    if (!rc && *actual > length)
+        rc = -NOS_DRV_EIO;
+    return rc;
+}
+static int class_request(const struct nos_usb_transport *io, uint32_t handle, uint8_t type,
+                         uint8_t req, uint16_t value, uint16_t index, void *data, uint16_t length,
                          size_t *actual)
 {
     uint8_t setup[8] = {type,
@@ -22,13 +74,20 @@ static int class_request(struct nos_usb_host *h, uint32_t handle, uint8_t type, 
                         (uint8_t)(index >> 8),
                         (uint8_t)length,
                         (uint8_t)(length >> 8)};
-    return nos_usb_host_control(h, handle, setup, data, length, actual, 500000);
+    *actual = 0;
+    int rc = nos_driver_status(
+        io->ops->control(io->context, handle, setup, data, length, actual, 500000));
+    return !rc && *actual > length ? -NOS_DRV_EIO : rc;
 }
-int nos_usb_hid_open(struct nos_usb_hid *hid, struct nos_usb_host *h, uint32_t handle,
-                     uint8_t number)
+int nos_usb_hid_open_transport(struct nos_usb_hid *hid, const struct nos_usb_transport *io,
+                               uint32_t handle, uint8_t number)
 {
-    struct nos_usb_interface *iface = interface(h, handle, number);
-    struct nos_usb_hid candidate = {h, handle, 0, number, 0};
+    struct nos_usb_class_info info;
+    int checked = describe(io, handle, &info);
+    if (checked)
+        return checked;
+    struct nos_usb_interface *iface = interface(&info, number);
+    struct nos_usb_hid candidate = {.handle = handle, .interface_number = number, .io = *io};
     size_t actual;
     unsigned i;
     int error;
@@ -40,8 +99,8 @@ int nos_usb_hid_open(struct nos_usb_hid *hid, struct nos_usb_host *h, uint32_t h
         (iface->protocol != 1 && iface->protocol != 2))
         return -NOS_DRV_ENOTSUP;
     candidate.protocol = iface->protocol;
-    for (i = 0; i < h->endpoint_count; i++) {
-        struct nos_usb_endpoint *ep = &h->endpoints[i];
+    for (i = 0; i < info.endpoint_count; i++) {
+        struct nos_usb_endpoint *ep = &info.endpoints[i];
         if (ep->interface_number == number && ep->type == NOS_USB_INTERRUPT &&
             (ep->address & 0x80) && ep->max_packet >= (iface->protocol == 1 ? 8 : 3)) {
             candidate.endpoint = ep->address;
@@ -51,10 +110,10 @@ int nos_usb_hid_open(struct nos_usb_hid *hid, struct nos_usb_host *h, uint32_t h
     if (!candidate.endpoint)
         return -NOS_DRV_ENOTSUP;
     error =
-        class_request(h, handle, 0x21, 11, 0, number, NULL, 0, &actual); /* SET_PROTOCOL(boot) */
+        class_request(io, handle, 0x21, 11, 0, number, NULL, 0, &actual); /* SET_PROTOCOL(boot) */
     if (error)
         return error;
-    error = class_request(h, handle, 0x21, 10, 0, number, NULL, 0, &actual); /* SET_IDLE */
+    error = class_request(io, handle, 0x21, 10, 0, number, NULL, 0, &actual); /* SET_IDLE */
     if (error && error != -NOS_USB_EPIPE)
         return error;
     *hid = candidate;
@@ -71,10 +130,14 @@ int nos_usb_hid_read(struct nos_usb_hid *hid, void *data, size_t capacity, size_
     length = hid->protocol == 1 ? 8 : hid->protocol == 2 ? 3 : 0;
     if (!length || capacity < length)
         return -NOS_DRV_EINVAL;
-    if (!interface(hid->host, hid->handle, hid->interface_number))
+    struct nos_usb_class_info info;
+    int checked = describe(&hid->io, hid->handle, &info);
+    if (checked)
+        return checked;
+    if (!interface(&info, hid->interface_number))
         return -NOS_DRV_ENODEV;
-    for (unsigned i = 0; i < hid->host->endpoint_count; i++) {
-        struct nos_usb_endpoint *ep = &hid->host->endpoints[i];
+    for (unsigned i = 0; i < info.endpoint_count; i++) {
+        struct nos_usb_endpoint *ep = &info.endpoints[i];
         if (ep->address == hid->endpoint) {
             requested = ep->max_packet;
             break;
@@ -84,8 +147,8 @@ int nos_usb_hid_read(struct nos_usb_hid *hid, void *data, size_t capacity, size_
         requested = sizeof(report);
     if (requested < length)
         return -NOS_DRV_EINVAL;
-    error = nos_usb_host_transfer(hid->host, hid->handle, hid->endpoint, report, requested,
-                                  &received, 100000);
+    error =
+        class_transfer(&hid->io, hid->handle, hid->endpoint, report, requested, &received, 100000);
     if (error)
         return error;
     /* Some wheel mice (including QEMU) retain a fourth byte in boot protocol.
@@ -103,7 +166,7 @@ int nos_usb_hid_set_leds(struct nos_usb_hid *hid, uint8_t leds)
     int error;
     if (!hid || hid->protocol != 1 || (leds & 0xe0))
         return -NOS_DRV_EINVAL;
-    error = class_request(hid->host, hid->handle, 0x21, 9, 0x200, hid->interface_number, &leds, 1,
+    error = class_request(&hid->io, hid->handle, 0x21, 9, 0x200, hid->interface_number, &leds, 1,
                           &actual);
     return !error && actual != 1 ? -NOS_DRV_EIO : error;
 }
@@ -135,7 +198,7 @@ static int bot(struct nos_usb_msc *m, const uint8_t *command, uint8_t command_le
     uint8_t cbw[31] = {0}, csw[13];
     size_t actual = 0, completed = 0;
     int error;
-    if (!m || !m->host || m->blocked)
+    if (!m || !m->io.ops || m->blocked)
         return -NOS_DRV_EIO;
     if (m->tag == UINT32_MAX)
         return -NOS_DRV_ENOSPC;
@@ -146,19 +209,17 @@ static int bot(struct nos_usb_msc *m, const uint8_t *command, uint8_t command_le
     cbw[14] = command_length;
     for (unsigned i = 0; i < command_length; i++)
         cbw[15 + i] = command[i];
-    error = nos_usb_host_transfer(m->host, m->handle, m->out_endpoint, cbw, sizeof(cbw), &actual,
-                                  1000000);
+    error = class_transfer(&m->io, m->handle, m->out_endpoint, cbw, sizeof(cbw), &actual, 1000000);
     if (error || actual != sizeof(cbw))
         goto blocked;
     if (length) {
-        error = nos_usb_host_transfer(m->host, m->handle, input ? m->in_endpoint : m->out_endpoint,
-                                      data, length, &completed, 1000000);
+        error = class_transfer(&m->io, m->handle, input ? m->in_endpoint : m->out_endpoint, data,
+                               length, &completed, 1000000);
         /* A failed data phase requires explicit BOT reset, never command replay. */
         if (error)
             goto blocked;
     }
-    error = nos_usb_host_transfer(m->host, m->handle, m->in_endpoint, csw, sizeof(csw), &actual,
-                                  1000000);
+    error = class_transfer(&m->io, m->handle, m->in_endpoint, csw, sizeof(csw), &actual, 1000000);
     if (error || actual != sizeof(csw) || get32(csw) != 0x53425355 || get32(csw + 4) != m->tag ||
         csw[12] > 2 || get32(csw + 8) > length)
         goto blocked;
@@ -173,21 +234,26 @@ int nos_usb_msc_recover(struct nos_usb_msc *m)
 {
     size_t actual;
     int error;
-    if (!m || !m->host)
+    if (!m || !m->io.ops)
         return -NOS_DRV_EINVAL;
     m->blocked = 1;
-    error = class_request(m->host, m->handle, 0x21, 0xff, 0, m->interface_number, NULL, 0, &actual);
+    error = class_request(&m->io, m->handle, 0x21, 0xff, 0, m->interface_number, NULL, 0, &actual);
     if (!error)
-        error = nos_usb_host_clear_halt(m->host, m->handle, m->in_endpoint);
+        error = nos_driver_status(m->io.ops->clear_halt(m->io.context, m->handle, m->in_endpoint));
     if (!error)
-        error = nos_usb_host_clear_halt(m->host, m->handle, m->out_endpoint);
+        error = nos_driver_status(m->io.ops->clear_halt(m->io.context, m->handle, m->out_endpoint));
     if (!error)
         m->blocked = 0;
     return error;
 }
-int nos_usb_msc_open(struct nos_usb_msc *m, struct nos_usb_host *h, uint32_t handle, uint8_t number)
+int nos_usb_msc_open_transport(struct nos_usb_msc *m, const struct nos_usb_transport *io,
+                               uint32_t handle, uint8_t number)
 {
-    struct nos_usb_interface *iface = interface(h, handle, number);
+    struct nos_usb_class_info info;
+    int checked = describe(io, handle, &info);
+    if (checked)
+        return checked;
+    struct nos_usb_interface *iface = interface(&info, number);
     uint8_t capacity[8], command[10] = {0x25}, lun = 0;
     size_t actual;
     unsigned i;
@@ -198,9 +264,10 @@ int nos_usb_msc_open(struct nos_usb_msc *m, struct nos_usb_host *h, uint32_t han
         return -NOS_DRV_ENODEV;
     if (iface->class_code != 8 || iface->subclass != 6 || iface->protocol != 0x50)
         return -NOS_DRV_ENOTSUP;
-    *m = (struct nos_usb_msc){.host = h, .handle = handle, .interface_number = number};
-    for (i = 0; i < h->endpoint_count; i++) {
-        struct nos_usb_endpoint *ep = &h->endpoints[i];
+    *m = (struct nos_usb_msc){
+        .handle = handle, .interface_number = number, .io = *io, .max_transfer = info.max_transfer};
+    for (i = 0; i < info.endpoint_count; i++) {
+        struct nos_usb_endpoint *ep = &info.endpoints[i];
         if (ep->interface_number != number || ep->type != NOS_USB_BULK)
             continue;
         if (ep->address & 0x80)
@@ -210,7 +277,7 @@ int nos_usb_msc_open(struct nos_usb_msc *m, struct nos_usb_host *h, uint32_t han
     }
     if (!m->in_endpoint || !m->out_endpoint)
         return -NOS_DRV_ENOTSUP;
-    error = class_request(h, handle, 0xa1, 0xfe, 0, number, &lun, 1, &actual);
+    error = class_request(io, handle, 0xa1, 0xfe, 0, number, &lun, 1, &actual);
     if (error != -NOS_USB_EPIPE && (error || actual != 1))
         return error ? error : -NOS_DRV_EIO;
     if (!error && lun > 15)
@@ -249,8 +316,8 @@ static int blocks(struct nos_usb_msc *m, uint32_t lba, uint16_t count, void *dat
 {
     uint8_t command[10] = {0};
     uint32_t length;
-    if (!m || !m->host || !m->block_size || !count || !data || lba >= m->blocks ||
-        count > m->blocks - lba || count > m->host->controller.max_transfer / m->block_size)
+    if (!m || !m->io.ops || !m->block_size || !count || !data || lba >= m->blocks ||
+        count > m->blocks - lba || count > m->max_transfer / m->block_size)
         return -NOS_DRV_EINVAL;
     length = (uint32_t)count * m->block_size;
     command[0] = input ? 0x28 : 0x2a;
@@ -271,4 +338,21 @@ int nos_usb_msc_sync(struct nos_usb_msc *m)
 {
     const uint8_t command[10] = {0x35};
     return bot(m, command, 10, NULL, 0, 0);
+}
+
+int nos_usb_hid_open(struct nos_usb_hid *hid, struct nos_usb_host *h, uint32_t g, uint8_t n)
+{
+    struct nos_usb_transport io = {&native_ops, h};
+    int rc = nos_usb_hid_open_transport(hid, &io, g, n);
+    if (!rc)
+        hid->host = h;
+    return rc;
+}
+int nos_usb_msc_open(struct nos_usb_msc *msc, struct nos_usb_host *h, uint32_t g, uint8_t n)
+{
+    struct nos_usb_transport io = {&native_ops, h};
+    int rc = nos_usb_msc_open_transport(msc, &io, g, n);
+    if (!rc)
+        msc->host = h;
+    return rc;
 }

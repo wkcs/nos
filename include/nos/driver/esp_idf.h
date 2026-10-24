@@ -2,6 +2,14 @@
 #ifndef NOS_DRIVER_ESP_IDF_H
 #define NOS_DRIVER_ESP_IDF_H
 #include "service_io.h"
+#include "usb_otg.h"
+/* Explicit board wiring; host power needs a protected default-off switch. */
+struct nos_idf_usb_otg_config {
+    int id_pin, vbus_sense_pin, vbus_enable_pin, overcurrent_pin;
+    uint16_t debounce_ms, poll_ms, discharge_ms, power_timeout_ms;
+    uint8_t allowed, source_allowed;
+    uint8_t id_active_low, vbus_active_low, enable_active_low, overcurrent_active_low;
+};
 /* Logical IDs, not SDK enum values. UART: 1/2 (0 is boot console);
  * SPI: 2/3 (1 is boot flash); I2C: 0/1; other services: 0.
  * Pins: GPIO[pin], UART[tx,rx,rts,cts], SPI[sck,mosi,miso,cs], I2C[sda,scl].
@@ -18,6 +26,8 @@ struct nos_idf_device_config {
     /* RGB display: pins[pclk,hsync,vsync,de,d0..d7], RGB565 over 8-bit bus. */
     uint16_t width, height;
     uint16_t hsync, hback, hfront, vsync, vback, vfront;
+    const struct nos_ble_profile *ble_profile;
+    const struct nos_idf_usb_otg_config *usb_otg;
 };
 int nos_idf_devices_init(void);
 /* Create registers a STOPPED NOS device; start is explicit and may touch HW.

@@ -41,7 +41,9 @@ idf_component_register(SRCS ${SRCS}
     PRIV_REQUIRES esp_timer esp_system esp_hw_support esp_rom newlib
     LDFRAGMENTS "${SDK_RTOS}/linker_common.lf" "${SDK_RTOS}/linker.lf")
 target_compile_definitions(${COMPONENT_LIB} PUBLIC NOS_XTENSA=1 NOS_ESP_IDF=1 NOS_SMP=1 NOS_NORMAL_BOOT=1
-    PAGE_POOL_PAGES=32 USER_BYTES=4096 HEAP_END=0)
+    PAGE_POOL_PAGES=28 USER_BYTES=4096 HEAP_END=0)
+# 24 native task records + 2 shared-heap pages fit in 28 pages. Leave 16 KiB
+# more internal SRAM for the SDK GATT/bond stores and driver heap.
 set_source_files_properties("${KERNEL}/portable/xtensa/port.c" PROPERTIES
     COMPILE_DEFINITIONS "offset_pxEndOfStack=nos_sdk_unused_stack_offset")
 set_source_files_properties("${KERNEL}/queue.c" "${KERNEL}/timers.c"

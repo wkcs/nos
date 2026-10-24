@@ -67,7 +67,7 @@ ESP32-S3 在本移植中采用共享、可信固件地址空间，没有 MMU 进
 
 当前原生 `arch_device_operation()` / `arch_irq_bind()` 返回 `ENOTSUP`。S3 应用通过 NOS 设备服务接口使用外设，由 `nos_devices` 后端调用官方 SDK 驱动，统一仲裁控制器、引脚及生命周期；接口覆盖范围、代码示例和未完成项目见 [ESP32_S3_DEVICES.md](ESP32_S3_DEVICES.md)。NLP、nshell 和 NK60 服务仍需要 S3 业务绑定。此 profile 使用 SDK VFS/Newlib；不启动原生 NOS VFS/init，也不提供 S3 上的 glibc、独立 ELF 进程或虚拟内存。
 
-任务池为 24 项，包含 idle、SDK esp_timer、软件定时器和 main；原生页池 32 × 4 KiB。每项原生任务内存之外另有 SDK 栈，应用必须为无线、USB 和缓冲区计算 RAM 预算。PSRAM、睡眠唤醒和多核需要指定模组后单独配置/验收。
+任务池为 24 项，包含 idle、SDK esp_timer、软件定时器和 main；原生页池 28 × 4 KiB。每项原生任务内存之外另有 SDK 栈，应用必须为无线、USB 和缓冲区计算 RAM 预算。PSRAM、睡眠唤醒和多核需要指定模组后单独配置/验收。
 
 ## 外设生态的验证层级
 
@@ -84,13 +84,13 @@ ESP32-S3 在本移植中采用共享、可信固件地址空间，没有 MMU 进
 | USB Device | 官方 esp_tinyusb/TinyUSB DWC2、CDC、Vendor 构建和链接 | 描述符、主机枚举、传输、拔插 |
 | OTA | 双槽布局、QEMU inactive-slot 擦除、错误镜像拒绝及 abort | 有效镜像升级、切换启动、断电回滚 |
 
-USB Host 与 Device 共用 S3 OTG PHY，不能同时安装。自动角色切换还需要把板级 ID/VBUS/供电与已有 NOS OTG 策略连接；当前没有 S3 的已验收角色切换 BSP，也不会默认驱动未知 VBUS 电源 GPIO。CDC/Vendor 是 SDK 接入面，不代表已经绑定 NLP/nshell。
+USB Host 与 Device 共用 S3 OTG PHY，不能同时安装。现已通过 NOS 传输接口复用 boot HID/MSC 类代码，并提供受管理的自动 OTG 任务；BSP 必须明确配置 ID/VBUS/受保护供电引脚。BLE 也已接入可配置 GATT 服务端、订阅/通知/配对事件。接口、示例与仿真边界见 [连接能力](ESP32_S3_CONNECTIVITY.md)。这些能力尚未实板验收，CDC/Vendor/GATT 也不代表已经绑定 NLP/nshell。
 
-当前全外设链接 profile 会包含 ADC 启动自校准；所选 QEMU 不产生该校准完成事件，会停在 SDK ADC 校准等待。因此只对运行 profile 执行 QEMU，完整 profile 只做编译/链接审计，不篡改 SDK 校准逻辑以伪造通过。
+默认空白校准 eFuse 会让完整 profile 进入 QEMU 未实现的 ADC 自校准。专项现使用 SDK 支持的版本1出厂校准 eFuse 数据运行完整 profile，不修改 SDK/固件或伪造 ADC 采样。正常/运行 profile 仍保留原 eFuse。完整固件能够启动，但官方 S3 machine 没有 RF 和 USB OTG 控制器模型，因此射频收发、USB 枚举和真实板级供电仍未验证。
 
 ## 自动化与实板复验
 
-`tests/esp32s3.py` 使用独立 `out/esp32s3/validation/`，构建正常应用和两种回归固件；运行正常应用与 runtime 回归，仅对完整生态固件做链接审计。回归应用在 `tests/guest/esp32s3_regression.c`，与正常应用分开；构建时必须显式指定 `--regression`。
+`tests/esp32s3.py` 使用独立 `out/esp32s3/validation/`，构建正常应用和两种回归固件；运行正常应用、runtime 回归和使用出厂校准 eFuse 的完整生态回归，并审计完整生态链接。回归应用在 `tests/guest/esp32s3_regression.c`，与正常应用分开；构建时必须显式指定 `--regression`。
 
 覆盖原生系统调用/IPC、无主动 yield 的抢占、队列超时、两任务 TLS/errno/FPU、删除回调、软件/SDK 定时器与真实 ISR、优先级继承跨任务退出、静态任务、任务池耗尽回滚、40 次栈回收、GPIO/UART/NVS 和 OTA 无效镜像拒绝。测试要求所有标记、main 返回和 QEMU 退出状态正确；标准输入保持打开，避免 UART 后端 EOF 丢日志。结果记录提交身份、冻结源码检查、工具版本、命令和镜像哈希。构建清单绑定源码身份和 ELF 哈希，`--no-build` 也会拒绝旧快照或被替换的镜像。
 
@@ -103,4 +103,4 @@ python3 scripts/esp32s3.py flash --regression \
 
 该回归会配置 GPIO4、UART1，改写并清理 `nos-test` NVS 命名空间，擦除非运行 OTA 槽的一个扇区并测试拒绝错误镜像；应使用开发用分区布局。4 MiB 布局包含 24 KiB NVS、OTA 元数据、两个 1.5 MiB 应用槽及预留存储，后续生产固件应按实际模组容量、升级和文件系统策略配置。
 
-实板后续优先级：双核上下文与跨核唤醒 → Wi-Fi/BLE 同时运行及内存预算 → USB Device/Host 与板级 OTG → 外接总线/DMA 错误恢复 → 电源管理/看门狗 → NOS 外设服务、NLP/nshell 绑定。每项保留独立的运行证据，不能用本次 QEMU 通过替代。
+实板后续优先级：Wi-Fi/BLE、GATT 与 USB/OTG 互通和内存预算 → 双核上下文与跨核唤醒 → 外接总线/DMA 错误恢复 → 电源管理/看门狗 → 独立设备 IPC 服务与 NLP/nshell 绑定。每项保留独立的运行证据，不能用本次 QEMU 通过替代。

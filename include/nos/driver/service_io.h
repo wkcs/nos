@@ -3,6 +3,7 @@
 #define NOS_DRIVER_SERVICE_IO_H
 #include "service.h"
 #include "peripheral.h"
+#include "ble.h"
 /* Commands are interpreted together with service.kind, not a wire protocol. */
 enum nos_service_command {
     NOS_IO_CONFIGURE = 1,
@@ -18,7 +19,25 @@ enum nos_service_command {
     NOS_IO_STATUS,
     NOS_IO_OTA_BEGIN,
     NOS_IO_OTA_FINISH,
-    NOS_IO_OTA_ABORT
+    NOS_IO_OTA_ABORT,
+    NOS_IO_BLE_ADVERTISE = 0x100,
+    NOS_IO_BLE_ADVERTISE_STOP,
+    NOS_IO_BLE_EVENT,
+    NOS_IO_BLE_VALUE_GET,
+    NOS_IO_BLE_VALUE_SET,
+    NOS_IO_BLE_NOTIFY,
+    NOS_IO_BLE_DISCONNECT,
+    NOS_IO_BLE_PAIRING_RESPONSE,
+    NOS_IO_BLE_SECURE,
+    NOS_IO_USB_ATTACH = 0x200,
+    NOS_IO_USB_DETACH,
+    NOS_IO_USB_INFO,
+    NOS_IO_USB_HID_OPEN,
+    NOS_IO_USB_HID_READ,
+    NOS_IO_USB_HID_LEDS,
+    NOS_IO_USB_MSC_OPEN,
+    NOS_IO_USB_ROLE,
+    NOS_IO_USB_OTG_STATUS
 };
 struct nos_io_buffer {
     void *data;

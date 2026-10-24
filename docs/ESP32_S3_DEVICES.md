@@ -29,7 +29,7 @@ IDF 后端使用同一个递归互斥量串行化管理和请求，拒绝 ISR/�
 
 ## 已接入的服务种类
 
-`runtime` 构建包含 GPIO、UART、SPI、I2C、NVS 和 OTA。`ecosystem` 额外包含其余后端。全部后端都有实际 SDK 创建、请求和停止代码；下表同时列出当前实现的功能边界，不能据此推断 SDK 的全部 API 已有 NOS 等价接口。
+`runtime` 构建包含 GPIO、UART、SPI、I2C、NVS 和 OTA。`ecosystem` 额外包含其余后端及自动 OTG 管理服务；共23类，新增连接接口见 [ESP32_S3_CONNECTIVITY.md](ESP32_S3_CONNECTIVITY.md)。全部后端都有实际 SDK 创建、请求和停止代码；下表同时列出当前实现的功能边界，不能据此推断 SDK 的全部 API 已有 NOS 等价接口。
 
 | 服务 | 当前 NOS 请求与限制 |
 | --- | --- |
@@ -40,9 +40,10 @@ IDF 后端使用同一个递归互斥量串行化管理和请求，拒绝 ISR/�
 | NVS | u32 键读写、提交、显式清除命名空间；初始化错误不会自动擦除数据 |
 | OTA | 非运行槽开始、写入、校验结束、取消；不会自动选择启动槽 |
 | Wi-Fi | 官方 STA 初始化、RAM 凭据配置、连接/断开、关联状态/RSSI；连接受理不表示 DHCP 已完成；尚无 AP/扫描/事件订阅接口 |
-| BLE | 官方控制器、NimBLE host 任务与同步状态；有界等待停止、失败保留所有权；GATT、广播、扫描业务接口待补 |
-| USB Host | SDK Host 安装、事件轮询、卸载；有设备/客户端时拒绝卸载；尚未桥接 NOS HID/MSC 类接口 |
+| BLE | 官方控制器/NimBLE，GATT 服务端、特征/描述符、广播、订阅/通知/indication、MTU、配对和 bond store；central/GATT client 与 OOB 未实现 |
+| USB Host | SDK 枚举及 URB，复用 NOS boot HID/MSC BOT 类；支持 generation、拔插、短传输、取消失败保留、同步/恢复 |
 | USB Device | TinyUSB 默认 CDC/Vendor 描述符，Vendor 短读写与卸载；尚未连接 NLP、nshell 或键盘 HID |
+| USB OTG | NOS 任务自动采样明确的板级 ID/VBUS/过流输入，保护供电、去抖、放电及单角色切换；经典 OTG，不是 PD/CC |
 | I2S | Master TX、Philips、16位立体声，8–96kHz；尚无 RX/TDM/PDM |
 | PWM | LEDC 四组独占 timer/channel，10位，千分比占空比 |
 | RMT | 官方 TX channel/copy encoder，NOS 脉冲序列；错误时保留后端副本，停止通道后释放；尚无 RX |
@@ -103,8 +104,8 @@ python3 tests/acceptance.py --include-posix --require-frozen-source
 
 S3 专项也运行 Wi-Fi 宿主故障模型：保留实际适配代码中的 Wi-Fi 语句，用 SDK API 替身注入分配、附着、初始化及卸载失败，同时连接实际 NOS 管理器，检查资源保留与停止重试。这不验证 RF 或 BLE 运行时；真实 Xtensa 构建负责核对官方 SDK 声明。宿主检查需要系统 GCC，以及 ASan/UBSan/LeakSanitizer 可正常运行的环境。
 
-当前没有可访问实板。Wi-Fi/BLE、USB、外接总线、DMA/复位、电气行为与辅助外设只具有构建/链接证据，尚未实测。完整生态镜像仍受 QEMU ADC 自校准模型缺失限制，不能宣称它已启动。SPI 强制复位路径也需要实板故障注入验证。
+当前没有可访问实板。Wi-Fi/BLE、USB、外接总线、DMA/复位、电气行为与辅助外设只具有构建/链接证据，尚未实测。完整生态镜像使用 SDK 支持的出厂校准 eFuse，已经能够在官方 S3 QEMU 启动；这不验证 ADC 采样。SPI 强制复位路径也需要实板故障注入验证。
 
 本 profile 是共享可信地址空间中的 NOS 服务接口，没有新增进程隔离或设备 IPC server。现有 MMU 平台的内核能力边界保留；后续将这些接口接入独立服务时，需要增加 IPC 请求编解码和用户缓冲区复制，不能把当前 C 指针请求直接当成 wire ABI。
 
-尚未覆盖的 SDK 功能以 ENOTSUP 或未提供接口体现，包括自动 OTG/VBUS 策略、USB Host 类桥接、BLE GATT、无线事件与网络 socket 服务、GPIO IRQ、DMA 异步 API、低功耗及驱动服务异常退出后的自动回收。新增外设不能绕过设备模型补捷径。
+尚未覆盖的 SDK 功能以 ENOTSUP 或未提供接口体现，包括 Type-C PD/CC、USB hub/UAS/等时类、BLE central/GATT client/OOB、无线网络 socket 服务、GPIO IRQ、通用 DMA 异步 API、低功耗及驱动服务异常退出后的自动回收。新增外设不能绕过设备模型补捷径。

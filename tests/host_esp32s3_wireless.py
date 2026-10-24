@@ -24,7 +24,7 @@ def main():
     # Keep every Wi-Fi statement verbatim; replace includes with the SDK fault
     # model. The real Xtensa build separately checks official SDK declarations.
     original = source.read_text()
-    wifi = original[: original.index("static void ble_host(")]
+    wifi = original
     wifi = re.sub(r'^#include "[^\n]+"\n', "", wifi, flags=re.M)
     (out / "wifi.c").write_text('#include "host_esp32s3_wifi_sdk.h"\n' + wifi)
     inputs = [

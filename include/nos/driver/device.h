@@ -7,6 +7,7 @@
  * serialize lifecycle and I/O. Callbacks must not reenter lifecycle methods.
  * No allocation, global registry, implicit MMIO mapping or kernel privilege. */
 #define NOS_DRV_EIO 5
+#define NOS_DRV_EACCES 13
 #define NOS_DRV_EAGAIN 11
 #define NOS_DRV_EBUSY 16
 #define NOS_DRV_ENODEV 19

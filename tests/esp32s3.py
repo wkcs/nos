@@ -9,12 +9,16 @@ from pathlib import Path
 import subprocess
 import time
 import re
+import tarfile
 
 ROOT = Path(__file__).resolve().parents[1]
 spec = importlib.util.spec_from_file_location("esp32_port", ROOT / "scripts/esp32s3.py")
 port = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(port)
 MARKERS = [
+    "PASS esp32s3_ble_gatt_state_descriptors_subscriptions_mtu_queue_atomicity",
+    "PASS esp32s3_usb_class_transport_hid_stale_and_backend_errors",
+    "PASS esp32s3_usb_otg_auto_discharge_wrap_and_overcurrent",
     "PASS page_allocator",
     "PASS esp32s3_native_syscalls",
     "PASS esp32s3_timer_preemption",
@@ -36,6 +40,51 @@ MARKERS = [
 
 def digest(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def emulator_probe(report):
+    archive = port.SDK_ROOT / "qemu-s3" / port.QEMU_ARCHIVE
+    assert digest(archive) == port.QEMU_SHA256, "Emulator download changed"
+    binary = port.qemu_binary()
+    with tarfile.open(archive) as package:
+        member = next(m for m in package.getmembers() if m.name.endswith("/bin/qemu-system-xtensa"))
+        selected_from_archive = hashlib.sha256(
+            package.extractfile(member).read()
+        ).hexdigest() == digest(binary)
+        if not port.os.environ.get("NOS_ESP_QEMU"):
+            assert selected_from_archive, "Installed QEMU differs from the verified archive"
+    command = [
+        str(binary),
+        "-M",
+        "esp32s3",
+        "-S",
+        "-display",
+        "none",
+        "-serial",
+        "null",
+        "-monitor",
+        "stdio",
+    ]
+    result = subprocess.run(
+        command,
+        input="info qtree\nquit\n",
+        text=True,
+        capture_output=True,
+        env=port.environment(),
+        timeout=15,
+        check=True,
+    )
+    (report / "machine-qtree.log").write_text(result.stdout + result.stderr)
+    return {
+        "download_url": port.QEMU_URL,
+        "archive_sha256": port.QEMU_SHA256,
+        "binary_sha256": digest(binary),
+        "machine": "esp32s3",
+        "qtree_exit_code": 0,
+        "selected_from_verified_archive": selected_from_archive,
+        "usb_controller_model": "dwc2" in result.stdout.lower(),
+        "rf_models": "not implemented by the pinned S3 machine; inspected official hw/xtensa/esp32s3.c",
+    }
 
 
 def audit(build, ecosystem=False, regression=True):
@@ -61,6 +110,9 @@ def audit(build, ecosystem=False, regression=True):
         "ports/esp_idf/components/nos_devices/devices.c",
         "ports/esp_idf/components/nos_devices/serial_buses.c",
         "ports/esp_idf/components/nos_devices/storage.c",
+        "servers/bluetooth/gatt.c",
+        "servers/usb/host/classes.c",
+        "servers/usb/host/otg.c",
     ]
     assert all((ROOT / p).resolve() in files for p in required)
     nm = (
@@ -76,7 +128,8 @@ def audit(build, ecosystem=False, regression=True):
     assert not any(name.startswith("nos_sdk_unused_") for name in names)
     assert "vPortTCBPreDeleteHook" not in names, "SDK cleanup assumes a different TCB layout"
     application = list((ROOT / "ports/esp_idf/project/main").glob("*.c")) + [
-        ROOT / "tests/guest/esp32s3_regression.c"
+        ROOT / "tests/guest/esp32s3_regression.c",
+        ROOT / "tests/guest/esp32s3_protocols.c",
     ]
     subprocess.run(["python3", ROOT / "scripts/check_idf_app_devices.py", *application], check=True)
     mechanisms = ["nos_service_start", "nos_idf_devices_init"]
@@ -86,7 +139,15 @@ def audit(build, ecosystem=False, regression=True):
         assert name in names, f"Missing managed device mechanism: {name}"
     checked = []
     if ecosystem:
-        for path in ("auxiliary.c", "wireless.c", "usb.c", "can.c"):
+        for path in (
+            "auxiliary.c",
+            "wireless.c",
+            "ble.c",
+            "usb.c",
+            "usb_host.c",
+            "usb_otg.c",
+            "can.c",
+        ):
             assert (ROOT / "ports/esp_idf/components/nos_devices" / path).resolve() in files
         for name in (
             "idf_auxiliary_ops",
@@ -95,6 +156,9 @@ def audit(build, ecosystem=False, regression=True):
             "idf_usb_host_ops",
             "idf_usb_device_ops",
             "idf_can_ops",
+            "idf_usb_otg_ops",
+            "nos_usb_hid_open_transport",
+            "nos_usb_msc_open_transport",
         ):
             assert name in names, f"Missing managed SDK backend: {name}"
         source = (ROOT / "ports/esp_idf/components/nos_devices/ecosystem.c").read_text()
@@ -113,7 +177,7 @@ def audit(build, ecosystem=False, regression=True):
     }
 
 
-def run_qemu(build, report, timeout, markers=None):
+def run_qemu(build, report, timeout, markers=None, calibrated_efuse=False):
     report.mkdir(parents=True, exist_ok=True)
     markers = MARKERS if markers is None else markers
     qemu = port.qemu_binary()
@@ -136,6 +200,11 @@ def run_qemu(build, report, timeout, markers=None):
     # ESP-IDF 5.4.2's default QEMU eFuse image: chip revision 0.3, no keys.
     efuse = bytearray(1024)
     efuse[38] = 0x0C
+    if calibrated_efuse:
+        # S3 QEMU stores BLK0/1 as 24 bytes each. BLK2 bit128 is the
+        # factory ADC-calibration version (1). Zero deltas select SDK-defined
+        # base codes. This models fused calibration, not ADC conversion.
+        efuse[64] = 1
     efuse_path = report / "efuse.bin"
     efuse_path.write_bytes(efuse)
     command = [
@@ -199,6 +268,7 @@ def run_qemu(build, report, timeout, markers=None):
         "flash_sha256": digest(flash_path),
         "hardware_peripherals": "not verified",
         "wifi_ble_rf": "not verified",
+        "factory_calibration_efuse": calibrated_efuse,
     }
 
 
@@ -282,6 +352,23 @@ def main():
     before = port.source_identity()
     result = {"source": before, "idf_commit": port.IDF_COMMIT, "passed": False}
     try:
+        result["emulator"] = emulator_probe(report)
+        for name, script in (
+            ("portable_protocols", "host_esp32s3_protocols.py"),
+            ("usb_sdk_faults", "host_esp32s3_usb.py"),
+        ):
+            with (report / (name + ".log")).open("wb") as log:
+                subprocess.run(
+                    ["python3", ROOT / "tests" / script],
+                    cwd=ROOT,
+                    stdout=log,
+                    stderr=subprocess.STDOUT,
+                    check=True,
+                )
+            result[name] = {
+                "passed": True,
+                "scope": "actual code with transport/SDK model, no physical RF/USB claim",
+            }
         subprocess.run(
             [
                 "python3",
@@ -319,6 +406,14 @@ def main():
                     )
             result[name] = audit(build, profile == "ecosystem", regression)
         result["qemu"] = run_qemu(output / "runtime/build", report / "runtime", args.timeout)
+        if not args.runtime_only:
+            result["qemu_ecosystem"] = run_qemu(
+                output / "ecosystem/build",
+                report / "ecosystem",
+                args.timeout,
+                [*MARKERS, "PASS esp32s3_managed_otg_idle_worker"],
+                calibrated_efuse=True,
+            )
         if not args.runtime_only:
             result["qemu_normal"] = run_qemu(
                 output / "normal/build",
