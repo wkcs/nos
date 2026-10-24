@@ -4,7 +4,11 @@
 
 最新连接能力已完成下列冻结专项验证；底层继续使用原始 ESP-IDF 驱动和无线库。接口见 [设备模型接入](ESP32_S3_DEVICES.md) 和 [GATT/Host/OTG](ESP32_S3_CONNECTIVITY.md)，无线/USB/外接外设仍未实板验收。
 
-## GATT、USB Host 与自动 OTG 的最终记录
+## 常驻 nshell 的最新记录
+
+`afb0818f916e788771668121c010f8085f53d382` 在干净、冻结源码上通过 C3/S3 三种镜像专项及三个相关宿主 runner。S3 报告为 `out/esp32s3/nshell-validation/reports/1792884403539264806/results.json`：常驻normal镜像15项真实UART0命令/编辑检查通过，runtime19/生态21个必需标记齐全，全部QEMU退出0。normal不再从app_main返回；UART0由system.console独占管理，SDK驱动/RX中断/ringbuffer与NOS任务实际工作。产物、证据与范围见 [最新冻结记录](ESP32_C3_VALIDATION.md) 和 [nshell profile](ESP32_NSHELL.md)。以下保留历史快照，不能替代最新shell结果。
+
+## GATT、USB Host 与自动 OTG 的历史记录
 
 被测源码为干净提交 `cc005897534b3265392b27d27d9af2dce1081890`。专项期间源码、文档和构建输入冻结，开始/结束身份完全相同；下面五个 runner 均实际退出 0。本文是测试结束后的文档补录，不改变原报告身份。
 
