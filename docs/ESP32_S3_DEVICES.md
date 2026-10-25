@@ -29,7 +29,7 @@ IDF 后端使用同一个递归互斥量串行化管理和请求，拒绝 ISR/�
 
 ## 已接入的服务种类
 
-`runtime` 构建包含 GPIO、UART、SPI、I2C、NVS 和 OTA。`ecosystem` 额外包含其余后端及自动 OTG 管理服务；共24类应用服务（含固定 USB Serial/JTAG），另有固件生命周期的 UART0 Console，新增连接接口见 [ESP32_S3_CONNECTIVITY.md](ESP32_S3_CONNECTIVITY.md)。全部后端都有实际 SDK 创建、请求和停止代码；下表同时列出当前实现的功能边界，不能据此推断 SDK 的全部 API 已有 NOS 等价接口。
+`runtime` 构建包含 GPIO、UART、SPI、I2C、NVS、OTA 和专用 Flash BLOCK。`ecosystem` 额外包含其余后端及自动 OTG 管理服务；共25类应用服务（含固定 USB Serial/JTAG），另有固件生命周期的 UART0 Console，新增连接接口见 [ESP32_S3_CONNECTIVITY.md](ESP32_S3_CONNECTIVITY.md)。全部后端都有实际 SDK 创建、请求和停止代码；下表同时列出当前实现的功能边界，不能据此推断 SDK 的全部 API 已有 NOS 等价接口。
 
 | 服务 | 当前 NOS 请求与限制 |
 | --- | --- |
@@ -39,6 +39,7 @@ IDF 后端使用同一个递归互斥量串行化管理和请求，拒绝 ISR/�
 | SPI | SPI2/3，模式0–3、8位、MSB/LSB；一个片选、整消息合并，最多64字节；CPU FIFO，无 DMA |
 | I2C | I2C0/1，7位、单读/单写/同地址写后 repeated START 读；不支持任意多消息、10位或自动恢复；小于一个系统 tick 的超时返回 ENOTSUP；无法区分阶段的 NACK 返回 EIO |
 | NVS | u32 键读写、提交、显式清除命名空间；初始化错误不会自动擦除数据 |
+| BLOCK | 专用storage分区，512字节逻辑扇区、每扇区独占4KiB擦除块；STATUS/READ/WRITE/COMMIT，拒绝原始擦除；[原生持久化](ESP32_STORAGE.md) |
 | OTA | 非运行槽开始、写入、校验结束、取消；不会自动选择启动槽 |
 | Wi-Fi | 官方 STA 初始化、RAM 凭据配置、连接/断开、关联状态/RSSI；连接受理不表示 DHCP 已完成；尚无 AP/扫描/事件订阅接口 |
 | BLE | 官方控制器/NimBLE，GATT 服务端、特征/描述符、广播、订阅/通知/indication、MTU、配对和 bond store；central/GATT client 与 OOB 未实现 |
@@ -61,7 +62,7 @@ IDF 后端使用同一个递归互斥量串行化管理和请求，拒绝 ISR/�
 
 SPI 超时通过 IDF 复位接口停止控制器，并用 SDK HAL 退还轮询事务 bookkeeping；对调用者仍返回超时，禁止故障总线继续传输，必须关闭后重新创建。没有用无限等待替代超时，也没有启用尚未验收的 SPI DMA。
 
-NVS 由存储和无线后端在域锁下引用计数，最后一个用户停止时调用 SDK deinit。SDK 的 lwIP/default event loop 与 SDSPI 全局基础设施保留到固件结束；每个接口、卡和总线仍由各自 NOS 设备管理。启动时钟、堆、ROM、tick、日志等系统基础设施由 ESP-IDF 启动路径负责，不伪装成可卸载的应用设备。
+NVS 由存储和无线后端在域锁下引用计数，最后一个用户停止时调用 SDK deinit。SDK 的 lwIP/default event loop 与 SDSPI 全局基础设施保留到固件结束；每个接口、卡和总线仍由各自 NOS 设备管理。启动时钟、堆、ROM、tick、日志等系统基础设施由 NOS 启动策略调用原始 IDF 硬件初始化负责，不伪装成可卸载的应用设备。
 
 Wi-Fi 网络接口通过原始 SDK 的可返回错误 API 创建，避免默认 STA 快捷函数在内存不足等错误上触发断言。SDK 的 Wi-Fi/NimBLE 初始化可能只返回最初错误、隐藏内部清理失败；这类失败以及不可确认完成的 Wi-Fi 清理会保留设备、NVS 引用和资源，要求重启。不能根据 NOT_INIT 或空句柄推断无线硬件已停止。
 

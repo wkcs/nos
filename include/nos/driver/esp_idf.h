@@ -30,6 +30,9 @@ struct nos_idf_device_config {
     const struct nos_idf_usb_otg_config *usb_otg;
 };
 int nos_idf_devices_init(void);
+/* BLOCK instance 0 owns only the dedicated "storage" data subtype 0x40
+ * partition. 512-byte logical sectors each occupy one 4096-byte erase block.
+ * No auto-format, wear levelling, raw erase or access to NVS/OTA partitions. */
 /* Firmware-owned UART0: all terminal requests use the NOS service domain.
  * READ/WRITE take nos_io_buffer and are nonblocking, with short transfers.
  * The console cannot be stopped or taken over by application UART services. */

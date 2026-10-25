@@ -137,8 +137,8 @@ static void command(char *line) {
     const char *name = words[0];
     if (nos_esp_shell_files(count, words, emit, NULL))
         return;
-    if (!strcmp(name, "run") || !strcmp(name, "mount")) {
-        print("%s: unsupported; ELF/persistent block backend is not bound\n", name);
+    if (!strcmp(name, "run")) {
+        print("%s: unsupported; independent ELF loader is not bound\n", name);
         return;
     }
     if (!strcmp(name, "echo")) {
@@ -153,7 +153,7 @@ static void command(char *line) {
     }
     if (!strcmp(name, "help"))
         print("nshell commands: help version uptime stats mem ps devices echo history clear\n"
-              "files: pwd cd ls cat write append touch mkdir rm rmdir mv stat\n");
+              "files: pwd cd ls cat write append touch mkdir rm rmdir mv stat mount sync\n");
     else if (!strcmp(name, "version"))
         version();
     else if (!strcmp(name, "uptime"))

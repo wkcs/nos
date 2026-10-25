@@ -9,6 +9,7 @@
 #include "nvs.h"
 #include "esp_ota_ops.h"
 #include "soc/soc_caps.h"
+#include "flash_block.h"
 struct idf_device {
     struct nos_service service;
     struct nos_idf_device_config config;
@@ -17,6 +18,7 @@ struct idf_device {
     struct nos_resource resources[NOS_DRIVER_MAX_RESOURCES];
     uint8_t installed, faulted, nvs_owned;
     union {
+        struct nos_flash_block block;
         struct {
             struct nos_gpio_controller controller;
             struct nos_gpio pin;
@@ -61,6 +63,7 @@ int idf_nvs_release(void);
 extern const struct nos_service_ops idf_gpio_ops, idf_uart_ops, idf_spi_ops, idf_i2c_ops;
 extern const struct nos_service_ops idf_storage_ops, idf_ota_ops;
 extern const struct nos_service_ops idf_console_ops;
+extern const struct nos_service_ops idf_flash_ops;
 #ifdef NOS_IDF_ECOSYSTEM
 extern const struct nos_service_ops idf_wifi_ops, idf_ble_ops, idf_usb_host_ops, idf_usb_device_ops;
 extern const struct nos_service_ops idf_auxiliary_ops;

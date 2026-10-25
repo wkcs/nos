@@ -18,6 +18,7 @@ static unsigned started, suspended, pended_yield;
 extern void nos_esp_vfs_entry(void *argument);
 #endif
 static portMUX_TYPE api_mux = portMUX_INITIALIZER_UNLOCKED;
+static TaskFunction_t init_entry;
 const DRAM_ATTR uint32_t offset_pxEndOfStack = offsetof(struct nos_idf_task, stack_end);
 extern int nos_idf_kernel_initialized(void);
 extern void vPortYield(void);
@@ -120,6 +121,10 @@ static BaseType_t create(TaskFunction_t function, const char *name, uint32_t byt
          * Reserve endpoint 0's owner before any such compatibility allocation. */
         if (!slot && function != nos_esp_vfs_entry)
             continue;
+        /* VFS mount policy identifies init as process 1. SDK constructor
+         * workers must not acquire that identity before init is created. */
+        if (slot == 1 && function != init_entry)
+            continue;
 #endif
         if (!records[slot].pending && !records[slot].native && !records[slot].deleting &&
             tasks[slot].state == TASK_UNUSED)
@@ -164,6 +169,7 @@ BaseType_t xTaskCreatePinnedToCore(TaskFunction_t f, const char *n, const uint32
 /* Native boot entry: vendor task APIs are clients of this NOS mechanism. */
 int nos_esp_create_init(TaskFunction_t entry, unsigned bytes, unsigned prio)
 {
+    init_entry = entry;
     return create(entry, "init", bytes, NULL, prio, NULL, 0, NULL, NULL,
                   MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT) == pdPASS ? 0 : -NOS_ENOMEM;
 }

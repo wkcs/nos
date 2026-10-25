@@ -129,6 +129,8 @@ static const struct nos_service_ops *backend(enum nos_service_kind kind)
         return &idf_storage_ops;
     case NOS_SERVICE_OTA:
         return &idf_ota_ops;
+    case NOS_SERVICE_BLOCK:
+        return &idf_flash_ops;
 #ifdef NOS_IDF_ECOSYSTEM
     case NOS_SERVICE_WIFI:
         return &idf_wifi_ops;

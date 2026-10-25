@@ -285,7 +285,8 @@ AS 限额见下方已完成批次；下一批优先完善稳定进程/地址空�
 - [x] 增加文件/目录/dup/unlink、管道、容量边界与SDK/native EXIT文件表回收的真实芯片回归。
 - [x] `bfd67ab` 最终冻结验收：两平台八个实际镜像、各正常固件32项交互及公共89/89组全部通过，五个runner退出0。[报告与正常固件](ESP32_VFS_VALIDATION.md)。
 - [x] Newlib 文件/stdio、目录和 poll/select 接入 NOS VFS；保留 SDK 全局 FD 兼容区间。
-- [ ] 持久块设备、独立ELF、内存分配器统一及NLP绑定。
+- [x] 专用Flash块设备和原生双bank持久化，使用原始IDF分区驱动，挂载不自动格式化。
+- [ ] 磨损均衡/FAT、独立ELF、内存分配器统一及NLP绑定。
 
 ## ESP32 Newlib 文件适配
 
@@ -295,3 +296,11 @@ AS 限额见下方已完成批次；下一批优先完善稳定进程/地址空�
 - [x] 增加 C3/S3 同一源码的真实 Newlib/stdio、ABI 转换、槽复用/heap 回收与全部任务槽容量回归。
 - [x] `106338b` 冻结专项：C3/S3八个实际镜像，四份普通固件各32项UART交互，运行时28/生态30标记通过；最终runner退出0。公共89组未重跑，保留此前基线。
 - 能力与边界见 [ESP32_NEWLIB.md](ESP32_NEWLIB.md)，[验证、日志与正常固件](ESP32_NEWLIB_VALIDATION.md)。
+
+## ESP32 原生Flash持久化
+
+- [x] 新增受NOS设备模型管理的BLOCK实例，只接入专用storage subtype0x40，底层复用IDF原始分区驱动。
+- [x] 512字节逻辑扇区独占4KiB擦除块，反码映射擦除态；复用原生双bank快照，不修改公共VFS。
+- [x] nshell mount/sync、Newlib fsync提交；预留init槽1，避免SDK构造任务抢占挂载身份。
+- [x] 增加真实NOR二进制回归、七次独立启动的持久化/损坏回退检查及宿主故障注入。
+- 实现与资源预算见 [ESP32_STORAGE.md](ESP32_STORAGE.md)，最终冻结执行证据另行补录。

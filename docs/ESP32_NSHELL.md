@@ -26,7 +26,7 @@ python3 scripts/esp32c3.py flash --port /dev/ttyACM0
 | `pwd cd ls cat write append touch mkdir rm rmdir mv stat` | 原生VFS的文件、目录、cwd及元数据操作，RAM预算见 [文件服务](ESP32_VFS.md) |
 | `echo`、`history`、`clear` | 带引号/转义的参数、历史记录与终端清屏 |
 
-支持方向键、行内编辑、退格、Ctrl+C、CR/LF、256字节有界输入和4条历史记录。错误引号、参数溢出或超长行报错后继续接受命令。原生 [NOS VFS](ESP32_VFS.md) 已接入：`pwd cd ls cat write append touch mkdir rm rmdir mv stat` 通过独立服务任务和 IPC 工作，标准输入输出也经 VFS 转到受管理控制台。RAM 文件复位丢失；[Newlib 文件与标准流](ESP32_NEWLIB.md) 已接入；独立 ELF、Linux/glibc 和 NLP 终端绑定仍未完成，`run`/持久挂载仍返回不支持。
+支持方向键、行内编辑、退格、Ctrl+C、CR/LF、256字节有界输入和4条历史记录。错误引号、参数溢出或超长行报错后继续接受命令。原生 [NOS VFS](ESP32_VFS.md) 已接入：`pwd cd ls cat write append touch mkdir rm rmdir mv stat` 通过独立服务任务和 IPC 工作，标准输入输出也经 VFS 转到受管理控制台。RAM 文件复位丢失；[Flash快照](ESP32_STORAGE.md) 可通过 `mount /data` 和 `sync` 使用。[Newlib 文件与标准流](ESP32_NEWLIB.md) 已接入；独立 ELF、Linux/glibc 和 NLP 终端绑定仍未完成，`run`/FAT挂载仍返回不支持。
 
 ## UART0 的统一管理
 

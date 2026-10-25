@@ -38,44 +38,13 @@ void nos_esp_vfs_entry(void *argument) {
     nos_vfs_server((uintptr_t)argument);
 }
 
-/* No block device or entropy service is bound in this profile. RAM/proc and
- * initramfs are native VFS backends; do not pretend RAM files are persistent. */
+/* Entropy and FatFs are not bound in this profile. The native two-bank
+ * filesystem uses the separately managed dedicated NOR block service. */
 intptr_t nos_random_read(void *buffer, size_t count, unsigned flags) {
     (void)buffer;
     (void)count;
     (void)flags;
     return -NOS_ENOTSUP;
-}
-int nos_block_init(void) {
-    return -NOS_ENOTSUP;
-}
-int nos_block_read(unsigned sector, void *buffer) {
-    (void)sector;
-    (void)buffer;
-    return -NOS_ENOTSUP;
-}
-int nos_block_write(unsigned sector, const void *buffer) {
-    (void)sector;
-    (void)buffer;
-    return -NOS_ENOTSUP;
-}
-int nos_block_flush(void) {
-    return -NOS_ENOTSUP;
-}
-uint64_t nos_block_capacity(void) {
-    return 0;
-}
-uint64_t nos_block_interrupts(void) {
-    return 0;
-}
-uint64_t nos_block_requests(void) {
-    return 0;
-}
-uint64_t nos_block_poll_fallbacks(void) {
-    return 0;
-}
-unsigned nos_block_version(void) {
-    return 0;
 }
 int nos_fat_mount(int format) {
     (void)format;

@@ -470,6 +470,8 @@ void nos_esp_init(void)
     }
     assert(heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT) == before);
     puts("PASS " NOS_IDF_TEST_NAME "_task_recycle_no_stack_leak");
+    extern void nos_esp_storage_regression(void);
+    nos_esp_storage_regression();
     puts("PASS " NOS_IDF_TEST_NAME "_nos_idf_regression");
     fflush(stdout);
 }

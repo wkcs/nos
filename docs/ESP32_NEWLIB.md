@@ -16,7 +16,7 @@ C3 与 S3 使用固定 ESP-IDF 5.4.2 工具链的原始 Newlib。NOS 在 `libc/p
 
 NOS 在 SDK stdio 初始化之前永久保留 3–10，防止 SDK 分配重复编号；编译期检查 socket 区间不重叠。普通应用的路径打开只查询 NOS，不在 ENOENT 时偷偷退回 SDK 路径。SDK 自身的原始 VFS 注册/打开接口仍可供兼容层使用，回归用一个真实注册的 SDK 文件系统验证与 NOS FD3 并存。SDK 全局描述符不获得 NOS 每任务归属或自动回收语义。
 
-支持 `mkdir/rmdir/chdir/getcwd`、`opendir/readdir/readdir_r/closedir/telldir/seekdir/rewinddir`、`unlink/rename/link`、`dup/dup2/pipe`、`pread/pwrite/ftruncate/truncate`、`isatty`，以及 `fcntl` 的复制、FD_CLOEXEC、访问/append/nonblock 标志。底层不支持的功能保留错误返回；当前 RAM 后端的 `fsync` 返回 ENOTSUP，O_SYNC 与记录锁也不伪造成功。Newlib 与 NOS 的 open 标志、errno、poll 位布局分别转换。
+支持 `mkdir/rmdir/chdir/getcwd`、`opendir/readdir/readdir_r/closedir/telldir/seekdir/rewinddir`、`unlink/rename/link`、`dup/dup2/pipe`、`pread/pwrite/ftruncate/truncate`、`isatty`，以及 `fcntl` 的复制、FD_CLOEXEC、访问/append/nonblock 标志。底层不支持的功能保留错误返回；没有持久挂载时 `fsync` 返回 ENOTSUP；挂载 [原生Flash快照](ESP32_STORAGE.md) 后 fsync 提交整个快照，不会持久化RAM路径。O_SYNC 与记录锁也不伪造成功。Newlib 与 NOS 的 open 标志、errno、poll 位布局分别转换。
 
 `poll` 支持至多 FD_SETSIZE 项，合并 NOS 就绪快照和 SDK select 回调；SDK 设备必须自身实现 select。`select` 支持 NOS 与 SDK 混合集合，纯 SDK 集合交还原实现。等待粒度为一个 100Hz tick。当前不是完整 POSIX.1-2017 实现或认证。
 
@@ -36,4 +36,4 @@ NOS 在 SDK stdio 初始化之前永久保留 3–10，防止 SDK 分配重复�
 
 运行 `python3 tests/esp32c3.py --timeout 90` 与 `python3 tests/esp32s3.py --timeout 90`。每个平台构建普通、运行时回归、完整生态回归镜像；检查真实编译/ELF 符号、Newlib 文件/stdio、poll/select ABI、SDK FD 并存、任务所有权与退出回收，以及私有标准流启用后的 16/24 个实际任务槽容量。普通固件启动输出 `NOS: Newlib filesystem online`，执行 32 项真实 UART nshell 交互。
 
-当前只使用易失 RAM 文件，仍待持久块设备/文件系统、分配器统一、独立 ELF 与 NLP 服务绑定；ESP32 仍是单核共享固件地址空间。本适配不扩大 RF、USB 或实板验证范围。冻结验证结果、原始日志和正常固件见 [ESP32_NEWLIB_VALIDATION.md](ESP32_NEWLIB_VALIDATION.md)；历史公共 89 组基线见 [ESP32_VFS_VALIDATION.md](ESP32_VFS_VALIDATION.md)。
+RAM 文件之外已接入 [原生Flash持久化](ESP32_STORAGE.md)，仍待磨损均衡/FAT、分配器统一、独立 ELF 与 NLP 服务绑定；ESP32 仍是单核共享固件地址空间。本适配不扩大 RF、USB 或实板验证范围。冻结验证结果、原始日志和正常固件见 [ESP32_NEWLIB_VALIDATION.md](ESP32_NEWLIB_VALIDATION.md)；历史公共 89 组基线见 [ESP32_VFS_VALIDATION.md](ESP32_VFS_VALIDATION.md)。

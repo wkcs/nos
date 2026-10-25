@@ -62,10 +62,13 @@ int nos_esp_shell_files(int count, char **words, void (*emit)(void *, const char
     int argc = -1;
     if (!strcmp(name, "pwd"))
         argc = 1;
+    else if (!strcmp(name, "sync"))
+        argc = 1;
     else if (!strcmp(name, "cd") || !strcmp(name, "ls"))
         argc = 0;
     else if (!strcmp(name, "cat") || !strcmp(name, "mkdir") || !strcmp(name, "rm") ||
-             !strcmp(name, "rmdir") || !strcmp(name, "touch") || !strcmp(name, "stat"))
+             !strcmp(name, "rmdir") || !strcmp(name, "touch") || !strcmp(name, "stat") ||
+             !strcmp(name, "mount"))
         argc = 2;
     else if (!strcmp(name, "write") || !strcmp(name, "append") || !strcmp(name, "mv"))
         argc = 3;
@@ -83,7 +86,11 @@ int nos_esp_shell_files(int count, char **words, void (*emit)(void *, const char
             text(&out, path);
             text(&out, "\n");
         }
-    } else if (!strcmp(name, "cd"))
+    } else if (!strcmp(name, "mount"))
+        rc = nos_mount(words[1], 1);
+    else if (!strcmp(name, "sync"))
+        rc = nos_sync();
+    else if (!strcmp(name, "cd"))
         rc = nos_chdir(count == 2 ? words[1] : "/");
     else if (!strcmp(name, "ls"))
         rc = list(&out, count == 2 ? words[1] : ".");

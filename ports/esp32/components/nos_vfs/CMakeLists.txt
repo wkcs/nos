@@ -1,6 +1,6 @@
 # Copyright (C) 2026 NOS contributors.
 set(NOS_ROOT "${CMAKE_CURRENT_LIST_DIR}/../../../..")
-idf_component_register(SRCS "backends.c"
+idf_component_register(SRCS "backends.c" "block.c"
     "${NOS_ROOT}/servers/vfs/server.c" "${NOS_ROOT}/user/lib/string.c"
     "${NOS_ROOT}/user/lib/ipc.c" "${NOS_ROOT}/user/lib/fs_io.c"
     "${NOS_ROOT}/user/lib/fs_path.c"

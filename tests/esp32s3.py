@@ -43,6 +43,7 @@ MARKERS = [
     "PASS esp32s3_device_capacity_no_leak",
     "PASS esp32s3_sdk_ota_reject_abort",
     "PASS esp32s3_task_recycle_no_stack_leak",
+    "PASS esp32s3_native_flash_block_mount_sync",
     "PASS esp32s3_nos_idf_regression",
 ]
 
@@ -134,6 +135,9 @@ def audit(build, ecosystem=False, regression=True):
         "user/lib/fs_io.c",
         "user/lib/fs_path.c",
         "ports/esp32/components/nos_vfs/backends.c",
+        "ports/esp32/components/nos_vfs/block.c",
+        "ports/esp32/components/nos_devices/flash.c",
+        "ports/esp32/components/nos_devices/flash_block.c",
         "libc/port/esp32/io.c",
         "libc/port/esp32/streams.c",
         "libc/port/esp32/directories.c",
@@ -202,6 +206,8 @@ def audit(build, ecosystem=False, regression=True):
         "__wrap_fopen",
         "__wrap_fcntl",
         "__wrap__write_r",
+        "idf_flash_ops",
+        "nos_block_init",
         "nos_rpc",
     ):
         assert name in names, f"Missing NOS scheduler mechanism: {name}"
@@ -285,7 +291,16 @@ def audit(build, ecosystem=False, regression=True):
     }
 
 
-def run_qemu(build, report, timeout, markers=None, calibrated_efuse=False, interactive=False):
+def run_qemu(
+    build,
+    report,
+    timeout,
+    markers=None,
+    calibrated_efuse=False,
+    interactive=False,
+    existing_flash=None,
+    console_exchanges=None,
+):
     report.mkdir(parents=True, exist_ok=True)
     markers = MARKERS if markers is None else markers
     markers = [
@@ -311,8 +326,19 @@ def run_qemu(build, report, timeout, markers=None, calibrated_efuse=False, inter
         assert end <= len(flash) and not any(offset < b and a < end for a, b in ranges)
         ranges.append((offset, end))
         flash[offset:end] = data
-    flash_path = report / "flash.bin"
-    flash_path.write_bytes(flash)
+    if existing_flash is None:
+        flash_path = report / "flash.bin"
+        flash_path.write_bytes(flash)
+    else:
+        flash_path = Path(existing_flash).resolve()
+        previous = flash_path.read_bytes()
+        assert len(previous) == len(flash), "Invalid reused Flash size"
+        for offset, filename in entries.items():
+            if filename == "ota_data_initial.bin":
+                continue  # Bootloader updates OTA selection metadata on first boot.
+            start = int(offset, 0)
+            data = (build / filename).read_bytes()
+            assert previous[start : start + len(data)] == data, "Reused Flash firmware changed"
     # ESP-IDF 5.4.2's default QEMU eFuse image: chip revision 0.3, no keys.
     efuse = bytearray(1024)
     efuse[38] = 0x0C
@@ -396,10 +422,13 @@ def run_qemu(build, report, timeout, markers=None, calibrated_efuse=False, inter
             (
                 "exec_boundary",
                 b"run /bin/hello\r",
-                r"run: unsupported; ELF/persistent block backend is not bound",
+                r"run: unsupported; independent ELF loader is not bound",
             ),
             ("recovery", b'echo "shell" "still" "alive"\r', r"shell still alive"),
         ]
+    if console_exchanges is not None:
+        assert interactive and console_exchanges
+        exchanges = console_exchanges
     exchange_index = 0
     exchange_start = None
     checks = []
@@ -578,6 +607,7 @@ def main():
         for name, script in (
             ("portable_protocols", "host_esp32s3_protocols.py"),
             ("usb_sdk_faults", "host_esp32s3_usb.py"),
+            ("flash_sdk_faults", "host_esp32_flash.py"),
         ):
             with (report / (name + ".log")).open("wb") as log:
                 subprocess.run(
@@ -661,6 +691,14 @@ def main():
                     "NOS SHELL READY",
                 ],
                 interactive=True,
+            )
+            from esp32_storage import persistence
+
+            result["persistence"] = persistence(
+                run_qemu,
+                output / "normal/build",
+                report / "persistence",
+                args.timeout,
             )
         result["source_after"] = port.source_identity()
         assert before == result["source_after"], "Sources changed during ESP32-S3 validation"
