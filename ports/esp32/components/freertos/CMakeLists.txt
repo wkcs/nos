@@ -56,6 +56,10 @@ idf_component_register(SRCS ${SRCS}
     LDFRAGMENTS "${SDK_RTOS}/linker_common.lf" "${SDK_RTOS}/linker.lf")
 target_compile_definitions(${COMPONENT_LIB} PUBLIC ${nos_arch} NOS_ESP_IDF=1 NOS_SMP=1 NOS_NORMAL_BOOT=1
     PAGE_POOL_PAGES=${nos_pages} USER_BYTES=4096 HEAP_END=0)
+idf_build_get_property(native_vfs NOS_ESP_VFS)
+if(native_vfs)
+    target_compile_definitions(${COMPONENT_LIB} PUBLIC NOS_ESP_VFS=1)
+endif()
 # Native task records plus two shared-heap pages and two spare pages.
 # C3: 16 tasks / 20 pages; S3: 24 tasks / 28 pages. SDK stacks use its heap.
 set_source_files_properties("${KERNEL}/portable/${sdk_arch}/port.c" PROPERTIES

@@ -39,10 +39,12 @@ IDF 无线二进制和部分原始驱动依赖 FreeRTOS 函数、Newlib TLS、�
 
 硬件支持源码、已初始化的必要子模块和无线库包含在仓库的校验归档中，构建从本地解包，不克隆外部 SDK。`scripts/espressif_sources.py` 在解包和构建前后核对归档及逐文件清单，包括可执行权限和符号链接；改动缓存或添加源码会拒绝构建。编译器、Python 构建工具和 QEMU 是宿主开发工具，仍由 setup 安装到忽略的 `out/`。
 
-保留 Espressif Flash/IRAM/DRAM 链接布局和 DMA/capability heap 支持，用于硬件库分配；NOS 原生页池和硬件 heap 的统计仍分别列出。目前还没有统一两套分配器。默认单核、100Hz、共享固件地址空间；ESP 端的独立 ELF、VFS 服务、完整 POSIX、SMP 和实板无线互通仍未完成。此次启动重构不代表这些能力已具备。
+保留 Espressif Flash/IRAM/DRAM 链接布局和 DMA/capability heap 支持，用于硬件库分配；NOS 原生页池和硬件 heap 的统计仍分别列出。目前还没有统一两套分配器。默认单核、100Hz、共享固件地址空间；ESP 端的独立 ELF、完整 POSIX、SMP 和实板无线互通仍未完成。此次启动重构不代表这些能力已具备。
 
 ## 验证
 
 运行 `python3 tests/esp32c3.py` 和 `python3 tests/esp32s3.py`。专项检查真实编译数据库、ELF 机器类型及启动符号：必须包含 NOS 启动与 init，必须排除 SDK `startup.c`、`app_startup.c`、`tasks.c` 和 `app_main/main_task`。真实 QEMU 分别执行正常启动的15项 UART nshell 交互、运行时回归和全外设链接回归。模拟器没有无线射频或完整 USB 控制器模型，不替代实板验证。
 
 本轮干净冻结源码的结果、原始日志和正常固件见 [ESP32_BOOT_VALIDATION.md](ESP32_BOOT_VALIDATION.md)。
+
+原生 VFS 已接入独立服务任务和端点0，nshell 文件与标准输入输出走实际 IPC；能力与限制见 [ESP32_VFS.md](ESP32_VFS.md)。SDK Newlib描述符适配和分配器统一仍未完成。

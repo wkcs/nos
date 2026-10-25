@@ -208,7 +208,7 @@ static intptr_t dispatch(uintptr_t nr, uintptr_t a, uintptr_t b, uintptr_t c)
     }
     case NOS_SYS_SERVICE_RESTART:
 #if defined(NOS_NK60_V2) || defined(NOS_ESP_IDF)
-        /* This profile has no native VFS service or process supervisor. */
+        /* MCU profiles do not expose the native-stack service restart path. */
         return -NOS_ENOTSUP;
 #else
         if (!(current_task->caps & NOS_CAP_SPAWN) || a) return -NOS_EACCES;

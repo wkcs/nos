@@ -14,6 +14,9 @@
 static struct nos_idf_task records[NOS_TASKS];
 void *pxCurrentTCBs[1];
 static unsigned started, suspended, pended_yield;
+#ifdef NOS_ESP_VFS
+extern void nos_esp_vfs_entry(void *argument);
+#endif
 static portMUX_TYPE api_mux = portMUX_INITIALIZER_UNLOCKED;
 const DRAM_ATTR uint32_t offset_pxEndOfStack = offsetof(struct nos_idf_task, stack_end);
 extern int nos_idf_kernel_initialized(void);
@@ -73,6 +76,10 @@ static int activate(unsigned slot)
     if (id < 0)
         return id;
     r->native = &tasks[slot];
+#ifdef NOS_ESP_VFS
+    if (slot)
+        r->native->endpoint_rights[0] = NOS_RIGHT_CALL;
+#endif
     r->inherited_priority = r->ceiling_priority = 31;
     memset(r->stack, 0xa5, r->stack_bytes);
     arch_frame_init(&r->native->frame, (uintptr_t)idf_entry,
@@ -102,10 +109,17 @@ static BaseType_t create(TaskFunction_t function, const char *name, uint32_t byt
     }
     portENTER_CRITICAL(&api_mux);
     unsigned slot;
-    for (slot = 0; slot < NOS_IDLE_FIRST; slot++)
+    for (slot = 0; slot < NOS_IDLE_FIRST; slot++) {
+#ifdef NOS_ESP_VFS
+        /* Hardware-library constructors can create tasks before kernel_start.
+         * Reserve endpoint 0's owner before any such compatibility allocation. */
+        if (!slot && function != nos_esp_vfs_entry)
+            continue;
+#endif
         if (!records[slot].pending && !records[slot].native && !records[slot].deleting &&
             tasks[slot].state == TASK_UNUSED)
             break;
+    }
     if (slot == NOS_IDLE_FIRST) {
         portEXIT_CRITICAL(&api_mux);
         if (owns_stack)
@@ -148,6 +162,22 @@ int nos_esp_create_init(TaskFunction_t entry, unsigned bytes, unsigned prio)
     return create(entry, "init", bytes, NULL, prio, NULL, 0, NULL, NULL,
                   MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT) == pdPASS ? 0 : -NOS_ENOMEM;
 }
+#ifdef NOS_ESP_VFS
+int nos_esp_create_vfs(TaskFunction_t entry)
+{
+    /* Endpoint 0 must belong to the first task; never silently assign it to
+     * an SDK constructor task. Device capability is confined to this service. */
+    TaskHandle_t h = NULL;
+    if (create(entry, "vfs", 12288, NULL, configMAX_PRIORITIES - 1, &h, 0, NULL, NULL,
+               MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT) != pdPASS)
+        return -NOS_ENOMEM;
+    struct nos_idf_task *r = lookup(h);
+    if (!r || r->native != &tasks[0])
+        kernel_fail("NOS VFS reserved slot");
+    r->native->caps |= NOS_CAP_DEVICE;
+    return 0;
+}
+#endif
 TaskHandle_t xTaskCreateStaticPinnedToCore(TaskFunction_t f, const char *n, const uint32_t s,
                                            void *a, UBaseType_t p, StackType_t *stack,
                                            StaticTask_t *buffer, const BaseType_t core)

@@ -7,6 +7,7 @@
 #include "nos/esp_shell.h"
 #include "nos/shell.h"
 #include "nos/arch.h"
+#include "nos/user.h"
 #include "nos/driver/esp_idf.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -20,16 +21,15 @@ static void print(const char *format, ...) __attribute__((format(printf, 1, 2)))
 static int write_all(const char *text, size_t n) {
     unsigned stalls = 0;
     while (n) {
-        struct nos_io_buffer b = {(void *)text, n, 0};
-        int rc = nos_idf_console_call(NOS_IO_WRITE, &b, sizeof(b));
-        if (rc == -NOS_DRV_EAGAIN && stalls++ < 100) {
+        intptr_t rc = nos_write_nowait(1, text, n);
+        if (rc == -NOS_EAGAIN && stalls++ < 100) {
             vTaskDelay(1);
             continue;
         }
-        if (rc || !b.actual || b.actual > n)
-            return rc ? rc : -NOS_DRV_EIO;
-        text += b.actual;
-        n -= b.actual;
+        if (rc <= 0 || (size_t)rc > n)
+            return rc < 0 ? (int)rc : -NOS_EIO;
+        text += rc;
+        n -= (size_t)rc;
     }
     return 0;
 }
@@ -135,6 +135,12 @@ static void command(char *line) {
     if (!count)
         return;
     const char *name = words[0];
+    if (nos_esp_shell_files(count, words, emit, NULL))
+        return;
+    if (!strcmp(name, "run") || !strcmp(name, "mount")) {
+        print("%s: unsupported; ELF/persistent block backend is not bound\n", name);
+        return;
+    }
     if (!strcmp(name, "echo")) {
         for (int i = 1; i < count; i++)
             print("%s%s", i == 1 ? "" : " ", words[i]);
@@ -146,7 +152,8 @@ static void command(char *line) {
         return;
     }
     if (!strcmp(name, "help"))
-        print("nshell commands: help version uptime stats mem ps devices echo history clear\n");
+        print("nshell commands: help version uptime stats mem ps devices echo history clear\n"
+              "files: pwd cd ls cat write append touch mkdir rm rmdir mv stat\n");
     else if (!strcmp(name, "version"))
         version();
     else if (!strcmp(name, "uptime"))
@@ -164,9 +171,6 @@ static void command(char *line) {
         }
     } else if (!strcmp(name, "clear"))
         print("\033[2J\033[H");
-    else if (!strcmp(name, "ls") || !strcmp(name, "pwd") || !strcmp(name, "run") ||
-             !strcmp(name, "cat") || !strcmp(name, "mount"))
-        print("%s: unsupported; NOS VFS/ELF is not bound on this profile\n", name);
     else
         print("nshell: unknown command: %s\n", name);
 }
@@ -183,9 +187,8 @@ void nos_idf_shell_run(void) {
     print("NOS SHELL READY\n" NOS_SHELL_PROMPT);
     for (;;) {
         unsigned char ch;
-        struct nos_io_buffer b = {&ch, 1, 0};
-        int rc = nos_idf_console_call(NOS_IO_READ, &b, sizeof(b));
-        if (rc || !b.actual || output_error) {
+        intptr_t rc = nos_read_nowait(0, &ch, 1);
+        if (rc != 1 || output_error) {
             output_error = 0;
             vTaskDelay(1);
             continue;

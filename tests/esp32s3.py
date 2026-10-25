@@ -21,6 +21,10 @@ MARKERS = [
     "PASS esp32s3_usb_otg_auto_discharge_wrap_and_overcurrent",
     "PASS page_allocator",
     "PASS esp32s3_native_syscalls",
+    "PASS esp32s3_vfs_files_cwd_dup_unlink_permissions",
+    "PASS esp32s3_vfs_pipe_eof_epipe",
+    "PASS esp32s3_vfs_descriptor_capacity_file_bounds",
+    "PASS esp32s3_vfs_task_rights_exit_fd_reclamation",
     "PASS esp32s3_timer_preemption",
     "PASS esp32s3_queue_timeout",
     "PASS esp32s3_tls_errno_fpu_cleanup",
@@ -121,6 +125,10 @@ def audit(build, ecosystem=False, regression=True):
         "ports/esp32/startup.c",
         "ports/esp32/components/freertos/nos_boot.c",
         "ports/esp32/components/freertos/nos_tasks.c",
+        "servers/vfs/server.c",
+        "user/lib/fs_io.c",
+        "user/lib/fs_path.c",
+        "ports/esp32/components/nos_vfs/backends.c",
         "servers/drivers/framework/device.c",
         "servers/drivers/framework/service.c",
         "ports/esp32/components/nos_devices/devices.c",
@@ -178,6 +186,8 @@ def audit(build, ecosystem=False, regression=True):
         "nos_esp_hal_cpu_init",
         "nos_esp_init",
         "nos_esp_create_init",
+        "nos_vfs_server",
+        "nos_rpc",
     ):
         assert name in names, f"Missing NOS scheduler mechanism: {name}"
     assert "app_main" not in names and "esp_startup_start_app" not in names
@@ -205,6 +215,7 @@ def audit(build, ecosystem=False, regression=True):
             assert name in names, f"Missing interactive nshell mechanism: {name}"
         for path in (
             "ports/esp32/components/nos_shell/shell.c",
+            "ports/esp32/components/nos_shell/fs_commands.c",
             "user/shell/editor.c",
             "user/shell/parser.c",
         ):
@@ -350,7 +361,28 @@ def run_qemu(build, report, timeout, markers=None, calibrated_efuse=False, inter
             ("line_overflow", b"echo " + b"x" * 300 + b"\r", r"command too long"),
             ("cancel", b'echo "must not execute"\x03', r'echo "must not execute"\^C'),
             ("unknown_command", b"__not_a_command\r", r"nshell: unknown command: __not_a_command"),
-            ("vfs_boundary", b"ls\r", r"ls: unsupported; NOS VFS/ELF is not bound on this profile"),
+            ("cwd_root", b"pwd\r", r"/"),
+            ("root_listing", b"ls /\r", r"tmp"),
+            ("proc_version", b"cat /proc/version\r", r"NOS microkernel"),
+            ("make_directory", b"mkdir /tmp/shell\r", r"ok"),
+            ("change_directory", b"cd /tmp/shell\r", r"ok"),
+            ("cwd_relative", b"pwd\r", r"/tmp/shell"),
+            ("write_file", b'write note "native data"\r', r"ok"),
+            ("read_file", b"cat note\r", r"native data"),
+            ("append_file", b'append note " plus"\r', r"ok"),
+            ("read_appended", b"cat note\r", r"native data plus"),
+            ("rename_file", b"mv note renamed\r", r"ok"),
+            ("file_listing", b"ls .\r", r"renamed"),
+            ("unlink_file", b"rm renamed\r", r"ok"),
+            ("missing_file", b"cat renamed\r", r"cat: error=-2"),
+            ("read_only_proc", b'write /proc/version "bad"\r', r"write: error=-13"),
+            ("parent_directory", b"cd /\r", r"ok"),
+            ("remove_directory", b"rmdir /tmp/shell\r", r"ok"),
+            (
+                "exec_boundary",
+                b"run /bin/hello\r",
+                r"run: unsupported; ELF/persistent block backend is not bound",
+            ),
             ("recovery", b'echo "shell" "still" "alive"\r', r"shell still alive"),
         ]
     exchange_index = 0
@@ -383,7 +415,7 @@ def run_qemu(build, report, timeout, markers=None, calibrated_efuse=False, inter
                         name, data, expected = exchanges[exchange_index]
                         response = text[exchange_start:]
                         if re.search(
-                            r"(?:^|\n)" + expected + r"\n", response
+                            r"(?:^|\n)" + expected + r"(?:\n|(?=nos> ))", response
                         ) and response.endswith("nos> "):
                             assert not re.search(r"(?:^|\n)must not execute\n", response)
                             checks.append(
@@ -605,6 +637,7 @@ def main():
                 [
                     "PASS page_allocator",
                     "NOS: init online; managed devices ready",
+                    "NOS: native VFS online",
                     "NOS: bootloader handoff",
                     "NOS: hardware ready; starting NOS kernel",
                     "NOS: init task running under NOS scheduler",

@@ -3,6 +3,12 @@
 #define NOS_USER_DEVICES_H
 #include "abi.h"
 intptr_t nos_device_uart_read(void);
+#ifdef NOS_ESP_IDF
+intptr_t nos_device_uart_write(const void *buffer, size_t count);
+#else
+static inline intptr_t nos_device_uart_write(const void *buffer, size_t count)
+{ return nos_syscall(NOS_SYS_WRITE, (uintptr_t)buffer, count, 0); }
+#endif
 int nos_uart_readable(void);
 int nos_uart_writable(void);
 intptr_t nos_random_read(void *buffer, size_t count, unsigned flags);

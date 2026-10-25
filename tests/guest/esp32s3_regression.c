@@ -15,6 +15,7 @@
 #include "esp_timer.h"
 #include "esp_heap_caps.h"
 #include "nos/abi.h"
+#include "nos/user.h"
 #include "nos/driver/esp_idf.h"
 #include "nos/driver/usb_service.h"
 static QueueHandle_t queue;
@@ -202,8 +203,8 @@ void nos_esp_init(void)
     assert(xTaskGetSchedulerState() == taskSCHEDULER_SUSPENDED);
     xTaskResumeAll();
     assert(xTaskGetSchedulerState() == taskSCHEDULER_RUNNING);
-    struct nos_message no_vfs = {0};
-    assert(nos_syscall(NOS_SYS_CALL, 0, (uintptr_t)&no_vfs, (uintptr_t)&no_vfs) == -NOS_EACCES);
+    char cwd[NOS_PATH_MAX];
+    assert(nos_getcwd(cwd, sizeof(cwd)) >= 0 && !strcmp(cwd, "/"));
     assert(nos_syscall(NOS_SYS_SERVICE_RESTART, 0, 0, 0) == -NOS_ENOTSUP);
     puts("PASS " NOS_IDF_TEST_NAME "_native_syscalls");
 
@@ -332,6 +333,8 @@ void nos_esp_init(void)
     puts("PASS " NOS_IDF_TEST_NAME "_static_tasks_capacity_rollback");
 
     assert(nos_idf_devices_init() == 0);
+    extern void nos_esp_vfs_regression(void);
+    nos_esp_vfs_regression();
     struct nos_idf_device_config config = {
         .name = "test.gpio4", .kind = NOS_SERVICE_GPIO, .pins = {4, -1, -1, -1}};
     struct nos_service *gpio, *other, *uart, *storage, *ota;

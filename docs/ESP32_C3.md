@@ -4,7 +4,7 @@
 
 ESP32-C3 由 [NOS 启动链与 init](ESP32_ARCHITECTURE.md) 主导运行，使用单核 RV32IMC、ESP-IDF 5.4.2/Newlib 和 NOS 任务/调度器。原始 SDK `tasks.c` 不参与构建；保留 SDK RISC-V `port.c/portasm.S` 的寄存器、GCC TLS、系统定时器和中断机制，以及原始队列/定时器等兼容集合。硬件驱动和无线二进制库继续使用 IDF 原件，应用通过 NOS 设备服务访问。
 
-这是与 S3 一样的可信共享固件地址空间，没有 MMU 进程隔离、独立 ELF/glibc、原生 NOS VFS 或完整 POSIX。C3 没有硬件 FPU；浮点运算回归使用工具链的软件浮点支持。正常固件已接入 [常驻 nshell](ESP32_NSHELL.md) 的 UART0 诊断 profile；NLP、低功耗、看门狗和实板无线互通仍需后续实现/验收。
+这是与 S3 一样的可信共享固件地址空间，没有 MMU 进程隔离、独立 ELF/glibc 或完整 POSIX。C3 没有硬件 FPU；浮点运算回归使用工具链的软件浮点支持。正常固件已接入 [常驻 nshell](ESP32_NSHELL.md) 的 UART0 诊断 profile；NLP、低功耗、看门狗和实板无线互通仍需后续实现/验收。
 
 原生系统调用和设备管理只接受可调度的任务上下文；ISR、SDK 调度暂停或 SDK 临界区内分别拒绝为 `EDEADLK` / `EBUSY`，避免在不允许切换时阻塞。
 
@@ -58,3 +58,5 @@ C3 原生任务池16项、页池20×4KiB，包含 idle、main、esp_timer、软�
 模拟器 eFuse 使用其公共序列化布局，芯片版本0.3；生态专项额外使用官方 C3 默认的出厂校准版本1.3（BLK2 bit128=1，零差值采用 SDK 参考码），让 SDK 的 ADC 构造函数走出厂数据路径。不是 ADC 转换验证，也不改写实板 eFuse。回归镜像会写 NVS/非运行 OTA 槽，必须显式 `--regression` 构建。
 
 官方 C3 machine 没有 Wi-Fi/BLE RF 或 USB Serial/JTAG 外设模型。GATT/USB/OTG 纯软件状态检查不构成 C3 拥有 OTG 控制器的证据；USB 串口另外以实际适配代码的 SDK 故障模型验证。射频、外接总线、USB 枚举、供电、实板 DMA/故障恢复仍未实测。最新执行记录见 [ESP32_C3_VALIDATION.md](ESP32_C3_VALIDATION.md)。
+
+原生VFS服务、RAM文件及nshell文件命令已接入，见 [ESP32_VFS.md](ESP32_VFS.md)。这不包含SDK Newlib描述符适配或持久存储。

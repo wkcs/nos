@@ -33,3 +33,5 @@ ESP32-S3 的 GATT 服务端、USB Host HID/MSC 与自动 OTG 接口及官方 QEM
 ESP32-C3 单核 RISC-V 移植复用同一 NOS/IDF 桥接；构建、烧录、17类受管理服务和芯片限制见 [ESP32_C3.md](docs/ESP32_C3.md)。
 
 ESP32-C3/S3 由 [NOS 自有启动入口和 init](docs/ESP32_ARCHITECTURE.md) 接管运行，硬件依赖和无线库随仓库打包；正常固件启动受管理的 UART0 和常驻 [nshell 诊断控制台](docs/ESP32_NSHELL.md)。
+
+ESP32-C3/S3 已接入 [原生 NOS VFS](docs/ESP32_VFS.md)，文件命令与控制台输入输出通过独立服务任务和 IPC；RAM 文件、描述符和持久性边界见文档。

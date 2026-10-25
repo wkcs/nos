@@ -2,6 +2,7 @@
 #include "private.h"
 #include "driver/uart.h"
 #include "driver/uart_vfs.h"
+#include "hal/uart_ll.h"
 static uint8_t installed;
 static int start(void *context) {
     (void)context;
@@ -27,6 +28,16 @@ static int call(void *context, uint32_t op, void *request, size_t size) {
     (void)context;
     if (!installed)
         return -NOS_DRV_ENODEV;
+    if (op == NOS_IO_POLL && size == sizeof(struct nos_io_console_status)) {
+        struct nos_io_console_status *status = request;
+        size_t received = 0;
+        int rc = idf_error(uart_get_buffered_data_len(UART_NUM_0, &received));
+        if (rc)
+            return rc;
+        status->readable = received != 0;
+        status->writable = uart_ll_get_txfifo_len(UART_LL_GET_HW(UART_NUM_0)) != 0;
+        return 0;
+    }
     if ((op != NOS_IO_READ && op != NOS_IO_WRITE) || size != sizeof(struct nos_io_buffer))
         return -NOS_DRV_ENOTSUP;
     struct nos_io_buffer *b = request;

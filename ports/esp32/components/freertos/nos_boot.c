@@ -10,6 +10,10 @@
 static unsigned initialized;
 extern void nos_esp_init(void);
 extern int nos_esp_create_init(TaskFunction_t entry, unsigned bytes, unsigned priority);
+#ifdef NOS_ESP_VFS
+extern void nos_esp_vfs_entry(void *argument);
+extern int nos_esp_create_vfs(TaskFunction_t entry);
+#endif
 
 static void init_task(void *argument) {
     (void)argument;
@@ -44,6 +48,10 @@ static void init_task(void *argument) {
 }
 void nos_esp_idf_boot(void) {
     initialized = 1;
+#ifdef NOS_ESP_VFS
+    if (nos_esp_create_vfs(nos_esp_vfs_entry))
+        kernel_fail("NOS VFS task creation");
+#endif
     if (nos_esp_create_init(init_task, 8192, 1))
         kernel_fail("NOS init task creation");
 }

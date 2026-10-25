@@ -44,6 +44,10 @@ struct nos_io_buffer {
     size_t size;
     size_t actual;
 };
+/* Console NOS_IO_POLL: readiness snapshot; a later transfer may be short. */
+struct nos_io_console_status {
+    uint32_t readable, writable;
+};
 struct nos_io_spi {
     struct nos_spi_config config;
     const struct nos_spi_segment *segments;

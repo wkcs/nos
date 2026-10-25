@@ -349,7 +349,7 @@ static intptr_t write_data(struct description *d, const char *data, size_t count
         size_t done = 0;
         while (done < count) {
             size_t chunk = count - done; if (chunk > 1024) chunk = 1024;
-            intptr_t written = nos_syscall(NOS_SYS_WRITE, (uintptr_t)(data + done), chunk, 0);
+            intptr_t written = nos_device_uart_write(data + done, chunk);
             if (written < 0) return done ? (intptr_t)done : written;
             if ((size_t)written > chunk) return done ? (intptr_t)done : -NOS_EIO;
             done += (size_t)written;

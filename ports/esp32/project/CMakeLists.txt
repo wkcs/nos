@@ -10,6 +10,7 @@ option(NOS_IDF_ECOSYSTEM "Retain broad SDK entry points for a link audit" OFF)
 option(NOS_IDF_REGRESSION "Build the hardware-mutating regression application" OFF)
 idf_build_set_property(NOS_IDF_REGRESSION "${NOS_IDF_REGRESSION}")
 idf_build_set_property(NOS_IDF_ECOSYSTEM "${NOS_IDF_ECOSYSTEM}")
+idf_build_set_property(NOS_ESP_VFS ON)
 project(nos_${IDF_TARGET})
 
 include("${CMAKE_CURRENT_LIST_DIR}/../cmake/hardware.cmake")

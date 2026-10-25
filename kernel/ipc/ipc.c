@@ -57,8 +57,8 @@ static struct endpoint *lookup(uintptr_t handle, unsigned *index)
 }
 void ipc_init(void)
 {
-#ifdef NOS_ESP_IDF
-    /* IDF VFS is in-process; no NOS VFS server owns the reserved endpoint. */
+#if defined(NOS_ESP_IDF) && !defined(NOS_ESP_VFS)
+    /* SDK compatibility probes may omit the native VFS component. */
     endpoints[0].used = 0;
 #else
     endpoints[0].used = 1; endpoints[0].owner = tasks[0].id;
@@ -68,7 +68,7 @@ void ipc_init(void)
     pending_reset(&cancel_pending[0]);
     pending_reset(&exit_pending); process_head = process_count = 0;
     delivered_fork_valid = 0;
-#ifndef NOS_ESP_IDF
+#if !defined(NOS_ESP_IDF) || defined(NOS_ESP_VFS)
     tasks[0].endpoint_rights[0] = NOS_RIGHT_RECV | NOS_RIGHT_GRANT;
     for (unsigned i = 1; i < NOS_TASKS; i++) tasks[i].endpoint_rights[0] = NOS_RIGHT_CALL;
 #endif
