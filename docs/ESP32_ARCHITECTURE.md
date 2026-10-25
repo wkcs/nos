@@ -28,6 +28,7 @@ ESP ROM -> 原始二级 bootloader -> NOS call_start_cpu0
 | `ports/esp32/startup.c`、`platform.c`、`init.c` | ESP SoC 启动策略、平台硬件钩子和系统 init |
 | `ports/esp32/components/freertos/` | IDF/无线库需要的 FreeRTOS API 兼容层，由 NOS 实现任务管理；组件名是 SDK ABI 要求 |
 | `ports/esp32/components/nos_devices/` | 原始 IDF 外设驱动到 NOS 设备服务的后端；应用不取得 vendor 控制器句柄 |
+| `libc/port/esp32/` | Newlib 文件/标准流、目录与就绪 OS 钩子 |
 | `ports/esp32/components/nos_shell/` | 共享 nshell 解析器/编辑器的 MCU 命令适配 |
 | `third_party/espressif/` | 固定硬件库、协议栈、无线二进制、源码清单及许可证 |
 
@@ -43,10 +44,10 @@ IDF 无线二进制和部分原始驱动依赖 FreeRTOS 函数、Newlib TLS、�
 
 ## 验证
 
-运行 `python3 tests/esp32c3.py` 和 `python3 tests/esp32s3.py`。专项检查真实编译数据库、ELF 机器类型及启动符号：必须包含 NOS 启动与 init，必须排除 SDK `startup.c`、`app_startup.c`、`tasks.c` 和 `app_main/main_task`。真实 QEMU 分别执行正常启动的15项 UART nshell 交互、运行时回归和全外设链接回归。模拟器没有无线射频或完整 USB 控制器模型，不替代实板验证。
+运行 `python3 tests/esp32c3.py` 和 `python3 tests/esp32s3.py`。专项检查真实编译数据库、ELF 机器类型及启动符号：必须包含 NOS 启动与 init，必须排除 SDK `startup.c`、`app_startup.c`、`tasks.c` 和 `app_main/main_task`。真实 QEMU 分别执行正常启动的32项 UART nshell 交互、运行时回归和全外设链接回归。模拟器没有无线射频或完整 USB 控制器模型，不替代实板验证。
 
 本轮干净冻结源码的结果、原始日志和正常固件见 [ESP32_BOOT_VALIDATION.md](ESP32_BOOT_VALIDATION.md)。
 
-原生 VFS 已接入独立服务任务和端点0，nshell 文件与标准输入输出走实际 IPC；能力与限制见 [ESP32_VFS.md](ESP32_VFS.md)。SDK Newlib描述符适配和分配器统一仍未完成。
+原生 VFS 已接入独立服务任务和端点0，nshell 文件与标准输入输出走实际 IPC；能力与限制见 [ESP32_VFS.md](ESP32_VFS.md)。[Newlib 文件与标准流](ESP32_NEWLIB.md) 已接入原生文件表，SDK 描述符保留兼容区间；分配器统一仍未完成。
 
 原生VFS集成后的最新冻结实现为 `bfd67ab`：C3/S3八个实际镜像与公共89/89组通过，见 [ESP32_VFS_VALIDATION.md](ESP32_VFS_VALIDATION.md)。

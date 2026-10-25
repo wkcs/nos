@@ -59,4 +59,4 @@ C3 原生任务池16项、页池20×4KiB，包含 idle、main、esp_timer、软�
 
 官方 C3 machine 没有 Wi-Fi/BLE RF 或 USB Serial/JTAG 外设模型。GATT/USB/OTG 纯软件状态检查不构成 C3 拥有 OTG 控制器的证据；USB 串口另外以实际适配代码的 SDK 故障模型验证。射频、外接总线、USB 枚举、供电、实板 DMA/故障恢复仍未实测。最新执行记录见 [ESP32_C3_VALIDATION.md](ESP32_C3_VALIDATION.md)。
 
-原生VFS服务、RAM文件及nshell文件命令已接入，见 [ESP32_VFS.md](ESP32_VFS.md)。这不包含SDK Newlib描述符适配或持久存储。
+原生VFS服务、RAM文件及nshell文件命令已接入，见 [ESP32_VFS.md](ESP32_VFS.md)。[Newlib 文件和标准流适配](ESP32_NEWLIB.md) 已接入，持久存储仍未实现。

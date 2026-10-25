@@ -335,6 +335,8 @@ void nos_esp_init(void)
     assert(nos_idf_devices_init() == 0);
     extern void nos_esp_vfs_regression(void);
     nos_esp_vfs_regression();
+    extern void nos_esp_libc_regression(void);
+    nos_esp_libc_regression();
     struct nos_idf_device_config config = {
         .name = "test.gpio4", .kind = NOS_SERVICE_GPIO, .pins = {4, -1, -1, -1}};
     struct nos_service *gpio, *other, *uart, *storage, *ota;

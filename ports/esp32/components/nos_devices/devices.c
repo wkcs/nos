@@ -100,11 +100,19 @@ int nos_idf_devices_init(void)
     if (initialized != 1 && !rc)
         rc = -NOS_DRV_EIO;
     unlock(mutex);
+    extern int nos_esp_libc_activate(void) __attribute__((weak));
+    if (!rc && nos_esp_libc_activate)
+        rc = nos_esp_libc_activate();
     return rc;
 }
 int nos_idf_console_call(uint32_t command, void *request, size_t size)
 {
     return nos_service_call(&console, command, request, size);
+}
+/* Internal lock-order query for libc diagnostics. No vendor handle escapes. */
+int nos_idf_device_domain_owned(void)
+{
+    return mutex && xSemaphoreGetMutexHolder(mutex) == xTaskGetCurrentTaskHandle();
 }
 static const struct nos_service_ops *backend(enum nos_service_kind kind)
 {

@@ -21,6 +21,9 @@ static portMUX_TYPE api_mux = portMUX_INITIALIZER_UNLOCKED;
 const DRAM_ATTR uint32_t offset_pxEndOfStack = offsetof(struct nos_idf_task, stack_end);
 extern int nos_idf_kernel_initialized(void);
 extern void vPortYield(void);
+extern int nos_esp_libc_task_enter(void) __attribute__((weak));
+extern void nos_esp_libc_task_exit(void) __attribute__((weak));
+extern void nos_esp_libc_task_reclaim(unsigned, struct _reent *) __attribute__((weak));
 static struct nos_idf_task *self(void)
 {
     return pxCurrentTCBs[0];
@@ -63,6 +66,8 @@ static void idf_entry(uintptr_t pointer, uintptr_t unused)
 {
     (void)unused;
     struct nos_idf_task *r = (void *)pointer;
+    if (nos_esp_libc_task_enter && nos_esp_libc_task_enter() < 0)
+        vTaskDelete(NULL);
     r->entry(r->argument);
     vTaskDelete(NULL);
     abort();
@@ -452,6 +457,8 @@ void vTaskDelete(TaskHandle_t h)
 {
     struct nos_idf_task *r = lookup(h);
     configASSERT(r);
+    if (r == self() && nos_esp_libc_task_exit)
+        nos_esp_libc_task_exit();
     uintptr_t irq = arch_irq_save();
     if (listLIST_ITEM_CONTAINER(&r->event))
         uxListRemove(&r->event);
@@ -748,6 +755,8 @@ static void reclaim(struct nos_idf_task *r)
     for (unsigned j = 0; j < CONFIG_FREERTOS_THREAD_LOCAL_STORAGE_POINTERS; j++)
         if (r->tls_delete[j])
             r->tls_delete[j](j, r->tls[j]);
+    if (nos_esp_libc_task_reclaim && r->native)
+        nos_esp_libc_task_reclaim(r->native->id, &r->reent);
     _reclaim_reent(&r->reent);
 #if XCHAL_CP_NUM > 0
     extern void _xt_coproc_release(volatile void *, BaseType_t);

@@ -33,7 +33,7 @@ rmdir /tmp/demo
 
 shell的标准输入/输出也经过VFS的READ/WRITE RPC；后端再调用NOS受管理的 `system.console`，复用原始UART驱动。没有额外的RX驱动或第二个接收任务。`NOS_IO_POLL` 从原始驱动RX长度和HAL TX FIFO空间读取就绪快照，不消费输入；传输仍处理实际短写/EAGAIN。
 
-提供的是原生 `nos_open/nos_read/nos_write` 等接口。SDK Newlib的全局POSIX描述符系统尚未统一到这些每进程文件表，不能据此宣称 `fopen()`、完整POSIX或任意SDK文件系统已接入。持久块设备、FAT挂载和熵服务没有绑定，后端返回ENOTSUP；`mount`与`run`仍明确报不支持。已有启动归档读取协议可用，但当前归档为空，没有独立应用ELF。
+原生 `nos_open/nos_read/nos_write` 与 [Newlib 文件/stdio 适配](ESP32_NEWLIB.md) 共用每任务文件表。`fopen()`、目录与 poll/select 已接入；SDK 全局设备/网络描述符保留独立区间和原始生命周期，不代表任意 SDK 文件系统或完整 POSIX 已接入。持久块设备、FAT挂载和熵服务没有绑定，后端返回ENOTSUP；`mount`与`run`仍明确报不支持。已有启动归档读取协议可用，但当前归档为空，没有独立应用ELF。
 
 ## 验证入口
 

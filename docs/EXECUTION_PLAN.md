@@ -284,4 +284,13 @@ AS 限额见下方已完成批次；下一批优先完善稳定进程/地址空�
 - [x] nshell原生文件命令与标准输入输出经过IPC，控制台后端接入受管理UART及真实就绪查询。
 - [x] 增加文件/目录/dup/unlink、管道、容量边界与SDK/native EXIT文件表回收的真实芯片回归。
 - [x] `bfd67ab` 最终冻结验收：两平台八个实际镜像、各正常固件32项交互及公共89/89组全部通过，五个runner退出0。[报告与正常固件](ESP32_VFS_VALIDATION.md)。
-- [ ] SDK Newlib描述符统一、持久块设备、独立ELF、内存分配器统一及NLP绑定。
+- [x] Newlib 文件/stdio、目录和 poll/select 接入 NOS VFS；保留 SDK 全局 FD 兼容区间。
+- [ ] 持久块设备、独立ELF、内存分配器统一及NLP绑定。
+
+## ESP32 Newlib 文件适配
+
+- [x] OS 钩子放在 libc/port/esp32；使用固定原始 Newlib，NOS VFS 管理普通任务的文件表和 cwd。
+- [x] 启动预留 FD 区间，实际 SDK FD 与原生 FD3 共存；不从 NOS 路径错误回退到 SDK。
+- [x] 私有标准流、FILE/DIR 归属检查、正常刷新与 orphan 丢弃回收，处理驱动持锁打印的锁顺序。
+- [x] 增加 C3/S3 同一源码的真实 Newlib/stdio、ABI 转换、槽复用/heap 回收与全部任务槽容量回归。
+- 能力、预算和剩余边界见 [ESP32_NEWLIB.md](ESP32_NEWLIB.md)；最终冻结执行证据另行补录。
