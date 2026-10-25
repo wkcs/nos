@@ -6,7 +6,7 @@
 #include "esp_err.h"
 #define ERASE 4096u
 static unsigned char flash[224 * ERASE], before[sizeof(flash)];
-static esp_partition_t partition = {1, 0x40, 0x320000, sizeof(flash), false, false};
+static esp_partition_t partition = {1, 0x40, 0x320000, sizeof(flash), false, false, 4096};
 static unsigned missing, reads, erases, writes, fail_read, fail_erase, fail_write;
 int idf_error(int error) {
     return error ? -NOS_DRV_EIO : 0;

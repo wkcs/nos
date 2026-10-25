@@ -5,8 +5,18 @@
 #include "esp_partition.h"
 struct nos_flash_block {
     const esp_partition_t *partition;
+    void *wear;
 };
+#ifdef __cplusplus
+extern "C" {
+#endif
 int nos_flash_block_start(struct nos_flash_block *);
 int nos_flash_block_stop(struct nos_flash_block *);
 int nos_flash_block_call(struct nos_flash_block *, uint32_t, void *, size_t);
+int nos_wl_block_start(struct nos_flash_block *);
+int nos_wl_block_stop(struct nos_flash_block *);
+int nos_wl_block_call(struct nos_flash_block *, uint32_t, void *, size_t);
+#ifdef __cplusplus
+}
+#endif
 #endif

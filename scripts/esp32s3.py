@@ -201,7 +201,7 @@ def qemu_binary():
     )
 
 
-def sdkconfig_defaults(profile="runtime"):
+def sdkconfig_defaults(profile="runtime", storage="raw"):
     defaults = [ROOT / "ports/esp32/project/sdkconfig.defaults"]
     target_defaults = ROOT / "ports/esp32/project" / f"sdkconfig.{TARGET}.defaults"
     if target_defaults.exists():
@@ -210,10 +210,14 @@ def sdkconfig_defaults(profile="runtime"):
         defaults.append(ROOT / "ports/esp32/project/sdkconfig.ecosystem.defaults")
         if TARGET == "esp32s3":
             defaults.append(ROOT / "ports/esp32/project/sdkconfig.usb.defaults")
+    if storage == "wl":
+        defaults.append(ROOT / "ports/esp32/project/sdkconfig.storage-wl.defaults")
     return defaults
 
 
-def build(profile="runtime", output=None, action="build", port=None, regression=False):
+def build(
+    profile="runtime", output=None, action="build", port=None, regression=False, storage="raw"
+):
     verify_sdk()
     if profile == "ecosystem" and TARGET == "esp32s3":
         verify_usb()
@@ -221,9 +225,20 @@ def build(profile="runtime", output=None, action="build", port=None, regression=
     python = python_environment() / "bin/python"
     if not python.exists():
         raise RuntimeError("SDK Python environment missing; run scripts/esp32s3.py setup")
-    output = Path(output or ROOT / "out" / TARGET / profile).resolve()
+    assert storage in ("raw", "wl")
+    output = Path(
+        output or ROOT / "out" / TARGET / (profile + ("-wl" if storage == "wl" else ""))
+    ).resolve()
     output.mkdir(parents=True, exist_ok=True)
-    defaults = sdkconfig_defaults(profile)
+    mode = output / "storage-mode.txt"
+    if mode.exists() and mode.read_text().strip() != storage:
+        raise RuntimeError("Storage format changed; select a separate --output directory")
+    if not mode.exists() and (output / "sdkconfig").exists() and storage != "raw":
+        raise RuntimeError(
+            "Existing output has raw configuration; select a separate --output directory"
+        )
+    mode.write_text(storage + "\n")
+    defaults = sdkconfig_defaults(profile, storage)
     command = [
         python,
         IDF / "tools/idf.py",
@@ -237,6 +252,7 @@ def build(profile="runtime", output=None, action="build", port=None, regression=
         "-DNOS_IDF_ECOSYSTEM=" + ("ON" if profile == "ecosystem" else "OFF"),
     ]
     command += ["-DNOS_IDF_REGRESSION=" + ("ON" if regression else "OFF")]
+    command += ["-DNOS_IDF_STORAGE_WL=" + ("ON" if storage == "wl" else "OFF")]
     if port:
         command += ["-p", port]
     before = source_identity()
@@ -264,6 +280,7 @@ def build(profile="runtime", output=None, action="build", port=None, regression=
             ESP_USB_COMMIT if profile == "ecosystem" and TARGET == "esp32s3" else None
         ),
         "profile": profile,
+        "storage": storage,
         "regression": regression,
         "compiler_version": subprocess.check_output(
             [compiler, "--version"], text=True, env=env
@@ -282,11 +299,12 @@ def main():
     parser.add_argument("action", choices=("setup", "env", "build", "test", "flash"))
     parser.add_argument("--profile", choices=("runtime", "ecosystem"), default="runtime")
     parser.add_argument("--output", type=Path)
+    parser.add_argument("--storage", choices=("raw", "wl"), default="raw")
     parser.add_argument("--port")
     parser.add_argument(
         "--regression",
         action="store_true",
-        help="Test app: GPIO4, UART1, NVS and inactive OTA writes",
+        help="Test app: GPIO4, UART1, NVS, inactive OTA, Flash snapshots; WL adds 128 commits",
     )
     args = parser.parse_args()
     if args.action == "setup":
@@ -310,11 +328,11 @@ def main():
             if name in env:
                 print(f"export {name}={shlex.quote(env[name])}")
     elif args.action == "test":
-        run([sys.executable, ROOT / "tests" / f"{TARGET}.py"], cwd=ROOT)
+        run([sys.executable, ROOT / "tests" / f"{TARGET}.py", "--storage", args.storage], cwd=ROOT)
     else:
         if args.action == "flash" and not args.port:
             parser.error("flash requires an explicit --port")
-        build(args.profile, args.output, args.action, args.port, args.regression)
+        build(args.profile, args.output, args.action, args.port, args.regression, args.storage)
 
 
 if __name__ == "__main__":

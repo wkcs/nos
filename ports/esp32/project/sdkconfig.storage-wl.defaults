@@ -1,0 +1,3 @@
+# Copyright (C) 2026 NOS contributors. Distinct format; never auto-migrate raw snapshots.
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.wl.csv"
+CONFIG_WL_SECTOR_SIZE_4096=y

@@ -99,10 +99,14 @@ def emulator_probe(report):
     }
 
 
-def audit(build, ecosystem=False, regression=True):
+def audit(build, ecosystem=False, regression=True, storage="raw"):
     manifest = json.loads((build / "nos-build.json").read_text())
     assert manifest["source"] == port.source_identity(), "Stale build source identity"
     assert manifest["target"] == port.TARGET
+    assert manifest["storage"] == storage
+    assert json.loads((build / "config/sdkconfig.json").read_text())[
+        "PARTITION_TABLE_CUSTOM_FILENAME"
+    ] == ("partitions.wl.csv" if storage == "wl" else "partitions.csv")
     config = json.loads((build / "config/sdkconfig.json").read_text())
     assert config["IDF_TARGET"] == port.TARGET
     assert config["FREERTOS_UNICORE"] and config["FREERTOS_HZ"] == 100
@@ -215,6 +219,13 @@ def audit(build, ecosystem=False, regression=True):
     assert "main_task" not in names and "start_cpu0_default" not in names
     assert not any(name.startswith("nos_sdk_unused_") for name in names)
     assert "vPortTCBPreDeleteHook" not in names, "SDK cleanup assumes a different TCB layout"
+    if storage == "wl":
+        assert (ROOT / "ports/esp32/components/nos_devices/flash_wl.cpp").resolve() in files
+        assert (port.IDF / "components/wear_levelling/WL_Flash.cpp").resolve() in files
+        assert "nos_wl_block_start" in names and "nos_flash_block_start" not in names
+        assert config["WL_SECTOR_SIZE"] == 4096
+    else:
+        assert "nos_flash_block_start" in names and "nos_wl_block_start" not in names
     application = [
         ROOT / "ports/esp32/init.c",
         ROOT / "tests/guest/esp32s3_regression.c",
@@ -590,24 +601,32 @@ def manager_smoke(report):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
-        "--output-root", type=Path, default=ROOT / "out" / port.TARGET / "validation"
-    )
+    parser.add_argument("--output-root", type=Path)
     parser.add_argument("--timeout", type=int, default=45)
+    parser.add_argument("--storage", choices=("raw", "wl"), default="raw")
     parser.add_argument("--runtime-only", action="store_true")
     parser.add_argument("--no-build", action="store_true")
     args = parser.parse_args()
-    output = args.output_root.resolve()
+    output = (
+        args.output_root
+        or ROOT / "out" / port.TARGET / ("validation-wl" if args.storage == "wl" else "validation")
+    ).resolve()
     report = output / "reports" / str(time.time_ns())
     report.mkdir(parents=True)
     before = port.source_identity()
-    result = {"source": before, "idf_commit": port.IDF_COMMIT, "passed": False}
+    result = {
+        "source": before,
+        "idf_commit": port.IDF_COMMIT,
+        "storage": args.storage,
+        "passed": False,
+    }
     try:
         result["emulator"] = emulator_probe(report)
         for name, script in (
             ("portable_protocols", "host_esp32s3_protocols.py"),
             ("usb_sdk_faults", "host_esp32s3_usb.py"),
             ("flash_sdk_faults", "host_esp32_flash.py"),
+            ("wear_levelling_faults", "host_esp32_wl.py"),
         ):
             with (report / (name + ".log")).open("wb") as log:
                 subprocess.run(
@@ -647,6 +666,8 @@ def main():
                     "build",
                     "--profile",
                     profile,
+                    "--storage",
+                    args.storage,
                     "--output",
                     output / name,
                 ]
@@ -656,15 +677,20 @@ def main():
                     subprocess.run(
                         command, cwd=ROOT, stdout=log, stderr=subprocess.STDOUT, check=True
                     )
-            result[name] = audit(build, profile == "ecosystem", regression)
-        result["qemu"] = run_qemu(output / "runtime/build", report / "runtime", args.timeout)
+            result[name] = audit(build, profile == "ecosystem", regression, args.storage)
+        runtime_markers = [*MARKERS]
+        if args.storage == "wl":
+            runtime_markers.append("PASS esp32s3_wear_levelled_physical_rotation")
+        result["qemu"] = run_qemu(
+            output / "runtime/build", report / "runtime", args.timeout, runtime_markers
+        )
         if not args.runtime_only:
             result["qemu_ecosystem"] = run_qemu(
                 output / "ecosystem/build",
                 report / "ecosystem",
                 args.timeout,
                 [
-                    *MARKERS,
+                    *runtime_markers,
                     "PASS esp32s3_sdk_ecosystem_linkage",
                     *(
                         ["PASS esp32s3_target_capability_limits"]
@@ -689,6 +715,7 @@ def main():
                     "NOS: init task running under NOS scheduler",
                     "[nos] nshell: starting",
                     "NOS SHELL READY",
+                    "storage_format=" + args.storage,
                 ],
                 interactive=True,
             )
@@ -699,6 +726,7 @@ def main():
                 output / "normal/build",
                 report / "persistence",
                 args.timeout,
+                storage=args.storage,
             )
         result["source_after"] = port.source_identity()
         assert before == result["source_after"], "Sources changed during ESP32-S3 validation"

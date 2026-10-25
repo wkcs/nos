@@ -1,0 +1,18 @@
+# ESP32 后续开发顺序
+
+<!-- Copyright (C) 2026 NOS contributors -->
+
+NOS已接管C3/S3启动、单核任务调度、设备生命周期、原生VFS及Newlib文件接口；Flash双bank快照和可选磨损均衡格式也已接入。下面仍需继续，不能将现有回归等同于完整POSIX或完整ESP-IDF生态。
+
+| 优先级 | 待完善内容 | 可验收目标 |
+| --- | --- | --- |
+| 1 | 文件系统容量与接口 | 解除当前16节点/512字节文件限制；适配FAT或其他后端，按文件后端实现fsync/O_SYNC、挂载与错误恢复，避免全局sync语义被当成完整POSIX |
+| 2 | 分配器与内存统计 | NOS页池与IDF capability heap统一分配入口/预算和故障回滚，保留DMA/内部RAM/IRAM约束，避免两个分配器重复管理物理内存 |
+| 3 | NLP业务绑定 | 把UART、USB及网络传输接入NOS能力发现、日志、nshell和OTA，验证帧边界、断连恢复、权限与升级激活策略 |
+| 4 | 驱动异步能力 | GPIO IRQ订阅、UART/SPI/I2C DMA、事件与取消、每控制器并行队列；继续复用原始HAL并经NOS设备模型管理 |
+| 5 | 网络服务 | 地址获取/事件、TCP/UDP与NOS服务/描述符生命周期、超时与错误路径；实板Wi-Fi/BLE/GATT互通 |
+| 6 | 独立ELF | 先完成分配器与资源所有权，再接入Xtensa/RV32重定位、TLS、装载失败回滚和进程退出资源回收；明确无MMU共享地址空间边界 |
+| 7 | 低功耗/可靠性 | NOS调度器配合tickless、看门狗、复位原因与崩溃转储，实测Flash掉电恢复和寿命、USB/OTG/外接总线错误恢复 |
+| 8 | S3多核 | 双核上下文、跨核唤醒、SDK ABI和锁顺序；C3物理单核，不扩大其硬件能力 |
+
+磨损均衡当前为显式选项，不迁移旧数据。固件只能证明软件逻辑和模拟器能力；目前没有可访问实板，板级功耗、DMA、射频、USB枚举和真正掉电测试仍需硬件验证。实现与边界见 [ESP32_WEAR_LEVELING.md](ESP32_WEAR_LEVELING.md)、[ESP32_ARCHITECTURE.md](ESP32_ARCHITECTURE.md)。

@@ -6,6 +6,15 @@ set(sources "devices.c" "serial_buses.c" "storage.c" "flash.c" "flash_block.c" "
     "${NOS_ROOT}/servers/usb/host/classes.c")
 set(dependencies freertos esp_driver_gpio esp_driver_uart esp_driver_spi esp_driver_i2c
     esp_timer nvs_flash app_update vfs)
+idf_build_get_property(storage_wl NOS_IDF_STORAGE_WL)
+if(storage_wl)
+    list(APPEND sources "flash_wl.cpp")
+    list(APPEND dependencies wear_levelling)
+    idf_build_get_property(regression NOS_IDF_REGRESSION)
+    if(regression)
+        list(APPEND sources "flash_wl_test.c")
+    endif()
+endif()
 if(ecosystem)
     list(APPEND sources "wireless.c" "ble.c" "usb_serial.c" "auxiliary.c" "can.c" "ecosystem.c")
     if(IDF_TARGET STREQUAL "esp32s3")
@@ -22,6 +31,16 @@ idf_component_register(SRCS ${sources}
     "${NOS_ROOT}/servers/drivers/framework/service.c"
     INCLUDE_DIRS "${NOS_ROOT}/include" PRIV_REQUIRES ${dependencies})
 target_compile_options(${COMPONENT_LIB} PRIVATE "-iquote${NOS_ROOT}/include/nos")
+if(storage_wl)
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE NOS_IDF_STORAGE_WL=1)
+    # Pinned IDF 5.4.2 original WL classes; NOS adds guarded lifecycle only.
+    target_include_directories(${COMPONENT_LIB} PRIVATE
+        "$ENV{IDF_PATH}/components/wear_levelling/private_include"
+        "$ENV{IDF_PATH}/components/wear_levelling")
+    if(regression)
+        target_link_libraries(${COMPONENT_LIB} INTERFACE "-Wl,--wrap=esp_partition_erase_range")
+    endif()
+endif()
 if(ecosystem)
     target_compile_definitions(${COMPONENT_LIB} PRIVATE NOS_IDF_ECOSYSTEM=1)
 endif()

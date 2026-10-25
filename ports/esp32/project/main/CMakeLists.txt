@@ -1,6 +1,7 @@
 # Copyright (C) 2026 NOS contributors.
 idf_build_get_property(NOS_IDF_ECOSYSTEM NOS_IDF_ECOSYSTEM)
 idf_build_get_property(NOS_IDF_REGRESSION NOS_IDF_REGRESSION)
+idf_build_get_property(storage_wl NOS_IDF_STORAGE_WL)
 if(NOS_IDF_REGRESSION)
     set(sources "${CMAKE_CURRENT_LIST_DIR}/../../../../tests/guest/esp32s3_regression.c"
         "${CMAKE_CURRENT_LIST_DIR}/../../../../tests/guest/esp32s3_protocols.c"
@@ -23,4 +24,7 @@ add_custom_target(nos_device_api_policy
 add_dependencies(${COMPONENT_LIB} nos_device_api_policy)
 if(NOS_IDF_ECOSYSTEM)
     target_compile_definitions(${COMPONENT_LIB} PRIVATE NOS_IDF_ECOSYSTEM=1)
+endif()
+if(storage_wl)
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE NOS_IDF_STORAGE_WL=1)
 endif()

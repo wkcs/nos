@@ -1,13 +1,14 @@
 # Copyright (C) 2026 NOS contributors.
 PYTHON ?= python3
 ESP_IDF_PROFILE ?= runtime
+ESP_IDF_STORAGE ?= raw
 ifneq ($(LIBC),idf)
 $(error $(PLATFORM) uses LIBC=idf, the ESP-IDF Newlib ABI)
 endif
 .PHONY: all firmware qemu-test setup-env
 all firmware:
-	$(PYTHON) scripts/$(PLATFORM).py build --profile $(ESP_IDF_PROFILE) --output $(O)
+	$(PYTHON) scripts/$(PLATFORM).py build --profile $(ESP_IDF_PROFILE) --storage $(ESP_IDF_STORAGE) --output $(O)
 qemu-test:
-	$(PYTHON) tests/$(PLATFORM).py
+	$(PYTHON) tests/$(PLATFORM).py --storage $(ESP_IDF_STORAGE)
 setup-env:
 	$(PYTHON) scripts/$(PLATFORM).py setup
