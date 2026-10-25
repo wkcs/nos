@@ -29,7 +29,7 @@
 
 测试必须先暂停再arm：xTimerStart可能让出CPU，若先arm再暂停，短定时器可在进入暂停区前合法触发。开发测试已捕获并修正这个用例本身的时序假设，没有将其算成OSAL缺陷。
 
-原来的软件定时器、esp_timer任务/ISR、通知、优先级继承、TLS/FPU、私有stdio、全部任务槽、退出回收和Flash/WL回归继续执行。最终冻结证据另行补录。没有新增实板或多核结论；长期稳定性仍需持续观察。
+原来的软件定时器、esp_timer任务/ISR、通知、优先级继承、TLS/FPU、私有stdio、全部任务槽、退出回收和Flash/WL回归继续执行。7812b03四组专项与四轮并行复测通过，证据和保留失败见 [ESP32_TIMING_VALIDATION.md](ESP32_TIMING_VALIDATION.md)。没有新增实板或多核结论；长期稳定性仍需持续观察。
 
 ## UART 停止时的待处理中断
 
