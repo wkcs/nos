@@ -91,8 +91,17 @@ static void permission_clear(unsigned index);
 #endif
 static void record_lock_close(intptr_t owner, const struct description *description);
 static struct vnode nodes[NODE_COUNT];
+#ifdef NOS_ESP_VFS
+/* The firmware linker cannot spread large BSS tables across the SoC's
+ * separate internal RAM banks. The platform supplies service-lifetime storage
+ * from its capability-aware allocator after the NOS scheduler is running. */
+static struct description *opened;
+static struct fd_table *fds;
+extern void *nos_vfs_allocate(size_t bytes);
+#else
 static struct description opened[OPEN_COUNT];
 static struct fd_table fds[FD_TABLE_COUNT];
+#endif
 static struct pipe_buffer pipes[PIPE_COUNT];
 #ifdef NOS_LINUX_COMPAT
 /* Positional reads never change the OFD. Keep bounded transport staging off
@@ -986,6 +995,13 @@ static void service(struct nos_message *m)
 }
 static int initialize_namespace(void)
 {
+#ifdef NOS_ESP_VFS
+    if (!opened) {
+        opened = nos_vfs_allocate(OPEN_COUNT * sizeof(*opened) + FD_TABLE_COUNT * sizeof(*fds));
+        if (!opened) return -NOS_ENOMEM;
+        fds = (struct fd_table *)(opened + OPEN_COUNT);
+    }
+#endif
 #ifdef NOS_LINUX_COMPAT
     int storage = path_storage_initialize(); if (storage) return storage;
     for (unsigned i = 0; i < NODE_COUNT; i++) { nodes[i].name = path_storage + i * NOS_PATH_MAX; nodes[i].name[0] = 0; }

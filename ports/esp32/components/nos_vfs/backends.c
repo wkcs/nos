@@ -2,6 +2,11 @@
 #include "nos/driver/esp_idf.h"
 #include "../../../../servers/drivers/devices.h"
 #include "../../../../servers/fatfs/adapter.h"
+#include "esp_heap_caps.h"
+
+void *nos_vfs_allocate(size_t bytes) {
+    return heap_caps_calloc(1, bytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+}
 
 void nos_uart_init(void) {
     /* UART0 is already managed by the system console. No second RX driver. */
