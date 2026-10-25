@@ -1,6 +1,8 @@
-# ESP32-S3 移植验证（2026-10-24）
+# ESP32-S3 移植验证（最新2026-10-25）
 
 <!-- Copyright (C) 2026 NOS contributors -->
+
+原生VFS最新冻结实现 `bfd67ab` 已通过S3/C3各四个实际镜像及公共89/89组验收，源码身份保持一致。S3静态DRAM超预算已通过服务启动时分配文件表修复，保留24任务槽及全部已有外设后端。完整证据见 [ESP32_VFS_VALIDATION.md](ESP32_VFS_VALIDATION.md)。以下保留历史阶段记录。
 
 最新连接能力已完成下列冻结专项验证；底层继续使用原始 ESP-IDF 驱动和无线库。接口见 [设备模型接入](ESP32_S3_DEVICES.md) 和 [GATT/Host/OTG](ESP32_S3_CONNECTIVITY.md)，无线/USB/外接外设仍未实板验收。
 

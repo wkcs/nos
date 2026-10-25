@@ -2,6 +2,10 @@
 
 <!-- Copyright (C) 2026 NOS contributors -->
 
+## ESP32 原生VFS与公共完整验收：2026-10-25
+
+干净冻结提交 `bfd67ab` 通过公共完整软件验收 **89/89组**，complete=true、全部returncode=0、源码未变化；报告 `out/microkernel/acceptance/1792907005224629555/results.json`。C3/S3各四个实际镜像启动通过，四个正常固件各32项UART交互、运行时23/生态25个必需标记齐全，五个runner实际退出0。原始日志、正常固件和S3内存修复见 [ESP32_VFS_VALIDATION.md](ESP32_VFS_VALIDATION.md)。这不是完整POSIX认证或新增实板结论。
+
 ## ESP32 启动接管：2026-10-25
 
 干净提交 `76a8ec8` 通过 C3/S3 各三种镜像的实际构建、入口/符号审计和真实 QEMU；正常启动各15项 UART nshell 交互、运行时19/生态21个标记齐全，全部退出0。仓库依赖离线完整性9组通过。此处仅为ESP专项，未新增完整POSIX或实板结论。原始报告、日志和固件见 [ESP32_BOOT_VALIDATION.md](ESP32_BOOT_VALIDATION.md)。

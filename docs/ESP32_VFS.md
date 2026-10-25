@@ -40,3 +40,5 @@ shell的标准输入/输出也经过VFS的READ/WRITE RPC；后端再调用NOS受
 `python3 tests/esp32c3.py`、`python3 tests/esp32s3.py`各构建正常/运行时/生态镜像，检查原生VFS实际编译和链接，并在官方QEMU运行。正常镜像执行32项UART交互，包含文件创建、相对cwd、读写/追加、目录、rename、unlink、只读拒绝和错误恢复。回归镜像还验证dup、已删除文件、管道EOF/EPIPE、FD耗尽、512字节边界、端点接收拒绝及超过进程槽数的任务退出回收。
 
 公共IPC/VFS改动还需 `python3 tests/acceptance.py --include-posix --require-frozen-source`。宿主模型与模拟器测试不替代实板无线、USB或物理存储验证。
+
+最终冻结实现 `bfd67ab` 已通过两平台八个实际镜像和公共89/89组验收，原始报告、日志和正常固件见 [ESP32_VFS_VALIDATION.md](ESP32_VFS_VALIDATION.md)。

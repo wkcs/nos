@@ -2,7 +2,9 @@
 
 <!-- Copyright (C) 2026 NOS contributors -->
 
-最新启动接管实现为 `76a8ec8`：由 NOS 提供镜像入口、启动策略和 init，两平台三种镜像与依赖完整性检查均通过。报告、原始日志、固件及校验见 [NOS 启动接管验证](ESP32_BOOT_VALIDATION.md)。
+最新VFS集成实现为 `bfd67ab`：C3/S3各四个实际镜像通过QEMU，各正常镜像32项UART交互，公共完整软件验收89/89通过，五个runner退出0。报告、日志和固件见 [ESP32_VFS_VALIDATION.md](ESP32_VFS_VALIDATION.md)。下列为历史启动阶段记录。
+
+启动接管阶段实现为 `76a8ec8`：由 NOS 提供镜像入口、启动策略和 init，两平台三种镜像与依赖完整性检查均通过。报告、原始日志、固件及校验见 [NOS 启动接管验证](ESP32_BOOT_VALIDATION.md)。
 
 ## 常驻 nshell 的历史记录
 

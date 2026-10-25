@@ -23,6 +23,7 @@ python3 scripts/esp32c3.py flash --port /dev/ttyACM0
 | `stats`、`mem` | 原生任务/锁/端点/空闲页与 SDK heap，分别标注 |
 | `ps` | NOS 的 IDF 任务桥接快照、任务名、优先级、状态和剩余栈估计 |
 | `devices` | NOS 设备域的实际注册表快照、状态与资源持有数量 |
+| `pwd cd ls cat write append touch mkdir rm rmdir mv stat` | 原生VFS的文件、目录、cwd及元数据操作，RAM预算见 [文件服务](ESP32_VFS.md) |
 | `echo`、`history`、`clear` | 带引号/转义的参数、历史记录与终端清屏 |
 
 支持方向键、行内编辑、退格、Ctrl+C、CR/LF、256字节有界输入和4条历史记录。错误引号、参数溢出或超长行报错后继续接受命令。原生 [NOS VFS](ESP32_VFS.md) 已接入：`pwd cd ls cat write append touch mkdir rm rmdir mv stat` 通过独立服务任务和 IPC 工作，标准输入输出也经 VFS 转到受管理控制台。RAM 文件复位丢失；独立 ELF、Linux/glibc、SDK Newlib文件描述符和NLP终端绑定仍未完成，`run`/持久挂载仍返回不支持。
@@ -31,10 +32,12 @@ python3 scripts/esp32c3.py flash --port /dev/ttyACM0
 
 `nos_devices/console.c` 使用原始 IDF UART 驱动，在 NOS 域中注册固件生命周期的 `system.console`，独占 UART0 控制器和两个控制台引脚。Flash/PSRAM 引脚另归 `system.flash-psram` 持有；正常启动时共有两个系统服务，应用设备注册表剩30槽。
 
-shell 通过 `nos_idf_console_call()` 提交非阻塞 READ/WRITE，处理实际短传输和 EAGAIN；无输入时让出 CPU。SDK 的标准输出也接到同一 UART 驱动。该固件生命周期服务不能卸载后转交应用；部分启动失败保留已获取资源，初始化失败不继续启动 shell。IRQ、SDK 临界区和调度暂停时沿用既有上下文拒绝规则。
+shell 通过原生 VFS 的 READ/WRITE RPC，VFS 后端再用 `nos_idf_console_call()` 提交设备请求，处理实际短传输和 EAGAIN；无输入时让出 CPU。SDK 的标准输出也接到同一 UART 驱动。该固件生命周期服务不能卸载后转交应用；部分启动失败保留已获取资源，初始化失败不继续启动 shell。IRQ、SDK 临界区和调度暂停时沿用既有上下文拒绝规则。
 
 ## 自动化验证
 
 `python3 tests/esp32c3.py` 和 `python3 tests/esp32s3.py` 重新构建三种镜像。普通镜像通过真实 UART0 的 QEMU stdin/stdout 交互，逐条验证32项命令/文件操作/编辑/错误恢复，检查输出属于本次请求而不是启动日志或输入回显；编译与符号审计排除 SDK 的 OS 启动、`app_main()` 和 `main_task`。回归镜像保持独立，验证 NOS 调度、IPC、设备容量/回收及生态后端。
 
 两个芯片的 UART 模型均实际触发 SDK RX 中断、ringbuffer 和 NOS 任务切换。测试结束后 harness 主动终止模拟器；完整命令、输入字节、必需输出、源码身份与原始 UART 日志保存在专项报告中。此前不含 shell 的 `eae2305` 日志属于历史镜像，不能作为这个启动流程的证明；此前公共89组验收在41组后被中断，没有完整成功收据，不计为89/89通过。
+
+最新文件服务与32项交互的冻结验收见 [ESP32_VFS_VALIDATION.md](ESP32_VFS_VALIDATION.md)。
