@@ -2,6 +2,10 @@
 
 <!-- Copyright (C) 2026 NOS contributors -->
 
+## ESP32 Newlib 文件/标准流适配：2026-10-25
+
+干净冻结提交 `106338b` 通过C3/S3各四个实际镜像的构建/审计与真实QEMU；四份普通固件各32项UART交互、运行时28/生态30标记齐全，最终runner退出0。Newlib真实stdio、SDK FD并存、任务所有权/退出回收及全部任务槽容量通过。此批未改公共核心，未重跑89组；旧完整基线单独保留。详细范围、首次辅助检查失败与复验、固件和日志见 [ESP32_NEWLIB_VALIDATION.md](ESP32_NEWLIB_VALIDATION.md)。
+
 ## ESP32 原生VFS与公共完整验收：2026-10-25
 
 干净冻结提交 `bfd67ab` 通过公共完整软件验收 **89/89组**，complete=true、全部returncode=0、源码未变化；报告 `out/microkernel/acceptance/1792907005224629555/results.json`。C3/S3各四个实际镜像启动通过，四个正常固件各32项UART交互、运行时23/生态25个必需标记齐全，五个runner实际退出0。原始日志、正常固件和S3内存修复见 [ESP32_VFS_VALIDATION.md](ESP32_VFS_VALIDATION.md)。这不是完整POSIX认证或新增实板结论。

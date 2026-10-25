@@ -36,4 +36,4 @@ NOS 在 SDK stdio 初始化之前永久保留 3–10，防止 SDK 分配重复�
 
 运行 `python3 tests/esp32c3.py --timeout 90` 与 `python3 tests/esp32s3.py --timeout 90`。每个平台构建普通、运行时回归、完整生态回归镜像；检查真实编译/ELF 符号、Newlib 文件/stdio、poll/select ABI、SDK FD 并存、任务所有权与退出回收，以及私有标准流启用后的 16/24 个实际任务槽容量。普通固件启动输出 `NOS: Newlib filesystem online`，执行 32 项真实 UART nshell 交互。
 
-当前只使用易失 RAM 文件，仍待持久块设备/文件系统、分配器统一、独立 ELF 与 NLP 服务绑定；ESP32 仍是单核共享固件地址空间。本适配不扩大 RF、USB 或实板验证范围。冻结验证结果和固件在验收后另行记录；历史公共 89 组基线见 [ESP32_VFS_VALIDATION.md](ESP32_VFS_VALIDATION.md)。
+当前只使用易失 RAM 文件，仍待持久块设备/文件系统、分配器统一、独立 ELF 与 NLP 服务绑定；ESP32 仍是单核共享固件地址空间。本适配不扩大 RF、USB 或实板验证范围。冻结验证结果、原始日志和正常固件见 [ESP32_NEWLIB_VALIDATION.md](ESP32_NEWLIB_VALIDATION.md)；历史公共 89 组基线见 [ESP32_VFS_VALIDATION.md](ESP32_VFS_VALIDATION.md)。

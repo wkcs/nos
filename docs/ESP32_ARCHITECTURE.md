@@ -2,6 +2,8 @@
 
 <!-- Copyright (C) 2026 NOS contributors -->
 
+最新ESP32 Newlib文件/标准流专项、正常固件与原始启动日志见 [ESP32_NEWLIB_VALIDATION.md](ESP32_NEWLIB_VALIDATION.md)。下列既有验收记录保留其原始提交与范围。
+
 ESP32-C3 / S3 使用 Espressif ROM 和二级 bootloader 加载 NOS 镜像。NOS 提供镜像入口、系统初始化顺序、内核启动及 init 任务；IDF 作为硬件支持库和第三方协议栈依赖。固件没有 IDF `app_main()`、SDK `main_task` 或 SDK OS 启动派发器。
 
 ## 启动链

@@ -293,4 +293,5 @@ AS 限额见下方已完成批次；下一批优先完善稳定进程/地址空�
 - [x] 启动预留 FD 区间，实际 SDK FD 与原生 FD3 共存；不从 NOS 路径错误回退到 SDK。
 - [x] 私有标准流、FILE/DIR 归属检查、正常刷新与 orphan 丢弃回收，处理驱动持锁打印的锁顺序。
 - [x] 增加 C3/S3 同一源码的真实 Newlib/stdio、ABI 转换、槽复用/heap 回收与全部任务槽容量回归。
-- 能力、预算和剩余边界见 [ESP32_NEWLIB.md](ESP32_NEWLIB.md)；最终冻结执行证据另行补录。
+- [x] `106338b` 冻结专项：C3/S3八个实际镜像，四份普通固件各32项UART交互，运行时28/生态30标记通过；最终runner退出0。公共89组未重跑，保留此前基线。
+- 能力与边界见 [ESP32_NEWLIB.md](ESP32_NEWLIB.md)，[验证、日志与正常固件](ESP32_NEWLIB_VALIDATION.md)。
