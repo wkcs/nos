@@ -44,3 +44,5 @@ IDF 无线二进制和部分原始驱动依赖 FreeRTOS 函数、Newlib TLS、�
 ## 验证
 
 运行 `python3 tests/esp32c3.py` 和 `python3 tests/esp32s3.py`。专项检查真实编译数据库、ELF 机器类型及启动符号：必须包含 NOS 启动与 init，必须排除 SDK `startup.c`、`app_startup.c`、`tasks.c` 和 `app_main/main_task`。真实 QEMU 分别执行正常启动的15项 UART nshell 交互、运行时回归和全外设链接回归。模拟器没有无线射频或完整 USB 控制器模型，不替代实板验证。
+
+本轮干净冻结源码的结果、原始日志和正常固件见 [ESP32_BOOT_VALIDATION.md](ESP32_BOOT_VALIDATION.md)。

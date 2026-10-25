@@ -4,7 +4,11 @@
 
 最新连接能力已完成下列冻结专项验证；底层继续使用原始 ESP-IDF 驱动和无线库。接口见 [设备模型接入](ESP32_S3_DEVICES.md) 和 [GATT/Host/OTG](ESP32_S3_CONNECTIVITY.md)，无线/USB/外接外设仍未实板验收。
 
-## 常驻 nshell 的最新记录
+## NOS 自有启动入口与 init
+
+`76a8ec8` 已在干净冻结源码上通过 C3/S3 各三种镜像与真实 QEMU。正常镜像各15项 UART 交互、运行时19/生态21个必需标记全部通过；没有 SDK OS 启动或 app_main/main_task。依赖从仓库内校验归档解包。三个 runner 实际退出0，完整记录见 [启动接管验证](ESP32_BOOT_VALIDATION.md)。
+
+## 常驻 nshell 的历史记录
 
 `afb0818f916e788771668121c010f8085f53d382` 在干净、冻结源码上通过 C3/S3 三种镜像专项及三个相关宿主 runner。S3 报告为 `out/esp32s3/nshell-validation/reports/1792884403539264806/results.json`：常驻normal镜像15项真实UART0命令/编辑检查通过，runtime19/生态21个必需标记齐全，全部QEMU退出0。normal不再从app_main返回；UART0由system.console独占管理，SDK驱动/RX中断/ringbuffer与NOS任务实际工作。产物、证据与范围见 [最新冻结记录](ESP32_C3_VALIDATION.md) 和 [nshell profile](ESP32_NSHELL.md)。以下保留历史快照，不能替代最新shell结果。
 

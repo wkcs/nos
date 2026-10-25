@@ -273,3 +273,5 @@ AS 限额见下方已完成批次；下一批优先完善稳定进程/地址空�
 - 固件硬件依赖及无线库纳入 third_party/espressif 的校验归档。
 - 当前实现和验收边界见 [ESP32_ARCHITECTURE.md](ESP32_ARCHITECTURE.md)。
 - 独立 VFS/ELF、分配器统一、SMP、实板外设仍待继续实现/验收。
+
+- [x] `76a8ec8` 冻结验收：C3/S3 各三种实际镜像、各15项UART交互和19/21回归标记、入口/编译审计及9组依赖完整性通过；三个runner实际退出0。[报告与固件](ESP32_BOOT_VALIDATION.md)。

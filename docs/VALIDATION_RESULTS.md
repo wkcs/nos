@@ -2,6 +2,10 @@
 
 <!-- Copyright (C) 2026 NOS contributors -->
 
+## ESP32 启动接管：2026-10-25
+
+干净提交 `76a8ec8` 通过 C3/S3 各三种镜像的实际构建、入口/符号审计和真实 QEMU；正常启动各15项 UART nshell 交互、运行时19/生态21个标记齐全，全部退出0。仓库依赖离线完整性9组通过。此处仅为ESP专项，未新增完整POSIX或实板结论。原始报告、日志和固件见 [ESP32_BOOT_VALIDATION.md](ESP32_BOOT_VALIDATION.md)。
+
 下文的 **50/50 个命令组通过、66 次真实 QEMU 启动** 是阶段 0–5 的历史完整软件验收，runner 退出 0。汇总为 `out/microkernel/acceptance/1792024151409000896/results.json`。后续 glibc/POSIX 开发修改了公共核心，不能以这份旧报告代替新快照的完整回归。
 
 ## 进行中的 POSIX.1-2017 / glibc 验证
