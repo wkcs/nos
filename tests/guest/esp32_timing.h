@@ -15,4 +15,6 @@ struct nos_timing_snapshot {
 void nos_esp_timing_snapshot(struct nos_timing_snapshot *);
 void nos_esp_timing_regression(void);
 void nos_esp_timing_dump(const char *stage);
+int nos_esp_timing_reaped(uintptr_t handle);
+void nos_esp_timing_wait_reaped(uintptr_t handle, uint32_t start);
 #endif

@@ -27,6 +27,8 @@ static TaskHandle_t main_handle;
 static SemaphoreHandle_t inheritance_mutex;
 static volatile unsigned isr_seen;
 static volatile unsigned spins[2], stop_spinning, tls_deleted;
+static SemaphoreHandle_t tls_cleaned;
+static StaticSemaphore_t tls_cleaned_storage;
 static __thread uint32_t thread_cookie;
 static void spinner(void *arg)
 {
@@ -50,6 +52,7 @@ static void tls_cleanup(int index, void *pointer)
 {
     assert(index == 0 && pointer == (void *)0x1234);
     tls_deleted++;
+    xSemaphoreGive(tls_cleaned);
 }
 static void tls_worker(void *arg)
 {
@@ -115,8 +118,12 @@ static void passive(void *unused)
 }
 static void wait_done(unsigned count)
 {
-    for (unsigned i = 0; i < count; i++)
-        assert(xSemaphoreTake(done, pdMS_TO_TICKS(3000)) == pdTRUE);
+    for (unsigned i = 0; i < count; i++) {
+        BaseType_t ready = xSemaphoreTake(done, pdMS_TO_TICKS(3000));
+        if (ready != pdTRUE)
+            nos_esp_timing_dump("done-timeout");
+        assert(ready == pdTRUE);
+    }
     vTaskDelay(2); /* Give the NOS idle task a chance to reclaim terminated tasks. */
 }
 static void short_lived(void *unused)
@@ -227,11 +234,35 @@ void nos_esp_init(void)
     vQueueDelete(queue);
     puts("PASS " NOS_IDF_TEST_NAME "_queue_timeout");
 
+    tls_cleaned = xSemaphoreCreateCountingStatic(2, 0, &tls_cleaned_storage);
+    assert(tls_cleaned);
     errno = 7;
+    TickType_t tls_start = xTaskGetTickCount();
     assert(xTaskCreate(tls_worker, "tls1", 4096, (void *)1, 3, NULL) == pdPASS);
     assert(xTaskCreate(tls_worker, "tls2", 4096, (void *)2, 3, NULL) == pdPASS);
-    wait_done(2);
-    assert(errno == 7 && thread_cookie == 0 && tls_deleted == 2);
+    /* Worker completion and idle reaping are distinct events. Keep all
+     * data assertions, with one total 3s budget for both phases. */
+    for (unsigned phase = 0; phase < 4; phase++) {
+        TickType_t elapsed = xTaskGetTickCount() - tls_start;
+        BaseType_t ready = elapsed < pdMS_TO_TICKS(3000)
+            ? xSemaphoreTake(phase < 2 ? done : tls_cleaned, pdMS_TO_TICKS(3000) - elapsed)
+            : pdFALSE;
+        int observed_errno = errno;
+        uint32_t observed_cookie = thread_cookie;
+        unsigned observed_deleted = tls_deleted;
+        if (ready != pdTRUE || observed_errno != 7 || observed_cookie ||
+            (phase == 3 && observed_deleted != 2)) {
+            printf("TLS phase=%u errno=%d cookie=%lu callbacks=%u ticks=%u\n", phase,
+                   observed_errno, (unsigned long)observed_cookie, observed_deleted,
+                   (unsigned)elapsed);
+            nos_esp_timing_dump("tls-completion");
+        }
+        assert(ready == pdTRUE && observed_errno == 7 && observed_cookie == 0);
+        if (phase == 3)
+            assert(observed_deleted == 2);
+    }
+    /* Callback signals can preempt idle inside Give(); keep the static
+     * semaphore alive until firmware shutdown, rather than freeing it early. */
     puts("PASS " NOS_IDF_TEST_NAME "_tls_errno_" NOS_IDF_FP_TEST "_cleanup");
 
     events = xEventGroupCreate();
@@ -467,8 +498,11 @@ void nos_esp_init(void)
 
     size_t before = heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
     for (unsigned i = 0; i < 40; i++) {
-        assert(xTaskCreate(short_lived, "recycle", 3072, NULL, 3, NULL) == pdPASS);
+        TickType_t start = xTaskGetTickCount();
+        TaskHandle_t task;
+        assert(xTaskCreate(short_lived, "recycle", 3072, NULL, 3, &task) == pdPASS);
         wait_done(1);
+        nos_esp_timing_wait_reaped((uintptr_t)task, start);
     }
     assert(heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT) == before);
     puts("PASS " NOS_IDF_TEST_NAME "_task_recycle_no_stack_leak");

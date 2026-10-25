@@ -14,6 +14,7 @@
 static struct nos_idf_task records[NOS_TASKS];
 void *pxCurrentTCBs[1];
 static unsigned started, suspended, pended_yield;
+static uint64_t pended_ticks;
 #ifdef NOS_ESP_VFS
 extern void nos_esp_vfs_entry(void *argument);
 #endif
@@ -57,12 +58,23 @@ static TaskHandle_t handle(struct nos_idf_task *r)
 static void reclaim(struct nos_idf_task *r);
 #ifdef NOS_IDF_REGRESSION
 #include "../../../../tests/guest/esp32_timing.h"
+int nos_esp_timing_reaped(uintptr_t token)
+{
+    uintptr_t irq = arch_irq_save();
+    unsigned complete = 1;
+    for (unsigned i = 0; i < NOS_TASKS; i++)
+        if ((uintptr_t)handle(&records[i]) == token)
+            complete = 0;
+    arch_irq_restore(irq);
+    return complete;
+}
 void nos_esp_timing_snapshot(struct nos_timing_snapshot *s)
 {
     uintptr_t irq = arch_irq_save();
     memset(s, 0, sizeof(*s));
     s->ticks = kernel_ticks;
     s->suspended = suspended;
+    s->deferred = pended_ticks;
     for (unsigned i = 0; i < NOS_TASKS && s->count < 24; i++) {
         struct nos_idf_task *r = &records[i];
         if (!r->native) continue;
@@ -299,9 +311,11 @@ void vTaskSwitchContext(void)
     pxCurrentTCBs[0] = r;
     arch_irq_restore(irq);
 }
-BaseType_t xTaskIncrementTick(void)
+/* Called with IRQs masked. Queue/timer code uses scheduler suspension to
+ * protect event lists while interrupts remain enabled. Neither timeouts nor
+ * list removals may run until the outermost resume. */
+static void advance_tick(void)
 {
-    uintptr_t irq = arch_irq_save();
     scheduler_tick();
     for (unsigned i = 0; i < NOS_TASKS; i++) {
         struct nos_idf_task *r = &records[i];
@@ -311,10 +325,21 @@ BaseType_t xTaskIncrementTick(void)
             r->waiting = 0;
         }
     }
-    arch_irq_restore(irq);
-    if (suspended)
+}
+BaseType_t xTaskIncrementTick(void)
+{
+    uintptr_t irq = arch_irq_save();
+    BaseType_t yield = pdFALSE;
+    if (suspended) {
+        configASSERT(pended_ticks != UINT64_MAX);
+        pended_ticks++;
         pended_yield = 1;
-    return suspended ? pdFALSE : pdTRUE;
+    } else {
+        advance_tick();
+        yield = pdTRUE;
+    }
+    arch_irq_restore(irq);
+    return yield;
 }
 TickType_t xTaskGetTickCount(void)
 {
@@ -432,6 +457,12 @@ BaseType_t xTaskResumeAll(void)
     portENTER_CRITICAL(&api_mux);
     configASSERT(suspended);
     suspended--;
+    if (!suspended) {
+        while (pended_ticks) {
+            pended_ticks--;
+            advance_tick();
+        }
+    }
     unsigned y = !suspended && pended_yield;
     if (!suspended)
         pended_yield = 0;

@@ -16,6 +16,9 @@ spec = importlib.util.spec_from_file_location("esp32_port", ROOT / "scripts/esp3
 port = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(port)
 MARKERS = [
+    "PASS esp32s3_async_reclaim_completion_contract",
+    "PASS esp32s3_suspended_ticks_event_list_atomicity",
+    "PASS esp32s3_resume_timer_64_deadlines",
     "PASS esp32s3_ble_gatt_state_descriptors_subscriptions_mtu_queue_atomicity",
     "PASS esp32s3_usb_class_transport_hid_stale_and_backend_errors",
     "PASS esp32s3_usb_otg_auto_discharge_wrap_and_overcurrent",
@@ -187,6 +190,16 @@ def audit(build, ecosystem=False, regression=True, storage="raw"):
     )
     symbols = subprocess.check_output([nm, build / f"nos_{port.TARGET}.elf"], text=True)
     names = {line.split()[-1] for line in symbols.splitlines() if line.split()}
+    timing_symbols = {
+        "nos_esp_timing_snapshot",
+        "nos_esp_timing_reaped",
+        "nos_esp_timing_regression",
+    }
+    timing_source = (ROOT / "tests/guest/esp32_timing_regression.c").resolve()
+    if regression:
+        assert timing_symbols <= names and timing_source in files
+    else:
+        assert not (timing_symbols & names) and timing_source not in files
     entry = next(
         line.split()
         for line in symbols.splitlines()
