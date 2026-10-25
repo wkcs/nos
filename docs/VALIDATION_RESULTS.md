@@ -2,6 +2,10 @@
 
 <!-- Copyright (C) 2026 NOS contributors -->
 
+## ESP32 原生Flash持久化：2026-10-25
+
+干净冻结提交 `7577e74` 通过C3/S3共22次真实QEMU启动；各七阶段持久化/损坏回退、运行时29/生态31标记、四份普通固件各32项UART交互均通过。公共驱动框架和NOR实际适配器故障模型的ASan/UBSan/LSan通过，五个runner退出0、源码身份一致。本批未改公共核心，未重跑89组，不扩大实板/Flash耐久/POSIX结论。[完整范围、固件与日志](ESP32_STORAGE_VALIDATION.md)。
+
 ## ESP32 Newlib 文件/标准流适配：2026-10-25
 
 干净冻结提交 `106338b` 通过C3/S3各四个实际镜像的构建/审计与真实QEMU；四份普通固件各32项UART交互、运行时28/生态30标记齐全，最终runner退出0。Newlib真实stdio、SDK FD并存、任务所有权/退出回收及全部任务槽容量通过。此批未改公共核心，未重跑89组；旧完整基线单独保留。详细范围、首次辅助检查失败与复验、固件和日志见 [ESP32_NEWLIB_VALIDATION.md](ESP32_NEWLIB_VALIDATION.md)。

@@ -303,4 +303,5 @@ AS 限额见下方已完成批次；下一批优先完善稳定进程/地址空�
 - [x] 512字节逻辑扇区独占4KiB擦除块，反码映射擦除态；复用原生双bank快照，不修改公共VFS。
 - [x] nshell mount/sync、Newlib fsync提交；预留init槽1，避免SDK构造任务抢占挂载身份。
 - [x] 增加真实NOR二进制回归、七次独立启动的持久化/损坏回退检查及宿主故障注入。
-- 实现与资源预算见 [ESP32_STORAGE.md](ESP32_STORAGE.md)，最终冻结执行证据另行补录。
+- [x] `7577e74` 冻结专项：两平台22次真实QEMU启动、各七次持久化/损坏回退、运行时29/生态31标记及四份普通固件各32项UART交互通过；公共驱动框架和NOR故障模型通过，五个runner退出0。
+- 实现与预算见 [ESP32_STORAGE.md](ESP32_STORAGE.md)，[验证与固件](ESP32_STORAGE_VALIDATION.md)。公共89组未重跑，仍保留既有基线。

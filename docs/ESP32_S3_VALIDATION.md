@@ -2,6 +2,8 @@
 
 <!-- Copyright (C) 2026 NOS contributors -->
 
+最新原生Flash持久化、22次实际QEMU启动、正常固件与日志见 [ESP32_STORAGE_VALIDATION.md](ESP32_STORAGE_VALIDATION.md)。
+
 最新ESP32 Newlib文件/标准流专项、正常固件与原始启动日志见 [ESP32_NEWLIB_VALIDATION.md](ESP32_NEWLIB_VALIDATION.md)。下列既有验收记录保留其原始提交与范围。
 
 原生VFS最新冻结实现 `bfd67ab` 已通过S3/C3各四个实际镜像及公共89/89组验收，源码身份保持一致。S3静态DRAM超预算已通过服务启动时分配文件表修复，保留24任务槽及全部已有外设后端。完整证据见 [ESP32_VFS_VALIDATION.md](ESP32_VFS_VALIDATION.md)。以下保留历史阶段记录。
