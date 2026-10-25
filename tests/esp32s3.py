@@ -41,6 +41,7 @@ MARKERS = [
     "PASS esp32s3_native_ipc",
     "PASS esp32s3_priority_inheritance_native_exit",
     "PASS esp32s3_static_tasks_capacity_rollback",
+    "PASS esp32s3_uart_pending_interrupt_stop_restart_64",
     "PASS esp32s3_sdk_gpio_uart_flash_nvs",
     "PASS esp32s3_managed_devices",
     "PASS esp32s3_device_capacity_no_leak",
@@ -194,12 +195,18 @@ def audit(build, ecosystem=False, regression=True, storage="raw"):
         "nos_esp_timing_snapshot",
         "nos_esp_timing_reaped",
         "nos_esp_timing_regression",
+        "nos_esp_uart_stop_checks",
+        "__wrap_uart_disable_intr_mask",
+        "__wrap_uart_driver_delete",
     }
     timing_source = (ROOT / "tests/guest/esp32_timing_regression.c").resolve()
+    uart_source = (ROOT / "ports/esp32/components/nos_devices/uart_test.c").resolve()
     if regression:
-        assert timing_symbols <= names and timing_source in files
+        assert timing_symbols <= names and timing_source in files and uart_source in files
     else:
-        assert not (timing_symbols & names) and timing_source not in files
+        assert (
+            not (timing_symbols & names) and timing_source not in files and uart_source not in files
+        )
     entry = next(
         line.split()
         for line in symbols.splitlines()
@@ -469,7 +476,15 @@ def run_qemu(
             # Keep stdin open: the QEMU UART drops TX when its backend sees EOF.
             while process.poll() is None and time.monotonic() < deadline:
                 text = log.read_text(errors="replace").replace("\r", "")
-                if "Guru Meditation" in text or "assert failed" in text or "FAIL " in text:
+                if any(
+                    marker in text
+                    for marker in (
+                        "Guru Meditation",
+                        "assert failed",
+                        "FAIL ",
+                        "Unhandled interrupt",
+                    )
+                ):
                     break
                 if interactive:
                     if "NOS: regression init completed" in text:

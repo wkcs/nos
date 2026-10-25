@@ -131,7 +131,16 @@ static int uart_start(void *context)
 static int uart_stop(void *context)
 {
     struct idf_device *d = context;
-    int rc = d->installed ? idf_error(uart_driver_delete(d->config.instance)) : 0;
+    if (!d->installed)
+        return 0;
+    /* Quiesce the peripheral before IDF disconnects its interrupt route and
+     * frees the handler. In particular, the S3 QEMU matrix does not lower an
+     * already asserted CPU line when a source is remapped to the disabled slot.
+     * Keep ownership on error so the caller can retry stopping the device. */
+    int rc = idf_error(uart_disable_intr_mask(d->config.instance, UINT32_MAX));
+    if (rc)
+        return rc;
+    rc = idf_error(uart_driver_delete(d->config.instance));
     if (!rc)
         d->installed = 0;
     return rc;

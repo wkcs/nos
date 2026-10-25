@@ -7,10 +7,13 @@ set(sources "devices.c" "serial_buses.c" "storage.c" "flash.c" "flash_block.c" "
 set(dependencies freertos esp_driver_gpio esp_driver_uart esp_driver_spi esp_driver_i2c
     esp_timer nvs_flash app_update vfs)
 idf_build_get_property(storage_wl NOS_IDF_STORAGE_WL)
+idf_build_get_property(regression NOS_IDF_REGRESSION)
+if(regression)
+    list(APPEND sources "uart_test.c")
+endif()
 if(storage_wl)
     list(APPEND sources "flash_wl.cpp")
     list(APPEND dependencies wear_levelling)
-    idf_build_get_property(regression NOS_IDF_REGRESSION)
     if(regression)
         list(APPEND sources "flash_wl_test.c")
     endif()
@@ -31,6 +34,10 @@ idf_component_register(SRCS ${sources}
     "${NOS_ROOT}/servers/drivers/framework/service.c"
     INCLUDE_DIRS "${NOS_ROOT}/include" PRIV_REQUIRES ${dependencies})
 target_compile_options(${COMPONENT_LIB} PRIVATE "-iquote${NOS_ROOT}/include/nos")
+if(regression)
+    target_link_libraries(${COMPONENT_LIB} INTERFACE
+        "-Wl,--wrap=uart_disable_intr_mask" "-Wl,--wrap=uart_driver_delete")
+endif()
 if(storage_wl)
     target_compile_definitions(${COMPONENT_LIB} PRIVATE NOS_IDF_STORAGE_WL=1)
     # Pinned IDF 5.4.2 original WL classes; NOS adds guarded lifecycle only.

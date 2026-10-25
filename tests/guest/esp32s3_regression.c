@@ -407,16 +407,22 @@ void nos_esp_init(void)
                                             .pins = {-1, -1, -1, -1},
                                             .hz = 115200};
     assert(nos_idf_device_create(&config, &uart) == 0);
-    assert(nos_service_start(uart) == 0);
     uint8_t byte;
-    struct nos_io_buffer buffer = {&byte, 1, 99};
-    assert(nos_service_call(uart, NOS_IO_READ, &buffer, sizeof(buffer)) == -NOS_DRV_EAGAIN);
-    assert(buffer.actual == 0);
-    buffer = (struct nos_io_buffer){"NOS", 3, 0};
-    assert(nos_service_call(uart, NOS_IO_WRITE, &buffer, sizeof(buffer)) == 0);
-    assert(buffer.actual > 0 && buffer.actual <= 3);
-    assert(nos_service_stop(uart) == 0);
-    assert(nos_service_call(uart, NOS_IO_WRITE, &buffer, sizeof(buffer)) == -NOS_DRV_ENODEV);
+    struct nos_io_buffer buffer;
+    for (unsigned cycle = 0; cycle < 64; cycle++) {
+        assert(nos_service_start(uart) == 0);
+        buffer = (struct nos_io_buffer){&byte, 1, 99};
+        assert(nos_service_call(uart, NOS_IO_READ, &buffer, sizeof(buffer)) == -NOS_DRV_EAGAIN);
+        assert(buffer.actual == 0);
+        buffer = (struct nos_io_buffer){"NOS", 3, 0};
+        assert(nos_service_call(uart, NOS_IO_WRITE, &buffer, sizeof(buffer)) == 0);
+        assert(buffer.actual > 0 && buffer.actual <= 3);
+        assert(nos_service_stop(uart) == 0);
+        assert(nos_service_call(uart, NOS_IO_WRITE, &buffer, sizeof(buffer)) == -NOS_DRV_ENODEV);
+    }
+    extern unsigned nos_esp_uart_stop_checks(void);
+    assert(nos_esp_uart_stop_checks() == 64);
+    puts("PASS " NOS_IDF_TEST_NAME "_uart_pending_interrupt_stop_restart_64");
     assert(nos_idf_device_destroy(&uart) == 0);
     config = (struct nos_idf_device_config){
         .name = "test.nvs", .kind = NOS_SERVICE_STORAGE, .storage_namespace = "nos-test"};
