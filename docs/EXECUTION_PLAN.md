@@ -312,4 +312,4 @@ AS 限额见下方已完成批次；下一批优先完善稳定进程/地址空�
 - [x] raw与wl显式选择、不同分区类型及构建目录防混用；nshell显示格式。
 - [x] 原始WL类由NOS设备模型管理，状态预检、全擦除态初始化、修复后位置重放和错误锁定。
 - [x] 宿主原始算法600次轮转及错误注入、来宾128次提交和物理擦除计数、七阶段复启回归已实现。
-- 实现见 [ESP32_WEAR_LEVELING.md](ESP32_WEAR_LEVELING.md)，最终冻结执行证据另行补录；[后续优先级](ESP32_NEXT_STEPS.md)。
+- 实现见 [ESP32_WEAR_LEVELING.md](ESP32_WEAR_LEVELING.md)，`0399da6`冻结结果见 [ESP32_WEAR_VALIDATION.md](ESP32_WEAR_VALIDATION.md)：最终42次成功启动，首轮两组失败保留，raw同ELF串行复验通过。时序根因未定，列入[最高优先级](ESP32_NEXT_STEPS.md)。

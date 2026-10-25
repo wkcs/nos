@@ -2,6 +2,8 @@
 
 <!-- Copyright (C) 2026 NOS contributors -->
 
+最新raw/WL磨损均衡专项、固件及首轮失败/同ELF复验记录见 [ESP32_WEAR_VALIDATION.md](ESP32_WEAR_VALIDATION.md)。
+
 最新原生Flash持久化、22次实际QEMU启动、正常固件与日志见 [ESP32_STORAGE_VALIDATION.md](ESP32_STORAGE_VALIDATION.md)。
 
 最新ESP32 Newlib文件/标准流专项、正常固件与原始启动日志见 [ESP32_NEWLIB_VALIDATION.md](ESP32_NEWLIB_VALIDATION.md)。下列既有验收记录保留其原始提交与范围。
