@@ -5,6 +5,7 @@ idf_build_get_property(storage_wl NOS_IDF_STORAGE_WL)
 if(NOS_IDF_REGRESSION)
     set(sources "${CMAKE_CURRENT_LIST_DIR}/../../../../tests/guest/esp32s3_regression.c"
         "${CMAKE_CURRENT_LIST_DIR}/../../../../tests/guest/esp32s3_protocols.c"
+        "${CMAKE_CURRENT_LIST_DIR}/../../../../tests/guest/esp32_timing_regression.c"
         "${CMAKE_CURRENT_LIST_DIR}/../../../../tests/guest/esp32_vfs_regression.c"
         "${CMAKE_CURRENT_LIST_DIR}/../../../../tests/guest/esp32_libc_regression.c"
         "${CMAKE_CURRENT_LIST_DIR}/../../../../tests/guest/esp32_storage_regression.c")

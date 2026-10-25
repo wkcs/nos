@@ -18,6 +18,7 @@
 #include "nos/user.h"
 #include "nos/driver/esp_idf.h"
 #include "nos/driver/usb_service.h"
+#include "esp32_timing.h"
 static QueueHandle_t queue;
 static SemaphoreHandle_t done;
 static EventGroupHandle_t events;
@@ -139,6 +140,7 @@ static void ipc_client(void *unused)
 }
 void nos_esp_init(void)
 {
+    nos_esp_timing_regression();
     extern void nos_esp32s3_protocol_regression(void);
     nos_esp32s3_protocol_regression();
     esp_chip_info_t chip;

@@ -55,6 +55,28 @@ static TaskHandle_t handle(struct nos_idf_task *r)
     return r && r->native ? (TaskHandle_t)(uintptr_t)(0x10000 + r->native->id) : NULL;
 }
 static void reclaim(struct nos_idf_task *r);
+#ifdef NOS_IDF_REGRESSION
+#include "../../../../tests/guest/esp32_timing.h"
+void nos_esp_timing_snapshot(struct nos_timing_snapshot *s)
+{
+    uintptr_t irq = arch_irq_save();
+    memset(s, 0, sizeof(*s));
+    s->ticks = kernel_ticks;
+    s->suspended = suspended;
+    for (unsigned i = 0; i < NOS_TASKS && s->count < 24; i++) {
+        struct nos_idf_task *r = &records[i];
+        if (!r->native) continue;
+        struct nos_timing_task *t = &s->tasks[s->count++];
+        memcpy(t->name, r->name, sizeof(t->name) - 1);
+        t->id = r->native->id;
+        t->state = r->native->state;
+        t->waiting = r->waiting;
+        t->deleting = r->deleting;
+        t->deadline = r->native->wake_tick;
+    }
+    arch_irq_restore(irq);
+}
+#endif
 static unsigned priority(UBaseType_t p)
 {
     return 31u - (unsigned)p;
