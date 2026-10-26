@@ -42,3 +42,9 @@
 NOS UART停止现在先调用原版uart_disable_intr_mask关闭全部外设中断，再调用原版uart_driver_delete。关闭失败时返回真实错误并保留设备所有权，供重试。未修改或替换vendor HAL、路由器和ISR，也未通过禁用全部CPU中断掩盖错误。
 
 回归固件通过链接包装，在每次NOS关闭全部UART中断之前临时屏蔽CPU IRQ并启用真实TX空中断，断言确有待处理状态；执行原版关闭函数后要求状态为0，并在删除入口再次检查。两架构各执行64次经NOS服务模型的启动、读写、停止和重启。包装代码、计数符号和注入只编入回归固件，正常镜像审计要求它们全部缺席。
+
+## 冷启动的第一个 SysTick
+
+扩展快照候选8e2d0ef的C3 raw正式回归在文件系统测试之前失败，实际输出为before=0、during=0、nested=0、after=2、linked=1、deferred=1。固定版本原始IDF `port_systick.c` 的 `SysTickIsrHandler` 在 `s_handled_systicks==0` 时把当前硬件计数设为基线，并强制本次diff=1；首个中断较晚到达时，不能从启动后的50ms推断已分派至少两个tick。
+
+回归现在先用vTaskDelay(1)等待首个实际调度tick，输出systick_ready探针，再进入原有50ms嵌套暂停测试。暂停期间tick冻结、链表节点保留、deferred至少2、恢复重放和3秒任务回收预算全部保留，没有修改原始SDK中断处理或NOS调度器。候选失败、当时镜像与中止的其余部分矩阵保留，最终结果以新的冻结提交为准。

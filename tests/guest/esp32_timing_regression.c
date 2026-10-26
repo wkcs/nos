@@ -90,6 +90,15 @@ void nos_esp_timing_wait_reaped(uintptr_t handle, uint32_t start) {
     }
 }
 void nos_esp_timing_regression(void) {
+    /* IDF's first systimer ISR establishes its hardware counter baseline
+     * and reports only one tick, even if delivery was late. Start the
+     * suspended-tick contract after that ISR, rather than interpreting
+     * 50 ms since boot as proof that at least two ticks were delivered. */
+    TickType_t initial = xTaskGetTickCount();
+    vTaskDelay(1);
+    TickType_t ready = xTaskGetTickCount();
+    assert((TickType_t)(ready - initial) >= 1);
+    printf("PROBE systick_ready initial=%u ready=%u\n", (unsigned)initial, (unsigned)ready);
     List_t event;
     vListInitialise(&event);
     vTaskSuspendAll();
