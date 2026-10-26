@@ -465,7 +465,12 @@ void nos_esp_init(void)
     for (unsigned i = 0; i < available_devices; i++) {
         snprintf(names[i], sizeof(names[i]), "capacity.%u", i);
         config.name = names[i];
-        assert(nos_idf_device_create(&config, &slots[i]) == 0);
+        int created = nos_idf_device_create(&config, &slots[i]);
+        if (created)
+            printf("Device capacity index=%u rc=%d heap=%u largest=%u\n", i, created,
+                   (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+                   (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+        assert(created == 0);
     }
     config.name = "capacity.full";
     assert(nos_idf_device_create(&config, &slots[available_devices]) == -NOS_DRV_ENOSPC &&

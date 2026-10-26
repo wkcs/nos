@@ -144,8 +144,8 @@ static int resize_node(unsigned index, uint64_t length)
         u_memset(data, 0, sizeof(data)); u_memcpy(data, node_bytes(node), retained);
         int rc = nos_fat_write(fat_relative(node->name), data, (size_t)length); if (rc) return rc;
     }
-    if (length < node->size) u_memset(node_bytes(node) + (size_t)length, 0, node->size - (size_t)length);
-    else if (length > node->size) u_memset(node_bytes(node) + node->size, 0, (size_t)length - node->size);
+    if (length < node->size) node_zero_data(node, (size_t)length, node->size - (size_t)length);
+    else if (length > node->size) node_zero_data(node, node->size, (size_t)length - node->size);
     node->size = (size_t)length;
     node_compact(node);
 #ifdef NOS_LINUX_COMPAT

@@ -6,23 +6,15 @@
 #include "../servers/vfs/server.c"
 
 static unsigned allocations, fail_allocation, live_allocations, fail_growth;
+static size_t max_allocation = SIZE_MAX;
 static unsigned writes, fail_write, fat_flushes;
 static int fat_error;
 static unsigned char disk[66][512];
 void *nos_vfs_allocate(size_t bytes) {
-    if (++allocations == fail_allocation)
+    if (++allocations == fail_allocation || fail_growth || bytes > max_allocation)
         return NULL;
     void *p = calloc(1, bytes);
     live_allocations += p != NULL;
-    return p;
-}
-void *nos_vfs_reallocate(void *address, size_t bytes) {
-    if (fail_growth)
-        return NULL;
-    unsigned was_null = address == NULL;
-    void *p = realloc(address, bytes);
-    if (p && was_null)
-        live_allocations++;
     return p;
 }
 void nos_vfs_free(void *address) {
@@ -208,15 +200,27 @@ static void grow_and_quota(void) {
         assert(node_bytes(&nodes[node])[i] == (char)0xa5);
     fail_growth = 0;
     assert(write_bytes(fd, 0x5a, 64) == 64 && ram_backing_bytes == 1024);
+    unsigned live = live_allocations;
+    fail_allocation = allocations + 3;
+    assert(resize(fd, 8192) == -NOS_ENOMEM && ram_backing_bytes == 1024 &&
+           live_allocations == live);
+    assert(nodes[node].size == 576 && ram_backing[node].capacity == 1024);
+    fail_allocation = 0;
+    unsigned char content[8192];
+    node_read_data(&nodes[node], 0, content, 576);
     for (unsigned i = 0; i < 512; i++)
-        assert(node_bytes(&nodes[node])[i] == (char)0xa5);
+        assert(content[i] == 0xa5);
+    for (unsigned i = 512; i < 576; i++)
+        assert(content[i] == 0x5a);
     assert(!resize(fd, 8192) && ram_backing_bytes == 8192);
+    node_read_data(&nodes[node], 0, content, 8192);
     for (unsigned i = 576; i < 8192; i++)
-        assert(!node_bytes(&nodes[node])[i]);
+        assert(!content[i]);
     assert(resize(fd, 8193) == -NOS_EFBIG && nodes[node].size == 8192);
     assert(!resize(fd, 513) && !resize(fd, 8192));
+    node_read_data(&nodes[node], 0, content, 8192);
     for (unsigned i = 513; i < 8192; i++)
-        assert(!node_bytes(&nodes[node])[i]);
+        assert(!content[i]);
     assert(!resize(fd, 512) && !ram_backing_bytes);
     close_file(fd);
     remove_file("/tmp/grow");
@@ -250,7 +254,7 @@ static void grow_and_quota(void) {
         snprintf(name, sizeof(name), "/tmp/q%u", i);
         remove_file(name);
     }
-    assert(!ram_backing_bytes && live_allocations == 2);
+    assert(!ram_backing_bytes && live_allocations == 3);
     puts("PASS esp_vfs_growth_failure_sparse_quota_unlink_dup_truncate_reclaim");
 }
 static void node_capacity_and_snapshot(void) {
@@ -283,6 +287,10 @@ static void node_capacity_and_snapshot(void) {
     header.header_crc = ~crc32(~0u, &header, offsetof(struct disk_header, header_crc));
     memcpy(disk[33], &header, sizeof(header));
     reset_namespace();
+    fail_allocation = allocations + 1;
+    assert(disk_mount("/data") == -NOS_ENOMEM && lookup("/data") == -NOS_ENOENT);
+    assert(live_allocations == 3 && !ram_backing_bytes && !disk_mounted);
+    fail_allocation = 0;
     assert(!disk_mount("/data"));
     int index = lookup("/data/high");
     assert(index >= 0 && nodes[index].size == 64);
@@ -333,7 +341,7 @@ static void backend_sync(void) {
     puts("PASS vfs_fsync_selects_fd_backend_and_preserves_errors");
 }
 int main(void) {
-    for (unsigned i = 1; i <= 2; i++) {
+    for (unsigned i = 1; i <= 3; i++) {
         allocations = 0;
         fail_allocation = i;
         assert(initialize_namespace() == -NOS_ENOMEM && !opened && !nodes && !fds &&
@@ -341,11 +349,16 @@ int main(void) {
     }
     fail_allocation = 0;
     assert(!initialize_namespace());
+    /* Model fragmented heap: all file backing allocations above one sector
+     * fail, while tables were allocated during initialization. */
+    max_allocation = 512;
     assert(NODE_COUNT == 32 && FILE_BYTES == 8192);
     grow_and_quota();
     node_capacity_and_snapshot();
     backend_sync();
     reset_namespace();
+    for (unsigned i = 0; i < NODE_COUNT; i++)
+        clear_node(i);
     nos_vfs_free(nodes);
     nos_vfs_free(opened);
     nodes = NULL;

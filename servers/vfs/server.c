@@ -65,7 +65,12 @@ struct vnode {
 #else
     char name[NOS_PATH_MAX];
 #endif
-    char bytes[INLINE_BYTES]; size_t size; unsigned mode; uint16_t used, linked, refs, persistent;
+#ifdef NOS_ESP_VFS
+    char *bytes;
+#else
+    char bytes[INLINE_BYTES];
+#endif
+    size_t size; unsigned mode; uint16_t used, linked, refs, persistent;
 };
 struct description { uint64_t offset, size; uint32_t flags; uint16_t node, refs, kind, pipe; };
 /* Every table may alias one OFD in every FD, with one extra pin per blocked
@@ -98,7 +103,6 @@ static struct description *opened;
 static struct fd_table *fds;
 static struct vnode *nodes;
 extern void *nos_vfs_allocate(size_t bytes);
-extern void *nos_vfs_reallocate(void *address, size_t bytes);
 extern void nos_vfs_free(void *address);
 #else
 static struct vnode nodes[NODE_COUNT];
@@ -354,7 +358,7 @@ static intptr_t read_data(struct description *d, char *data, size_t count)
     if (NODE_TYPE(n) == MODE_DIR) return -NOS_EISDIR;
     if (d->offset >= n->size) return 0;
     if (count > n->size - d->offset) count = n->size - d->offset;
-    u_memcpy(data, node_bytes(n) + (size_t)d->offset, count); d->offset += count;
+    node_read_data(n, (size_t)d->offset, data, count); d->offset += count;
 #ifdef NOS_LINUX_COMPAT
     int64_t now; if (!permission_clock(&now)) permission_touch(d->node, 1, now);
 #endif
@@ -395,8 +399,8 @@ static intptr_t write_data(struct description *d, const char *data, size_t count
     int64_t now; int clock = permission_clock(&now); if (clock) return clock;
 #endif
     int reserve = node_reserve(n, (size_t)d->offset + count); if (reserve) return reserve;
-    if (d->offset > n->size) u_memset(node_bytes(n) + n->size, 0, d->offset - n->size);
-    u_memcpy(node_bytes(n) + d->offset, data, count); d->offset += count;
+    if (d->offset > n->size) node_zero_data(n, n->size, d->offset - n->size);
+    node_write_data(n, (size_t)d->offset, data, count); d->offset += count;
     if (d->offset > n->size) n->size = d->offset;
     if (n->persistent == 2 && n->linked) { int rc = nos_fat_write(fat_relative(n->name), node_bytes(n), n->size); if (rc) return rc; }
 #ifdef NOS_LINUX_COMPAT
@@ -454,7 +458,7 @@ static int disk_sync(void)
         crc = crc32(crc, sector, 512);
         int rc = nos_block_write(bank * BANK_SECTORS + 1 + 2 * i, sector); if (rc) return rc;
         u_memset(sector, 0, sizeof(sector));
-        if (n->used && n->linked && n->persistent) u_memcpy(sector, n->bytes, n->size);
+        if (n->used && n->linked && n->persistent && n->size) u_memcpy(sector, n->bytes, n->size);
         crc = crc32(crc, sector, 512); rc = nos_block_write(bank * BANK_SECTORS + 2 + 2 * i, sector); if (rc) return rc;
     }
     int rc = nos_block_flush(); if (rc) return rc;
@@ -512,8 +516,11 @@ static int disk_mount(const char *path)
             if (slot < 0) { rc = -NOS_ENOSPC; goto rollback; }
             rc = nos_block_read(bank * BANK_SECTORS + 2 + 2 * i, sector); if (rc) goto rollback;
             struct vnode *n = &nodes[slot]; clear_node((unsigned)(n - nodes));
-            u_memcpy(n->name, entry->name, 64); n->size = entry->size; n->mode = entry->mode; n->used = n->linked = n->persistent = 1;
-            u_memcpy(n->bytes, sector, n->size); installed |= 1u << slot;
+            u_memcpy(n->name, entry->name, 64); n->mode = entry->mode; n->used = n->linked = n->persistent = 1;
+            installed |= 1u << slot;
+            rc = node_reserve(n, entry->size); if (rc) goto rollback;
+            n->size = entry->size;
+            if (n->size) u_memcpy(n->bytes, sector, n->size);
         }
         for (unsigned i = 0; i < NODE_COUNT; i++) if ((installed & (1u << i)) && parent_of(nodes[i].name) < 0) { rc = -NOS_EINVAL; goto rollback; }
         disk_generation = headers[bank].generation;
@@ -539,7 +546,10 @@ static int fat_import(const char *path, unsigned depth)
         struct vnode *node = &nodes[slot]; clear_node((unsigned)(node - nodes));
         u_memcpy(node->name, full, n + extra + 1); node->mode = mode | ((mode & 0170000u) == MODE_DIR ? 0777 : 0666); node->size = size; node->used = node->linked = 1; node->persistent = 2;
         if ((mode & 0170000u) == MODE_DIR) rc = fat_import(full, depth + 1);
-        else { rc = nos_fat_read(fat_relative(full), node->bytes, size); if (rc >= 0) rc = (size_t)rc == size ? 0 : -NOS_EIO; }
+        else {
+            rc = node_reserve(node, size ? size : 1); if (rc) return rc;
+            rc = nos_fat_read(fat_relative(full), node->bytes, size); if (rc >= 0) rc = (size_t)rc == size ? 0 : -NOS_EIO;
+        }
         if (rc) return rc;
     }
 }
@@ -1050,6 +1060,14 @@ static int initialize_namespace(void)
     nodes[9].size = 3; u_memcpy(nodes[9].bytes, groups_max, 3);
 #endif
     const char *version = "NOS microkernel\n";
+    int version_memory = node_reserve(&nodes[5], u_strlen(version));
+    if (version_memory) {
+#ifdef NOS_ESP_VFS
+        for (unsigned i = 0; i < NODE_COUNT; i++) clear_node(i);
+        nos_vfs_free(nodes); nos_vfs_free(opened); nodes = NULL; opened = NULL; fds = NULL;
+#endif
+        return version_memory;
+    }
     nodes[5].size = u_strlen(version); u_memcpy(nodes[5].bytes, version, nodes[5].size);
     for (unsigned i = 0; i < 3; i++) opened[i] = (struct description){ .node = 4, .kind = 1, .flags = i ? NOS_O_WRONLY : NOS_O_RDONLY };
     for (unsigned i = 0; i < FD_TABLE_COUNT; i++) fds[i].pid = -1;

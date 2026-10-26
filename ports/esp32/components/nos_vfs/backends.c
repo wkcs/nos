@@ -7,9 +7,6 @@
 void *nos_vfs_allocate(size_t bytes) {
     return heap_caps_calloc(1, bytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
 }
-void *nos_vfs_reallocate(void *address, size_t bytes) {
-    return heap_caps_realloc(address, bytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-}
 void nos_vfs_free(void *address) {
     heap_caps_free(address);
 }
