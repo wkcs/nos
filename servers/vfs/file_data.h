@@ -80,7 +80,13 @@ static void node_zero_data(struct vnode *node, size_t offset, size_t count)
     }
 }
 static size_t node_limit(const struct vnode *node)
-{ return node->persistent ? INLINE_BYTES : FILE_BYTES; }
+{
+#ifdef NOS_VFS_SNAPSHOT3
+    return node->persistent == 2 ? INLINE_BYTES : FILE_BYTES;
+#else
+    return node->persistent ? INLINE_BYTES : FILE_BYTES;
+#endif
+}
 static int node_reserve(struct vnode *node, size_t length)
 {
     if (length > node_limit(node)) return -27;

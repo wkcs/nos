@@ -331,4 +331,12 @@ AS 限额见下方已完成批次；下一批优先完善稳定进程/地址空�
 - [x] 持久版本2保持16条/512字节，扫描全部节点紧凑序列化，高索引持久文件独立重启用例已实现。
 - [x] 追加nos_fsync(fd)及操作码50，ESP Newlib、musl、glibc网关按文件后端同步；RAM不提交Flash，错误保留。
 - [x] addc280冻结公共89/89与C3/S3 raw/WL四组40次启动通过，四份正常固件及日志已核验，保留前置候选及部分验收失败。
-- 设计见 [ESP32_RAMFS.md](ESP32_RAMFS.md)，完整证据及固件见 [ESP32_RAMFS_VALIDATION.md](ESP32_RAMFS_VALIDATION.md)。持久大文件/FAT、新格式迁移仍为后续独立任务。
+- 设计见 [ESP32_RAMFS.md](ESP32_RAMFS.md)，完整证据及固件见 [ESP32_RAMFS_VALIDATION.md](ESP32_RAMFS_VALIDATION.md)。可选扩展格式见 [ESP32_SNAPSHOT3.md](ESP32_SNAPSHOT3.md)，流式大文件/FAT仍为后续独立任务。
+
+## ESP32 扩展持久快照
+
+- [x] 显式snapshot3 profile，默认native2；构建目录、清单、ELF编译输入和shell版本同时记录格式。
+- [x] 16条记录/8KiB持久文件，元数据与数据逐扇区提交，复用共享32KiB按需页预算。
+- [x] v2只读导入、首次sync固定后半区、确认前拒绝标记与失败重试顺序、未知非空拒绝挂载。
+- [x] 宿主逐写/flush中断、CRC/语义、分配回滚和容量测试，以及C3/S3 raw/WL升级/降级/独立重启QEMU脚本已实现。
+- 冻结验收结果另记；机制与限制见 [ESP32_SNAPSHOT3.md](ESP32_SNAPSHOT3.md)。

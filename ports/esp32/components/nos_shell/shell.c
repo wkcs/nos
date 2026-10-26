@@ -63,6 +63,11 @@ static void version(void) {
     print("NOS arch=%s abi=%u target=%s scheduler=NOS\n", ARCH_NAME, NOS_ABI_VERSION,
           CONFIG_IDF_TARGET);
     print("storage_format=%s\n", nos_idf_storage_format());
+#ifdef NOS_VFS_SNAPSHOT3
+    print("filesystem=snapshot3\n");
+#else
+    print("filesystem=native2\n");
+#endif
 }
 static void stats(void) {
     struct nos_object_stats s;

@@ -216,7 +216,13 @@ def sdkconfig_defaults(profile="runtime", storage="raw"):
 
 
 def build(
-    profile="runtime", output=None, action="build", port=None, regression=False, storage="raw"
+    profile="runtime",
+    output=None,
+    action="build",
+    port=None,
+    regression=False,
+    storage="raw",
+    filesystem="native2",
 ):
     verify_sdk()
     if profile == "ecosystem" and TARGET == "esp32s3":
@@ -226,8 +232,17 @@ def build(
     if not python.exists():
         raise RuntimeError("SDK Python environment missing; run scripts/esp32s3.py setup")
     assert storage in ("raw", "wl")
+    assert filesystem in ("native2", "snapshot3")
     output = Path(
-        output or ROOT / "out" / TARGET / (profile + ("-wl" if storage == "wl" else ""))
+        output
+        or ROOT
+        / "out"
+        / TARGET
+        / (
+            profile
+            + ("-wl" if storage == "wl" else "")
+            + ("-snapshot3" if filesystem == "snapshot3" else "")
+        )
     ).resolve()
     output.mkdir(parents=True, exist_ok=True)
     mode = output / "storage-mode.txt"
@@ -237,7 +252,12 @@ def build(
         raise RuntimeError(
             "Existing output has raw configuration; select a separate --output directory"
         )
+    fs_mode = output / "filesystem-mode.txt"
+    previous_fs = fs_mode.read_text().strip() if fs_mode.exists() else "native2"
+    if previous_fs != filesystem and (fs_mode.exists() or (output / "sdkconfig").exists()):
+        raise RuntimeError("Filesystem format changed; select a separate --output directory")
     mode.write_text(storage + "\n")
+    fs_mode.write_text(filesystem + "\n")
     defaults = sdkconfig_defaults(profile, storage)
     command = [
         python,
@@ -253,6 +273,7 @@ def build(
     ]
     command += ["-DNOS_IDF_REGRESSION=" + ("ON" if regression else "OFF")]
     command += ["-DNOS_IDF_STORAGE_WL=" + ("ON" if storage == "wl" else "OFF")]
+    command += ["-DNOS_IDF_FILESYSTEM=" + filesystem]
     if port:
         command += ["-p", port]
     before = source_identity()
@@ -281,6 +302,7 @@ def build(
         ),
         "profile": profile,
         "storage": storage,
+        "filesystem": filesystem,
         "regression": regression,
         "compiler_version": subprocess.check_output(
             [compiler, "--version"], text=True, env=env
@@ -300,6 +322,7 @@ def main():
     parser.add_argument("--profile", choices=("runtime", "ecosystem"), default="runtime")
     parser.add_argument("--output", type=Path)
     parser.add_argument("--storage", choices=("raw", "wl"), default="raw")
+    parser.add_argument("--filesystem", choices=("native2", "snapshot3"), default="native2")
     parser.add_argument("--port")
     parser.add_argument(
         "--regression",
@@ -328,11 +351,35 @@ def main():
             if name in env:
                 print(f"export {name}={shlex.quote(env[name])}")
     elif args.action == "test":
-        run([sys.executable, ROOT / "tests" / f"{TARGET}.py", "--storage", args.storage], cwd=ROOT)
+        if args.filesystem == "snapshot3":
+            run(
+                [
+                    sys.executable,
+                    ROOT / "tests/esp32_snapshot3.py",
+                    "--target",
+                    TARGET,
+                    "--storage",
+                    args.storage,
+                ],
+                cwd=ROOT,
+            )
+        else:
+            run(
+                [sys.executable, ROOT / "tests" / f"{TARGET}.py", "--storage", args.storage],
+                cwd=ROOT,
+            )
     else:
         if args.action == "flash" and not args.port:
             parser.error("flash requires an explicit --port")
-        build(args.profile, args.output, args.action, args.port, args.regression, args.storage)
+        build(
+            args.profile,
+            args.output,
+            args.action,
+            args.port,
+            args.regression,
+            args.storage,
+            args.filesystem,
+        )
 
 
 if __name__ == "__main__":

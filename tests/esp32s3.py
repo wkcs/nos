@@ -105,11 +105,13 @@ def emulator_probe(report):
     }
 
 
-def audit(build, ecosystem=False, regression=True, storage="raw"):
+def audit(build, ecosystem=False, regression=True, storage="raw", filesystem="native2"):
     manifest = json.loads((build / "nos-build.json").read_text())
     assert manifest["source"] == port.source_identity(), "Stale build source identity"
     assert manifest["target"] == port.TARGET
     assert manifest["storage"] == storage
+    assert manifest["filesystem"] == filesystem
+    assert (build.parent / "filesystem-mode.txt").read_text().strip() == filesystem
     assert json.loads((build / "config/sdkconfig.json").read_text())[
         "PARTITION_TABLE_CUSTOM_FILENAME"
     ] == ("partitions.wl.csv" if storage == "wl" else "partitions.csv")
@@ -125,6 +127,15 @@ def audit(build, ecosystem=False, regression=True, storage="raw"):
     ), "ELF changed since build"
     commands = json.loads((build / "compile_commands.json").read_text())
     files = {Path(item["file"]).resolve() for item in commands}
+    vfs_commands = [
+        item["command"]
+        for item in commands
+        if Path(item["file"]).resolve() == ROOT / "servers/vfs/server.c"
+    ]
+    assert vfs_commands and all(
+        ("-DNOS_VFS_SNAPSHOT3=1" in command) == (filesystem == "snapshot3")
+        for command in vfs_commands
+    )
     forbidden = [
         str(p)
         for p in files
@@ -655,6 +666,7 @@ def main():
         for name, script in (
             ("portable_protocols", "host_esp32s3_protocols.py"),
             ("vfs_capacity", "host_esp32_vfs.py"),
+            ("snapshot3_faults", "host_esp32_snapshot3.py"),
             ("usb_sdk_faults", "host_esp32s3_usb.py"),
             ("flash_sdk_faults", "host_esp32_flash.py"),
             ("wear_levelling_faults", "host_esp32_wl.py"),

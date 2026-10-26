@@ -9,7 +9,12 @@ static unsigned allocations, fail_allocation, live_allocations, fail_growth;
 static size_t max_allocation = SIZE_MAX;
 static unsigned writes, fail_write, fat_flushes;
 static int fat_error;
-static unsigned char disk[66][512];
+#ifndef HOST_BLOCK_SECTORS
+#define HOST_BLOCK_SECTORS 66u
+#endif
+static unsigned char disk[HOST_BLOCK_SECTORS][512];
+static unsigned block_events, fail_event, reads, fail_read;
+static uint64_t block_capacity = HOST_BLOCK_SECTORS;
 void *nos_vfs_allocate(size_t bytes) {
     if (++allocations == fail_allocation || fail_growth || bytes > max_allocation)
         return NULL;
@@ -70,7 +75,7 @@ int nos_block_init(void) {
     return 0;
 }
 uint64_t nos_block_capacity(void) {
-    return 66;
+    return block_capacity;
 }
 uint64_t nos_block_interrupts(void) {
     return 0;
@@ -85,20 +90,22 @@ unsigned nos_block_version(void) {
     return 1;
 }
 int nos_block_read(unsigned sector, void *out) {
-    assert(sector < 66);
+    assert(sector < block_capacity);
+    if (++reads == fail_read)
+        return -NOS_EIO;
     memcpy(out, disk[sector], 512);
     return 0;
 }
 int nos_block_write(unsigned sector, const void *in) {
-    assert(sector < 66);
+    assert(sector < block_capacity);
     writes++;
-    if (fail_write)
+    if (++block_events == fail_event || fail_write)
         return -NOS_EIO;
     memcpy(disk[sector], in, 512);
     return 0;
 }
 int nos_block_flush(void) {
-    return 0;
+    return ++block_events == fail_event ? -NOS_EIO : 0;
 }
 int nos_fat_mount(int format) {
     (void)format;

@@ -429,6 +429,7 @@ static int disk_bank_check(unsigned bank, struct disk_header *header)
     for (unsigned i = 0; i < DISK_NODE_COUNT * 2; i++) { rc = nos_block_read(bank * BANK_SECTORS + 1 + i, sector); if (rc) return rc; crc = crc32(crc, sector, 512); }
     return (~crc == header->crc) ? 0 : -NOS_EIO;
 }
+#ifndef NOS_VFS_SNAPSHOT3
 static int disk_sync(void)
 {
     if (!disk_mounted) return -NOS_ENOTSUP;
@@ -468,7 +469,8 @@ static int disk_sync(void)
     rc = nos_block_write(bank * BANK_SECTORS, sector); if (rc) return rc;
     rc = nos_block_flush(); if (!rc) disk_generation++; return rc;
 }
-static int disk_mount(const char *path)
+#endif
+static int disk_mount_v2(const char *path)
 {
     if (u_strlen(path) >= 64) return -NOS_ENAMETOOLONG;
     if (disk_mounted || fat_mounted) return -NOS_EBUSY;
@@ -530,6 +532,11 @@ rollback:
     for (unsigned i = 0; i < NODE_COUNT; i++) if (installed & (1u << i)) clear_node(i);
     nodes[root].persistent = 0; if (created) clear_node((unsigned)root); return rc;
 }
+#ifdef NOS_VFS_SNAPSHOT3
+#include "snapshot3.h"
+#else
+#define disk_mount disk_mount_v2
+#endif
 static int fat_import(const char *path, unsigned depth)
 {
     if (depth > 8) return -NOS_EINVAL;
