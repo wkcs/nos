@@ -73,6 +73,7 @@ void nos_esp_timing_snapshot(struct nos_timing_snapshot *s)
     uintptr_t irq = arch_irq_save();
     memset(s, 0, sizeof(*s));
     s->ticks = kernel_ticks;
+    s->irq_state = (uint32_t)irq;
     s->suspended = suspended;
     s->deferred = pended_ticks;
     for (unsigned i = 0; i < NOS_TASKS && s->count < 24; i++) {

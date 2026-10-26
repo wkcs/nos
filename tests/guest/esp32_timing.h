@@ -9,7 +9,7 @@ struct nos_timing_task {
 };
 struct nos_timing_snapshot {
     uint64_t ticks, deferred;
-    uint32_t suspended, count;
+    uint32_t suspended, count, irq_state;
     struct nos_timing_task tasks[24];
 };
 void nos_esp_timing_snapshot(struct nos_timing_snapshot *);

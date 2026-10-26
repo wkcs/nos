@@ -48,3 +48,7 @@ NOS UART停止现在先调用原版uart_disable_intr_mask关闭全部外设中�
 扩展快照候选8e2d0ef的C3 raw正式回归在文件系统测试之前失败，实际输出为before=0、during=0、nested=0、after=2、linked=1、deferred=1。固定版本原始IDF `port_systick.c` 的 `SysTickIsrHandler` 在 `s_handled_systicks==0` 时把当前硬件计数设为基线，并强制本次diff=1；首个中断较晚到达时，不能从启动后的50ms推断已分派至少两个tick。
 
 回归现在先用vTaskDelay(1)等待首个实际调度tick，输出systick_ready探针，再进入原有50ms嵌套暂停测试。暂停期间tick冻结、链表节点保留、deferred至少2、恢复重放和3秒任务回收预算全部保留，没有修改原始SDK中断处理或NOS调度器。候选失败、当时镜像与中止的其余部分矩阵保留，最终结果以新的冻结提交为准。
+
+后续acf8ab5候选中，C3四组均通过，S3 raw的生态回归却观察到ready=1、before=2、after=2、deferred=0。配置确认两芯片都使用SYSTIMER；50ms计时器读数推进并不构成中断已执行的证据，不能将缺少测试刺激误报为NOS未重放。
+
+回归改为直接观察pending tick：基础用例等待实际5个tick，64轮定时器用例每轮等待实际3个tick，再验证冻结、内层resume、完整重放及恰好一次回调。刺激阶段有独立3秒硬件计时看门狗，超时输出明确的stimulus-timeout及IRQ状态；原回收/定时器完成的3秒预算不变。没有降低deferred至少2、链表、TLS或资源回收断言，正常固件不包含这些诊断。两次旧候选的原始失败与部分矩阵均保留。

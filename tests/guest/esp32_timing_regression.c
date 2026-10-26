@@ -21,7 +21,19 @@ static void timer_callback(TimerHandle_t timer) {
     timer_calls++;
     xSemaphoreGive((SemaphoreHandle_t)pvTimerGetTimerID(timer));
 }
-static void timer_stress(void) {
+static void wait_suspended_ticks(struct nos_timing_snapshot *snapshot, unsigned ticks) {
+    /* Elapsed peripheral time is not evidence that its ISR was delivered.
+     * Observe the stimulus itself; retain a bounded independent watchdog. */
+    int64_t deadline = esp_timer_get_time() + 3000000;
+    do {
+        nos_esp_timing_snapshot(snapshot);
+        if (snapshot->deferred >= ticks)
+            return;
+    } while (esp_timer_get_time() < deadline);
+    nos_esp_timing_dump("suspended-tick-stimulus-timeout");
+    assert(snapshot->deferred >= ticks);
+}
+static void timer_stress(struct nos_timing_snapshot *snapshot) {
     static StaticSemaphore_t signal_storage;
     SemaphoreHandle_t signal = xSemaphoreCreateBinaryStatic(&signal_storage);
     TimerHandle_t timer = xTimerCreate("resume-stress", 2, pdFALSE, signal, timer_callback);
@@ -34,9 +46,7 @@ static void timer_stress(void) {
          * scheduler is locked; otherwise a short timer may legally fire
          * before this test even enters the suspended interval. */
         assert(xTimerStart(timer, 0) == pdPASS);
-        int64_t until = esp_timer_get_time() + 35000;
-        while (esp_timer_get_time() < until) {
-        }
+        wait_suspended_ticks(snapshot, 3);
         assert(xTaskGetTickCount() == frozen && timer_calls == round);
         assert(xTaskResumeAll() == pdFALSE && xTaskGetTickCount() == frozen);
         xTaskResumeAll();
@@ -71,8 +81,9 @@ static void worker(void *unused) {
 void nos_esp_timing_dump(const char *stage) {
     struct nos_timing_snapshot s;
     nos_esp_timing_snapshot(&s);
-    printf("TIMING %s ticks=%llu deferred=%llu suspended=%u\n", stage, (unsigned long long)s.ticks,
-           (unsigned long long)s.deferred, (unsigned)s.suspended);
+    printf("TIMING %s ticks=%llu deferred=%llu suspended=%u irq_state=0x%08lx\n", stage,
+           (unsigned long long)s.ticks, (unsigned long long)s.deferred, (unsigned)s.suspended,
+           (unsigned long)s.irq_state);
     for (unsigned i = 0; i < s.count; i++) {
         struct nos_timing_task *t = &s.tasks[i];
         printf(" task=%s id=%u state=%u wait=%u deleting=%u deadline=%llu\n", t->name,
@@ -105,14 +116,12 @@ void nos_esp_timing_regression(void) {
     vTaskSuspendAll();
     TickType_t before = xTaskGetTickCount();
     vTaskPlaceOnEventList(&event, 2);
-    int64_t until = esp_timer_get_time() + 50000;
-    while (esp_timer_get_time() < until) {
-    }
+    struct nos_timing_snapshot frozen;
+    wait_suspended_ticks(&frozen, 5);
     TickType_t during = xTaskGetTickCount();
     unsigned linked = listCURRENT_LIST_LENGTH(&event);
     assert(xTaskResumeAll() == pdFALSE);
     TickType_t nested = xTaskGetTickCount();
-    struct nos_timing_snapshot frozen;
     nos_esp_timing_snapshot(&frozen);
     xTaskResumeAll();
     TickType_t after = xTaskGetTickCount();
@@ -153,5 +162,5 @@ void nos_esp_timing_regression(void) {
     assert(during == before && nested == before && linked == 1);
     assert(frozen.deferred >= 2 && (TickType_t)(after - before) >= frozen.deferred);
     puts("PASS " NOS_IDF_TEST_NAME "_suspended_ticks_event_list_atomicity");
-    timer_stress();
+    timer_stress(&frozen);
 }
