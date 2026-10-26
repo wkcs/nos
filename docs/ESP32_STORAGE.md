@@ -2,6 +2,8 @@
 
 <!-- Copyright (C) 2026 NOS contributors -->
 
+最新RAM扩容、按FD同步及高索引快照重启验收见 [ESP32_RAMFS_VALIDATION.md](ESP32_RAMFS_VALIDATION.md)。持久格式及文件上限保持版本2原值。
+
 C3/S3 复用公共 NOS VFS 的双 bank 快照文件系统；新增 ESP 专用块适配器，不修改公共文件系统实现。普通应用和 Newlib 文件调用仍进入原生 VFS IPC，只有 VFS 的块后端调用 NOS 设备服务；设备服务内使用原始 IDF `esp_partition_read/write/erase_range`，不绕过设备生命周期和资源仲裁。
 
 ## 使用

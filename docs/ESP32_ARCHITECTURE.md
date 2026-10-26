@@ -58,4 +58,4 @@ IDF 无线二进制和部分原始驱动依赖 FreeRTOS 函数、Newlib TLS、�
 
 原生 VFS 已接入独立服务任务和端点0，nshell 文件与标准输入输出走实际 IPC；能力与限制见 [ESP32_VFS.md](ESP32_VFS.md)。[Newlib 文件与标准流](ESP32_NEWLIB.md) 已接入原生文件表，SDK 描述符保留兼容区间；分配器统一仍未完成。
 
-原生VFS集成后的最新冻结实现为 `bfd67ab`：C3/S3八个实际镜像与公共89/89组通过，见 [ESP32_VFS_VALIDATION.md](ESP32_VFS_VALIDATION.md)。
+初始原生VFS集成冻结 `bfd67ab` 的历史记录见 [ESP32_VFS_VALIDATION.md](ESP32_VFS_VALIDATION.md)。当前RAM容量及按文件同步冻结为addc280，公共89/89和ESP四组40次启动通过，见 [ESP32_RAMFS_VALIDATION.md](ESP32_RAMFS_VALIDATION.md)。

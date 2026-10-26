@@ -2,6 +2,8 @@
 
 <!-- Copyright (C) 2026 NOS contributors -->
 
+最新容量及按FD同步的公共89/89、ESP四组冻结结果与正常固件见 [ESP32_RAMFS_VALIDATION.md](ESP32_RAMFS_VALIDATION.md)。
+
 C3 与 S3 使用固定 ESP-IDF 5.4.2 工具链的原始 Newlib。NOS 在 `libc/port/esp32/` 实现 OS 钩子，`ports/esp32/components/nos_libc/` 只负责组件集成与链接包装。调度、文件表、cwd 与文件操作归 NOS；没有修改 vendor Newlib 或新增 SDK 调度器。
 
 ## 文件路径与描述符

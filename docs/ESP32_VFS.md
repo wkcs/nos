@@ -41,4 +41,4 @@ shell的标准输入/输出也经过VFS的READ/WRITE RPC；后端再调用NOS受
 
 公共IPC/VFS改动还需 `python3 tests/acceptance.py --include-posix --require-frozen-source`。宿主模型与模拟器测试不替代实板无线、USB或物理存储验证。
 
-最终冻结实现 `bfd67ab` 已通过两平台八个实际镜像和公共89/89组验收，原始报告、日志和正常固件见 [ESP32_VFS_VALIDATION.md](ESP32_VFS_VALIDATION.md)。
+初始VFS集成冻结 `bfd67ab` 的八个镜像和公共89/89历史记录见 [ESP32_VFS_VALIDATION.md](ESP32_VFS_VALIDATION.md)。当前容量与按FD同步冻结为addc280，公共89/89及ESP四组40次启动通过，见 [ESP32_RAMFS_VALIDATION.md](ESP32_RAMFS_VALIDATION.md)。
