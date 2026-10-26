@@ -28,7 +28,7 @@ COMMON = {
     'ipc_lifecycle_authentication', 'mapping_quota_recovery',
     'tls_pointer_validation',
     'abi_version_contract', 'resource_lifecycle_1000',
-    'vfs_emfile_transaction', 'vfs_sparse_zero', 'vfs_unlink_open',
+    'vfs_fsync_backend', 'vfs_emfile_transaction', 'vfs_sparse_zero', 'vfs_unlink_open',
     'vfs_path_normalization', 'vfs_dup_shared_offset', 'vfs_pipe', 'vfs_rename_readdir',
     'vfs_resource_cycles', 'device_capability',
     'versioned_syscall_abi', 'multiple_endpoint_rpc', 'ipc_timeout_stale_reply',

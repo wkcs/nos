@@ -147,6 +147,7 @@ static int resize_node(unsigned index, uint64_t length)
     if (length < node->size) u_memset(node_bytes(node) + (size_t)length, 0, node->size - (size_t)length);
     else if (length > node->size) u_memset(node_bytes(node) + node->size, 0, (size_t)length - node->size);
     node->size = (size_t)length;
+    node_compact(node);
 #ifdef NOS_LINUX_COMPAT
     permission_touch(index, 6, now); if (subject.credentials.euid) node->mode &= ~06000u;
 #endif

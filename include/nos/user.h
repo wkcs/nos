@@ -43,6 +43,7 @@ int nos_pipe(int descriptors[2]);
 int nos_pipe2(int descriptors[2], unsigned flags);
 int nos_mount(const char *path, unsigned backend);
 int nos_sync(void);
+int nos_fsync(int fd);
 #define NOS_AT_FDCWD (-100)
 #define NOS_AT_SYMLINK_NOFOLLOW 0x100
 #define NOS_AT_EACCESS 0x200

@@ -42,6 +42,10 @@ def persistence(run_qemu, build, output, timeout, storage="raw"):
     boot(
         "write",
         [
+            *[
+                (f"high_slot_pad_{i}", f"write /tmp/pad-{i} pad\r".encode(), r"ok")
+                for i in range(20)
+            ],
             ("mount", b"mount /data\r", r"ok"),
             ("directory", b"mkdir /data/config\r", r"ok"),
             ("write", b'write /data/config/note "stable-42"\r', r"ok"),
@@ -55,6 +59,7 @@ def persistence(run_qemu, build, output, timeout, storage="raw"):
             ("mount", b"mount /data\r", r"ok"),
             ("persisted", b"cat /data/config/note\r", r"stable-42"),
             ("ram_lost", b"cat /tmp/volatile\r", r"cat: error=-2"),
+            ("high_slot_pad_lost", b"cat /tmp/pad-19\r", r"cat: error=-2"),
             ("rename", b"mv /data/config/note /data/config/saved\r", r"ok"),
             ("append", b'append /data/config/saved "-next"\r', r"ok"),
             ("commit", b"sync\r", r"ok"),

@@ -345,11 +345,7 @@ int __wrap_fsync(int fd) {
         return __real_fsync(fd);
     if (c < 0)
         return (int)nos_libc_result(__getreent(), c);
-    struct nos_stat info;
-    int rc = nos_stat_fd(fd, &info);
-    if (!rc && !S_ISREG(info.mode) && !S_ISDIR(info.mode))
-        rc = -NOS_EINVAL;
-    return (int)nos_libc_result(__getreent(), rc ? rc : nos_sync());
+    return (int)nos_libc_result(__getreent(), nos_fsync(fd));
 }
 ssize_t __wrap_pread(int fd, void *buffer, size_t size, off_t offset) {
     int c = nos_libc_context(__getreent());

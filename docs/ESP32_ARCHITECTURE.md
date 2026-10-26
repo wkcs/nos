@@ -2,6 +2,8 @@
 
 <!-- Copyright (C) 2026 NOS contributors -->
 
+RAM容量与按FD同步接口见 [ESP32_RAMFS.md](ESP32_RAMFS.md)；已完成的调度暂停、清理与UART停止验收见 [ESP32_TIMING_VALIDATION.md](ESP32_TIMING_VALIDATION.md)。
+
 最新raw/WL磨损均衡专项、固件及首轮失败/同ELF复验记录见 [ESP32_WEAR_VALIDATION.md](ESP32_WEAR_VALIDATION.md)。
 
 最新原生Flash持久化、22次实际QEMU启动、正常固件与日志见 [ESP32_STORAGE_VALIDATION.md](ESP32_STORAGE_VALIDATION.md)。

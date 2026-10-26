@@ -16,14 +16,14 @@
 #define PATH_DATA_MAX NOS_MSG_DATA
 #endif
 #define JOINED_PATH_MAX (2u * NOS_PATH_MAX)
-#ifdef NOS_LINUX_COMPAT
+#if defined(NOS_LINUX_COMPAT) || defined(NOS_ESP_VFS)
 #define NODE_COUNT 32u
 #else
 #define NODE_COUNT 16u
 #endif
 #define DISK_NODE_COUNT 16u
 #define INLINE_BYTES 512u
-#ifdef NOS_LINUX_COMPAT
+#if defined(NOS_LINUX_COMPAT) || defined(NOS_ESP_VFS)
 #define FILE_BYTES 8192u
 #else
 #define FILE_BYTES INLINE_BYTES
@@ -90,15 +90,18 @@ struct pipe_buffer { char bytes[PIPE_BYTES]; unsigned head, size, readers, write
 static void permission_clear(unsigned index);
 #endif
 static void record_lock_close(intptr_t owner, const struct description *description);
-static struct vnode nodes[NODE_COUNT];
 #ifdef NOS_ESP_VFS
 /* The firmware linker cannot spread large BSS tables across the SoC's
  * separate internal RAM banks. The platform supplies service-lifetime storage
  * from its capability-aware allocator after the NOS scheduler is running. */
 static struct description *opened;
 static struct fd_table *fds;
+static struct vnode *nodes;
 extern void *nos_vfs_allocate(size_t bytes);
+extern void *nos_vfs_reallocate(void *address, size_t bytes);
+extern void nos_vfs_free(void *address);
 #else
+static struct vnode nodes[NODE_COUNT];
 static struct description opened[OPEN_COUNT];
 static struct fd_table fds[FD_TABLE_COUNT];
 #endif
@@ -224,6 +227,14 @@ static int create_sized(const char *path, unsigned mode, size_t reservation)
     int64_t now; permission = permission_clock(&now); if (permission) return permission;
 #endif
     if (nodes[p].persistent && u_strlen(path) >= 64) return -NOS_ENAMETOOLONG;
+#ifdef NOS_ESP_VFS
+    if (nodes[p].persistent == 1) {
+        unsigned count = 0;
+        for (unsigned i = 0; i < NODE_COUNT; i++)
+            count += nodes[i].used && nodes[i].linked && nodes[i].persistent == 1;
+        if (count >= DISK_NODE_COUNT) return -NOS_ENOSPC;
+    }
+#endif
     for (unsigned i = 0; i < NODE_COUNT; i++) if (!nodes[i].used) {
         #ifdef NOS_LINUX_COMPAT
         if (next_file_inode == UINT64_MAX) return -NOS_ENOSPC;
@@ -420,7 +431,7 @@ static int disk_sync(void)
     if (disk_generation == UINT32_MAX) return -NOS_EOVERFLOW;
     for (unsigned i = 0; i < NODE_COUNT; i++) if (nodes[i].used && nodes[i].linked && nodes[i].persistent &&
         (u_strlen(nodes[i].name) >= 64 || nodes[i].size > INLINE_BYTES)) return -NOS_ENAMETOOLONG;
-#ifdef NOS_LINUX_COMPAT
+#if defined(NOS_LINUX_COMPAT) || defined(NOS_ESP_VFS)
     unsigned persistent_count = 0;
     for (unsigned i = 0; i < NODE_COUNT; i++) persistent_count += nodes[i].used && nodes[i].linked && nodes[i].persistent;
     if (persistent_count > DISK_NODE_COUNT) return -NOS_ENOSPC;
@@ -429,7 +440,7 @@ static int disk_sync(void)
     unsigned bank = (disk_generation + 1) & 1u, crc = ~0u, count = 0;
     unsigned char sector[512];
     for (unsigned i = 0; i < DISK_NODE_COUNT; i++) {
-#ifdef NOS_LINUX_COMPAT
+#if defined(NOS_LINUX_COMPAT) || defined(NOS_ESP_VFS)
         while (source < NODE_COUNT && !(nodes[source].used && nodes[source].linked && nodes[source].persistent)) source++;
         struct vnode empty = { 0 }, *n = source < NODE_COUNT ? &nodes[source++] : &empty;
 #else
@@ -839,6 +850,7 @@ static void service(struct nos_message *m)
 #endif
             if (nodes[node].persistent == 2) { rc = nos_fat_write(fat_relative(path), "", 0); if (rc) { m->value = rc; return; } }
             nodes[node].size = 0;
+            node_compact(&nodes[node]);
 #ifdef NOS_LINUX_COMPAT
             permission_touch((unsigned)node, 6, now); if (subject.credentials.euid) nodes[node].mode &= ~06000u;
 #endif
@@ -852,6 +864,13 @@ static void service(struct nos_message *m)
     unsigned fd = (unsigned)m->arg, desc = t->fd[fd] - 1;
     struct description *d = &opened[desc];
     switch (m->op) {
+    case NOS_VFS_FSYNC:
+        if (d->kind == 1 || d->kind == 2) m->value = -NOS_EINVAL;
+        else if (d->kind >= ARCHIVE_FILE) m->value = 0;
+        else if (backend(nodes[d->node].name) == 2) m->value = -NOS_EINVAL;
+        else m->value = nodes[d->node].persistent == 1 ? disk_sync() :
+                        nodes[d->node].persistent == 2 ? nos_fat_sync() : 0;
+        break;
     case NOS_VFS_DUP: {
         unsigned close_on_exec = (unsigned char)m->data[0];
         if (close_on_exec > 1) { m->value = -NOS_EINVAL; break; }
@@ -997,8 +1016,12 @@ static int initialize_namespace(void)
 {
 #ifdef NOS_ESP_VFS
     if (!opened) {
-        opened = nos_vfs_allocate(OPEN_COUNT * sizeof(*opened) + FD_TABLE_COUNT * sizeof(*fds));
-        if (!opened) return -NOS_ENOMEM;
+        struct description *descriptions = nos_vfs_allocate(OPEN_COUNT * sizeof(*opened) + FD_TABLE_COUNT * sizeof(*fds));
+        struct vnode *entries = nos_vfs_allocate(NODE_COUNT * sizeof(*nodes));
+        if (!descriptions || !entries) {
+            nos_vfs_free(descriptions); nos_vfs_free(entries); return -NOS_ENOMEM;
+        }
+        opened = descriptions; nodes = entries;
         fds = (struct fd_table *)(opened + OPEN_COUNT);
     }
 #endif

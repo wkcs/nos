@@ -17,6 +17,9 @@ void nos_vfs_regression(void)
 {
     char bytes[8]; int fd = nos_open("/tmp/p0", NOS_O_CREAT | NOS_O_RDWR), held[NOS_FD_LIMIT], count = 0;
     int ok = fd >= 3 && nos_write(fd, "SECRET", 6) == 6;
+    nos_check(!request(NOS_VFS_FSYNC, fd, 0) &&
+              request(NOS_VFS_FSYNC, -1, 0) == -NOS_EBADF &&
+              request(NOS_VFS_FSYNC, 0, 0) == -NOS_EINVAL, "vfs_fsync_backend");
     while ((unsigned)count < NOS_FD_LIMIT) { int extra = nos_open("/tmp/p0", NOS_O_RDONLY); if (extra < 0) break; held[count++] = extra; }
     ok &= nos_open("/tmp/p0", NOS_O_RDWR | NOS_O_TRUNC) == -NOS_EMFILE;
     ok &= nos_open("/tmp/absent", NOS_O_CREAT | NOS_O_RDWR) == -NOS_EMFILE;

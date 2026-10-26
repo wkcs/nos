@@ -10,11 +10,11 @@ C3/S3 固件现在创建独立的 `vfs` 任务，运行现有 `servers/vfs/serve
 
 各任务使用其原生进程身份对应的文件表和cwd。原生EXIT会通知VFS回收文件表，NOS idle随后回收兼容任务的栈/TLS；这些任务仍处于无硬件隔离的共享固件地址空间。不能把文件表独立理解为内存隔离。VFS栈为12288字节，回归检查实际剩余栈至少512字节。服务重启和ELF进程监督尚未接入该profile。
 
-ESP版VFS的打开文件描述和进程文件表在服务启动时，从平台提供的内部capability heap一次性分配并清零；分配失败则退出服务，不报告就绪。这样可使用SoC分散的内部RAM，不把全部表压进链接器单一BSS区域。容量保持原值，内存生命周期为固件服务，不提供卸载/重启。其他平台继续使用原有静态表。这是VFS存储后端选择，尚不代表内核页池和硬件heap已统一。
+ESP版VFS的节点表、打开文件描述和进程文件表在服务启动时，从平台提供的内部capability heap分配并清零；任一分配失败回滚并退出服务，不报告就绪。这样可使用SoC分散的内部RAM，不把全部表压进链接器单一BSS区域。内存生命周期为固件服务，不提供卸载/重启。其他平台继续使用原有静态表。这是VFS存储后端选择，尚不代表内核页池和硬件heap已统一。
 
 ## 文件与终端
 
-初始命名空间包含 `/`、`/tmp`、`/dev`、`/proc`、`/dev/console` 和只读的 `/proc/version`。支持RAM文件、目录、读写/定位、dup共享文件偏移、rename、unlink后继续访问已打开文件、管道及cwd。沿用MCU版VFS的16节点、每文件512字节、每任务11个描述符和64字节路径预算；资源耗尽返回实际错误。RAM内容复位即丢失。
+初始命名空间包含 `/`、`/tmp`、`/dev`、`/proc`、`/dev/console` 和只读的 `/proc/version`。支持RAM文件、目录、读写/定位、dup共享文件偏移、rename、unlink后继续访问已打开文件、管道及cwd。ESP现为32节点、RAM文件最多8192字节、额外文件缓冲共享32KiB预算；每任务11个描述符和64字节路径保持不变。持久版本2仍为16记录/512字节文件，详见 [容量与按文件同步](ESP32_RAMFS.md)。资源耗尽返回实际错误，RAM内容复位即丢失。
 
 nshell命令为 `pwd cd ls cat write append touch mkdir rm rmdir mv stat`，另保留诊断及编辑命令。例如：
 
@@ -37,7 +37,7 @@ shell的标准输入/输出也经过VFS的READ/WRITE RPC；后端再调用NOS受
 
 ## 验证入口
 
-`python3 tests/esp32c3.py`、`python3 tests/esp32s3.py`各构建正常/运行时/生态镜像，检查原生VFS实际编译和链接，并在官方QEMU运行。正常镜像执行32项UART交互，包含文件创建、相对cwd、读写/追加、目录、rename、unlink、只读拒绝和错误恢复。回归镜像还验证dup、已删除文件、管道EOF/EPIPE、FD耗尽、512字节边界、端点接收拒绝及超过进程槽数的任务退出回收。
+`python3 tests/esp32c3.py`、`python3 tests/esp32s3.py`各构建正常/运行时/生态镜像，检查原生VFS实际编译和链接，并在官方QEMU运行。正常镜像执行32项UART交互，包含文件创建、相对cwd、读写/追加、目录、rename、unlink、只读拒绝和错误恢复。回归镜像还验证dup、已删除文件、管道EOF/EPIPE、FD耗尽、8KiB RAM边界和32KiB预算回收、端点接收拒绝及超过进程槽数的任务退出回收。
 
 公共IPC/VFS改动还需 `python3 tests/acceptance.py --include-posix --require-frozen-source`。宿主模型与模拟器测试不替代实板无线、USB或物理存储验证。
 

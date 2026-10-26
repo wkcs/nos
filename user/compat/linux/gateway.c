@@ -628,11 +628,7 @@ static intptr_t gateway_call(const struct nos_linux_call *call)
 #endif
 #endif
     case SYS_ioctl: return -ENOTTY;
-    case SYS_fsync: case SYS_fdatasync: {
-        struct nos_stat st;
-        int rc = nos_stat_fd((int)a[0], &st);
-        return rc ? rc : nos_sync();
-    }
+    case SYS_fsync: case SYS_fdatasync: return nos_fsync((int)a[0]);
     default: return -ENOSYS;
     }
 }

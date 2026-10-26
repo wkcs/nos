@@ -17,7 +17,7 @@ sync
 
 重启后再次 `mount /data`，然后 `cat /data/config/note`。RAM 的 `/tmp` 仍在重启后丢失。快照记录绝对路径，应以相同路径重新挂载。一个实例只允许一个持久挂载，没有卸载命令；挂载失败保留正常 shell 和 RAM 文件系统。
 
-Newlib 可用 `fopen/fwrite/fflush` 后再 `fsync(fileno(file))` 提交；`fflush` 只把 stdio 缓冲提交给 VFS，`fclose`、普通写和改名不会隐式同步 NOR。`nos_sync()`/shell `sync` 提交整个已挂载快照，当前 fsync 也使用这一全局提交语义；RAM 路径不会因此持久化。没有持久挂载时 sync/fsync 保留 ENOTSUP，O_SYNC 仍未实现。
+Newlib 可用 `fopen/fwrite/fflush` 后再 `fsync(fileno(file))` 提交；`fflush` 只把 stdio 缓冲提交给 VFS，`fclose`、普通写和改名不会隐式同步 NOR。`nos_sync()`/shell `sync`提交整个已挂载快照，没有持久挂载时返回ENOTSUP。fsync现按FD选择后端：持久文件仍提交整个所属快照，RAM文件返回0且不操作Flash，不表示RAM路径持久化。O_SYNC仍未实现。
 
 ## 分区与映射
 
@@ -38,7 +38,7 @@ Newlib 可用 `fopen/fwrite/fflush` 后再 `fsync(fileno(file))` 提交；`fflus
 
 ## 预算与边界
 
-保留MCU VFS的全局16节点（包含初始系统节点）、每文件512字节、路径64字节及每任务11个FD；空间预算不会因为块设备大而自动扩大。可选 [原始IDF磨损均衡格式](ESP32_WEAR_LEVELING.md) 已接入；FAT、加密、容量扩展、掉电实板试验及Flash寿命尚未验收。本后端适合低频配置保存；每次sync重写一个完整bank，不能用于频繁日志或高吞吐存储。频繁保存应使用显式wl格式；大文件文件系统后端仍待接入。
+ESP RAM现为全局32节点、每文件8KiB和32KiB额外缓冲预算，但持久版本2仍为16记录（含挂载根目录）及每文件512字节；路径64字节及每任务11个FD不变。序列化会扫描全部节点并紧凑保存，兼容旧空槽布局，见[容量设计](ESP32_RAMFS.md)。可选 [原始IDF磨损均衡格式](ESP32_WEAR_LEVELING.md) 已接入；FAT、加密、持久容量扩展、掉电实板试验及Flash寿命尚未验收。本后端适合低频配置保存；每次sync重写一个完整bank，不能用于频繁日志或高吞吐存储。频繁保存应使用显式wl格式；大文件文件系统后端仍待接入。
 
 VFS槽0及init槽1在SDK构造器创建工作任务前均保留，避免工作任务抢占具有挂载权限的init身份。默认仍是单核可信共享固件，没有新增MMU隔离、独立ELF或不可信设备调用边界。
 

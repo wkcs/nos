@@ -43,7 +43,11 @@ int main(void)
     char first[PATH_BYTES], second[PATH_BYTES], alias[PATH_BYTES], directory[PATH_BYTES];
     make_path(first, 'a'); make_path(second, 'b'); make_path(alias, 'c'); make_path(directory, 'd');
     int fd = open(first, O_CREAT | O_EXCL | O_RDWR, 0600);
-    if (fd < 0 || write(fd, "x", 1) != 1 || close(fd)) return failed("long_open");
+    if (fd < 0 || write(fd, "x", 1) != 1 || fsync(fd) || fdatasync(fd) || close(fd)) return failed("long_open_sync");
+    errno = 0;
+    if (fsync(-1) != -1 || errno != EBADF) return failed("fsync_bad_fd");
+    errno = 0;
+    if (fsync(1) != -1 || errno != EINVAL) return failed("fsync_console");
     char *pages = mmap(NULL, 2 * PAGE_BYTES, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     if (pages == MAP_FAILED || mprotect(pages + PAGE_BYTES, PAGE_BYTES, PROT_NONE)) return failed("guard_setup");
     char *boundary = pages + PAGE_BYTES - PATH_BYTES;

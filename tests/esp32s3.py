@@ -32,6 +32,8 @@ MARKERS = [
     "PASS esp32s3_vfs_files_cwd_dup_unlink_permissions",
     "PASS esp32s3_vfs_pipe_eof_epipe",
     "PASS esp32s3_vfs_descriptor_capacity_file_bounds",
+    "PASS esp32s3_ramfs_quota_sparse_truncate_unlink_reclaim",
+    "PASS esp32s3_ramfs_32_node_admission_recovery",
     "PASS esp32s3_vfs_task_rights_exit_fd_reclamation",
     "PASS esp32s3_timer_preemption",
     "PASS esp32s3_queue_timeout",
@@ -652,6 +654,7 @@ def main():
         result["emulator"] = emulator_probe(report)
         for name, script in (
             ("portable_protocols", "host_esp32s3_protocols.py"),
+            ("vfs_capacity", "host_esp32_vfs.py"),
             ("usb_sdk_faults", "host_esp32s3_usb.py"),
             ("flash_sdk_faults", "host_esp32_flash.py"),
             ("wear_levelling_faults", "host_esp32_wl.py"),

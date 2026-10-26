@@ -478,6 +478,11 @@ int nos_sync(void)
     struct nos_message m = { .op = NOS_VFS_SYNC };
     return (int)nos_rpc(&m);
 }
+int nos_fsync(int fd)
+{
+    struct nos_message m = { .op = NOS_VFS_FSYNC, .arg = fd };
+    return (int)nos_rpc(&m);
+}
 
 /* VFS returns EAGAIN rather than blocking its service loop. The libc-facing
  * path implements blocking descriptors while the native API stays explicit. */

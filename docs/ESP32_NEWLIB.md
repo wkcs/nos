@@ -16,7 +16,7 @@ C3 与 S3 使用固定 ESP-IDF 5.4.2 工具链的原始 Newlib。NOS 在 `libc/p
 
 NOS 在 SDK stdio 初始化之前永久保留 3–10，防止 SDK 分配重复编号；编译期检查 socket 区间不重叠。普通应用的路径打开只查询 NOS，不在 ENOENT 时偷偷退回 SDK 路径。SDK 自身的原始 VFS 注册/打开接口仍可供兼容层使用，回归用一个真实注册的 SDK 文件系统验证与 NOS FD3 并存。SDK 全局描述符不获得 NOS 每任务归属或自动回收语义。
 
-支持 `mkdir/rmdir/chdir/getcwd`、`opendir/readdir/readdir_r/closedir/telldir/seekdir/rewinddir`、`unlink/rename/link`、`dup/dup2/pipe`、`pread/pwrite/ftruncate/truncate`、`isatty`，以及 `fcntl` 的复制、FD_CLOEXEC、访问/append/nonblock 标志。底层不支持的功能保留错误返回；没有持久挂载时 `fsync` 返回 ENOTSUP；挂载 [原生Flash快照](ESP32_STORAGE.md) 后 fsync 提交整个快照，不会持久化RAM路径。O_SYNC 与记录锁也不伪造成功。Newlib 与 NOS 的 open 标志、errno、poll 位布局分别转换。
+支持 `mkdir/rmdir/chdir/getcwd`、`opendir/readdir/readdir_r/closedir/telldir/seekdir/rewinddir`、`unlink/rename/link`、`dup/dup2/pipe`、`pread/pwrite/ftruncate/truncate`、`isatty`，以及 `fcntl` 的复制、FD_CLOEXEC、访问/append/nonblock 标志。fsync按FD选择后端：RAM文件成功且不触发Flash，持久文件提交所属[原生Flash快照](ESP32_STORAGE.md)，控制台/管道/proc返回EINVAL。RAM成功不表示掉电保留，具体预算见[容量与同步](ESP32_RAMFS.md)。O_SYNC 与记录锁也不伪造成功。Newlib 与 NOS 的 open 标志、errno、poll 位布局分别转换。
 
 `poll` 支持至多 FD_SETSIZE 项，合并 NOS 就绪快照和 SDK select 回调；SDK 设备必须自身实现 select。`select` 支持 NOS 与 SDK 混合集合，纯 SDK 集合交还原实现。等待粒度为一个 100Hz tick。当前不是完整 POSIX.1-2017 实现或认证。
 

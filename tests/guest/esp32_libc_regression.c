@@ -91,7 +91,9 @@ void nos_esp_libc_regression(void) {
     struct stat st;
     assert(!stat("note", &st) && S_ISREG(st.st_mode) && st.st_size == 15);
     int fd = open("note", O_RDWR);
-    assert(fd == 3 && fsync(fd) == -1 && errno == ENOTSUP);
+    assert(fd == 3 && !fsync(fd));
+    assert(fsync(-1) == -1 && errno == EBADF);
+    assert(fsync(1) == -1 && errno == EINVAL);
     assert(!isatty(fd) && errno == ENOTTY && isatty(1));
     assert(pread(fd, data, 6, 0) == 6 && !memcmp(data, "number", 6));
     assert(pwrite(fd, "N", 1, 0) == 1 && pread(fd, data, 1, 0) == 1 && data[0] == 'N');

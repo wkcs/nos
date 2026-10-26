@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <errno.h>
+#include <unistd.h>
 #if defined(NOS_MUSL)
 static _Thread_local unsigned initialized_tls = 0x7165;
 static _Thread_local unsigned zero_tls;
@@ -24,6 +25,9 @@ int main(int argc, char **argv)
     if (missing || errno != ENOENT) return 65;
     FILE *file = fopen("/libc-app", "w+");
     if (!file || fprintf(file, "ELF libc %d\n", argc) <= 0 || fflush(file) || fseek(file, 0, SEEK_SET)) return 66;
+#if defined(NOS_MUSL)
+    if (fsync(fileno(file))) return 68;
+#endif
     char buffer[64];
     if (!fgets(buffer, sizeof(buffer), file) || strcmp(buffer, "ELF libc 2\n") || fclose(file)) return 67;
     printf("NOS ELF LIBC APP PASS malloc stdio errno%s\n",

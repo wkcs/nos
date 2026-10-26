@@ -347,11 +347,7 @@ long nos_musl_syscall(long n, long a, long b, long c, long d, long e, long f)
         if (!fd_argument(a) || !fd_argument(c)) return -NOS_EBADF;
         return nos_renameat((int)a, (const char *)(uintptr_t)b, (int)c, (const char *)(uintptr_t)d);
 #endif
-    case SYS_fsync: case SYS_fdatasync: {
-        struct nos_stat st;
-        int rc = nos_stat_fd((int)a, &st);
-        return rc ? rc : nos_sync();
-    }
+    case SYS_fsync: case SYS_fdatasync: return nos_fsync((int)a);
     case SYS_sync: return nos_sync();
     case SYS_brk: {
         long old = nos_syscall(NOS_SYS_BRK, 0, 0, 0);
