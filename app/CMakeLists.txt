@@ -11,22 +11,24 @@ if(CONFIG_DISPLAY_SERVER)
     endif()
 endif()
 
-if(CONFIG_CONNECT_SERVER)
+if(CONFIG_NLK_SERVER OR CONFIG_NDK_SERVER)
     list(APPEND APP_SRCS
-        server/connect/com.c
-        server/connect/com_updata.c
-        server/connect/com_version.c
+        server/nlk/core/nlk_frame.c
+        server/nlk/core/nlk_discovery.c
+        server/nlk/core/nlk_router.c
+        server/nlk/core/nlk_core.c
+        server/nlk/caps/cap_fw_update.c
+        server/nlk/caps/cap_log.c
+        server/nlk/caps/cap_shell.c
+        server/nlk/caps/cap_keyboard.c
+        server/nlk/caps/cap_encoder.c
+        server/nlk/caps/cap_display.c
+        server/nlk/caps/cap_wireless.c
+        server/nlk/bearers/bearer_usb_winusb.c
+        server/nlk/bearers/bearer_bus_generic.c
+        server/nlk/nlk_server.c
     )
-endif()
-
-if(CONFIG_NDK_SERVER)
-    list(APPEND APP_SRCS
-        server/ndk/ndk.c
-        server/ndk/cmd/cmd_fw_update.c
-        server/ndk/protocol/protocol.c
-        server/ndk/usb/winusb.c
-    )
-    list(APPEND APP_PRIVATE_INCLUDES "${CMAKE_CURRENT_SOURCE_DIR}/server/ndk")
+    list(APPEND APP_PRIVATE_INCLUDES "${CMAKE_CURRENT_SOURCE_DIR}/server/nlk")
 endif()
 
 if(CONFIG_SHELL)
