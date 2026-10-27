@@ -339,4 +339,6 @@ AS 限额见下方已完成批次；下一批优先完善稳定进程/地址空�
 - [x] 16条记录/8KiB持久文件，元数据与数据逐扇区提交，复用共享32KiB按需页预算。
 - [x] v2只读导入、首次sync固定后半区、确认前拒绝标记与失败重试顺序、未知非空拒绝挂载。
 - [x] 宿主逐写/flush中断、CRC/语义、分配回滚和容量测试，以及C3/S3 raw/WL升级/降级/独立重启QEMU脚本已实现。
-- 冻结验收结果另记；机制与限制见 [ESP32_SNAPSHOT3.md](ESP32_SNAPSHOT3.md)。
+- [x] 3ab51e7冻结公共89/89与新旧格式八组80次QEMU启动通过，正常固件已打包核验；首个tick预检、前置失败及同源S3 WL首轮超时另列。
+- [ ] S3 WL压力提交180秒首轮超时原因仍待追踪；同固件同预算复验通过，补充逐提交耗时和宿主CPU/I/O采样。
+- 机制与限制见 [ESP32_SNAPSHOT3.md](ESP32_SNAPSHOT3.md)，证据见 [ESP32_SNAPSHOT3_VALIDATION.md](ESP32_SNAPSHOT3_VALIDATION.md)。
