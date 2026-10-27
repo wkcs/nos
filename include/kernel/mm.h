@@ -76,10 +76,13 @@ struct page {
     struct list_head list;
 };
 
+#ifndef __NOS_GFP_T_DEFINED__
+#define __NOS_GFP_T_DEFINED__
 typedef enum gpf_flag {
     GFP_KERNEL = 1,
     GFP_ZERO = 1 << 1,
 } gfp_t;
+#endif
 
 int mm_node_early_init(void);
 __init int mm_node_init(struct mm_node *node);
@@ -94,6 +97,7 @@ int free_page(addr_t addr);
 void *kmalloc(u32 size, gfp_t flag);
 void *kzalloc(u32 size, gfp_t flag);
 void *krealloc(void *ptr, u32 size, gfp_t flag);
+char *kstrdup(const char *s, gfp_t gfp);
 void *kalloc_by_pid(u32 size, gfp_t flag, pid_t pid);
 int kfree(void *addr);
 int kfree_by_pid(pid_t pid);

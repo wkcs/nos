@@ -18,7 +18,6 @@ if("${CONFIG_BOARD}" STREQUAL "nk60-v2")
     list(APPEND BOARD_PRIVATE_INCLUDES
         "${BOARD_DIR}/inside-include"
         "${BOARD_DIR}/usb"
-        "${BOARD_DIR}/drivers/inc"
     )
     if(CONFIG_USB)
         list(APPEND BOARD_SRCS
@@ -68,7 +67,6 @@ elseif("${CONFIG_BOARD}" STREQUAL "wl-001" OR "${CONFIG_BOARD}" STREQUAL "zj-v3"
     )
     list(APPEND BOARD_PRIVATE_INCLUDES
         "${BOARD_DIR}/inside-include"
-        "${BOARD_DIR}/drivers/inc"
         "${BOARD_DIR}/usb"
     )
     if(CONFIG_USB)

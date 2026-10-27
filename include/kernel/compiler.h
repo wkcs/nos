@@ -1,6 +1,10 @@
 #ifndef __NOS_COMPILER_H
 #define __NOS_COMPILER_H
 
+#if defined(__has_include) && __has_include(<sys/cdefs.h>)
+#include <sys/cdefs.h>
+#endif
+
 #include <kernel/types.h>
 
 #ifndef __ASSEMBLY__
@@ -486,6 +490,7 @@ static __always_inline void __write_once_size(volatile void *p, void *res,
 #endif
 
 /* Simple shorthand for a section definition */
+#undef __section
 #ifndef __section
 #define __section(S) __attribute__((__section__(#S)))
 #endif

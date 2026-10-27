@@ -16,6 +16,7 @@
 #include <kernel/printk.h>
 #include <kernel/section.h>
 #include <kernel/types.h>
+#include <nos/klibc.h>
 
 extern addr_t kernel_running;
 

@@ -62,6 +62,7 @@ add_subdirectory(soc)
 add_subdirectory(board)
 add_subdirectory(kernel)
 add_subdirectory(libs)
+add_subdirectory(libc)
 add_subdirectory(drivers)
 add_subdirectory(fs)
 add_subdirectory(app)
@@ -71,6 +72,7 @@ set(NOS_OBJECT_LIBS
     $<TARGET_OBJECTS:nos_arch>
     $<TARGET_OBJECTS:nos_kernel>
     $<TARGET_OBJECTS:nos_libs>
+    $<TARGET_OBJECTS:nos_libc>
     $<TARGET_OBJECTS:nos_drivers>
     $<TARGET_OBJECTS:nos_fs>
 )
