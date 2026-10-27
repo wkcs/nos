@@ -22,7 +22,6 @@ set(KERNEL_SRCS
     boot.c
     init_levels.c
     timer.c
-    sys.c
     panic.c
     kallsyms.c
 )

@@ -65,6 +65,14 @@ typedef u64 uint64_t;
 #define _UINT64_T_DECLARED
 #endif
 
+#ifndef __NOS_GFP_T_DEFINED__
+#define __NOS_GFP_T_DEFINED__
+typedef enum gpf_flag {
+    GFP_KERNEL = 1,
+    GFP_ZERO = 1 << 1,
+} gfp_t;
+#endif
+
 #undef offsetof
 #define offsetof(TYPE, MEMBER)	__builtin_offsetof(TYPE, MEMBER)
 

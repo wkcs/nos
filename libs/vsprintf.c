@@ -8,7 +8,6 @@
 
 #include <kernel/kernel.h>
 #include <string.h>
-#include <stdio.h>
 #include <lib/vsprintf.h>
 
 #define isdigit(c) ((unsigned)((c) - '0') < 10)
@@ -210,7 +209,7 @@ static char *print_float(char *buf, char *end, double num, int s, int type)
     return buf;
 }
 
-__printf(3, 0) uint32_t vsnprintf(char *buf, size_t size, const char *fmt, va_list args)
+__printf(3, 0) int vsnprintf(char *buf, size_t size, const char *fmt, va_list args)
 {
     uint32_t num;
     double num_f;
@@ -422,12 +421,12 @@ __printf(3, 0) uint32_t vsnprintf(char *buf, size_t size, const char *fmt, va_li
     /* the trailing null byte doesn't count towards the total
     * ++str;
     */
-    return str - buf;
+    return (int)(str - buf);
 }
 
-__printf(3, 4) uint32_t snprintf(char *buf, size_t size, const char *fmt, ...)
+__printf(3, 4) int snprintf(char *buf, size_t size, const char *fmt, ...)
 {
-    uint32_t n;
+    int n;
     va_list args;
 
     va_start(args, fmt);
@@ -437,14 +436,14 @@ __printf(3, 4) uint32_t snprintf(char *buf, size_t size, const char *fmt, ...)
     return n;
 }
 
-__printf(2, 0) uint32_t vsprintf(char *buf, const char *format, va_list arg_ptr)
+__printf(2, 0) int vsprintf(char *buf, const char *format, va_list arg_ptr)
 {
     return vsnprintf(buf, SIZE_MAX, format, arg_ptr);
 }
 
-__printf(2, 3) uint32_t sprintf(char *buf, const char *format, ...)
+__printf(2, 3) int sprintf(char *buf, const char *format, ...)
 {
-    uint32_t n;
+    int n;
     va_list arg_ptr;
 
     va_start(arg_ptr, format);

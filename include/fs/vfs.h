@@ -16,18 +16,29 @@
 /* Types are defined in fs/fs.h */
 #include <fs/fs.h>
 
-typedef unsigned int size_t;
-typedef int ssize_t;
 typedef unsigned short umode_t;
+#ifndef _UID_T_DECLARED
 typedef unsigned int uid_t;
+#define _UID_T_DECLARED
+#endif
+#ifndef _GID_T_DECLARED
 typedef unsigned int gid_t;
+#define _GID_T_DECLARED
+#endif
+#if !defined(__time_t_defined) && !defined(_TIME_T_DECLARED)
 typedef long time_t;
+#define __time_t_defined
+#define _TIME_T_DECLARED
+#endif
 typedef unsigned int fmode_t;
 
+#ifndef _SYS__TIMESPEC_H_
+#define _SYS__TIMESPEC_H_
 struct timespec {
   time_t tv_sec;
   long tv_nsec;
 };
+#endif
 
 struct kstatfs; /* Forward declaration */
 

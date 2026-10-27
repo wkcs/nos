@@ -236,7 +236,9 @@
 #define MSB(n)  (((n)&0xff00)>>8)
 struct uhid_comm_descriptor
 {
+#ifdef CONFIG_USB_DEVICE_COMPOSITE
     struct uiad_descriptor iad_desc;
+#endif
     struct uinterface_descriptor    intf_desc;
     struct uhid_descriptor          hid_desc;
     struct uendpoint_descriptor     ep_in_desc;
