@@ -15,10 +15,14 @@
 #include <kernel/device.h>
 #include <kernel/printk.h>
 #include <kernel/init.h>
+#include <lib/kfifo.h>
 #include <usb/usb_common.h>
 #include <usb/usb_device.h>
 
 #include "winusb.h"
+
+#define WINUSB_EP_BUFSIZE   512
+#define WINUSB_RX_FIFOSIZE  512
 
 void winusb_read_test(void);
 
@@ -26,7 +30,10 @@ struct winusb_device {
     struct device dev;
     void (*cmd_handler)(uint8_t *buffer, size_t size);
     struct ufunction *func;
-    uint8_t cmd_buff[1024];
+    uint8_t cmd_buff[512];
+    uint8_t ep_rx_buf[WINUSB_EP_BUFSIZE];
+    uint8_t rx_fifo_buf[WINUSB_RX_FIFOSIZE];
+    struct kfifo rx_fifo;
     uep_t ep_out;
     uep_t ep_in;
     sem_t read_sem;
@@ -146,7 +153,17 @@ static int _ep_out_handler(ufunction_t func, size_t size)
 {
     struct winusb_device *winusb_device = (struct winusb_device *)func->user_data;
 
-    sem_send_one(&winusb_device->read_sem);
+    if (size > 0) {
+        kfifo_in(&winusb_device->rx_fifo, winusb_device->ep_rx_buf, (unsigned int)size);
+        sem_send_one(&winusb_device->read_sem);
+    }
+
+    winusb_device->ep_out->buffer = winusb_device->ep_rx_buf;
+    winusb_device->ep_out->request.buffer = winusb_device->ep_rx_buf;
+    winusb_device->ep_out->request.size = EP_MAXPACKET(winusb_device->ep_out);
+    winusb_device->ep_out->request.req_type = UIO_REQUEST_READ_BEST;
+    usbd_io_request(func->device, winusb_device->ep_out,
+                    &winusb_device->ep_out->request);
 
     return 0;
 }
@@ -201,10 +218,33 @@ static int _interface_handler(ufunction_t func, ureq_t setup)
 }
 static int _function_enable(ufunction_t func)
 {
+    struct winusb_device *winusb_device;
+
+    if (func == NULL || func->user_data == NULL)
+        return -EINVAL;
+
+    winusb_device = (struct winusb_device *)func->user_data;
+    kfifo_skip(&winusb_device->rx_fifo, kfifo_used(&winusb_device->rx_fifo));
+
+    winusb_device->ep_out->buffer = winusb_device->ep_rx_buf;
+    winusb_device->ep_out->request.buffer = winusb_device->ep_rx_buf;
+    winusb_device->ep_out->request.size = EP_MAXPACKET(winusb_device->ep_out);
+    winusb_device->ep_out->request.req_type = UIO_REQUEST_READ_BEST;
+    usbd_io_request(func->device, winusb_device->ep_out,
+                    &winusb_device->ep_out->request);
+
     return 0;
 }
 static int _function_disable(ufunction_t func)
 {
+    struct winusb_device *winusb_device;
+
+    if (func == NULL || func->user_data == NULL)
+        return -EINVAL;
+
+    winusb_device = (struct winusb_device *)func->user_data;
+    kfifo_skip(&winusb_device->rx_fifo, kfifo_used(&winusb_device->rx_fifo));
+
     return 0;
 }
 
@@ -229,22 +269,20 @@ static int _winusb_descriptor_config(winusb_desc_t winusb, uint8_t cintf_nr, uin
 static ssize_t winusb_read(struct device *dev, addr_t pos,
     void *buffer, size_t size)
 {
-    size_t read_size;
+    unsigned int read_size;
     struct winusb_device *win_dev = container_of(dev, struct winusb_device, dev);
 
-    if (win_dev->func->device->state != USB_STATE_CONFIGURED)
-        return 0;
+    (void)pos;
+    if (buffer == NULL || size == 0)
+        return -EINVAL;
 
-    win_dev->ep_out->buffer = buffer;
-    win_dev->ep_out->request.buffer = buffer;
-    win_dev->ep_out->request.size = size;
-    win_dev->ep_out->request.req_type = UIO_REQUEST_READ_FULL;
-    read_size = usbd_io_request(win_dev->func->device, win_dev->ep_out,
-        &win_dev->ep_out->request);
+    while (kfifo_used(&win_dev->rx_fifo) == 0) {
+        sem_get(&win_dev->read_sem);
+    }
 
-    sem_get(&win_dev->read_sem);
+    read_size = kfifo_out(&win_dev->rx_fifo, buffer, (unsigned int)size);
 
-    return read_size;
+    return (ssize_t)read_size;
 }
 
 static ssize_t winusb_write(struct device *dev, addr_t pos,
@@ -271,28 +309,25 @@ static ssize_t winusb_write(struct device *dev, addr_t pos,
 static ssize_t winusb_read_timeout(struct device *dev, addr_t pos,
     void *buffer, size_t size, uint32_t tick)
 {
-    size_t read_size;
+    unsigned int read_size;
     struct winusb_device *win_dev =
         container_of(dev, struct winusb_device, dev);
     int rc;
 
-    if (win_dev->func->device->state != USB_STATE_CONFIGURED)
-        return 0;
+    (void)pos;
+    if (buffer == NULL || size == 0)
+        return -EINVAL;
 
-    win_dev->ep_out->buffer = buffer;
-    win_dev->ep_out->request.buffer = buffer;
-    win_dev->ep_out->request.size = size;
-    win_dev->ep_out->request.req_type = UIO_REQUEST_READ_FULL;
-    read_size = usbd_io_request(win_dev->func->device, win_dev->ep_out,
-        &win_dev->ep_out->request);
-
-    rc = sem_get_timeout(&win_dev->read_sem, tick);
-    if (rc < 0) {
-        pr_err("read timeout\r\n");
-        return -ETIMEDOUT;
+    while (kfifo_used(&win_dev->rx_fifo) == 0) {
+        rc = sem_get_timeout(&win_dev->read_sem, tick);
+        if (rc < 0) {
+            return -ETIMEDOUT;
+        }
     }
 
-    return read_size;
+    read_size = kfifo_out(&win_dev->rx_fifo, buffer, (unsigned int)size);
+
+    return (ssize_t)read_size;
 }
 
 static ssize_t winusb_write_timeout(struct device *dev, addr_t pos,
@@ -371,6 +406,8 @@ ufunction_t usbd_function_winusb_create(udevice_t device)
     memset((void *)winusb_device, 0, sizeof(*winusb_device));
     sem_init(&winusb_device->read_sem, 0);
     sem_init(&winusb_device->write_sem, 0);
+    kfifo_init(&winusb_device->rx_fifo, winusb_device->rx_fifo_buf,
+               WINUSB_RX_FIFOSIZE, 1);
     func->user_data = (void*)winusb_device;
     /* create an interface object */
     winusb_intf = usbd_interface_new(device, _interface_handler);

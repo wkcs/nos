@@ -21,6 +21,7 @@ TESTS = [
     ("run_tty_canonical_test.py",),
     ("run_spinlock_irq_test.py",),
     ("run_pl011_uart_test.py",),
+    ("run_nlk_test.py",),
 ]
 
 

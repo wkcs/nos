@@ -58,16 +58,40 @@ config QEMU
 # 服务器配置
 menu "Server Configuration"
 
-config CONNECT_SERVER
-	bool "Connect server"
+config NLK_SERVER
+	bool "NLK (NOS Link Kit) distributed soft-bus server"
+	default y if BOARD_NK60
 	default n
 	help
-	  启用连接服务器。
+	  启用 NLK (NOS Link Kit) 分布式软总线协议栈与能力服务（替代原 NDK 与 Connect Server）。
+
+if NLK_SERVER
+
+config NLK_PACKET_MTU
+	int "NLK maximum L3 payload size (bytes)"
+	default 256
+	help
+	  单个 NLK L3 报文的最大有效载荷字节数。
+
+config NLK_MAX_BEARERS
+	int "Maximum NLK physical bearers per node"
+	default 6
+
+config NLK_MAX_CAPS
+	int "Maximum NLK capabilities per node"
+	default 12
+
+config NLK_MAX_CHILDREN
+	int "Maximum cascaded child nodes tracked per node"
+	default 8
+
+endif
 
 config NDK_SERVER
-	bool "NDK server"
+	bool "Legacy NDK server alias (selects NLK_SERVER)"
 	default n
+	select NLK_SERVER
 	help
-	  启用 NDK 服务器。
+	  向后兼容配置项，自动启用 NLK_SERVER。
 
 endmenu

@@ -24,6 +24,9 @@
 #include <fs/vfs.h>
 #include <lib/vsprintf.h>
 #include <stdarg.h>
+#ifdef CONFIG_NLK_SERVER
+#include <nos/nlk_core.h>
+#endif
 
 #define SHELL_PROMPT "nos# "
 #define CMD_MAX_LEN 256
@@ -514,6 +517,43 @@ static int cmd_ps(int argc, char *argv[]) {
   return 0;
 }
 
+#ifdef CONFIG_NLK_SERVER
+static int cmd_nlk(int argc, char *argv[])
+{
+    struct nlk_node *node = nlk_default_node();
+    uint8_t i;
+
+    (void)argc;
+    (void)argv;
+    shell_printf("NLK Node: %s (addr=0x%04x, parent=0x%04x, up_port=%u)\r\n",
+                 node->desc.name, node->addr, node->parent_addr, node->upstream_port);
+    shell_printf("Stats: rx=%u tx=%u fwd=%u drop=%u\r\n",
+                 node->rx_packets, node->tx_packets,
+                 node->forwarded_packets, node->dropped_packets);
+    shell_printf("Capabilities (%u):\r\n", node->cap_count);
+    for (i = 0; i < node->cap_count; i++) {
+        struct nlk_capability *cap = node->caps[i];
+        if (cap != NULL) {
+            shell_printf("  [%u] type=0x%04x ver=0x%02x modes=0x%02x %s\r\n",
+                         cap->cap_id, cap->cap_type, cap->cap_ver,
+                         cap->sup_modes, cap->name ? cap->name : "");
+        }
+    }
+    shell_printf("Cascaded Children (%u direct):\r\n", node->desc.attached_children);
+    for (i = 0; i < CONFIG_NLK_MAX_CHILDREN; i++) {
+        if (node->children[i].online) {
+            shell_printf("  addr=0x%04x parent=0x%04x port=%u class=0x%04x caps=%u\r\n",
+                         node->children[i].node_addr,
+                         node->children[i].parent_addr,
+                         node->children[i].port_id,
+                         node->children[i].device_class,
+                         node->children[i].cap_count);
+        }
+    }
+    return 0;
+}
+#endif
+
 /* --- ANSI and nshell logic --- */
 
 #define isdigit(c) ((unsigned)((c) - '0') < 10)
@@ -678,6 +718,9 @@ static void nshell_task_entry(void* parameter)
     shell_register_cmd("cat", "Concatenate file", cmd_cat);
     shell_register_cmd("mount", "Mount filesystem", cmd_mount);
     shell_register_cmd("ps", "Dump task status", cmd_ps);
+#ifdef CONFIG_NLK_SERVER
+    shell_register_cmd("nlk", "Show NLK soft-bus status & topology", cmd_nlk);
+#endif
 
     shell_printf("\033[2J\033[H"); /* Clear screen */
     shell_printf("\033[1;36m");
