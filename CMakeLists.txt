@@ -212,13 +212,13 @@ add_custom_target(stflash
 
 if("${CONFIG_BOARD}" STREQUAL "qemu-stm32")
     add_custom_target(qemu-run
-        COMMAND qemu-system-arm -M nos_stm32 -nographic -semihosting -semihosting-config enable=on,target=native -kernel "$<TARGET_FILE:nos.elf>"
+        COMMAND qemu-system-arm -M netduinoplus2 -nographic -semihosting -semihosting-config enable=on,target=native -kernel "$<TARGET_FILE:nos.elf>"
         DEPENDS nos.elf
-        COMMENT "Running nos.elf in QEMU (nos_stm32)"
+        COMMENT "Running nos.elf in QEMU (netduinoplus2)"
         VERBATIM
     )
     add_custom_target(qemu-run-gdb
-        COMMAND qemu-system-arm -M nos_stm32 -nographic -semihosting -semihosting-config enable=on,target=native -kernel "$<TARGET_FILE:nos.elf>" -S -s
+        COMMAND qemu-system-arm -M netduinoplus2 -nographic -semihosting -semihosting-config enable=on,target=native -kernel "$<TARGET_FILE:nos.elf>" -S -s
         DEPENDS nos.elf
         COMMENT "Running nos.elf in QEMU waiting for GDB on :1234"
         VERBATIM

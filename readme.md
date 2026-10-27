@@ -68,7 +68,7 @@ cmake --build build/nk60-v2
 ### 2.4 仿真、烧录与配置管理
 
 ```bash
-# 在 QEMU 中运行 qemu-stm32 固件（需支持 nos_stm32 机型的定版 QEMU）
+# 在 QEMU 中运行 qemu-stm32 固件（使用 QEMU 默认支持的 netduinoplus2 机型）
 cmake --build --preset qemu-stm32 --target qemu-run
 
 # 启动 QEMU 并挂载 GDB 调试端口 (:1234)

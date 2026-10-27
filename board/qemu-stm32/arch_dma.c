@@ -20,21 +20,21 @@ int dma_config(struct dma_config_t *config)
 
     clk_enable_all(config->clk_config);
 
-    DMA_DeInit(config->ch);
-	DMA_Init(config->ch, &config->init_type);
+    DMA_DeInit(config->stream);
+    DMA_Init(config->stream, &config->init_type);
 
     if (config->irq_config) {
         irq_config(config->irq_config);
-        DMA_ITConfig(config->ch, config->irq_type, ENABLE);
+        DMA_ITConfig(config->stream, config->irq_type, ENABLE);
     }
 
     return 0;
 }
 
-void dma_start(DMA_Channel_TypeDef *ch, uint16_t len)
+void dma_start(DMA_Stream_TypeDef *stream, uint16_t len)
 {
-	DMA_Cmd(ch, DISABLE );
- 	DMA_SetCurrDataCounter(ch, len);
- 	DMA_Cmd(ch, ENABLE);
+    DMA_Cmd(stream, DISABLE);
+    DMA_SetCurrDataCounter(stream, len);
+    DMA_Cmd(stream, ENABLE);
 }
 

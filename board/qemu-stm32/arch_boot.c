@@ -8,15 +8,13 @@
 
 #include <kernel/kernel.h>
 #include "board.h"
-#include "stm32f10x_bkp.h"
+#include "stm32f4xx_rtc.h"
 
-#define BOOT_SAVE_ADDR1 BKP_DR1
-#define BOOT_SAVE_ADDR2 BKP_DR2
+#define BOOT_SAVE_ADDR RTC_BKP_DR0
 
 int board_write_boot_flag(u32 flag)
 {
-    BKP_WriteBackupRegister(BOOT_SAVE_ADDR1, flag & 0xffff);
-    BKP_WriteBackupRegister(BOOT_SAVE_ADDR2, (flag >> 16) & 0xffff);
+    RTC_WriteBackupRegister(BOOT_SAVE_ADDR, flag);
 
     return 0;
 }
@@ -25,8 +23,7 @@ u32 board_read_boot_flag(void)
 {
     u32 flag;
 
-    flag = BKP_ReadBackupRegister(BOOT_SAVE_ADDR1) & 0xffff;
-    flag = (flag << 16) | (BKP_ReadBackupRegister(BOOT_SAVE_ADDR2) & 0xffff);
+    flag = RTC_ReadBackupRegister(BOOT_SAVE_ADDR);
 
     return flag;
 }

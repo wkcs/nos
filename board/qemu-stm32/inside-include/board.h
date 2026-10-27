@@ -9,7 +9,7 @@
 #ifndef __BOARD_H__
 #define __BOARD_H__
 
-#include "stm32f10x.h"
+#include "stm32f4xx.h"
 #include "arch_clk.h"
 #include "arch_dma.h"
 #include "arch_gpio.h"

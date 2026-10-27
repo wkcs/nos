@@ -12,12 +12,12 @@
 
 #ifdef CONFIG_UART_DMA
 static struct clk_config_t uart_log_dev_dma_clk = {
-    .clk[CLK_GROUP_AHB] = RCC_AHBPeriph_DMA1
+    .clk[CLK_GROUP_AHB1] = RCC_AHB1Periph_DMA2
 };
 
 static struct irq_config_t uart_log_dev_dma_irq = {
     .init_type = {
-        .NVIC_IRQChannel = DMA1_Channel4_IRQn,
+        .NVIC_IRQChannel = DMA2_Stream7_IRQn,
         .NVIC_IRQChannelPreemptionPriority = 3,
         .NVIC_IRQChannelSubPriority = 3,
         .NVIC_IRQChannelCmd = ENABLE
@@ -28,25 +28,29 @@ static struct dma_config_t uart_log_dev_dma = {
     .clk_config = &uart_log_dev_dma_clk,
     .irq_config = &uart_log_dev_dma_irq,
     .irq_type = DMA_IT_TC,
-    .ch = DMA1_Channel4,
+    .stream = DMA2_Stream7,
     .init_type = {
+        .DMA_Channel = DMA_Channel_4,
         .DMA_PeripheralBaseAddr = (uint32_t)&USART1->DR,
-	    .DMA_MemoryBaseAddr = 0,
-	    .DMA_DIR = DMA_DIR_PeripheralDST,
-	    .DMA_BufferSize = UART_LOG_DMA_BUF_SIZE,
-	    .DMA_PeripheralInc = DMA_PeripheralInc_Disable,
-	    .DMA_MemoryInc = DMA_MemoryInc_Enable,
-	    .DMA_PeripheralDataSize = DMA_PeripheralDataSize_Byte,
-	    .DMA_MemoryDataSize = DMA_MemoryDataSize_Byte,
-	    .DMA_Mode = DMA_Mode_Normal,
-	    .DMA_Priority = DMA_Priority_Low,
-	    .DMA_M2M = DMA_M2M_Disable
+        .DMA_Memory0BaseAddr = 0,
+        .DMA_DIR = DMA_DIR_MemoryToPeripheral,
+        .DMA_BufferSize = UART_LOG_DMA_BUF_SIZE,
+        .DMA_PeripheralInc = DMA_PeripheralInc_Disable,
+        .DMA_MemoryInc = DMA_MemoryInc_Enable,
+        .DMA_PeripheralDataSize = DMA_PeripheralDataSize_Byte,
+        .DMA_MemoryDataSize = DMA_MemoryDataSize_Byte,
+        .DMA_Mode = DMA_Mode_Normal,
+        .DMA_Priority = DMA_Priority_Medium,
+        .DMA_FIFOMode = DMA_FIFOMode_Disable,
+        .DMA_FIFOThreshold = DMA_FIFOThreshold_Full,
+        .DMA_MemoryBurst = DMA_MemoryBurst_Single,
+        .DMA_PeripheralBurst = DMA_PeripheralBurst_Single,
     }
 };
 #endif /* CONFIG_UART_DMA */
 
 static struct clk_config_t uart_log_dev_gpio_clk = {
-    .clk[CLK_GROUP_APB2] = RCC_APB2Periph_GPIOA
+    .clk[CLK_GROUP_AHB1] = RCC_AHB1Periph_GPIOA
 };
 
 static struct gpio_config_t uart_log_dev_gpio[2] = {
@@ -57,8 +61,15 @@ static struct gpio_config_t uart_log_dev_gpio[2] = {
         .init_type = {
             .GPIO_Pin = GPIO_Pin_9,
             .GPIO_Speed = GPIO_Speed_50MHz,
-            .GPIO_Mode = GPIO_Mode_AF_PP
-        }
+            .GPIO_Mode = GPIO_Mode_AF,
+            .GPIO_OType = GPIO_OType_PP,
+            .GPIO_PuPd = GPIO_PuPd_UP,
+        },
+        .mux_enable = true,
+        .gpio_mux = {
+            .mux_func = GPIO_AF_USART1,
+            .mux_pin = GPIO_PinSource9,
+        },
     },
     {
         .clk_config = NULL,
@@ -67,8 +78,15 @@ static struct gpio_config_t uart_log_dev_gpio[2] = {
         .init_type = {
             .GPIO_Pin = GPIO_Pin_10,
             .GPIO_Speed = GPIO_Speed_50MHz,
-            .GPIO_Mode = GPIO_Mode_IN_FLOATING
-        }
+            .GPIO_Mode = GPIO_Mode_AF,
+            .GPIO_OType = GPIO_OType_PP,
+            .GPIO_PuPd = GPIO_PuPd_UP,
+        },
+        .mux_enable = true,
+        .gpio_mux = {
+            .mux_func = GPIO_AF_USART1,
+            .mux_pin = GPIO_PinSource10,
+        },
     }
 };
 
