@@ -4,34 +4,34 @@
 
 NOS 内核现在支持功能完整的 Kconfig 配置系统，类似于 Linux 内核的配置方式。这提供了强大的配置管理能力，包括依赖关系处理、互斥选项和层级菜单。
 
-## 基本使用
+## 基本使用（CMake + Ninja + Kconfiglib）
 
-### 1. 使用默认配置
+### 1. 使用板级预设配置与构建
 
 ```bash
-make defconfig
+cmake --preset nk60-v2
+cmake --build --preset nk60-v2
 ```
 
-这将使用架构的默认配置文件（`arch/<ARCH>/configs/defconfig`）。
+这将读取根目录下的标准板级配置文件（`configs/<board>_defconfig`），并通过 `scripts/gen_kconfig_cmake.py` + `scripts/kconfiglib.py` 自动生成：
+- `build/<board>/.config`
+- `build/<board>/include/autocfg.h` 与 `build/<board>/include/autoconf.h`
+- `build/<board>/kconfig.cmake`
 
-### 2. 使用特定板级配置
+当前支持的预设与配置文件（均位于根目录 `configs/` 下）：
+- `configs/nk60-v2_defconfig` - NK60 V2 键盘主控板（STM32F401 Cortex-M4F）
+- `configs/qemu-stm32_defconfig` - QEMU STM32 仿真金标板（STM32F103 Cortex-M3）
+- `configs/wl-001_defconfig` - WL-001 节点板（STM32F103 Cortex-M3）
+- `configs/zj-v3_defconfig` - ZJ V3 开发板（STM32F103 Cortex-M3）
+- `configs/qemu-virt-arm64_defconfig` - QEMU Virt ARM64 预设
+- `configs/qemu-virt-riscv64_defconfig` - QEMU Virt RISC-V 64 预设
+- `configs/qemu-q35-x86_64_defconfig` - QEMU Q35 x86_64 预设
 
-```bash
-make nk60-v2_config
-```
-
-这将使用板级特定的配置文件（`arch/arm/configs/nk60-v2_defconfig`）。
-
-支持的板级配置：
-- `nk60-v2_config` - NK60 V2 键盘板
-- `qemu-stm32_config` - QEMU STM32 仿真板
-- `wl-001_config` - WL-001 板
-- `zj-v3_config` - ZJ V3 板
-
-### 3. 交互式配置（menuconfig）
+### 2. 交互式配置（menuconfig）与保存最小配置（savedefconfig）
 
 ```bash
-make menuconfig
+cmake --build --preset nk60-v2 --target menuconfig
+cmake --build --preset nk60-v2 --target savedefconfig
 ```
 
 这将启动一个功能完整的交互式界面，支持：
@@ -69,17 +69,22 @@ make savedefconfig
   - `arch/Kconfig` - 架构选择
   - `arch/arm/Kconfig` - ARM 特定配置
   - `arch/arm64/Kconfig` - ARM64 特定配置
+  - `arch/riscv/Kconfig` - RISC-V 特定配置
+  - `arch/x86/Kconfig` - x86_64 特定配置
+  - `soc/Kconfig` - SoC 芯片选择
+  - `libc/Kconfig` - 标准 C 库与 POSIX 配置
   - `drivers/Kconfig` - 驱动配置
   - `fs/Kconfig` - 文件系统配置
   - `board/Kconfig` - 板级配置
 
-- **defconfig 文件**：默认配置
-  - `arch/<ARCH>/configs/defconfig` - 架构默认配置
-  - `arch/<ARCH>/configs/<board>_defconfig` - 板级默认配置
+- **defconfig 文件**：统一位于根目录 `configs/`
+  - `configs/<board>_defconfig` - 板级默认配置
+  - `configs/fragments/*.conf` - 可叠加的特性配置片段（`debug.conf`, `posix.conf`, `microkernel.conf`）
 
 - **生成的文件**：
-  - `out/.config` - 当前配置
-  - `out/include/autoconf.h` - 自动生成的 C 头文件
+  - `build/<preset>/.config` - 当前完整配置
+  - `build/<preset>/include/autocfg.h` / `autoconf.h` - 自动生成的 C 头文件
+  - `build/<preset>/kconfig.cmake` - 导出的 CMake `CONFIG_*` 变量
 
 ## 配置选项类型
 

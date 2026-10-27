@@ -1,7 +1,0 @@
-# Minimal configuration
-
-ARCH_ARM=y
-ARCH_HAS_IRQ=y
-BOARD_NK60=y
-DEFAULT_LOG_LEVEL=6
-SHELL=y

@@ -30,6 +30,10 @@ build-job:       # This job runs in the build stage, which runs first.
     - cmake --build --preset qemu-stm32
     - cmake --preset nk60-v2
     - cmake --build --preset nk60-v2
+    - cmake --preset zj-v3
+    - cmake --build --preset zj-v3
+    - cmake --preset wl-001
+    - cmake --build --preset wl-001
     - echo "Compile complete."
 
 unit-test-job:   # This job runs in the test stage.

@@ -206,10 +206,6 @@ config FLASH_DEV
 	help
 	  Flash 设备名称。
 
-config STM32F4XX
-	bool "Legacy STM32F4xx driver tree in drivers/stm32f4xx"
-	default n
-
 endmenu
 
 endmenu
