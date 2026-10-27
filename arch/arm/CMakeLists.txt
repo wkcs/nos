@@ -1,5 +1,6 @@
 set(ARCH_ARM_SRCS
     boot/start.S
+    hal/hal_arm.c
     kernel/irq.c
     kernel/switch.S
     kernel/atomic.c

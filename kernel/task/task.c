@@ -19,6 +19,8 @@
 #include <kernel/spinlock.h>
 #include <kernel/printk.h>
 #include <kernel/timer.h>
+#include <uapi/nos/abi.h>
+#include <nos/ipc.h>
 
 static LIST_HEAD(g_task_list);
 LIST_HEAD(g_close_task_list);
@@ -121,6 +123,18 @@ static int __task_create(struct task_struct *task,
     task->sys_cycle = 0;
     task->save_sys_cycle = 0;
     task->save_run_time = 0;
+    task->ipc_partner = NULL;
+    task->ipc_state = NOS_IPC_STATE_NONE;
+    task->notify_bits = 0;
+    memset(&task->ipc_msg, 0, sizeof(task->ipc_msg));
+    nos_cap_table_init(&task->cap_table);
+    (void)nos_cap_alloc_at(&task->cap_table,
+                           NOS_CAP_SLOT_SELF_TASK,
+                           NOS_CAP_TASK,
+                           task,
+                           NOS_CAP_RIGHT_ALL,
+                           (uint32_t)task->pid,
+                           NULL);
 
     spin_lock(&g_task_list_lock);
     list_add_tail(&task->tlist, &g_task_list);
@@ -531,6 +545,7 @@ static void task_free(struct task_struct *task)
 #else
     stack_addr = (void *)((addr_t)task->stack + sizeof(addr_t) - task->stack_size);
 #endif
+    nos_cap_table_destroy(&task->cap_table);
     pid_free(task->pid);
     free_task_stack(stack_addr);
     kfree(task);

@@ -13,6 +13,16 @@
 #define NOS_IPC_INLINE_REGS  4U
 #define NOS_IPC_MAX_CAPS     2U
 
+/* IPC message flags */
+#define NOS_IPC_FLAG_NONE        0x00U
+#define NOS_IPC_FLAG_CAP_XFER    (1U << 0)
+#define NOS_IPC_FLAG_NONBLOCK    (1U << 1)
+#define NOS_IPC_FLAG_KERNEL_EVT  (1U << 2)
+
+/* Timeout constants (in system ticks) */
+#define NOS_IPC_TIMEOUT_INFINITE 0U
+#define NOS_IPC_TIMEOUT_NONBLOCK 0xFFFFFFFFU
+
 #define NOS_IPC_TAG_MAKE(opcode, flags, cap_cnt) \
     ((((uint32_t)(opcode) & 0xFFFFU) << 16) |    \
      (((uint32_t)(flags) & 0xFFU) << 8) |        \
