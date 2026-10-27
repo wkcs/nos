@@ -50,19 +50,17 @@ endchoice
 ### 使用 GCC 编译器
 
 ```bash
-# 使用默认配置（GCC）
-make defconfig
-make check-compiler
-make
+cmake --preset nk60-v2
+cmake --build --preset nk60-v2
 ```
 
 ### 使用 Clang 编译器
 
 ```bash
-# 使用 Clang 配置
-make clang-test_config
-make check-compiler
-make
+cmake -B build/nk60-clang -G Ninja \
+  -DCMAKE_TOOLCHAIN_FILE=cmake/toolchains/clang-cross.cmake \
+  -DNOS_DEFCONFIG=configs/nk60-v2_defconfig
+cmake --build build/nk60-clang
 ```
 
 ### 编译器检查
