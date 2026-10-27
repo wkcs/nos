@@ -1,0 +1,27 @@
+#
+# SoC 芯片级配置
+#
+
+menu "SoC Configuration"
+
+config SOC_STM32F1
+	bool "STMicroelectronics STM32F1 Series (Cortex-M3)"
+	depends on ARCH_ARM
+	default y if BOARD_QEMU_STM32 || BOARD_WL_001 || BOARD_ZJ_V3
+	help
+	  启用 STM32F10x 系列 SoC 外设与 CMSIS 支持。
+
+config SOC_STM32F4
+	bool "STMicroelectronics STM32F4 Series (Cortex-M4)"
+	depends on ARCH_ARM
+	default y if BOARD_NK60
+	help
+	  启用 STM32F4xx 系列 SoC 外设与 CMSIS 支持。
+
+config SOC_QEMU_VIRT
+	bool "QEMU Generic Virtual Machine SoC"
+	default y if BOARD_QEMU_VIRT
+	help
+	  启用 QEMU Virt 通用虚拟平台 SoC 支持。
+
+endmenu

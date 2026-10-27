@@ -1,0 +1,7 @@
+if("${CONFIG_ARCH}" STREQUAL "arm")
+    add_subdirectory(arm)
+elseif("${CONFIG_ARCH}" STREQUAL "arm64")
+    add_subdirectory(arm64)
+else()
+    message(FATAL_ERROR "Unsupported or unconfigured CONFIG_ARCH: ${CONFIG_ARCH}")
+endif()

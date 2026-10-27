@@ -1,0 +1,30 @@
+#
+# RISC-V 架构配置
+#
+
+if ARCH_RISCV
+
+choice
+	prompt "RISC-V ISA Profile"
+	default RISCV_64GC
+	help
+	  选择 RISC-V 处理器配置。
+
+config RISCV_32IMAC
+	bool "RV32IMAC (32-bit MCU profile with PMP)"
+	help
+	  32 位 RISC-V 微控制器配置（支持 M/U 态与 PMP）。
+
+config RISCV_64GC
+	bool "RV64GC (64-bit Application profile with Sv39/Sv48 MMU)"
+	help
+	  64 位 RISC-V 处理器配置（支持 M/S/U 态、SBI、PLIC/CLINT 与 Sv39/Sv48 页表）。
+
+endchoice
+
+config CPU_TYPE
+	string
+	default "rv32imac" if RISCV_32IMAC
+	default "rv64gc" if RISCV_64GC
+
+endif # ARCH_RISCV

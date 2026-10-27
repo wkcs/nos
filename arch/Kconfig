@@ -11,6 +11,7 @@ choice
 config ARCH_ARM
 	bool "ARM (32-bit)"
 	select ARCH_HAS_IRQ
+	select ARCH_HAS_MPU
 	help
 	  ARM 32 位架构支持（ARMv7-M, ARMv7-A 等）。
 
@@ -21,12 +22,29 @@ config ARCH_ARM64
 	help
 	  ARM 64 位架构支持（ARMv8-A, AArch64）。
 
+config ARCH_RISCV
+	bool "RISC-V (32/64-bit)"
+	select ARCH_HAS_IRQ
+	select ARCH_HAS_MMU
+	select ARCH_HAS_MPU
+	help
+	  RISC-V 架构支持（RV32IMAC PMP 与 RV64GC Sv39/Sv48 MMU）。
+
+config ARCH_X86
+	bool "x86_64 (64-bit)"
+	select ARCH_HAS_IRQ
+	select ARCH_HAS_MMU
+	help
+	  x86_64 (AMD64/Intel 64) 架构支持。
+
 endchoice
 
 config ARCH
 	string
 	default "arm" if ARCH_ARM
 	default "arm64" if ARCH_ARM64
+	default "riscv" if ARCH_RISCV
+	default "x86" if ARCH_X86
 
 # 架构能力标志
 config ARCH_HAS_MMU
@@ -34,11 +52,18 @@ config ARCH_HAS_MMU
 	help
 	  架构支持 MMU（内存管理单元）。
 
+config ARCH_HAS_MPU
+	bool
+	help
+	  架构支持 MPU 或 PMP 硬件内存保护单元。
+
 config ARCH_HAS_IRQ
 	bool
 	help
 	  架构支持中断控制器。
 
-# 包含架构特定配置
-source "arch/arm/Kconfig" if ARCH_ARM
-source "arch/arm64/Kconfig" if ARCH_ARM64
+# 包含架构特定配置（标准 Kconfig 语法，子文件内部使用 if ARCH_* 守卫）
+source "arch/arm/Kconfig"
+source "arch/arm64/Kconfig"
+source "arch/riscv/Kconfig"
+source "arch/x86/Kconfig"

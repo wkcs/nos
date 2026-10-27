@@ -1,0 +1,100 @@
+{
+  "version": 3,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 20,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "arm-base",
+      "hidden": true,
+      "generator": "Ninja",
+      "toolchainFile": "${sourceDir}/cmake/toolchains/arm-none-eabi.cmake"
+    },
+    {
+      "name": "nk60-v2",
+      "displayName": "NK60-V2 (STM32F401 / Cortex-M4F)",
+      "inherits": "arm-base",
+      "binaryDir": "${sourceDir}/build/nk60-v2",
+      "cacheVariables": {
+        "NOS_DEFCONFIG": "${sourceDir}/configs/nk60-v2_defconfig"
+      }
+    },
+    {
+      "name": "qemu-stm32",
+      "displayName": "QEMU STM32 (STM32F103 / Cortex-M3)",
+      "inherits": "arm-base",
+      "binaryDir": "${sourceDir}/build/qemu-stm32",
+      "cacheVariables": {
+        "NOS_DEFCONFIG": "${sourceDir}/configs/qemu-stm32_defconfig"
+      }
+    },
+    {
+      "name": "wl-001",
+      "displayName": "WL-001 (STM32F103MD / Cortex-M3)",
+      "inherits": "arm-base",
+      "binaryDir": "${sourceDir}/build/wl-001",
+      "cacheVariables": {
+        "NOS_DEFCONFIG": "${sourceDir}/configs/wl-001_defconfig"
+      }
+    },
+    {
+      "name": "zj-v3",
+      "displayName": "ZJ-V3 (STM32F103HD / Cortex-M3)",
+      "inherits": "arm-base",
+      "binaryDir": "${sourceDir}/build/zj-v3",
+      "cacheVariables": {
+        "NOS_DEFCONFIG": "${sourceDir}/configs/zj-v3_defconfig"
+      }
+    },
+    {
+      "name": "qemu-virt-arm64",
+      "displayName": "QEMU Virt ARM64 (Cortex-A53 Microkernel)",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/qemu-virt-arm64",
+      "toolchainFile": "${sourceDir}/cmake/toolchains/aarch64-elf.cmake",
+      "cacheVariables": {
+        "NOS_DEFCONFIG": "${sourceDir}/configs/qemu-virt-arm64_defconfig"
+      }
+    },
+    {
+      "name": "qemu-virt-riscv64",
+      "displayName": "QEMU Virt RISC-V 64 (RV64GC Microkernel)",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/qemu-virt-riscv64",
+      "toolchainFile": "${sourceDir}/cmake/toolchains/riscv-elf.cmake",
+      "cacheVariables": {
+        "NOS_DEFCONFIG": "${sourceDir}/configs/qemu-virt-riscv64_defconfig"
+      }
+    },
+    {
+      "name": "qemu-q35-x86_64",
+      "displayName": "QEMU Q35 x86_64 (Long Mode Microkernel)",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/qemu-q35-x86_64",
+      "toolchainFile": "${sourceDir}/cmake/toolchains/x86_64-elf.cmake",
+      "cacheVariables": {
+        "NOS_DEFCONFIG": "${sourceDir}/configs/qemu-q35-x86_64_defconfig"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "nk60-v2",
+      "configurePreset": "nk60-v2"
+    },
+    {
+      "name": "qemu-stm32",
+      "configurePreset": "qemu-stm32"
+    },
+    {
+      "name": "wl-001",
+      "configurePreset": "wl-001"
+    },
+    {
+      "name": "zj-v3",
+      "configurePreset": "zj-v3"
+    }
+  ]
+}

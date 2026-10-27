@@ -41,8 +41,8 @@ void arch_switch_to(struct task_struct *prev, struct task_struct *next)
     }
     
     /* 调用汇编实现的上下文切换 */
-    __arch_switch_to((struct cpu_context *)prev->cpu_context,
-                     (struct cpu_context *)next->cpu_context);
+    __arch_switch_to((struct cpu_context *)prev->sp,
+                     (struct cpu_context *)next->sp);
 }
 
 /**
@@ -53,7 +53,7 @@ void arch_switch_to(struct task_struct *prev, struct task_struct *next)
  */
 void arch_task_init(struct task_struct *task, void (*entry)(void), void *stack)
 {
-    struct cpu_context *context = (struct cpu_context *)task->cpu_context;
+    struct cpu_context *context = (struct cpu_context *)task->sp;
     
     /* 清零上下文 */
     for (int i = 0; i < sizeof(struct cpu_context) / sizeof(unsigned long); i++) {
@@ -123,19 +123,5 @@ void arch_restore_context(void *context)
 {
     struct cpu_context *ctx = (struct cpu_context *)context;
     
-    __asm__ volatile (
-        "ldr r4, [%0, #0]\n"
-        "ldr r5, [%0, #4]\n"
-        "ldr r6, [%0, #8]\n"
-        "ldr r7, [%0, #12]\n"
-        "ldr r8, [%0, #16]\n"
-        "ldr r9, [%0, #20]\n"
-        "ldr r10, [%0, #24]\n"
-        "ldr r11, [%0, #28]\n"
-        "ldr sp, [%0, #32]\n"
-        "ldr lr, [%0, #36]\n"
-        :
-        : "r" (ctx)
-        : "r4", "r5", "r6", "r7", "r8", "r9", "r10", "r11", "sp", "lr", "memory"
-    );
+    __arch_switch_to(ctx, ctx);
 }

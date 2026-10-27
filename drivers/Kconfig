@@ -60,6 +60,57 @@ endif # USB
 
 endmenu
 
+# 块设备驱动
+menu "Block Devices"
+
+config RAMDISK
+	bool "RAM disk block device support"
+	default n
+	help
+	  启用内存盘块设备驱动。
+
+config BLOCK_SPI_SD
+	bool "SPI SD card block device adapter"
+	default n
+	help
+	  启用 SPI SD 卡块设备适配层。
+
+endmenu
+
+# SPI 与存储外设驱动
+menu "SPI and Storage Drivers"
+
+config SPI
+	bool "SPI bus support"
+	default n
+
+config SPI_595
+	bool "74HC595 SPI shift register driver"
+	default n
+
+config SPI_SDCARD
+	bool "SPI SD card driver"
+	default n
+
+config QEMU_SD
+	bool "QEMU SPI SD card emulation driver"
+	default n
+
+endmenu
+
+# I2C 与 PWM 驱动
+menu "I2C and PWM Drivers"
+
+config I2C_CORE
+	bool "I2C core support"
+	default n
+
+config STM32PWM
+	bool "STM32 PWM driver"
+	default n
+
+endmenu
+
 # UART 驱动
 menu "UART Support"
 
@@ -87,6 +138,11 @@ config DISPLAY_SERVER
 	help
 	  启用显示服务器。
 
+config DISPLAY_SERVER_DEMO
+	bool "Display server drawing demo"
+	default n
+	depends on DISPLAY_SERVER
+
 config NK60_DISPLAY_SERVER
 	bool "NK60 display server"
 	default n
@@ -94,10 +150,30 @@ config NK60_DISPLAY_SERVER
 	help
 	  启用 NK60 板级显示服务器。
 
+config RGB_MATRIX
+	bool "RGB matrix driver"
+	default n
+
+config ZJ_TFTLCD
+	bool "ZJ TFT LCD driver"
+	default n
+
+config ST7789_LCD
+	bool "ST7789 LCD driver"
+	default n
+
+config SSD1106_OLED
+	bool "SSD1106 OLED driver"
+	default n
+
 endmenu
 
 # 板级特定驱动
 menu "Board-specific Drivers"
+
+config NK60_V1_KEY
+	bool "NK60 V1 keyboard driver"
+	default n
 
 config NK60_V2_KEY
 	bool "NK60 V2 keyboard driver"
@@ -121,16 +197,18 @@ config NK60_V2_W25QXX
 config LED_DEV
 	string "LED device name"
 	default "nk60_v2-led"
-	depends on NK60_V2_LED
 	help
 	  LED 设备名称。
 
 config FLASH_DEV
 	string "Flash device name"
 	default "nk60_v2-flash"
-	depends on NK60_V2_W25QXX
 	help
 	  Flash 设备名称。
+
+config STM32F4XX
+	bool "Legacy STM32F4xx driver tree in drivers/stm32f4xx"
+	default n
 
 endmenu
 
