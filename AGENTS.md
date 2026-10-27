@@ -6,7 +6,9 @@
 
 - **项目类型:** 嵌入式微内核/RTOS 操作系统。
 - **主要语言:** C (标准 C99/GNU11), 汇编 (`arm`, `arm64`, `riscv`, `x86_64`)。
-- **构建系统:** 纯 CMake + Ninja + Kconfig (`scripts/kconfiglib.py`)，支持 Windows / macOS / Linux 跨平台构建。
+- **目标架构:** `arm` (Cortex-M3/M4), `arm64` (ARMv8-A), `riscv` (RV32/RV64), `x86` (`x86_64`)。
+- **构建系统:** 100% 纯 **CMake + Ninja + Kconfiglib** (`scripts/kconfiglib.py`)，无任何 `Makefile` 或 Unix Shell 依赖，原生支持 Windows / macOS / Linux 跨平台构建。
+- **工具链:** `arm-none-eabi-gcc`（默认 MCU 工具链）、`aarch64-none-elf-gcc`、`riscv64-unknown-elf-gcc`、`x86_64-elf-gcc`。
 - **架构蓝图:** 详见 `docs/ARCHITECTURE_AND_BUILD_SPEC.md`。
 
 ## 2. 构建、Lint 和测试命令
@@ -28,13 +30,15 @@
     *   `cmake --build build/<board> --target clean` 或直接删除 `build/<board>` 目录。
 
 ### 2.2 烧录与调试
-*   **OpenOCD:** `cmake --build build/<board> --target flash`
-*   **ST-Link:** `cmake --build build/<board> --target stflash`
-*   **QEMU 仿真:** `cmake --build build/qemu-stm32 --target qemu-run`
+*   **OpenOCD:** `cmake --build --preset <board> --target flash`
+*   **ST-Link:** `cmake --build --preset <board> --target stflash`
+*   **QEMU 仿真:** `cmake --build --preset qemu-stm32 --target qemu-run`
+*   **QEMU GDB 调试:** `cmake --build --preset qemu-stm32 --target qemu-run-gdb`
+*   **Kconfig 配置:** `cmake --build --preset <board> --target menuconfig`
 
 ### 2.3 测试与验证
 *   **单元测试:** 根目录下没有可见的集中式单元测试框架 (如 Unity/GoogleTest)。
-    *   *策略:* 尽可能依赖编译成功 (`make`) 和通过 QEMU 进行运行时验证 (`make qemu-run`)。
+    *   *策略:* 依赖四块金标板级预设（`nk60-v2`、`qemu-stm32`、`zj-v3`、`wl-001`）通过 `cmake --preset <board> && cmake --build --preset <board>` 100% 编译链接成功，并通过 QEMU (`cmake --build --preset qemu-stm32 --target qemu-run`) 进行运行时验证。
     *   *CI:* `.gitlab-ci.yml` 使用占位符 echo 命令进行测试。不要寻找 `npm test` 或 `ctest`。
 *   **Linting:** 目前未配置自动化的 Linter。
     *   *策略:* 你必须严格手动执行第 3 节中定义的代码风格。
@@ -77,6 +81,11 @@
 
 ### 3.3 类型与内存
 *   **整数类型:** 优先使用 `<stdint.h>` 中的定宽类型或内核别名 (`u32`, `uint8_t`, `addr_t`)。
+    *   *铁律:* `arch/*/include/asm/types.h` 中的 `s8/u8/s16/u16/s32/u32/s64/u64` 必须直接 `typedef` 自 `<stdint.h>` 的 `int8_t..uint64_t`，严禁硬编码为 `int`/`long`，以免与工具链 Newlib/Picolibc 或 CMSIS 头文件冲突。
+*   **头文件隔离原则:**
+    *   **严禁**在 `include/` 根目录下创建 `stdio.h`、`string.h`、`stdlib.h`、`stdarg.h`、`limits.h`、`signal.h` 等标准 C 库同名头文件。
+    *   内核与用户态共享的 ABI 定义统一放在 `include/uapi/nos/*.h`（通过 `<uapi/nos/*.h>` 引用），且严禁任何 `#ifdef` 改变 UAPI 结构体（如 64 字节 `struct nos_ipc_msg`）的大小。
+    *   微内核内部接口放在 `include/nos/*.h`（通过 `<nos/*.h>` 引用）。
 *   **指针:** 显式检查 `NULL`。
     ```c
     if (ptr == NULL) {
@@ -105,13 +114,20 @@
 *   **断言:** 对不可恢复的系统状态使用 `BUG_ON(condition)`。
 
 ## 4. 源码目录结构
-*   `arch/` - 架构特定代码 (ARM 等)。
-*   `board/` - 板级支持包和配置。
-*   `drivers/` - 设备驱动 (USB, I2C, SPI 等)。
-*   `include/` - 头文件。`include/kernel/` 包含核心 API。
+*   `cmake/` - CMake 构建模块（Kconfig 解析桥接、编译标志、跨架构工具链定义）。
+*   `configs/` - 标准板级 `*_defconfig` 与配置片段。
+*   `arch/` - 架构特定代码（`arm`, `arm64`, `riscv`, `x86`），统一实现 `include/nos/hal_arch.h` 契约。
+*   `soc/` - SoC 芯片级外设库与系统初始化（`stm32f1`, `stm32f4`，供各板级共享，禁止拷贝到 `board/` 下）。
+*   `board/` - 板级支持包、引脚/时钟配置与链接脚本 `nos_kernel.ld.S`。
+*   `include/` - 头文件：`include/uapi/nos/`（UAPI 契约层）、`include/nos/`（微内核内部层）、`include/kernel/`（内核与驱动公共 API）。
 *   `init/` - 系统初始化 (`main.c`, `init.c`)。
-*   `kernel/` - 核心内核逻辑 (调度器, IPC, 内存)。
-*   `scripts/` - 用于构建/配置的 Python 和 Shell 脚本。
+*   `kernel/` - 微内核核心逻辑（`task/`, `sched/`, `cap/`, `ipc/`, `syscall/`, `mm/`, `irq/`, `printk/`）。
+*   `libc/` - 标准 C 库（Newlib / Picolibc）底层端口适配层 (`libc/port/picolibc_newlib.c`)。
+*   `user/` - 用户态/服务客户端库 (`user/libnos/`) 与 POSIX FD 桥接。
+*   `drivers/` - 设备驱动 (UART, SPI, USB, Block 等)。
+*   `fs/` - 虚拟文件系统 (VFS, FatFs, RamFS, ProcFS, SysFS)。
+*   `app/` - 系统服务与应用程序 (nShell, Lua 5.4, Display Server, NDK)。
+*   `scripts/` - 跨平台 Python 构建与固件打包脚本 (`gen_kconfig_cmake.py`, `mkkallsyms.py`, `create_img.py`)。
 
 ## 5. Git 提交规范
 *   **格式:** `Component: Short description` (模块: 简短描述)
@@ -119,10 +135,10 @@
 *   **语言:** 虽然仓库包含中文，但为了国际协作，英语优先。如果不确定，请匹配用户的语言。
 
 ## 6. Agent 工作流程
-1.  **阅读:** 务必阅读 `Makefile` 和与任务相关的 `include/kernel/*.h` 以了解可用 API。
+1.  **阅读:** 务必阅读 `CMakeLists.txt`、`docs/ARCHITECTURE_AND_BUILD_SPEC.md` 以及与任务相关的 `include/nos/*.h` / `include/kernel/*.h` 以了解可用 API。
 2.  **计划:** 在创建新驱动之前，先检查 `drivers/` 中是否已有驱动，避免重复。
 3.  **编辑:** 保持 `snake_case` 命名和 4 空格缩进。
-4.  **验证:** 由于无法运行硬件测试，请仔细验证语法和逻辑。建议用户运行 `make <board>_config && make` 进行验证。
+4.  **验证:** 修改后务必使用 `cmake --preset <board> && cmake --build --preset <board>` 验证构建零错误、零新增警告。
 
 ---
 *由 Antigravity 生成*
