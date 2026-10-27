@@ -38,7 +38,7 @@ if(CONFIG_NK60_V2_LED)
     list(APPEND DRIVERS_SRCS misc/nk60_v2_led.c)
 endif()
 
-if(CONFIG_SOC_STM32F1)
+if(CONFIG_SOC_STM32F1 OR CONFIG_SOC_STM32F4)
     list(APPEND DRIVERS_SRCS serial/uart_stm32.c)
 endif()
 

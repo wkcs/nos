@@ -9,7 +9,7 @@
 #ifndef __ARCH_IRQ_H__
 #define __ARCH_IRQ_H__
 
-#include "stm32f10x.h"
+#include "stm32f4xx.h"
 
 struct irq_config_t {
     NVIC_InitTypeDef init_type;

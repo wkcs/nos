@@ -134,7 +134,7 @@ static int fatfs_readdir(struct file *file, void *dirent, filldir_t filldir) {
     // WARNING: This depends on how VFS opens directories. 
     // If VFS calls open() on dir, we allocate DIR.
     DIR *dp = (DIR *)file->private_data;
-    FILINFO fno;
+    FILINFO fno = { 0 };
     FRESULT res;
     int i = 0;
 
@@ -194,7 +194,7 @@ static struct dentry *fatfs_lookup(struct inode *dir, struct dentry *dentry) {
     // Construct path for child.
     char path[260] __attribute__((aligned(4)));
     FRESULT res;
-    FILINFO fno;
+    FILINFO fno = { 0 };
 
     // Warning: dentry is not fully linked to tree yet usually during lookup?
     // Parent is linked. dentry->d_parent is parent.

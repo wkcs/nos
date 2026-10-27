@@ -7,14 +7,14 @@ menu "SoC Configuration"
 config SOC_STM32F1
 	bool "STMicroelectronics STM32F1 Series (Cortex-M3)"
 	depends on ARCH_ARM
-	default y if BOARD_QEMU_STM32 || BOARD_WL_001 || BOARD_ZJ_V3
+	default y if BOARD_WL_001 || BOARD_ZJ_V3
 	help
 	  启用 STM32F10x 系列 SoC 外设与 CMSIS 支持。
 
 config SOC_STM32F4
 	bool "STMicroelectronics STM32F4 Series (Cortex-M4)"
 	depends on ARCH_ARM
-	default y if BOARD_NK60
+	default y if BOARD_NK60 || BOARD_QEMU_STM32
 	help
 	  启用 STM32F4xx 系列 SoC 外设与 CMSIS 支持。
 

@@ -10,7 +10,7 @@
 #include <kernel/printk.h>
 
 #define RAMDISK_SECTOR_SIZE 512U
-#define RAMDISK_SECTOR_COUNT 512U
+#define RAMDISK_SECTOR_COUNT 128U
 #define RAMDISK_SIZE (RAMDISK_SECTOR_SIZE * RAMDISK_SECTOR_COUNT)
 
 static uint8_t ramdisk_storage[RAMDISK_SIZE];
