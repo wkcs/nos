@@ -877,6 +877,31 @@ int main(void)
         assert(nlk_cap_keyboard_report_switches(&nk60_kb, 0x0001U, 4U, 0U, &sw, 1U) >= 0);
         assert(nk60_kb.active_layer == 1U);
         assert(host_cap.last_hid_report.keys[0] == 0x3AU /* KC_F1 */);
+
+        /* Test local key bitmap update & 6KRO rollover preservation */
+        {
+            uint32_t bm[2] = { 0U, 0U };
+            layer0[2] = 0x14U; /* KC_Q */
+            layer0[3] = 0x1AU; /* KC_W */
+            assert(nlk_cap_keyboard_load_layout(&nk60_kb, 0U, layer0, NULL, 16U) == 0);
+
+            /* Press W (key 3) first */
+            bm[0] = (1UL << 3U);
+            assert(nlk_cap_keyboard_update_local_keys(&nk60_kb, bm, 16U) == 0);
+            assert(nk60_kb.last_report.keys[0] == 0x1AU);
+
+            /* Then press Q (key 2, lower index): W must stay at slot 0, Q at slot 1 */
+            bm[0] = (1UL << 3U) | (1UL << 2U);
+            assert(nlk_cap_keyboard_update_local_keys(&nk60_kb, bm, 16U) == 0);
+            assert(nk60_kb.last_report.keys[0] == 0x1AU);
+            assert(nk60_kb.last_report.keys[1] == 0x14U);
+
+            /* Re-assert FN (key 1) so section 10 sees KC_F1 active on key 10 */
+            bm[0] = (1UL << 1U) | (1UL << 10U);
+            assert(nlk_cap_keyboard_update_local_keys(&nk60_kb, bm, 16U) == 0);
+            assert(nk60_kb.active_layer == 1U);
+            assert(nk60_kb.last_report.keys[0] == 0x3AU);
+        }
     }
 
     /* ----------------------------------------------------------------------

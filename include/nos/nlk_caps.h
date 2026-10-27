@@ -94,6 +94,9 @@ struct nos_tty *nlk_cap_shell_tty(struct nlk_shell_ctx *ctx);
 
 typedef void (*nlk_kb_report_cb_t)(const struct nlk_kb_hid_report *report, void *priv);
 typedef void (*nlk_kb_nkro_cb_t)(const struct nlk_kb_nkro_report *report, void *priv);
+typedef void (*nlk_kb_action_cb_t)(uint8_t layer, uint8_t key_index,
+                                   uint8_t key_code, uint8_t action,
+                                   void *priv);
 typedef void (*nlk_kb_light_cb_t)(const struct nlk_kb_light_cfg *cfg,
                                   const struct nlk_kb_light_sync_beacon *beacon,
                                   uint8_t indicators, void *priv);
@@ -108,6 +111,7 @@ struct nlk_keyboard_ctx {
     uint8_t                         keymap[NLK_KB_MAX_LAYERS][NLK_KB_MAX_KEYS];
     uint8_t                         action_map[NLK_KB_MAX_LAYERS][NLK_KB_MAX_KEYS];
     uint8_t                         key_state[NLK_KB_MAX_KEYS];
+    uint8_t                         active_code[NLK_KB_MAX_KEYS];
     struct nlk_kb_hid_report        last_report;
     struct nlk_kb_nkro_report       last_nkro;
     struct nlk_kb_analog_cfg        analog_cfg;
@@ -116,6 +120,8 @@ struct nlk_keyboard_ctx {
     nlk_kb_report_cb_t              report_cb;
     nlk_kb_nkro_cb_t                nkro_cb;
     void                           *report_priv;
+    nlk_kb_action_cb_t              action_cb;
+    void                           *action_priv;
     nlk_kb_light_cb_t               light_cb;
     nlk_kb_light_frame_cb_t         light_frame_cb;
     void                           *light_priv;
@@ -128,6 +134,9 @@ int nlk_cap_keyboard_init(struct nlk_node *node, struct nlk_keyboard_ctx *ctx,
                           nlk_kb_report_cb_t report_cb, void *priv);
 int nlk_cap_keyboard_configure(struct nlk_keyboard_ctx *ctx,
                                const struct nlk_kb_desc *desc);
+int nlk_cap_keyboard_set_action_cb(struct nlk_keyboard_ctx *ctx,
+                                   nlk_kb_action_cb_t action_cb,
+                                   void *priv);
 int nlk_cap_keyboard_set_light_cb(struct nlk_keyboard_ctx *ctx,
                                   nlk_kb_light_cb_t light_cb,
                                   nlk_kb_light_frame_cb_t frame_cb,
@@ -137,6 +146,9 @@ int nlk_cap_keyboard_set_module_offset(struct nlk_keyboard_ctx *ctx,
 int nlk_cap_keyboard_load_layout(struct nlk_keyboard_ctx *ctx, uint8_t layer,
                                  const uint8_t *key_codes, const uint8_t *actions,
                                  uint8_t count);
+int nlk_cap_keyboard_update_local_keys(struct nlk_keyboard_ctx *ctx,
+                                       const uint32_t *raw_bitmap,
+                                       uint8_t key_count);
 int nlk_cap_keyboard_report_switches(struct nlk_keyboard_ctx *ctx,
                                      nlk_addr_t target_addr, uint8_t dst_cap,
                                      uint8_t module_id,

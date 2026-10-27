@@ -40,8 +40,6 @@ static void nlk_server_task_entry(void *parameter)
     uint32_t tick_cnt = 0U;
 
     srv->node = nlk_default_node();
-    (void)nlk_node_init(srv->node, NLK_ADDR_PRIMARY,
-                        0x4E4FU, 0x0001U, NLK_DEV_CLASS_GENERIC, "NOS-Node");
 
     /* Allow board/product layer to register its identity, capabilities, and bearers */
     if (g_board_setup_fn != NULL) {
