@@ -114,11 +114,64 @@ endmenu
 # UART 驱动
 menu "UART Support"
 
+config UART_BAUD_RATE
+	int "Console UART baud rate"
+	default 115200
+	range 1200 4000000
+
+config PL011_CLOCK_HZ
+	int "QEMU virt PL011 input clock (Hz)"
+	depends on ARCH_ARM64 && BOARD_QEMU_VIRT
+	default 24000000
+	range 1000000 1000000000
+
+config UART_RX_BUFFER_SIZE
+	int "UART receive buffer size"
+	default 128 if BOARD_WL_001
+	default 256
+	range 16 65536
+	help
+	  USART 接收队列容量（字节），必须是 2 的幂。
+
+config UART_TX_BUFFER_SIZE
+	int "UART transmit buffer size"
+	default 128 if BOARD_WL_001
+	default 256
+	range 16 65536
+	help
+	  USART 发送队列容量（字节），必须是 2 的幂。
+	  建议不小于单条日志的最大格式化长度。
+
+config UART_POLL_TIMEOUT
+	int "UART polling timeout iterations"
+	default 1000000
+	range 1 100000000
+	help
+	  启动和 panic 轮询发送时等待 UART 就绪的最大循环次数。
+
 config UART_DMA
 	bool "UART DMA support"
+	depends on (SOC_STM32F1 || SOC_STM32F4) && !BOARD_QEMU_STM32
 	default n
 	help
-	  启用 UART DMA 传输支持。
+	  启用 STM32 UART DMA 发送。QEMU STM32F405 未模拟 DMA 控制器，
+	  因此 QEMU 板使用中断发送。
+
+config UART_DMA_BUFFER_SIZE
+	int "UART DMA staging buffer size"
+	depends on UART_DMA
+	default 128
+	range 16 4096
+	help
+	  DMA 传输期间独占的静态中转缓冲区（字节）。
+
+config UART_DMA_STOP_TIMEOUT
+	int "UART DMA stop timeout iterations"
+	depends on UART_DMA
+	default 4096
+	range 1 1000000
+	help
+	  等待 DMA 通道停止时的最大循环次数。
 
 endmenu
 

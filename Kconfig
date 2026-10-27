@@ -247,39 +247,93 @@ config DEFAULT_CONSOLE
 	help
 	  默认控制台设备名称。
 
+config LOG_BUFFERED
+	bool "Buffer complete log records"
+	depends on !(ARCH_ARM64 && BOARD_QEMU_VIRT)
+	default y
+	help
+	  使用固定大小的记录队列吸收串口突发输出。
+	  ARM64 QEMU virt 当前只有 PL011 轮询端口，尚不支持后台排空。
+
 config LOG_FIFO_BUF_SIZE
 	int "Log FIFO buffer size"
+	depends on LOG_BUFFERED
 	default 512
-	range 128 4096
+	range 128 65536
 	help
-	  日志 FIFO 缓冲区大小（字节）。
+	  日志记录队列大小（字节），必须是 2 的幂。
 
-config CONSOLE_FIFO_BUF_SIZE
-	int "Console FIFO buffer size"
+config LOG_MESSAGE_SIZE
+	int "Maximum formatted log message size"
+	default 128 if BOARD_WL_001
+	default 256 if ARCH_ARM
 	default 512
-	range 128 4096
+	range 64 4096
 	help
-	  控制台 FIFO 缓冲区大小（字节）。
+	  每次日志调用使用的格式化空间（字节，包含结尾 NUL）。
+
+config LOG_COMPILE_LEVEL
+	int "Compile-time minimum log severity"
+	default 0
+	range 0 6
+	help
+	  低于该级别的日志在编译时移除，参数也不会求值。
+	  0=ALL, 1=DEBUG, 2=INFO, 3=WARNING, 4=ERROR, 5=FATAL, 6=OFF。
 
 config DEFAULT_LOG_LEVEL
 	int "Default log level"
 	default 0
-	range 0 7
+	range 0 6
 	help
-	  默认日志级别：
-	  0 = EMERG, 1 = ALERT, 2 = CRIT, 3 = ERR,
-	  4 = WARNING, 5 = NOTICE, 6 = INFO, 7 = DEBUG
+	  最低输出严重性（包含该级别）。
+	  0=ALL, 1=DEBUG, 2=INFO, 3=WARNING, 4=ERROR, 5=FATAL, 6=OFF。
 
 endmenu
 
-# Shell 配置
+# 终端和 Shell 配置
+menu "Terminal"
+
+config TTY
+	bool "Raw TTY support"
+	default y
+	help
+	  启用可裁剪的原始终端字节流；行编辑由 Shell 或上层服务负责。
+
+config TTY_CANONICAL
+	bool "Canonical TTY input and echo"
+	depends on TTY
+	default n
+	help
+	  可选的行缓冲、退格、回显和回车转换；默认仍为 raw 模式。
+
+config TTY_LINE_SIZE
+	int "Canonical TTY line buffer size"
+	depends on TTY_CANONICAL
+	default 128
+	range 8 4096
+
+endmenu
+
 menu "Shell"
 
 config SHELL
 	bool "Enable shell"
+	depends on TTY
 	default n
 	help
 	  启用交互式 Shell 命令行界面。
+
+config SHELL_STACK_SIZE
+	int "Shell task stack size"
+	depends on SHELL
+	default 8192
+	range 1024 65536
+
+config SHELL_OUTPUT_SIZE
+	int "Shell formatted output size"
+	depends on SHELL
+	default 256
+	range 64 4096
 
 endmenu
 

@@ -10,7 +10,7 @@
 #define __NOS_INIT_H__
 
 #include <asm/init.h>
-#include <board/init.h>
+#include <kernel/board.h>
 #include <kernel/section.h>
 
 typedef struct {

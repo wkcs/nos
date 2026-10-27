@@ -67,14 +67,20 @@ struct nshell {
 
 // Helper for shell output to avoid log tags
 static int shell_printf(const char *fmt, ...) {
-  char buf[1024];
+  char buf[CONFIG_SHELL_OUTPUT_SIZE];
   va_list args;
   int len;
 
   va_start(args, fmt);
-  len = vsprintf(buf, fmt, args);
+  len = vsnprintf(buf, sizeof(buf), fmt, args);
   va_end(args);
 
+  if (len < 0) {
+    return len;
+  }
+  if ((size_t)len >= sizeof(buf)) {
+    len = sizeof(buf) - 1;
+  }
   return console_write(buf, len);
 }
 
@@ -219,11 +225,17 @@ static int cmd_help(int argc, char *argv[]) {
 
 static int cmd_log(int argc, char *argv[]) {
   if (argc < 2) {
-    shell_printf("Usage: log <on|off>\r\n");
+    shell_printf("Usage: log <on|off|stats>\r\n");
     return 0;
   }
 
-  if (strcmp(argv[1], "on") == 0) {
+  if (strcmp(argv[1], "stats") == 0) {
+    struct kernel_log_stats stats;
+
+    kernel_log_get_stats(&stats);
+    shell_printf("log: dropped=%u truncated=%u high_water=%u\r\n",
+                 stats.dropped_records, stats.truncated_records, stats.high_water);
+  } else if (strcmp(argv[1], "on") == 0) {
     set_log_enabled(true);
     shell_printf("Kernel log enabled\r\n");
   } else if (strcmp(argv[1], "off") == 0) {
@@ -747,7 +759,7 @@ static int nshell_init(void)
     }
 
     shell->task = task_create("nshell",
-        nshell_task_entry, shell, 5, 8192, 10, NULL); // Increased stack size
+        nshell_task_entry, shell, 5, CONFIG_SHELL_STACK_SIZE, 10, NULL);
     if (shell->task == NULL) {
         pr_fatal("creat nshell task err\r\n");
 

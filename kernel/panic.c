@@ -7,6 +7,7 @@
  */
 
 #include <kernel/cpu.h>
+#include <kernel/console.h>
 #include <kernel/irq.h>
 #include <kernel/kernel.h>
 #include <kernel/printk.h>
@@ -19,16 +20,18 @@ void panic(const char *fmt, ...) {
   va_list args;
 
   disable_irq_save();
-  pr_fatal("Kernel panic - not syncing: ");
+  (void)console_panic_begin();
+  kernel_log_panic_flush();
+  console_write("Kernel panic - not syncing: ", 28);
   va_start(args, fmt);
   vprintk(fmt, args);
   va_end(args);
-  pr_fatal("\r\n");
+  console_write("\r\n", 2);
 
   dump_stack();
 
   /* 触发一个硬故障，进入cpu_hard_fault进行处理 */
-  __asm__ volatile("udf #0");
+  __builtin_trap();
 
   while (1)
     ;

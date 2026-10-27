@@ -18,6 +18,7 @@
 #include <stdarg.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <limits.h>
 
 #include <kernel/kernel.h>
 #include <kernel/console.h>
@@ -233,8 +234,15 @@ _ssize_t _write_r(struct _reent *r, int fd, const void *buf, size_t cnt)
     }
 
     if (fd == 1 || fd == 2) {
-        int rc = console_write((const char *)buf, (int)cnt);
-        return (rc < 0) ? (_ssize_t)cnt : (_ssize_t)cnt;
+        int rc = console_write((const char *)buf, cnt > INT_MAX ? INT_MAX : (int)cnt);
+        if (rc < 0) {
+            if (r != NULL) {
+                r->_errno = -rc;
+            }
+            errno = -rc;
+            return -1;
+        }
+        return (_ssize_t)rc;
     }
 
 #ifdef CONFIG_FS
@@ -278,11 +286,15 @@ _ssize_t _read_r(struct _reent *r, int fd, void *buf, size_t cnt)
 
     if (fd == 0) {
         char *dst = (char *)buf;
-        char ch = console_getc();
-        if (ch == 0) {
-            return 0;
+        int ch = console_getc();
+        if (ch < 0) {
+            if (r != NULL) {
+                r->_errno = -ch;
+            }
+            errno = -ch;
+            return -1;
         }
-        dst[0] = ch;
+        dst[0] = (char)ch;
         return 1;
     }
 

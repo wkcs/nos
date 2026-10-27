@@ -8,7 +8,7 @@
 
 #include <kernel/boot.h>
 #include <kernel/kernel.h>
-#include <board/boot.h>
+#include <kernel/board.h>
 
 int write_boot_flag(u32 flag)
 {

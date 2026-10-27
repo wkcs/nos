@@ -9,9 +9,11 @@
 #include <kernel/console.h>
 #include <kernel/kernel.h>
 #include <kernel/errno.h>
+#include <limits.h>
 #include <string.h>
 
 static struct console *g_console;
+static bool g_console_panic;
 
 extern addr_t __console_data_start;
 extern addr_t __console_data_end;
@@ -76,6 +78,9 @@ int console_init(void)
     if (console == NULL) {
         return -ENODEV;
     }
+    if (console->ops == NULL || console->ops->init == NULL) {
+        return -ENOSYS;
+    }
 
     rc = console->ops->init();
     if (rc < 0) {
@@ -98,21 +103,95 @@ int console_write(const char buf[], int len)
         return -EINVAL;
     }
 
+    if (g_console->ops == NULL || g_console->ops->write == NULL) {
+        return -ENOSYS;
+    }
+    if (console_is_panic() && g_console->ops->panic_write != NULL) {
+        return g_console->ops->panic_write(buf, len);
+    }
     return g_console->ops->write(buf, len);
+}
+
+int console_write_record(const char buf[], int len)
+{
+    if (g_console == NULL) {
+        return -ENODEV;
+    }
+    if (buf == NULL || len < 0) {
+        return -EINVAL;
+    }
+    if (g_console->ops == NULL) {
+        return -ENOSYS;
+    }
+    if (console_is_panic()) {
+        return console_write(buf, len);
+    }
+    if (g_console->ops->write_record != NULL) {
+        return g_console->ops->write_record(buf, len);
+    }
+    return -ENOSYS;
+}
+
+int console_write_room(void)
+{
+    if (g_console == NULL) {
+        return -ENODEV;
+    }
+    if (g_console->ops == NULL || g_console->ops->write_room == NULL) {
+        return -ENOSYS;
+    }
+    return g_console->ops->write_room();
+}
+
+int console_write_recordv(const char *first, unsigned int first_len,
+                          const char *second, unsigned int second_len)
+{
+    if (g_console == NULL) {
+        return -ENODEV;
+    }
+    if ((first == NULL && first_len != 0) || (second == NULL && second_len != 0) ||
+        first_len > UINT_MAX - second_len || first_len + second_len > INT_MAX) {
+        return -EINVAL;
+    }
+    if (g_console->ops == NULL || g_console->ops->write_recordv == NULL) {
+        return -ENOSYS;
+    }
+    return g_console->ops->write_recordv(first, first_len, second, second_len);
+}
+
+int console_panic_begin(void)
+{
+    if (g_console == NULL) {
+        return -ENODEV;
+    }
+    __atomic_store_n(&g_console_panic, true, __ATOMIC_RELAXED);
+    if (g_console->ops == NULL || g_console->ops->panic_begin == NULL) {
+        return -ENOSYS;
+    }
+    return g_console->ops->panic_begin();
+}
+
+bool console_is_panic(void)
+{
+    return __atomic_load_n(&g_console_panic, __ATOMIC_RELAXED);
 }
 
 void console_send_log(void)
 {
-    if (g_console == NULL) {
+    if (g_console == NULL || g_console->ops == NULL ||
+        g_console->ops->send_log == NULL) {
         return;
     }
-    return g_console->ops->send_log();
+    g_console->ops->send_log();
 }
 
-char console_getc(void)
+int console_getc(void)
 {
     if (g_console == NULL) {
-        return 0;
+        return -ENODEV;
+    }
+    if (g_console->ops == NULL || g_console->ops->getc == NULL) {
+        return -ENOSYS;
     }
     return g_console->ops->getc();
 }
@@ -121,6 +200,9 @@ int console_putc(char c)
 {
     if (g_console == NULL) {
         return -ENODEV;
+    }
+    if (g_console->ops == NULL || g_console->ops->putc == NULL) {
+        return -ENOSYS;
     }
     return g_console->ops->putc(c);
 }
