@@ -8,11 +8,9 @@ if("${CONFIG_BOARD}" STREQUAL "nk60-v2")
         ${BOARD_DIR}/board_config.c
         ${BOARD_DIR}/board_mm.c
         ${BOARD_DIR}/arch_dma.c
-        ${BOARD_DIR}/arch_uart.c
         ${BOARD_DIR}/arch_clk.c
         ${BOARD_DIR}/arch_irq.c
         ${BOARD_DIR}/arch_gpio.c
-        ${BOARD_DIR}/arch_console.c
         ${BOARD_DIR}/arch_boot.c
     )
     list(APPEND BOARD_PRIVATE_INCLUDES
@@ -33,11 +31,9 @@ elseif("${CONFIG_BOARD}" STREQUAL "qemu-stm32")
         ${BOARD_DIR}/board_config.c
         ${BOARD_DIR}/board_mm.c
         ${BOARD_DIR}/arch_dma.c
-        ${BOARD_DIR}/arch_uart.c
         ${BOARD_DIR}/arch_clk.c
         ${BOARD_DIR}/arch_irq.c
         ${BOARD_DIR}/arch_gpio.c
-        ${BOARD_DIR}/arch_console.c
         ${BOARD_DIR}/arch_boot.c
     )
     list(APPEND BOARD_PRIVATE_INCLUDES
@@ -58,11 +54,9 @@ elseif("${CONFIG_BOARD}" STREQUAL "wl-001" OR "${CONFIG_BOARD}" STREQUAL "zj-v3"
         ${BOARD_DIR}/board_config.c
         ${BOARD_DIR}/board_mm.c
         ${BOARD_DIR}/arch_dma.c
-        ${BOARD_DIR}/arch_uart.c
         ${BOARD_DIR}/arch_clk.c
         ${BOARD_DIR}/arch_irq.c
         ${BOARD_DIR}/arch_gpio.c
-        ${BOARD_DIR}/arch_console.c
         ${BOARD_DIR}/arch_boot.c
     )
     list(APPEND BOARD_PRIVATE_INCLUDES
@@ -77,6 +71,8 @@ elseif("${CONFIG_BOARD}" STREQUAL "wl-001" OR "${CONFIG_BOARD}" STREQUAL "zj-v3"
             ${BOARD_DIR}/usb/stm32f1xx_ll_usb.c
         )
     endif()
+elseif("${CONFIG_BOARD}" STREQUAL "qemu-virt" AND CONFIG_ARCH_ARM64)
+    list(APPEND BOARD_SRCS ${BOARD_DIR}/init.c)
 endif()
 
 if(BOARD_SRCS)

@@ -28,5 +28,6 @@ int kfifo_init(struct kfifo *fifo, void *buffer, unsigned int size, size_t esize
 unsigned int kfifo_in(struct kfifo *fifo, const void *buf, unsigned int len);
 unsigned int kfifo_out_peek(struct kfifo *fifo, void *buf, unsigned int len);
 unsigned int kfifo_out(struct kfifo *fifo, void *buf, unsigned int len);
+unsigned int kfifo_skip(struct kfifo *fifo, unsigned int len);
 
 #endif /* __KFIFO_H__ */

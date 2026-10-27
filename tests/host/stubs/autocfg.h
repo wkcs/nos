@@ -1,0 +1,1 @@
+/* Host tests provide configuration symbols through compiler flags. */

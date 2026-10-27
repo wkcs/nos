@@ -52,13 +52,21 @@ do {                                     \
 #define __LOCK(rlock) \
   do { sch_lock(); ___LOCK(rlock); } while (0)
 #define __LOCK_IRQ(lock) \
-  do { (lock)->irq_level = disable_irq_save(); __LOCK(&(lock)->rlock); } while (0)
+  do { \
+      addr_t __saved_irq_level = disable_irq_save(); \
+      __LOCK(&(lock)->rlock); \
+      (lock)->irq_level = __saved_irq_level; \
+  } while (0)
 #define ___UNLOCK(rlock) \
   do { arch_spin_unlock(&(rlock)->raw_lock); __release(rlock); } while (0)
 #define __UNLOCK(rlock) \
   do { ___UNLOCK(rlock); sch_unlock(); } while (0)
 #define __UNLOCK_IRQ(lock) \
-  do { __UNLOCK(&(lock)->rlock); enable_irq_save((lock)->irq_level); } while (0)
+  do { \
+      addr_t __saved_irq_level = (lock)->irq_level; \
+      __UNLOCK(&(lock)->rlock); \
+      enable_irq_save(__saved_irq_level); \
+  } while (0)
 
 #define _raw_spin_lock(rlock) __LOCK(rlock)
 #define raw_spin_lock(rlock) _raw_spin_lock(rlock)

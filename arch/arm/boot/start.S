@@ -6,6 +6,8 @@
  * Email: hqh2030@gmail.com, huqihan@live.com
  */
 
+#include <autocfg.h>
+
   .syntax unified
   .cpu cortex-m4
   .fpu softvfp
@@ -135,7 +137,11 @@ g_pfnVectors:
   .word     DMA1_Stream0_IRQHandler           /* DMA1 Stream 0                */
   .word     DMA1_Stream1_IRQHandler           /* DMA1 Stream 1                */
   .word     DMA1_Stream2_IRQHandler           /* DMA1 Stream 2                */
+#ifdef CONFIG_SOC_STM32F1
+  .word     DMA1_Channel4_IRQHandler          /* USART1 TX DMA                */
+#else
   .word     DMA1_Stream3_IRQHandler           /* DMA1 Stream 3                */
+#endif
   .word     DMA1_Stream4_IRQHandler           /* DMA1 Stream 4                */
   .word     DMA1_Stream5_IRQHandler           /* DMA1 Stream 5                */
   .word     DMA1_Stream6_IRQHandler           /* DMA1 Stream 6                */
@@ -285,6 +291,9 @@ g_pfnVectors:
 
    .weak      DMA1_Stream3_IRQHandler
    .thumb_set DMA1_Stream3_IRQHandler,Default_Handler
+
+   .weak      DMA1_Channel4_IRQHandler
+   .thumb_set DMA1_Channel4_IRQHandler,Default_Handler
 
    .weak      DMA1_Stream4_IRQHandler
    .thumb_set DMA1_Stream4_IRQHandler,Default_Handler

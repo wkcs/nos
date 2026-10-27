@@ -31,8 +31,6 @@ struct uart_config_t {
     USART_InitTypeDef init_type;
 };
 
-int uart_config(struct uart_config_t *config);
-int usart_send(const char *ptr, int len);
 #endif
 
 

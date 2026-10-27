@@ -32,9 +32,11 @@ void nos_print_kernel_info(void) {
 #include <fs/vfs.h>
 
 int nos_start(void) {
+  kernel_log_init();
   arch_early_init();
   board_early_init();
   cpu_init();
+  kernel_log_clock_ready();
   arch_init();
   board_init();
 
@@ -45,7 +47,7 @@ int nos_start(void) {
    */
   sys_init_run(INIT_LEVEL_PRE_KERNEL_1);
   console_init();
-  kernel_log_init();
+  kernel_log_flush();
   nos_print_kernel_info();
 
   mm_node_early_init();

@@ -166,3 +166,15 @@ unsigned int kfifo_out(struct kfifo *fifo, void *buf, unsigned int len)
     fifo->out += len;
     return len;
 }
+
+unsigned int kfifo_skip(struct kfifo *fifo, unsigned int len)
+{
+    unsigned int used = kfifo_used(fifo);
+
+    if (len > used) {
+        len = used;
+    }
+    smp_wmb();
+    fifo->out += len;
+    return len;
+}
