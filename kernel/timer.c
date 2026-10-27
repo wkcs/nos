@@ -113,16 +113,16 @@ int timer_start(struct timer *timer, u32 tick)
         return rc;
     }
     spin_lock_irq(&timer->lock);
-    if (U64_MAX - cpu_run_ticks() >= timer->init_tick) {
-        timer->timeout_tick = cpu_run_ticks() + timer->init_tick;
-    } else {
-        timer->timeout_tick = timer->init_tick - (U64_MAX - cpu_run_ticks());
-    }
     run_times = cpu_run_time_us();
     if (run_times - sys_heartbeat_time > (CONFIG_SYS_TICK_MS * 500)) {
         timer->init_tick = tick;
     } else {
         timer->init_tick = tick + 1;
+    }
+    if (U64_MAX - cpu_run_ticks() >= timer->init_tick) {
+        timer->timeout_tick = cpu_run_ticks() + timer->init_tick;
+    } else {
+        timer->timeout_tick = timer->init_tick - (U64_MAX - cpu_run_ticks());
     }
     timer->timeout = false;
 

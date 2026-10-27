@@ -5,20 +5,34 @@
  */
 
 #include <nos/nlk_caps.h>
+#if !defined(NLK_HOST_TEST) && __has_include(<kernel/irq.h>)
+#include <kernel/types.h>
+#include <kernel/irq.h>
+#define NLK_SHELL_LOCK()        disable_irq_save()
+#define NLK_SHELL_UNLOCK(f)     enable_irq_save(f)
+#else
+#define NLK_SHELL_LOCK()        (0UL)
+#define NLK_SHELL_UNLOCK(f)     ((void)(f))
+#endif
 #include <uapi/nos/errno.h>
 #include <string.h>
+
+static struct nlk_shell_ctx *g_default_shell_ctx;
 
 static int nlk_shell_tty_read(void *context, unsigned char *buf,
                               unsigned int len, bool wait)
 {
     struct nlk_shell_ctx *ctx = (struct nlk_shell_ctx *)context;
     unsigned int copied = 0U;
+    unsigned long irq_flags;
 
     (void)wait;
     if (ctx == NULL || buf == NULL || len == 0U) {
         return -EINVAL;
     }
+    irq_flags = NLK_SHELL_LOCK();
     if (ctx->rx_count == 0U) {
+        NLK_SHELL_UNLOCK(irq_flags);
         return -EAGAIN;
     }
     while (copied < len && ctx->rx_count > 0U) {
@@ -26,6 +40,7 @@ static int nlk_shell_tty_read(void *context, unsigned char *buf,
         ctx->rx_tail = (uint16_t)((ctx->rx_tail + 1U) % CONFIG_NLK_SHELL_RX_BUF_SIZE);
         ctx->rx_count--;
     }
+    NLK_SHELL_UNLOCK(irq_flags);
     return (int)copied;
 }
 
@@ -92,6 +107,7 @@ static int cap_shell_on_rpc(struct nlk_node *node, struct nlk_capability *cap,
             ctx->rx_credit = CONFIG_NLK_SHELL_RX_BUF_SIZE;
         }
         ctx->session_open = true;
+        ctx->prompt_pending = true;
         ctx->client_addr = hdr->src_addr;
         ctx->client_cap = hdr->dst_cap;
         return 0;
@@ -99,6 +115,7 @@ static int cap_shell_on_rpc(struct nlk_node *node, struct nlk_capability *cap,
 
     case NLK_SHELL_OP_CLOSE:
         ctx->session_open = false;
+        ctx->prompt_pending = false;
         return 0;
 
     case NLK_SHELL_OP_SIGNAL:
@@ -107,12 +124,14 @@ static int cap_shell_on_rpc(struct nlk_node *node, struct nlk_capability *cap,
         }
         ctx->last_signal = *(const uint8_t *)req;
         if (ctx->last_signal == NLK_SHELL_SIG_INT) {
+            unsigned long irq_flags = NLK_SHELL_LOCK();
             /* Inject Ctrl+C (0x03) into shell RX stream */
             if (ctx->rx_count < CONFIG_NLK_SHELL_RX_BUF_SIZE) {
                 ctx->rx_buf[ctx->rx_head] = 0x03U;
                 ctx->rx_head = (uint16_t)((ctx->rx_head + 1U) % CONFIG_NLK_SHELL_RX_BUF_SIZE);
                 ctx->rx_count++;
             }
+            NLK_SHELL_UNLOCK(irq_flags);
         }
         return 0;
 
@@ -143,14 +162,17 @@ static int cap_shell_on_stream(struct nlk_node *node, struct nlk_capability *cap
 
     if (hdr->cmd_op == NLK_SHELL_STREAM_STDIN ||
         hdr->cmd_op == NLK_SHELL_STREAM_STDOUT) {
+        unsigned long irq_flags = NLK_SHELL_LOCK();
         for (i = 0U; i < len; i++) {
             if (ctx->rx_count >= CONFIG_NLK_SHELL_RX_BUF_SIZE) {
+                NLK_SHELL_UNLOCK(irq_flags);
                 return -ENOSPC;
             }
             ctx->rx_buf[ctx->rx_head] = bytes[i];
             ctx->rx_head = (uint16_t)((ctx->rx_head + 1U) % CONFIG_NLK_SHELL_RX_BUF_SIZE);
             ctx->rx_count++;
         }
+        NLK_SHELL_UNLOCK(irq_flags);
         return (int)len;
     }
 
@@ -189,10 +211,16 @@ int nlk_cap_shell_init(struct nlk_node *node, struct nlk_shell_ctx *ctx)
     ctx->cap.ops = &g_shell_ops;
     ctx->cap.priv = ctx;
 
+    g_default_shell_ctx = ctx;
     return nlk_node_register_cap(node, &ctx->cap);
 }
 
 struct nos_tty *nlk_cap_shell_tty(struct nlk_shell_ctx *ctx)
 {
     return (ctx != NULL) ? &ctx->tty : NULL;
+}
+
+struct nlk_shell_ctx *nlk_cap_shell_default_ctx(void)
+{
+    return g_default_shell_ctx;
 }

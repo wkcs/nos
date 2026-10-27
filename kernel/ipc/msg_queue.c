@@ -63,6 +63,7 @@ static int msg_free(msg_t *msg)
 int msg_q_send(struct msg_queue *msg_q, const char *buf, int size)
 {
     msg_t *msg;
+    bool need_resched = false;
 
     if (msg_q == NULL) {
         pr_err("msg_q is NULL\r\n");
@@ -82,10 +83,13 @@ int msg_q_send(struct msg_queue *msg_q, const char *buf, int size)
 
     spin_lock_irq(&msg_q->lock);
     list_add_tail(&msg->list, &msg_q->msg_list);
-    spin_unlock_irq(&msg_q->lock);
-
     if (msg_q->owner != NULL && msg_q->owner->status == TASK_WAIT) {
         task_resume(msg_q->owner);
+        need_resched = true;
+    }
+    spin_unlock_irq(&msg_q->lock);
+
+    if (need_resched) {
         switch_task();
     }
 
@@ -135,8 +139,10 @@ int msg_q_recv(struct msg_queue *msg_q, char *buf, int size)
     }
     spin_lock_irq(&msg_q->lock);
     if (list_empty(&msg_q->msg_list)) {
+        spin_lock_irq(&task->lock);
+        rc = task_hang_lock(task);
+        spin_unlock_irq(&task->lock);
         spin_unlock_irq(&msg_q->lock);
-        rc = task_hang(task);
         if (rc < 0) {
             pr_err("%s task hang error, rc=%d\r\n", task->name, rc);
             return rc;
@@ -190,16 +196,17 @@ int msg_q_recv_timeout(struct msg_queue *msg_q, char *buf, int size, u32 tick)
 
     spin_lock_irq(&msg_q->lock);
     if (list_empty(&msg_q->msg_list)) {
-        spin_unlock_irq(&msg_q->lock);
         spin_lock_irq(&task->lock);
         rc = task_hang_lock(task);
         if (rc < 0) {
             spin_unlock_irq(&task->lock);
+            spin_unlock_irq(&msg_q->lock);
             pr_err("%s task hang error, rc=%d\r\n", task->name, rc);
             return rc;
         }
         timer_start(&task->timer, tick);
         spin_unlock_irq(&task->lock);
+        spin_unlock_irq(&msg_q->lock);
         switch_task();
     } else {
         spin_unlock_irq(&msg_q->lock);

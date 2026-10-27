@@ -326,7 +326,7 @@ config SHELL
 config SHELL_STACK_SIZE
 	int "Shell task stack size"
 	depends on SHELL
-	default 8192
+	default 2048
 	range 1024 65536
 
 config SHELL_OUTPUT_SIZE

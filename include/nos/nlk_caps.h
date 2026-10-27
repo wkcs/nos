@@ -50,12 +50,21 @@ int nlk_cap_fw_update_set_partitions(struct nlk_fw_update_ctx *ctx,
                                      const uint32_t *part_max_sizes);
 
 /* 0x0002: Kernel Log Capability */
+#ifndef CONFIG_NLK_LOG_TAP_BUF_SIZE
+#define CONFIG_NLK_LOG_TAP_BUF_SIZE     1024U
+#endif
+
 struct nlk_log_ctx {
     bool                  subscribed;
+    bool                  flushing;
     uint8_t               min_level;
     uint8_t               subscriber_cap;
     uint16_t              flush_interval_ms;
     nlk_addr_t            subscriber_addr;
+    uint16_t              tap_head;
+    uint16_t              tap_tail;
+    uint16_t              tap_used;
+    uint8_t               tap_buf[CONFIG_NLK_LOG_TAP_BUF_SIZE];
     struct nlk_node      *node;
     struct nlk_capability cap;
 };
@@ -70,6 +79,7 @@ int nlk_cap_log_flush_pending(struct nlk_log_ctx *ctx);
 
 struct nlk_shell_ctx {
     bool                  session_open;
+    bool                  prompt_pending;
     nlk_addr_t            client_addr;
     uint8_t               client_cap;
     uint16_t              cols;
@@ -87,6 +97,7 @@ struct nlk_shell_ctx {
 
 int nlk_cap_shell_init(struct nlk_node *node, struct nlk_shell_ctx *ctx);
 struct nos_tty *nlk_cap_shell_tty(struct nlk_shell_ctx *ctx);
+struct nlk_shell_ctx *nlk_cap_shell_default_ctx(void);
 
 /* 0x0100: Keyboard (Multi-Form-Factor, 6KRO/NKRO, Analog/RT & Integrated Lighting) */
 #define NLK_KB_MAX_LAYERS           4U

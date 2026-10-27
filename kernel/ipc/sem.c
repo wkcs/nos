@@ -31,7 +31,7 @@ int sem_init(sem_t *sem, uint8_t num)
     return 0;
 }
 
-static void __sem_get(struct task_struct *task, sem_t *sem)
+static void __sem_get_locked(struct task_struct *task, sem_t *sem)
 {
     struct task_struct *task_temp;
 
@@ -40,7 +40,6 @@ static void __sem_get(struct task_struct *task, sem_t *sem)
         return;
     }
 
-    spin_lock_irq(&sem->lock);
     list_for_each_entry (task_temp, &sem->wait_list, list) {
         if (task->current_priority < task_temp->current_priority) {
             break;
@@ -48,7 +47,6 @@ static void __sem_get(struct task_struct *task, sem_t *sem)
     }
     list_add_tail(&task->list, &task_temp->list);
     task->list_lock = &sem->lock;
-    spin_unlock_irq(&sem->lock);
 }
 
 void sem_get(sem_t *sem)
@@ -62,18 +60,23 @@ void sem_get(sem_t *sem)
         return;
     }
 
+    spin_lock_irq(&task->lock);
+    spin_lock_irq(&sem->lock);
     if (sem->count > 0) {
         sem->count--;
+        spin_unlock_irq(&sem->lock);
+        spin_unlock_irq(&task->lock);
         return;
     }
-    spin_lock_irq(&task->lock);
     rc = task_hang_lock(task);
     if (rc < 0) {
+        spin_unlock_irq(&sem->lock);
         spin_unlock_irq(&task->lock);
         pr_err("%s task hang error, rc=%d\r\n", task->name, rc);
         return;
     }
-    __sem_get(task, sem);
+    __sem_get_locked(task, sem);
+    spin_unlock_irq(&sem->lock);
     spin_unlock_irq(&task->lock);
     switch_task();
 }
@@ -89,19 +92,24 @@ int sem_get_timeout(sem_t *sem, uint32_t tick)
         return -EINVAL;
     }
 
+    spin_lock_irq(&task->lock);
+    spin_lock_irq(&sem->lock);
     if (sem->count > 0) {
         sem->count--;
+        spin_unlock_irq(&sem->lock);
+        spin_unlock_irq(&task->lock);
         return 0;
     }
 
-    spin_lock_irq(&task->lock);
     rc = task_hang_lock(task);
     if (rc < 0) {
+        spin_unlock_irq(&sem->lock);
         spin_unlock_irq(&task->lock);
         pr_err("%s task hang error, rc=%d\r\n", task->name, rc);
         return rc;
     }
-    __sem_get(task, sem);
+    __sem_get_locked(task, sem);
+    spin_unlock_irq(&sem->lock);
     if (tick == 0) {
         spin_unlock_irq(&task->lock);
         switch_task();
@@ -141,7 +149,11 @@ void sem_send(sem_t *sem, uint8_t num)
             }
         }
     }
-    sem->count += num;
+    if ((uint32_t)sem->count + num > 0xFFU) {
+        sem->count = 0xFFU;
+    } else {
+        sem->count += num;
+    }
     spin_unlock_irq(&sem->lock);
 
     if (!list_empty(&tmp_list)) {

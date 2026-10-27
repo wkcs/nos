@@ -28,6 +28,8 @@ static unsigned char log_buf[CONFIG_LOG_FIFO_BUF_SIZE];
 static SPINLOCK(log_buf_lock);
 #endif
 static struct kernel_log_stats g_log_stats;
+static kernel_log_observer_fn g_log_observer;
+static void *g_log_observer_priv;
 
 #ifdef CONFIG_LOG_BUFFERED
 static addr_t log_lock(void)
@@ -57,6 +59,12 @@ void kernel_log_init(void)
 #ifdef CONFIG_LOG_BUFFERED
     (void)kfifo_init(&g_log_fifo, log_buf, sizeof(log_buf), 1);
 #endif
+}
+
+void kernel_log_set_observer(kernel_log_observer_fn fn, void *priv)
+{
+    g_log_observer_priv = priv;
+    __atomic_store_n(&g_log_observer, fn, __ATOMIC_RELAXED);
 }
 
 void kernel_log_record_truncated(void)
@@ -164,6 +172,13 @@ void kernel_log_flush(void)
         if (written != record.length) {
             log_unlock(irq_flags);
             return;
+        }
+        {
+            kernel_log_observer_fn obs = __atomic_load_n(&g_log_observer, __ATOMIC_RELAXED);
+            if (obs != NULL) {
+                obs(&record, data + offset, first_len,
+                    data, record.length - first_len, g_log_observer_priv);
+            }
         }
         (void)kfifo_skip(&g_log_fifo, sizeof(record) + record.length);
         log_unlock(irq_flags);
