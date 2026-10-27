@@ -29,4 +29,16 @@ enum nos_cap_type {
 #define NOS_CAP_RIGHT_GRANT     (1U << 5)
 #define NOS_CAP_RIGHT_MANAGE    (1U << 6)
 
+#define NOS_CAP_RIGHT_ALL       0x7FU
+
+/* Capability control operations for SYS_NOS_CAP_CONTROL */
+#define NOS_CAP_OP_DERIVE       1U
+#define NOS_CAP_OP_REVOKE       2U
+#define NOS_CAP_OP_INSPECT      3U
+
+/* IRQ control operations for SYS_NOS_IRQ_CONTROL */
+#define NOS_IRQ_OP_BIND         1U
+#define NOS_IRQ_OP_UNBIND       2U
+#define NOS_IRQ_OP_ACK          3U
+
 #endif /* __NOS_UAPI_CAP_H__ */

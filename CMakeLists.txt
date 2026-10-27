@@ -18,8 +18,8 @@ include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/helpers.cmake")
 add_library(nos_headers INTERFACE)
 
 set(_NOS_INCLUDE_DIRS
-    "${CMAKE_CURRENT_SOURCE_DIR}/include/uapi"
     "${CMAKE_CURRENT_SOURCE_DIR}/include"
+    "${CMAKE_CURRENT_SOURCE_DIR}/user/include"
     "${CMAKE_CURRENT_SOURCE_DIR}/arch/${CONFIG_ARCH}/include"
     "${CMAKE_CURRENT_BINARY_DIR}/include"
     "${CMAKE_CURRENT_SOURCE_DIR}/app/lua/lib"
@@ -63,6 +63,7 @@ add_subdirectory(board)
 add_subdirectory(kernel)
 add_subdirectory(libs)
 add_subdirectory(libc)
+add_subdirectory(user)
 add_subdirectory(drivers)
 add_subdirectory(fs)
 add_subdirectory(app)
@@ -73,6 +74,7 @@ set(NOS_OBJECT_LIBS
     $<TARGET_OBJECTS:nos_kernel>
     $<TARGET_OBJECTS:nos_libs>
     $<TARGET_OBJECTS:nos_libc>
+    $<TARGET_OBJECTS:nos_user>
     $<TARGET_OBJECTS:nos_drivers>
     $<TARGET_OBJECTS:nos_fs>
 )

@@ -15,6 +15,8 @@
 #include <kernel/spinlock.h>
 #include <kernel/timer.h>
 #include <asm/task.h>
+#include <uapi/nos/ipc.h>
+#include <nos/cap.h>
 
 enum task_status {
     TASK_RUNING = 0x01,
@@ -63,6 +65,13 @@ struct task_struct {
     u32 sys_cycle;
     u32 save_run_time;
     u32 save_sys_cycle;
+
+    /* Microkernel Capability Table & Synchronous/Async IPC State */
+    struct nos_cap_table cap_table;
+    struct nos_ipc_msg   ipc_msg;
+    struct task_struct  *ipc_partner;
+    uint8_t              ipc_state;
+    uint64_t             notify_bits;
 };
 
 struct task_struct *task_current(void);

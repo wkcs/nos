@@ -10,9 +10,13 @@ set(KERNEL_SRCS
     mm/mm_page.c
     sched/sched.c
     task/task.c
+    cap/cap_table.c
     ipc/mutex.c
     ipc/sem.c
     ipc/msg_queue.c
+    ipc/endpoint.c
+    ipc/notification.c
+    syscall/syscall.c
     irq/irq.c
     kernel.c
     console.c
