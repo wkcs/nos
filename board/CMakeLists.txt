@@ -25,6 +25,11 @@ if("${CONFIG_BOARD}" STREQUAL "nk60-v2")
             ${BOARD_DIR}/usb/stm32f4xx_ll_usb.c
         )
     endif()
+    if(CONFIG_KEYBOARD)
+        list(APPEND BOARD_SRCS
+            ${BOARD_DIR}/nk60_keyboard.c
+        )
+    endif()
     if(CONFIG_NLK_SERVER OR CONFIG_NDK_SERVER)
         list(APPEND BOARD_SRCS
             ${BOARD_DIR}/nk60_nlk.c

@@ -46,11 +46,10 @@ static uint8_t kb_infer_form_factor(uint8_t key_count)
     return NLK_KB_FORM_ANSI_100;
 }
 
-static void kb_rebuild_hid_report(struct nlk_keyboard_ctx *ctx)
+static uint8_t kb_resolve_active_layer(const struct nlk_keyboard_ctx *ctx)
 {
     uint8_t layer = 0U;
     uint8_t i;
-    uint8_t key_slot = 0U;
 
     /* Check if FN / PN / MO3 layer shift key is held on base layer 0 */
     for (i = 0U; i < ctx->desc.key_count; i++) {
@@ -64,7 +63,7 @@ static void kb_rebuild_hid_report(struct nlk_keyboard_ctx *ctx)
                 layer = 1U;
                 break;
             }
-            if (base_kc == NLK_KC_PN) {
+            if (base_kc == NLK_KC_PN && layer == 0U) {
                 layer = 2U;
             }
         }
@@ -72,6 +71,21 @@ static void kb_rebuild_hid_report(struct nlk_keyboard_ctx *ctx)
     if (layer >= ctx->desc.layer_count) {
         layer = 0U;
     }
+    return layer;
+}
+
+static void kb_rebuild_hid_report(struct nlk_keyboard_ctx *ctx)
+{
+    uint8_t prev_keys[6];
+    uint8_t data_bck[6] = { 0 };
+    uint8_t data_new[6] = { 0 };
+    uint8_t bck_num = 0U;
+    uint8_t new_num = 0U;
+    uint8_t layer;
+    uint8_t i, n, m;
+
+    memcpy(prev_keys, ctx->last_report.keys, sizeof(prev_keys));
+    layer = kb_resolve_active_layer(ctx);
     ctx->active_layer = layer;
 
     memset(&ctx->last_report, 0, sizeof(ctx->last_report));
@@ -81,11 +95,22 @@ static void kb_rebuild_hid_report(struct nlk_keyboard_ctx *ctx)
 
     for (i = 0U; i < ctx->desc.key_count; i++) {
         uint8_t kc;
+        bool is_old;
 
         if (ctx->key_state[i] == 0U) {
+            ctx->active_code[i] = 0U;
             continue;
         }
-        kc = ctx->keymap[layer][i];
+        if (layer > 0U && ctx->keymap[layer][i] != 0U) {
+            kc = ctx->keymap[layer][i];
+            ctx->active_code[i] = kc;
+        } else if (ctx->active_code[i] != 0U) {
+            kc = ctx->active_code[i];
+        } else {
+            kc = ctx->keymap[layer][i];
+            ctx->active_code[i] = kc;
+        }
+
         if (kc == 0U || kc == NLK_KC_FN || kc == NLK_KC_PN || kc == NLK_KC_MO3) {
             continue;
         }
@@ -94,13 +119,44 @@ static void kb_rebuild_hid_report(struct nlk_keyboard_ctx *ctx)
             ctx->last_report.modifiers |= mod_bit;
             ctx->last_nkro.modifiers |= mod_bit;
         } else {
-            if (key_slot < sizeof(ctx->last_report.keys)) {
-                ctx->last_report.keys[key_slot++] = kc;
-            }
             if (kc < 128U) {
                 ctx->last_nkro.bitmap[kc >> 3U] |= (uint8_t)(1U << (kc & 0x07U));
             }
+            /* Preserve 6KRO rollover order of previously held keys */
+            is_old = false;
+            for (n = 0U; n < 6U; n++) {
+                if (prev_keys[n] != 0U && prev_keys[n] == kc) {
+                    is_old = true;
+                    for (m = 0U; m < bck_num; m++) {
+                        if (data_bck[m] == kc) {
+                            break;
+                        }
+                    }
+                    if (m == bck_num && bck_num < 6U) {
+                        data_bck[bck_num++] = kc;
+                    }
+                    break;
+                }
+            }
+            if (!is_old) {
+                for (m = 0U; m < new_num; m++) {
+                    if (data_new[m] == kc) {
+                        break;
+                    }
+                }
+                if (m == new_num && new_num < 6U) {
+                    data_new[new_num++] = kc;
+                }
+            }
         }
+    }
+
+    if (bck_num > 0U) {
+        memcpy(&ctx->last_report.keys[0], data_bck, bck_num);
+    }
+    if (new_num > 0U && bck_num < 6U) {
+        uint8_t copy_cnt = (uint8_t)((6U - bck_num < new_num) ? (6U - bck_num) : new_num);
+        memcpy(&ctx->last_report.keys[bck_num], data_new, copy_cnt);
     }
 
     if (ctx->report_cb != NULL) {
@@ -294,6 +350,9 @@ static int kb_on_event(struct nlk_node *node, struct nlk_capability *cap,
             uint16_t idx = (uint16_t)mod_offset + items[i].key_index;
             if (idx < ctx->desc.key_count) {
                 ctx->key_state[idx] = items[i].state;
+                if (items[i].state == 0U) {
+                    ctx->active_code[idx] = 0U;
+                }
                 if (items[i].key_code != 0U && ctx->keymap[0][idx] == 0U) {
                     ctx->keymap[0][idx] = items[i].key_code;
                 }
@@ -375,7 +434,7 @@ int nlk_cap_keyboard_init(struct nlk_node *node, struct nlk_keyboard_ctx *ctx,
                           uint8_t rows, uint8_t cols, uint8_t key_count,
                           nlk_kb_report_cb_t report_cb, void *priv)
 {
-    if (node == NULL || ctx == NULL || key_count > NLK_KB_MAX_KEYS) {
+    if (ctx == NULL || key_count > NLK_KB_MAX_KEYS) {
         return -EINVAL;
     }
     memset(ctx, 0, sizeof(*ctx));
@@ -421,6 +480,9 @@ int nlk_cap_keyboard_init(struct nlk_node *node, struct nlk_keyboard_ctx *ctx,
     ctx->cap.ops = &g_kb_ops;
     ctx->cap.priv = ctx;
 
+    if (node == NULL) {
+        return 0;
+    }
     return nlk_node_register_cap(node, &ctx->cap);
 }
 
@@ -434,6 +496,18 @@ int nlk_cap_keyboard_configure(struct nlk_keyboard_ctx *ctx,
     }
     ctx->desc = *desc;
     ctx->cap.sub_class = desc->form_factor;
+    return 0;
+}
+
+int nlk_cap_keyboard_set_action_cb(struct nlk_keyboard_ctx *ctx,
+                                   nlk_kb_action_cb_t action_cb,
+                                   void *priv)
+{
+    if (ctx == NULL) {
+        return -EINVAL;
+    }
+    ctx->action_cb = action_cb;
+    ctx->action_priv = priv;
     return 0;
 }
 
@@ -474,6 +548,59 @@ int nlk_cap_keyboard_load_layout(struct nlk_keyboard_ctx *ctx, uint8_t layer,
     if (actions != NULL) {
         memcpy(ctx->action_map[layer], actions, count);
     }
+    return 0;
+}
+
+int nlk_cap_keyboard_update_local_keys(struct nlk_keyboard_ctx *ctx,
+                                       const uint32_t *raw_bitmap,
+                                       uint8_t key_count)
+{
+    uint8_t limit;
+    uint8_t layer;
+    uint8_t i;
+
+    if (ctx == NULL || raw_bitmap == NULL) {
+        return -EINVAL;
+    }
+    limit = (key_count <= ctx->desc.key_count) ? key_count : ctx->desc.key_count;
+
+    /* First pass: update raw key_state for layer-shift keys so active_layer is current */
+    for (i = 0U; i < limit; i++) {
+        uint8_t pressed = (uint8_t)((raw_bitmap[i / 32U] >> (i % 32U)) & 0x01U);
+        uint8_t base_kc = ctx->keymap[0][i];
+        if (base_kc == NLK_KC_FN || base_kc == NLK_KC_PN || base_kc == NLK_KC_MO3) {
+            ctx->key_state[i] = pressed;
+        }
+    }
+    layer = kb_resolve_active_layer(ctx);
+
+    /* Second pass: process press/release transitions and fire key actions */
+    for (i = 0U; i < limit; i++) {
+        uint8_t pressed = (uint8_t)((raw_bitmap[i / 32U] >> (i % 32U)) & 0x01U);
+        uint8_t base_kc = ctx->keymap[0][i];
+        bool is_layer_key = (base_kc == NLK_KC_FN ||
+                             base_kc == NLK_KC_PN ||
+                             base_kc == NLK_KC_MO3);
+
+        if (pressed != 0U) {
+            if (ctx->key_state[i] == 0U || is_layer_key) {
+                uint8_t kc = is_layer_key ? base_kc : ctx->keymap[layer][i];
+                uint8_t act = is_layer_key ? ctx->action_map[0][i] : ctx->action_map[layer][i];
+                bool first_down = (ctx->key_state[i] == 0U && !is_layer_key);
+
+                ctx->key_state[i] = 1U;
+                ctx->active_code[i] = kc;
+                if (first_down && act != 0U && ctx->action_cb != NULL) {
+                    ctx->action_cb(layer, i, kc, act, ctx->action_priv);
+                }
+            }
+        } else {
+            ctx->key_state[i] = 0U;
+            ctx->active_code[i] = 0U;
+        }
+    }
+
+    kb_rebuild_hid_report(ctx);
     return 0;
 }
 

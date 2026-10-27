@@ -177,10 +177,10 @@ endmenu
 
 # 键盘驱动
 config KEYBOARD
-	bool "Keyboard support"
+	bool "Keyboard server support"
 	default n
 	help
-	  启用键盘驱动支持。
+	  启用键盘系统服务（负责按键扫描消抖、层切换、HID 上报及 NLK keyboard 能力注册管理）。
 
 # 显示驱动
 menu "Display Support"
@@ -246,6 +246,12 @@ config NK60_V2_W25QXX
 	default n
 	help
 	  NK60 V2 板级 W25Qxx Flash 驱动。
+
+config KEY_DEV
+	string "Keyboard matrix device name"
+	default "nk60_v2-key"
+	help
+	  底层键盘矩阵硬件驱动设备名称。
 
 config LED_DEV
 	string "LED device name"

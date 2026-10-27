@@ -11,6 +11,19 @@ if(CONFIG_DISPLAY_SERVER)
     endif()
 endif()
 
+if(CONFIG_KEYBOARD)
+    list(APPEND APP_SRCS server/keyboard/keyboard_server.c)
+    if(NOT (CONFIG_NLK_SERVER OR CONFIG_NDK_SERVER))
+        list(APPEND APP_SRCS
+            server/nlk/core/nlk_frame.c
+            server/nlk/core/nlk_discovery.c
+            server/nlk/core/nlk_router.c
+            server/nlk/core/nlk_core.c
+            server/nlk/caps/cap_keyboard.c
+        )
+    endif()
+endif()
+
 if(CONFIG_NLK_SERVER OR CONFIG_NDK_SERVER)
     list(APPEND APP_SRCS
         server/nlk/core/nlk_frame.c
@@ -77,9 +90,6 @@ endif()
 
 if(CONFIG_TEST_APP)
     list(APPEND APP_SRCS test.c)
-endif()
-if(CONFIG_KEYBOARD)
-    list(APPEND APP_SRCS keyboard.c)
 endif()
 if(CONFIG_RGB_TEST)
     list(APPEND APP_SRCS rgb_test.c)

@@ -9,9 +9,15 @@
 #include <string.h>
 
 static struct nlk_node g_nlk_default_node;
+static bool g_nlk_default_inited;
 
 struct nlk_node *nlk_default_node(void)
 {
+    if (!g_nlk_default_inited) {
+        g_nlk_default_inited = true;
+        (void)nlk_node_init(&g_nlk_default_node, NLK_ADDR_PRIMARY,
+                            0x4E4FU, 0x0001U, NLK_DEV_CLASS_GENERIC, "NOS-Node");
+    }
     return &g_nlk_default_node;
 }
 
@@ -21,6 +27,9 @@ int nlk_node_init(struct nlk_node *node, nlk_addr_t initial_addr,
 {
     if (node == NULL) {
         return -EINVAL;
+    }
+    if (node == &g_nlk_default_node) {
+        g_nlk_default_inited = true;
     }
     memset(node, 0, sizeof(*node));
     node->addr = initial_addr;
@@ -134,8 +143,15 @@ int nlk_node_poll_bearers(struct nlk_node *node, uint32_t timeout_ms)
 
 int nlk_node_register_cap(struct nlk_node *node, struct nlk_capability *cap)
 {
+    uint8_t i;
+
     if (node == NULL || cap == NULL || cap->ops == NULL) {
         return -EINVAL;
+    }
+    for (i = 0; i < node->cap_count; i++) {
+        if (node->caps[i] == cap) {
+            return (int)cap->cap_id;
+        }
     }
     if (node->cap_count >= CONFIG_NLK_MAX_CAPS) {
         return -ENOSPC;
