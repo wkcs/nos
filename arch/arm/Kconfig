@@ -40,6 +40,13 @@ config ARM_CORTEX_CPU
 	help
 	  ARM Cortex 系列 CPU。
 
+config ARM_CORTEX_M4_FPU
+	bool "Enable Cortex-M4 FPU (FPv4-SP-D16)"
+	default y
+	depends on ARM_CORTEX_M4
+	help
+	  启用 Cortex-M4 硬件单精度浮点单元。
+
 config THUMB2_KERNEL
 	bool "Use Thumb-2 instruction set"
 	default y

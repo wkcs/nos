@@ -10,23 +10,27 @@
 #define __ARM_ASM_TYPES_H__
 
 #include <stddef.h>
+#include <stdint.h>
 #include <limits.h>
 
-typedef signed char s8;
-typedef unsigned char u8;
+typedef int8_t s8;
+typedef uint8_t u8;
 
-typedef signed short s16;
-typedef unsigned short u16;
+typedef int16_t s16;
+typedef uint16_t u16;
 
-typedef signed int s32;
-typedef unsigned int u32;
+typedef int32_t s32;
+typedef uint32_t u32;
 
-typedef signed long long s64;
-typedef unsigned long long u64;
+typedef int64_t s64;
+typedef uint64_t u64;
 
+#ifndef _SSIZE_T_DECLARED
 typedef int ssize_t;
+#define _SSIZE_T_DECLARED
+#endif
 
-typedef unsigned long int addr_t;
+typedef uintptr_t addr_t;
 
 #ifndef SIZE_MAX
 #define SIZE_MAX	(~(size_t)0)

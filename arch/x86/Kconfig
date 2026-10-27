@@ -1,0 +1,17 @@
+#
+# x86_64 架构配置
+#
+
+if ARCH_X86
+
+config X86_64
+	bool "x86_64 (64-bit Long Mode)"
+	default y
+	help
+	  启用 x86_64 64 位长模式（4 级页表、SYSCALL/SYSRET、Local APIC/IOAPIC）。
+
+config CPU_TYPE
+	string
+	default "x86_64"
+
+endif # ARCH_X86

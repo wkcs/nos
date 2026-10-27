@@ -6,6 +6,8 @@
 *.size
 debug
 out
+build/
+__pycache__/
 *~
 *.o
 *.a

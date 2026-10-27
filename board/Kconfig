@@ -34,7 +34,7 @@ config BOARD_ZJ_V3
 
 config BOARD_QEMU_VIRT
 	bool "QEMU Virt"
-	depends on ARCH_ARM || ARCH_ARM64
+	depends on ARCH_ARM || ARCH_ARM64 || ARCH_RISCV || ARCH_X86
 	help
 	  QEMU Virt 通用仿真板。
 
@@ -42,11 +42,18 @@ endchoice
 
 config BOARD
 	string
-	default "nk60" if BOARD_NK60
+	default "nk60-v2" if BOARD_NK60
 	default "qemu-stm32" if BOARD_QEMU_STM32
 	default "wl-001" if BOARD_WL_001
 	default "zj-v3" if BOARD_ZJ_V3
 	default "qemu-virt" if BOARD_QEMU_VIRT
+
+config QEMU
+	bool "Target runs under QEMU emulator"
+	default y if BOARD_QEMU_STM32 || BOARD_QEMU_VIRT
+	default n
+	help
+	  启用针对 QEMU 仿真环境的初始化与半主机/外设适配。
 
 # 服务器配置
 menu "Server Configuration"

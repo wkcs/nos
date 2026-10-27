@@ -20,6 +20,9 @@ config BUILD_INFO
 # 架构选择
 source "arch/Kconfig"
 
+# SoC 芯片选择
+source "soc/Kconfig"
+
 # 编译器选择
 menu "Compiler Configuration"
 
@@ -68,6 +71,37 @@ endmenu
 
 # 内核核心配置
 menu "Kernel Configuration"
+
+choice
+	prompt "Kernel Architecture Mode"
+	default KERNEL_MONOLITHIC
+	help
+	  选择内核运行架构模式：传统宏内核/RTOS 模式，或 Capability 微内核模式。
+
+config KERNEL_MONOLITHIC
+	bool "Monolithic / Classic RTOS kernel"
+	help
+	  传统单地址空间或宏内核模式，所有核心服务运行于内核态。
+
+config KERNEL_MICROKERNEL
+	bool "Capability-based Microkernel"
+	help
+	  微内核模式：内核仅保留线程调度、同步 Endpoint IPC、Notification、
+	  Capability 句柄表、MMU/MPU 地址空间隔离与用户态 IRQ 转发。
+
+endchoice
+
+config SMP
+	bool "Symmetric Multi-Processing (SMP) support"
+	default n
+	help
+	  启用多核 SMP 支持。
+
+config SCHED_CPULOAD
+	bool "Track task CPU load statistics"
+	default n
+	help
+	  启用任务 CPU 负载统计。
 
 config PAGE_SIZE
 	int "Page size"
@@ -126,6 +160,13 @@ config MMU
 	  启用内存管理单元（MMU）支持。
 	  提供虚拟内存、内存保护等功能。
 
+config MPU
+	bool "Enable MPU / PMP memory protection"
+	default n
+	depends on ARCH_HAS_MPU
+	help
+	  启用硬件 MPU (ARM Cortex-M) 或 PMP (RISC-V) 内存保护单元。
+
 config MM_DEBUG
 	bool "Memory management debugging"
 	default n
@@ -140,6 +181,48 @@ config MAX_ORDER
 	help
 	  Buddy 分配器的最大阶数。
 	  最大可分配块大小为 PAGE_SIZE * (2^MAX_ORDER)。
+
+endmenu
+
+# 标准库与 POSIX 兼容层配置
+menu "Standard C Library (libc) and POSIX"
+
+choice
+	prompt "C Standard Library Selection"
+	default LIBC_NEWLIB if ARCH_ARM
+	default LIBC_MUSL if ARCH_ARM64 || ARCH_RISCV || ARCH_X86
+	help
+	  选择使用的 C 标准库实现。
+
+config LIBC_MINIMAL
+	bool "NOS Minimal internal klibc only"
+	help
+	  仅使用内核内置精简 string/vsprintf，不链接外部完整 libc。
+
+config LIBC_NEWLIB
+	bool "Toolchain Newlib / Newlib-nano"
+	help
+	  使用交叉编译工具链自带的 Newlib / Newlib-nano，通过 libc/port 对接。
+
+config LIBC_PICOLIBC
+	bool "Picolibc (Lightweight embedded C library)"
+	help
+	  使用专为嵌入式优化的 Picolibc 标准库。
+
+config LIBC_MUSL
+	bool "musl libc (Full POSIX standard library for MMU targets)"
+	depends on MMU || ARCH_ARM64 || ARCH_RISCV || ARCH_X86
+	help
+	  在带 MMU 的架构上使用完整的 musl C 标准库。
+
+endchoice
+
+config POSIX
+	bool "Enable POSIX API compatibility layer (pthread, fd, signal, timer, mmap)"
+	default y if LIBC_MUSL
+	default n
+	help
+	  启用统一的 POSIX 兼容层接口。
 
 endmenu
 
@@ -240,3 +323,40 @@ source "fs/Kconfig"
 
 # 板级配置
 source "board/Kconfig"
+
+# 应用与测试套件配置
+menu "Applications and Tests"
+
+config LUA
+	bool "Enable Lua runtime"
+	default n
+
+config LVGL
+	bool "Enable LVGL graphics library"
+	default n
+
+config TEST_APP
+	bool "Enable general test application"
+	default n
+
+config RGB_TEST
+	bool "Enable RGB matrix test"
+	default n
+
+config LCD_TEST
+	bool "Enable LCD test"
+	default n
+
+config OLED_TEST
+	bool "Enable OLED test"
+	default n
+
+config SDCARD_TEST
+	bool "Enable SD card test"
+	default n
+
+config FATFS_TEST
+	bool "Enable FatFS test"
+	default n
+
+endmenu

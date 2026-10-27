@@ -4,36 +4,33 @@
 
 ## 1. 项目概述与环境
 
-- **项目类型:** 嵌入式操作系统 (类似 RTOS)。
-- **主要语言:** C (标准 C99/GNU99), 汇编 (ARM)。
-- **目标架构:** ARM (可通过 `ARCH` 配置，默认为 `arm`)。
-- **构建系统:** GNU Make。
-- **主机环境:** 已在 macOS (Darwin) 和 Linux 上验证。
-- **工具链:** `arm-none-eabi-gcc` 是预期的交叉编译器。
+- **项目类型:** 嵌入式微内核/RTOS 操作系统。
+- **主要语言:** C (标准 C99/GNU11), 汇编 (`arm`, `arm64`, `riscv`, `x86_64`)。
+- **构建系统:** 纯 CMake + Ninja + Kconfig (`scripts/kconfiglib.py`)，支持 Windows / macOS / Linux 跨平台构建。
+- **架构蓝图:** 详见 `docs/ARCHITECTURE_AND_BUILD_SPEC.md`。
 
 ## 2. 构建、Lint 和测试命令
 
-### 2.1 构建系统
-项目使用基于 Makefile 的构建系统。配置通过脚本处理。
+### 2.1 构建系统 (CMake + Ninja)
+项目使用 `CMakePresets.json` 与 `configs/*_defconfig` 管理多架构与板级构建。
 
-*   **配置 (必须首先执行):**
-    *   `make <board_name>_config`
-    *   示例: `make nk60-v2_config`, `make zj-v3_config`
-    *   *Agent 注意:* 如果用户未指定，请务必检查 `.gitlab-ci.yml` 或 `board/` 目录以获取有效的板级配置。
+*   **使用 Preset 配置与构建 (推荐，Windows / macOS / Linux 通用):**
+    *   `cmake --preset nk60-v2 && cmake --build --preset nk60-v2`
+    *   `cmake --preset qemu-stm32 && cmake --build --preset qemu-stm32`
+    *   `cmake --preset wl-001 && cmake --build --preset wl-001`
+    *   `cmake --preset zj-v3 && cmake --build --preset zj-v3`
 
-*   **构建项目:**
-    *   `make` (构建内核和配置的模块)
-    *   `make -j$(nproc)` (推荐并行构建)
+*   **手动指定参数构建:**
+    *   `cmake -B build/<board> -G Ninja -DCMAKE_TOOLCHAIN_FILE=cmake/toolchains/arm-none-eabi.cmake -DNOS_DEFCONFIG=configs/<board>_defconfig`
+    *   `cmake --build build/<board>`
 
 *   **清理:**
-    *   `make clean` (删除 `out/` 目录和构建产物)
+    *   `cmake --build build/<board> --target clean` 或直接删除 `build/<board>` 目录。
 
 ### 2.2 烧录与调试
-*   **OpenOCD:** `make flash` (使用 `openocd.cfg`)
-*   **ST-Link:** `make stflash` (复位状态下连接)
-*   **J-Link:** `make jflash` (使用 `scripts/jflash.sh`)
-*   **GDB 调试:** `make debug` (启动 GDB 管道连接到 OpenOCD，在 `nos_start` 处断点)
-*   **QEMU 仿真:** `make qemu-run` (如果支持，在 QEMU 中运行生成的 ELF)
+*   **OpenOCD:** `cmake --build build/<board> --target flash`
+*   **ST-Link:** `cmake --build build/<board> --target stflash`
+*   **QEMU 仿真:** `cmake --build build/qemu-stm32 --target qemu-run`
 
 ### 2.3 测试与验证
 *   **单元测试:** 根目录下没有可见的集中式单元测试框架 (如 Unity/GoogleTest)。

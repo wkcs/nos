@@ -26,8 +26,10 @@ build-job:       # This job runs in the build stage, which runs first.
   script:
     - echo "Compiling the code..."
     - bash scripts/check_layer_deps.sh
-    - make qemu-stm32_config
-    - make
+    - cmake --preset qemu-stm32
+    - cmake --build --preset qemu-stm32
+    - cmake --preset nk60-v2
+    - cmake --build --preset nk60-v2
     - echo "Compile complete."
 
 unit-test-job:   # This job runs in the test stage.

@@ -764,7 +764,7 @@ static int _data_notify(udevice_t device, struct ep_msg* ep_msg)
             EP_HANDLER(ep, func, ep->request.size);
         else
             dcd_ep_read_prepare(device->dcd, EP_ADDRESS(ep), ep->request.buffer,
-                min(ep->request.remain_size, EP_MAXPACKET(ep)));
+                min_t(u32, ep->request.remain_size, EP_MAXPACKET(ep)));
     }
 
     return 0;

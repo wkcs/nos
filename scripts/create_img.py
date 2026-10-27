@@ -3,24 +3,32 @@ import sys
 import struct
 
 if len(sys.argv) != 7:
-    exit(-1)
+    sys.exit(1)
 
-img_in = open(sys.argv[1], 'rb')
-img_out = open(sys.argv[6], 'ab')
+bin_path = sys.argv[1]
+ver_major = int(sys.argv[2])
+ver_minor = int(sys.argv[3])
+ver_patch = int(sys.argv[4])
+hdr_type = int(sys.argv[5])
+out_path = sys.argv[6]
 
-img_in_size = os.path.getsize(sys.argv[1])
+with open(bin_path, "rb") as img_in:
+    img_in_data = img_in.read()
 
-img_in_data = img_in.read()
+img_in_size = len(img_in_data)
+header_bytes = [
+    0x30, 0x20, 0x30, 0x20,
+    0, 0, 0, 0,
+    (img_in_size & 0xFF),
+    ((img_in_size >> 8) & 0xFF),
+    ((img_in_size >> 16) & 0xFF),
+    ((img_in_size >> 24) & 0xFF),
+    hdr_type,
+    ver_major,
+    ver_minor,
+    ver_patch,
+]
 
-list_dec = [0x30, 0x20, 0x30, 0x20, 0, 0, 0, 0, (img_in_size & 0xff), \
-    ((img_in_size >> 8) & 0xff), ((img_in_size >> 16) & 0xff), \
-    ((img_in_size >> 24) & 0xff), int(sys.argv[5]), int(sys.argv[2]), int(sys.argv[3]), int(sys.argv[4])]
-
-for x in list_dec:
-        a = struct.pack('B', x)
-        img_out.write(a)
-
-img_out.write(img_in_data)
-
-img_in.close
-img_out.close
+with open(out_path, "wb") as img_out:
+    img_out.write(bytes(header_bytes))
+    img_out.write(img_in_data)
