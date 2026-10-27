@@ -95,6 +95,7 @@ int task_set_prio(struct task_struct *task, uint8_t prio);
 u32 task_get_cpu_usage(struct task_struct *task);
 void clean_close_task(void);
 void dump_all_task(void);
+void dump_all_task_to(int (*print_fn)(const char *fmt, ...));
 
 #define task_list_lock(lock_func, lock) \
 do {                                    \

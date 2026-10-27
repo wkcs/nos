@@ -19,6 +19,8 @@
 #include <kernel/init.h>
 #include <kernel/printk.h>
 #include <kernel/sleep.h>
+#include <kernel/timer.h>
+#include <kernel/clk.h>
 #include <string.h>
 
 #include <nos/nlk_core.h>
@@ -48,6 +50,7 @@ static const uint32_t g_nk60_part_max_sizes[NLK_FW_MAX_PARTS] = {
 struct nk60_nlk_board {
     struct device           *flash_dev;
     struct nlk_node         *node;
+    struct timer             reboot_timer;
     struct nlk_winusb_bearer winusb_bearer;
     struct nlk_fw_update_ctx fw_cap;
     struct nlk_encoder_ctx   enc_cap;
@@ -57,10 +60,21 @@ struct nk60_nlk_board {
 
 static struct nk60_nlk_board g_nk60_nlk;
 
+static struct device *nk60_get_flash_dev(struct nk60_nlk_board *brd)
+{
+#ifdef CONFIG_FLASH_DEV
+    if (brd->flash_dev == NULL) {
+        brd->flash_dev = device_find_by_name(CONFIG_FLASH_DEV);
+    }
+#endif
+    return brd->flash_dev;
+}
+
 static int nk60_flash_write(uint8_t part_index, uint32_t offset,
                             const uint8_t *data, uint32_t len, void *priv)
 {
     struct nk60_nlk_board *brd = (struct nk60_nlk_board *)priv;
+    struct device *fdev;
     addr_t base_addr;
 
     if (brd == NULL) {
@@ -83,9 +97,9 @@ static int nk60_flash_write(uint8_t part_index, uint32_t offset,
         return -EINVAL;
     }
 
-    if (brd->flash_dev != NULL && brd->flash_dev->ops.write != NULL) {
-        brd->flash_dev->ops.write(brd->flash_dev, base_addr + offset,
-                                  (const void *)data, len);
+    fdev = nk60_get_flash_dev(brd);
+    if (fdev != NULL && fdev->ops.write != NULL) {
+        fdev->ops.write(fdev, base_addr + offset, (const void *)data, len);
     }
     return 0;
 }
@@ -94,6 +108,7 @@ static int nk60_flash_commit(uint8_t part_index, uint32_t total_size,
                              uint32_t crc32, void *priv)
 {
     struct nk60_nlk_board *brd = (struct nk60_nlk_board *)priv;
+    struct device *fdev;
     uint32_t reboot_flag = REBOOT_TO_BOOTLOADER;
 
     if (brd == NULL) {
@@ -105,13 +120,32 @@ static int nk60_flash_commit(uint8_t part_index, uint32_t total_size,
         reboot_flag = REBOOT_TO_KERNEL_B;
     }
 
-    if (brd->flash_dev != NULL && brd->flash_dev->ops.write != NULL) {
-        brd->flash_dev->ops.write(brd->flash_dev, NK60_REBOOT_FLASH_BASE,
-                                  &reboot_flag, sizeof(reboot_flag));
+    fdev = nk60_get_flash_dev(brd);
+    if (fdev != NULL && fdev->ops.write != NULL) {
+        fdev->ops.write(fdev, NK60_REBOOT_FLASH_BASE,
+                        &reboot_flag, sizeof(reboot_flag));
     }
     pr_info("NK60 firmware commit ok: part=%u, size=%u, crc=0x%08x\r\n",
             part_index, total_size, crc32);
     return 0;
+}
+
+static void nk60_reboot_timer_cb(void *parameter)
+{
+    (void)parameter;
+    cpu_reboot(REBOOT_TO_BOOTLOADER);
+}
+
+static void nk60_flash_reboot(uint8_t part_index, void *priv)
+{
+    struct nk60_nlk_board *brd = (struct nk60_nlk_board *)priv;
+
+    (void)part_index;
+    if (brd == NULL) {
+        return;
+    }
+    pr_info("NK60 scheduling reboot after NLK ACK...\r\n");
+    timer_start(&brd->reboot_timer, msec_to_tick(50));
 }
 
 static int nk60_nlk_board_setup(struct nlk_node *node)
@@ -126,6 +160,7 @@ static int nk60_nlk_board_setup(struct nlk_node *node)
 
     memset(brd, 0, sizeof(*brd));
     brd->node = node;
+    timer_init(&brd->reboot_timer, "nlk_rst", nk60_reboot_timer_cb, brd);
 
 #ifdef CONFIG_FLASH_DEV
     brd->flash_dev = device_find_by_name(CONFIG_FLASH_DEV);
@@ -137,6 +172,7 @@ static int nk60_nlk_board_setup(struct nlk_node *node)
     /* 1. NK60-V2 Firmware Update Capability with W25QXX Partition Table */
     (void)nlk_cap_fw_update_init(node, &brd->fw_cap, ver_code,
                                  nk60_flash_write, nk60_flash_commit, brd);
+    brd->fw_cap.flash_reboot = nk60_flash_reboot;
     (void)nlk_cap_fw_update_set_partitions(&brd->fw_cap, 4U,
                                            NK60_PART_KERNEL_A,
                                            g_nk60_part_max_sizes);

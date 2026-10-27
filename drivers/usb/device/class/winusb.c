@@ -12,6 +12,7 @@
 #include <kernel/task.h>
 #include <kernel/task.h>
 #include <kernel/sem.h>
+#include <kernel/mutex.h>
 #include <kernel/device.h>
 #include <kernel/printk.h>
 #include <kernel/init.h>
@@ -38,6 +39,7 @@ struct winusb_device {
     uep_t ep_in;
     sem_t read_sem;
     sem_t write_sem;
+    struct mutex write_lock;
 };
 
 struct winusb_device *winusb_dev;
@@ -291,9 +293,11 @@ static ssize_t winusb_write(struct device *dev, addr_t pos,
     size_t write_size;
     struct winusb_device *win_dev = container_of(dev, struct winusb_device, dev);
 
+    (void)pos;
     if (win_dev->func->device->state != USB_STATE_CONFIGURED)
         return 0;
 
+    mutex_lock(&win_dev->write_lock);
     win_dev->ep_in->buffer = (void *)buffer;
     win_dev->ep_in->request.buffer = win_dev->ep_in->buffer;
     win_dev->ep_in->request.size = size;
@@ -302,6 +306,7 @@ static ssize_t winusb_write(struct device *dev, addr_t pos,
         &win_dev->ep_in->request);
 
     sem_get(&win_dev->write_sem);
+    mutex_unlock(&win_dev->write_lock);
 
     return write_size;
 }
@@ -320,7 +325,7 @@ static ssize_t winusb_read_timeout(struct device *dev, addr_t pos,
 
     while (kfifo_used(&win_dev->rx_fifo) == 0) {
         rc = sem_get_timeout(&win_dev->read_sem, tick);
-        if (rc < 0) {
+        if (rc < 0 && kfifo_used(&win_dev->rx_fifo) == 0) {
             return -ETIMEDOUT;
         }
     }
@@ -338,9 +343,11 @@ static ssize_t winusb_write_timeout(struct device *dev, addr_t pos,
         container_of(dev, struct winusb_device, dev);
     int rc;
 
+    (void)pos;
     if (win_dev->func->device->state != USB_STATE_CONFIGURED)
         return 0;
 
+    mutex_lock(&win_dev->write_lock);
     win_dev->ep_in->buffer = (void *)buffer;
     win_dev->ep_in->request.buffer = win_dev->ep_in->buffer;
     win_dev->ep_in->request.size = size;
@@ -349,6 +356,7 @@ static ssize_t winusb_write_timeout(struct device *dev, addr_t pos,
         &win_dev->ep_in->request);
 
     rc = sem_get_timeout(&win_dev->write_sem, tick);
+    mutex_unlock(&win_dev->write_lock);
     if (rc < 0) {
         pr_err("write timeout\r\n");
         return -ETIMEDOUT;
@@ -406,6 +414,7 @@ ufunction_t usbd_function_winusb_create(udevice_t device)
     memset((void *)winusb_device, 0, sizeof(*winusb_device));
     sem_init(&winusb_device->read_sem, 0);
     sem_init(&winusb_device->write_sem, 0);
+    mutex_init(&winusb_device->write_lock);
     kfifo_init(&winusb_device->rx_fifo, winusb_device->rx_fifo_buf,
                WINUSB_RX_FIFOSIZE, 1);
     func->user_data = (void*)winusb_device;

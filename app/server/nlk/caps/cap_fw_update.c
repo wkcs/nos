@@ -6,6 +6,12 @@
  */
 
 #include <nos/nlk_caps.h>
+#ifndef NLK_HOST_TEST
+#include <kernel/printk.h>
+#else
+#define pr_info(fmt, ...) do { (void)(fmt); } while (0)
+#define pr_err(fmt, ...)  do { (void)(fmt); } while (0)
+#endif
 #include <uapi/nos/errno.h>
 #include <string.h>
 
@@ -88,6 +94,9 @@ static int fw_update_on_rpc(struct nlk_node *node, struct nlk_capability *cap,
         ctx->expected_crc32 = prep->image_crc32;
         ctx->running_crc32 = 0U;
         ctx->acked_offset = 0U;
+        pr_info("[NLK-FW] prepare: part=%u, total_size=%u, crc32=0x%08x\r\n",
+                (unsigned int)ctx->target_part, (unsigned int)ctx->total_size,
+                (unsigned int)ctx->expected_crc32);
         return 0;
     }
 
@@ -99,6 +108,9 @@ static int fw_update_on_rpc(struct nlk_node *node, struct nlk_capability *cap,
             return -EAGAIN;
         }
         if (ctx->running_crc32 != ctx->expected_crc32) {
+            pr_err("[NLK-FW] verify failed: calc_crc=0x%08x != exp_crc=0x%08x\r\n",
+                   (unsigned int)ctx->running_crc32,
+                   (unsigned int)ctx->expected_crc32);
             ctx->session_active = false;
             return -EBADMSG;
         }
@@ -109,6 +121,9 @@ static int fw_update_on_rpc(struct nlk_node *node, struct nlk_capability *cap,
                 return rc;
             }
         }
+        pr_info("[NLK-FW] verify & commit ok: part=%u, size=%u, crc32=0x%08x\r\n",
+                (unsigned int)ctx->target_part, (unsigned int)ctx->total_size,
+                (unsigned int)ctx->running_crc32);
         ctx->active_part = ctx->target_part;
         ctx->session_active = false;
         return 0;
@@ -132,6 +147,8 @@ static int fw_update_on_bulk(struct nlk_node *node, struct nlk_capability *cap,
 {
     struct nlk_fw_update_ctx *ctx = (struct nlk_fw_update_ctx *)cap->priv;
     struct nlk_fw_chunk_ack *ack = (struct nlk_fw_chunk_ack *)ack_buf;
+    uint32_t prev_step;
+    uint32_t curr_step;
     int rc = 0;
 
     (void)node;
@@ -177,8 +194,22 @@ static int fw_update_on_bulk(struct nlk_node *node, struct nlk_capability *cap,
         }
     }
 
+    prev_step = ctx->acked_offset / 8192U;
     ctx->running_crc32 = nlk_crc32(ctx->running_crc32, data, len);
     ctx->acked_offset += len;
+    curr_step = ctx->acked_offset / 8192U;
+    if (offset == 0U || curr_step > prev_step ||
+        ctx->acked_offset == ctx->total_size) {
+        uint32_t pct = (ctx->total_size > 0U) ?
+                       (uint32_t)(((uint64_t)ctx->acked_offset * 100ULL) / ctx->total_size) :
+                       100U;
+        (void)pct;
+        pr_info("[NLK-FW] recv chunk: %u/%u bytes (%u%%)\r\n",
+                (unsigned int)ctx->acked_offset,
+                (unsigned int)ctx->total_size,
+                (unsigned int)pct);
+    }
+
     ctx->rx_window_bitmap = (uint16_t)((ctx->rx_window_bitmap << 1U) | 1U);
 
     ack->acked_offset = ctx->acked_offset;

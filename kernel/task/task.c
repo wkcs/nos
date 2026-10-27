@@ -516,6 +516,29 @@ static char *get_task_status_string(struct task_struct *task)
     }
 }
 
+void dump_all_task_to(int (*print_fn)(const char *fmt, ...))
+{
+    struct task_struct *task_temp;
+    size_t max_used;
+
+    if (print_fn == NULL) {
+        dump_all_task();
+        return;
+    }
+    print_fn("----------------------------------------------------------------------------------------\r\n");
+    print_fn("|      task      |prio|    pid    |stack size|stack lave|stack max used| flag | status |\r\n");
+    list_for_each_entry(task_temp, &g_task_list, tlist) {
+        max_used = task_get_stack_max_used(task_temp);
+        print_fn("|%16s|%4u|%11u|%10u|%10lu|%14u|%6d|%8s|%s\r\n",
+                 task_temp->name, task_temp->current_priority, task_temp->pid,
+                 task_temp->stack_size,
+                 task_temp->stack_size - ((addr_t)task_temp->stack - (addr_t)task_temp->sp),
+                 max_used, task_temp->flag, get_task_status_string(task_temp),
+                 max_used ? "" : "(task stack overflow)");
+    }
+    print_fn("----------------------------------------------------------------------------------------\r\n");
+}
+
 void dump_all_task(void)
 {
     struct task_struct *task_temp;

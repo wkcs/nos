@@ -59,14 +59,12 @@ static void nlk_server_task_entry(void *parameter)
             srv->node->cap_count, srv->node->bearer_count);
 
     while (true) {
-        int rc = nlk_node_poll_bearers(srv->node, 200U);
-        if (rc < 0) {
-            msleep(50);
+        int rc = nlk_node_poll_bearers(srv->node, 20U);
+        if (rc < 0 && rc != -ETIMEDOUT && rc != -EAGAIN) {
+            msleep(20);
         }
 
-        if (srv->log_cap.subscribed) {
-            (void)nlk_cap_log_flush_pending(&srv->log_cap);
-        }
+        (void)nlk_cap_log_flush_pending(&srv->log_cap);
 
         tick_cnt++;
         if ((tick_cnt % 10U) == 0U && srv->node->desc.attached_children > 0U) {
@@ -84,7 +82,7 @@ static int nlk_server_init(void)
 {
     memset(&g_nlk_srv, 0, sizeof(g_nlk_srv));
     g_nlk_srv.task = task_create("nlk_server", nlk_server_task_entry,
-                                 &g_nlk_srv, 25, 2048, 10, NULL);
+                                 &g_nlk_srv, 6, 2048, 10, NULL);
     if (g_nlk_srv.task == NULL) {
         pr_fatal("create nlk_server task failed\r\n");
         BUG_ON(true);

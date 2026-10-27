@@ -108,6 +108,7 @@ int nlk_winusb_bearer_poll_rx(struct nlk_winusb_bearer *wb,
     struct nlk_pkt_hdr hdr;
     uint16_t total_len;
     uint16_t got = 0U;
+    uint32_t body_timeout_ms;
     ssize_t rc;
 
     if (wb == NULL || wb->usb_dev == NULL || rx_buf == NULL ||
@@ -115,10 +116,14 @@ int nlk_winusb_bearer_poll_rx(struct nlk_winusb_bearer *wb,
         return -EINVAL;
     }
 
+    body_timeout_ms = (wb->timeout_ms >= NLK_WINUSB_TIMEOUT_MS) ?
+                      wb->timeout_ms : NLK_WINUSB_TIMEOUT_MS;
+
     while (got < sizeof(struct nlk_pkt_hdr)) {
+        uint32_t t_ms = (got == 0U) ? wb->timeout_ms : body_timeout_ms;
         rc = winusb_read_chunk(wb, rx_buf + got,
                                (uint16_t)(sizeof(struct nlk_pkt_hdr) - got),
-                               wb->timeout_ms);
+                               t_ms);
         if (rc <= 0) {
             return (rc < 0) ? (int)rc : -EAGAIN;
         }
@@ -128,13 +133,15 @@ int nlk_winusb_bearer_poll_rx(struct nlk_winusb_bearer *wb,
     memcpy(&hdr, rx_buf, sizeof(hdr));
     if (NLK_PKT_VER(hdr.ver_flags) != NLK_PROTO_VER_1 ||
         (uint32_t)sizeof(hdr) + hdr.payload_len > max_len) {
+        while (winusb_read_chunk(wb, rx_buf, max_len, 2U) > 0) {
+        }
         return -EBADMSG;
     }
 
     total_len = (uint16_t)(sizeof(hdr) + hdr.payload_len);
     while (got < total_len) {
         rc = winusb_read_chunk(wb, rx_buf + got, (uint16_t)(total_len - got),
-                               wb->timeout_ms);
+                               body_timeout_ms);
         if (rc <= 0) {
             return (rc < 0) ? (int)rc : -EAGAIN;
         }

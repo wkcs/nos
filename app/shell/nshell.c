@@ -26,6 +26,10 @@
 #include <stdarg.h>
 #ifdef CONFIG_NLK_SERVER
 #include <nos/nlk_core.h>
+#include <nos/nlk_caps.h>
+#endif
+#ifdef CONFIG_TTY
+#include <nos/tty.h>
 #endif
 
 #define SHELL_PROMPT "nos# "
@@ -68,6 +72,24 @@ struct nshell {
 
 /* --- Helper Functions from kernel/shell.c --- */
 
+static int nshell_write(const char *buf, int len)
+{
+    int rc = console_write(buf, len);
+#ifdef CONFIG_NLK_SERVER
+    struct nlk_shell_ctx *sh_ctx = nlk_cap_shell_default_ctx();
+    if (sh_ctx != NULL && sh_ctx->session_open && len > 0) {
+        (void)nos_tty_write(nlk_cap_shell_tty(sh_ctx),
+                            (const unsigned char *)buf, (unsigned int)len);
+    }
+#endif
+    return rc;
+}
+
+static int nshell_putc(char ch)
+{
+    return nshell_write(&ch, 1);
+}
+
 // Helper for shell output to avoid log tags
 static int shell_printf(const char *fmt, ...) {
   char buf[CONFIG_SHELL_OUTPUT_SIZE];
@@ -84,7 +106,40 @@ static int shell_printf(const char *fmt, ...) {
   if ((size_t)len >= sizeof(buf)) {
     len = sizeof(buf) - 1;
   }
-  return console_write(buf, len);
+  return nshell_write(buf, len);
+}
+
+static int nshell_getc(void)
+{
+#ifdef CONFIG_NLK_SERVER
+    unsigned char ch;
+    for (;;) {
+        struct nlk_shell_ctx *sh_ctx = nlk_cap_shell_default_ctx();
+        if (sh_ctx != NULL) {
+            if (sh_ctx->prompt_pending) {
+                sh_ctx->prompt_pending = false;
+                shell_printf("\r\n" SHELL_PROMPT);
+            }
+            struct nos_tty *sh_tty = nlk_cap_shell_tty(sh_ctx);
+            if (sh_tty != NULL && nos_tty_read(sh_tty, &ch, 1U, false) == 1) {
+                return (int)ch;
+            }
+        }
+#ifdef CONFIG_TTY
+        struct nos_tty *con_tty = nos_console_tty();
+        if (con_tty != NULL) {
+            if (nos_tty_read(con_tty, &ch, 1U, false) == 1) {
+                return (int)ch;
+            }
+            msleep(10);
+            continue;
+        }
+#endif
+        return console_getc();
+    }
+#else
+    return console_getc();
+#endif
 }
 
 static void shell_register_cmd(const char *name, const char *desc,
@@ -228,7 +283,7 @@ static int cmd_help(int argc, char *argv[]) {
 
 static int cmd_log(int argc, char *argv[]) {
   if (argc < 2) {
-    shell_printf("Usage: log <on|off|stats>\r\n");
+    shell_printf("Usage: log <on|off|stats|test [msg]>\r\n");
     return 0;
   }
 
@@ -244,9 +299,28 @@ static int cmd_log(int argc, char *argv[]) {
   } else if (strcmp(argv[1], "off") == 0) {
     set_log_enabled(false);
     shell_printf("Kernel log disabled\r\n");
+  } else if (strcmp(argv[1], "test") == 0) {
+    const char *msg = (argc >= 3) ? argv[2] : "nlk_live_log_test";
+    pr_info("NLK log test info: %s\r\n", msg);
+    pr_warning("NLK log test warning: %s\r\n", msg);
+    pr_err("NLK log test error: %s\r\n", msg);
+    shell_printf("Emitted 3 kernel log records (%s)\r\n", msg);
   } else {
     shell_printf("Unknown option: %s\r\n", argv[1]);
   }
+  return 0;
+}
+
+static int cmd_ver(int argc, char *argv[]) {
+  u64 ticks = cpu_run_ticks();
+  (void)argc;
+  (void)argv;
+  shell_printf("NOS Kernel %u.%u.%u (uptime=%u.%03us)\r\n",
+               (unsigned int)((CONFIG_VERSION_CODE >> 16) & 0xFFU),
+               (unsigned int)((CONFIG_VERSION_CODE >> 8) & 0xFFU),
+               (unsigned int)(CONFIG_VERSION_CODE & 0xFFU),
+               (unsigned int)(ticks / 1000ULL),
+               (unsigned int)(ticks % 1000ULL));
   return 0;
 }
 
@@ -513,7 +587,9 @@ static int cmd_mount(int argc, char *argv[]) {
 extern void dump_all_task(void);
 
 static int cmd_ps(int argc, char *argv[]) {
-  dump_all_task();
+  (void)argc;
+  (void)argv;
+  dump_all_task_to(shell_printf);
   return 0;
 }
 
@@ -575,8 +651,8 @@ static char nshell_parse_ansi_cmd(struct ansi_cmd *cmd)
     cmd->is_escape_sequence = true;
 
     while (true) {
-        ch = console_getc();
-        console_putc(ch);
+        ch = (char)nshell_getc();
+        nshell_putc(ch);
         if (ch != '[') {
             break;
         }
@@ -587,8 +663,8 @@ static char nshell_parse_ansi_cmd(struct ansi_cmd *cmd)
     }
 
     while (true) {
-        ch = console_getc();
-        console_putc(ch);
+        ch = (char)nshell_getc();
+        nshell_putc(ch);
         if (isdigit(ch) || ch == ';' || ch == '?') {
             cmd->params[index++] = ch;
             if (index >= ANSI_CMD_PARAM_MAX) {
@@ -604,8 +680,8 @@ static char nshell_parse_ansi_cmd(struct ansi_cmd *cmd)
         cmd->has_param = true;
     }
     // 读取命令
-    cmd->cmd = console_getc();
-    console_putc(cmd->cmd);
+    cmd->cmd = (char)nshell_getc();
+    nshell_putc(cmd->cmd);
 
     return 0;
 }
@@ -689,8 +765,7 @@ static void nshell_exec_cmd(struct nshell *shell)
 
 static void nshell_new_line(struct nshell *shell)
 {
-    console_putc('\r');
-    console_putc('\n');
+    shell_printf("\r\n");
     nshell_exec_cmd(shell);
     memset(shell->cmd.buf, 0, SHELL_CMD_STR_MAX);
     shell->cmd.index = 0;
@@ -709,6 +784,7 @@ static void nshell_task_entry(void* parameter)
 
     // Register basic commands
     shell_register_cmd("help", "List commands", cmd_help);
+    shell_register_cmd("ver", "Show NOS kernel version & uptime", cmd_ver);
     shell_register_cmd("clear", "Clear screen", cmd_clear);
     shell_register_cmd("log", "Toggle kernel log (on/off)", cmd_log);
     shell_register_cmd("ls", "List directory", cmd_ls);
@@ -745,7 +821,7 @@ static void nshell_task_entry(void* parameter)
                 continue;
             }
         } else {
-            ch = console_getc();
+            ch = (char)nshell_getc();
         }
 
         if (isprint(ch)) {
@@ -758,7 +834,7 @@ static void nshell_task_entry(void* parameter)
             }
             shell->cmd.buf[shell->cmd.index++] = ch;
             len++;
-            console_putc(ch);
+            nshell_putc(ch);
             if (len >= SHELL_CMD_STR_MAX) {
                 nshell_new_line(shell);
                 len = 0;
@@ -775,17 +851,21 @@ static void nshell_task_entry(void* parameter)
             nshell_new_line(shell);
             len = 0;
             newline = false;
+        } else if (ch == 0x03) {
+            memset(shell->cmd.buf, 0, SHELL_CMD_STR_MAX);
+            shell->cmd.index = 0;
+            len = 0;
+            newline = false;
+            shell_printf("^C\r\n" SHELL_PROMPT);
         } else if (ch == '\033') {
             ansi_cmd = true;
-            console_putc(ch);
+            nshell_putc(ch);
         } else if (ch == 0x08 || ch == 0x7F) { // Backspace handling
              if (shell->cmd.index > 0) {
                 shell->cmd.index--;
                 len--;
                 shell->cmd.buf[shell->cmd.index] = 0; // Simple truncate for now
-                console_putc('\b');
-                console_putc(' ');
-                console_putc('\b');
+                shell_printf("\b \b");
             }
         }
     }
