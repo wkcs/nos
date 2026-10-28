@@ -60,6 +60,7 @@ struct nshell {
     bool remote;
     bool ls_long_format;
     int last_status;
+    struct file *input_file;
     struct file *output_file;
     int output_error;
     uint32_t generation;
@@ -638,11 +639,44 @@ error:
     return status;
 }
 
+static int cat_stream(struct file *f)
+{
+    char buf[64];
+    int ret;
+
+    while ((ret = f->f_op->read(f, buf, sizeof(buf), &f->f_pos)) > 0) {
+        int pos = 0;
+        while (pos < ret) {
+            int written = nshell_write(buf + pos, ret - pos);
+            if (written <= 0) return written < 0 ? written : -EIO;
+            pos += written;
+        }
+    }
+    return ret;
+}
+
+static int cat_stdin(void)
+{
+    struct nshell *shell = nshell_current();
+
+    if (shell == NULL) return -EINVAL;
+    if (shell->input_file != NULL) return cat_stream(shell->input_file);
+    for (;;) {
+        int value = nshell_getc();
+        char ch;
+        int rc;
+        if (value < 0) return value;
+        if (value == 4 || value == 3) return value == 3 ? -EINTR : 0;
+        ch = (char)value;
+        rc = nshell_write(&ch, 1);
+        if (rc != 1) return rc < 0 ? rc : -EIO;
+    }
+}
+
 static int cat_file(const char *path)
 {
   struct dentry *dentry;
   struct file *f;
-  char buf[64];
   int ret;
 
   dentry = resolve_path(path);
@@ -677,19 +711,7 @@ static int cat_file(const char *path)
       }
   }
 
-  while ((ret = f->f_op->read(f, buf, sizeof(buf), &f->f_pos)) > 0) {
-    int pos = 0;
-    while (pos < ret) {
-      int written = nshell_write(buf + pos, ret - pos);
-      if (written <= 0) {
-        ret = written < 0 ? written : -EIO;
-        goto out;
-      }
-      pos += written;
-    }
-  }
-
-out:
+  ret = cat_stream(f);
   if (f->f_op->release) {
       f->f_op->release(dentry->d_inode, f);
   }
@@ -703,12 +725,9 @@ static int cmd_cat(int argc, char *argv[])
     int i;
     int status = 0;
 
-    if (argc < 2) {
-        shell_printf("cat: missing operand\r\n");
-        return -EINVAL;
-    }
+    if (argc < 2) return cat_stdin();
     for (i = 1; i < argc; i++) {
-        int rc = cat_file(argv[i]);
+        int rc = strcmp(argv[i], "-") == 0 ? cat_stdin() : cat_file(argv[i]);
         if (rc < 0) {
             status = rc;
         }
@@ -826,6 +845,41 @@ static int cmd_nlk(int argc, char *argv[])
 }
 #endif
 
+static int nshell_open_input(struct nshell *shell, const char *path)
+{
+    struct dentry *entry = resolve_path(path);
+    struct file *file;
+    int rc;
+
+    if (entry == NULL || entry->d_inode == NULL) return -ENOENT;
+    if (S_ISDIR(entry->d_inode->i_mode)) return -EISDIR;
+    if (entry->d_inode->i_fop == NULL || entry->d_inode->i_fop->read == NULL) return -EACCES;
+    file = kzalloc(sizeof(*file), GFP_KERNEL);
+    if (file == NULL) return -ENOMEM;
+    file->f_inode = entry->d_inode;
+    file->f_path.dentry = entry;
+    file->f_op = entry->d_inode->i_fop;
+    file->f_flags = O_RDONLY;
+    if (file->f_op->open != NULL) {
+        rc = file->f_op->open(file->f_inode, file);
+        if (rc != 0) {
+            kfree(file);
+            return rc;
+        }
+    }
+    shell->input_file = file;
+    return 0;
+}
+
+static void nshell_close_input(struct nshell *shell)
+{
+    struct file *file = shell->input_file;
+    if (file == NULL) return;
+    shell->input_file = NULL;
+    if (file->f_op->release != NULL) (void)file->f_op->release(file->f_inode, file);
+    kfree(file);
+}
+
 static int nshell_open_output(struct nshell *shell, const char *path, bool append)
 {
     char *copy;
@@ -939,11 +993,20 @@ static void nshell_exec_cmd(struct nshell *shell)
         }
         argc = shell_parse_redirect(workspace->commands[i].text, argv, MAX_ARGS + 1, &redir);
         if (argc <= 0) continue;
+        if (redir.input_path != NULL) {
+            int rc = nshell_open_input(shell, redir.input_path);
+            if (rc < 0) {
+                shell_printf("shell: %s: cannot redirect (error %d)\r\n", redir.input_path, rc);
+                shell->last_status = 1;
+                continue;
+            }
+        }
         if (redir.path != NULL) {
             int rc = nshell_open_output(shell, redir.path, redir.append);
             if (rc < 0) {
                 shell_printf("shell: %s: cannot redirect (error %d)\r\n", redir.path, rc);
                 shell->last_status = 1;
+                nshell_close_input(shell);
                 continue;
             }
         }
@@ -958,6 +1021,7 @@ static void nshell_exec_cmd(struct nshell *shell)
             shell_printf("%s: command not found\r\n", argv[0]);
             shell->last_status = 127;
         }
+        nshell_close_input(shell);
         if (shell->output_file != NULL) {
             struct file *file = shell->output_file;
             shell->output_file = NULL;

@@ -7,6 +7,7 @@
 int shell_parse_line(char *line, char **argv, int argv_capacity);
 
 struct shell_redirection {
+    char *input_path;
     char *path;
     bool append;
 };
