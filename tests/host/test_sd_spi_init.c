@@ -96,6 +96,9 @@ int main(void)
         card.spi.config.frequency != 12000000 || highest_frequency != 400000 ||
         tries != 3 || delays != 2 || idle_bytes < 10 || active || last_cmd != 9 ||
         card.sector_count != 1024) return 1;
+    tries = 0;
+    if (sd_spi_card_init(&card, &card.spi) != 0 || card.spi.config.frequency != 12000000 ||
+        !card.ready || active) return 1;
     v1 = 1; high_capacity = 0; tries = 0;
     if (sd_spi_card_init(&card, &sd) != 0 || !card.ready || card.high_capacity ||
         last_cmd != 9 || card.sector_count != 4 || active) return 1;
