@@ -33,5 +33,5 @@ if(CONFIG_NLK_SERVER OR CONFIG_NDK_SERVER)
 endif()
 
 if(CONFIG_NK60_V2_W25QXX)
-    list(APPEND BOARD_SRCS ${BOARD_DIR}/spi.c)
+    list(APPEND BOARD_SRCS ${BOARD_DIR}/spi.c ${BOARD_DIR}/flash.c)
 endif()
