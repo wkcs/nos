@@ -14,5 +14,6 @@ with tempfile.TemporaryDirectory(prefix='nos-sd-init-test-') as tmp:
                     '-I', str(TEST_DIR / 'stubs'), '-I', str(ROOT / 'include'),
                     str(TEST_DIR / 'test_sd_spi_init.c'), str(ROOT / 'drivers/block/sd_spi.c'),
                     str(ROOT / 'drivers/block/sd_spi_card.c'),
+                    str(ROOT / 'drivers/block/sd_spi_io.c'), str(ROOT / 'drivers/block/sd_csd.c'),
                     '-o', str(binary)], check=True)
     subprocess.run([str(binary)], check=True)

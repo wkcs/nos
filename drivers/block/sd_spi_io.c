@@ -51,19 +51,16 @@ static uint32_t sd_poll_limit(const struct sd_spi_card *card)
     return limit == 0 ? 1 : limit;
 }
 
-int sd_spi_read_block(struct sd_spi_card *card, uint32_t lba, void *buffer)
+static int sd_read_data(struct sd_spi_card *card, uint8_t command, uint32_t address,
+                        void *buffer, size_t length)
 {
     struct spi_session session = {0};
-    uint32_t address, remaining;
+    uint32_t remaining;
     uint8_t response, token, crc_bytes[2];
     uint16_t crc;
     int ret;
 
-    if (card == NULL || buffer == NULL) return -EINVAL;
-    if (!card->ready) return -ENODEV;
-    ret = sd_block_address(card, lba, &address);
-    if (ret != 0) return ret;
-    ret = sd_spi_begin_command(&card->spi, &session, 17, address, &response);
+    ret = sd_spi_begin_command(&card->spi, &session, command, address, &response);
     if (ret == 0 && response != 0) ret = -EIO;
     remaining = sd_poll_limit(card);
     while (ret == 0 && remaining-- != 0) {
@@ -72,13 +69,37 @@ int sd_spi_read_block(struct sd_spi_card *card, uint32_t lba, void *buffer)
     }
     if (ret == 0 && token == 0xffU) ret = -ETIMEDOUT;
     if (ret == 0 && token != 0xfeU) ret = -EIO;
-    if (ret == 0) ret = sd_transfer(&session, NULL, buffer, SD_BLOCK_SIZE);
+    if (ret == 0) ret = sd_transfer(&session, NULL, buffer, length);
     if (ret == 0) ret = sd_transfer(&session, NULL, crc_bytes, sizeof(crc_bytes));
     if (ret == 0) {
-        crc = sd_crc16(buffer, SD_BLOCK_SIZE);
+        crc = sd_crc16(buffer, length);
         if (crc_bytes[0] != (uint8_t)(crc >> 8) || crc_bytes[1] != (uint8_t)crc) ret = -EIO;
     }
     return sd_end(card, &session, ret);
+}
+
+int sd_spi_read_block(struct sd_spi_card *card, uint32_t lba, void *buffer)
+{
+    uint32_t address;
+    int ret;
+
+    if (card == NULL || buffer == NULL) return -EINVAL;
+    if (!card->ready) return -ENODEV;
+    if (lba >= card->sector_count) return -EINVAL;
+    ret = sd_block_address(card, lba, &address);
+    if (ret != 0) return ret;
+    return sd_read_data(card, 17, address, buffer, SD_BLOCK_SIZE);
+}
+
+int sd_spi_read_capacity(struct sd_spi_card *card, uint32_t *sectors)
+{
+    uint8_t csd[16];
+    int ret;
+
+    if (card == NULL || sectors == NULL) return -EINVAL;
+    if (!card->ready) return -ENODEV;
+    ret = sd_read_data(card, 9, 0, csd, sizeof(csd));
+    return ret != 0 ? ret : sd_spi_csd_sectors(csd, sectors);
 }
 
 int sd_spi_write_block(struct sd_spi_card *card, uint32_t lba, const void *buffer)
@@ -91,6 +112,7 @@ int sd_spi_write_block(struct sd_spi_card *card, uint32_t lba, const void *buffe
 
     if (card == NULL || buffer == NULL) return -EINVAL;
     if (!card->ready) return -ENODEV;
+    if (lba >= card->sector_count) return -EINVAL;
     ret = sd_block_address(card, lba, &address);
     if (ret != 0) return ret;
     ret = sd_spi_begin_command(&card->spi, &session, 24, address, &response);

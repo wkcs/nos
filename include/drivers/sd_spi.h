@@ -11,6 +11,7 @@ struct sd_spi {
 
 struct sd_spi_card {
     struct sd_spi spi;
+    uint32_t sector_count;
     uint8_t high_capacity;
     uint8_t ready;
 };
@@ -18,6 +19,7 @@ struct sd_spi_card {
 /* Parse the 16-byte CSD into 512-byte sectors; capacities exceeding the
  * 32-bit block API are rejected. */
 int sd_spi_csd_sectors(const uint8_t csd[16], uint32_t *sectors);
+int sd_spi_read_capacity(struct sd_spi_card *card, uint32_t *sectors);
 
 /* Call from task context, with exclusive access to the card. */
 int sd_spi_card_init(struct sd_spi_card *card, const struct sd_spi *spi);
