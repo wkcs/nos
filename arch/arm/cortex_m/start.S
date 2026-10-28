@@ -46,8 +46,8 @@ LoopFillZerobss:
   cmp  r2, r3
   bcc  FillZerobss
 
-/* Call the clock system intitialization function.*/
-  bl  SystemInit
+/* SoC initialization runs after memory is ready and before constructors. */
+  bl  soc_early_init
 /* Call static constructors */
   bl __libc_init_array
 /* Call the application's entry point.*/
