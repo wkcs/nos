@@ -5,6 +5,6 @@ list(APPEND DRIVERS_SRCS
 )
 
 if(CONFIG_DEVICE_TREE)
-    list(APPEND DRIVERS_SRCS base/devicetree.c "${NOS_DTS_C}")
+    list(APPEND DRIVERS_SRCS base/devicetree.c base/dt_driver.c "${NOS_DTS_C}")
 endif()
 

@@ -15,6 +15,8 @@
 #include <kernel/mutex.h>
 
 struct device;
+struct nos_dt_driver;
+struct nos_dt_node;
 
 struct device_ops {
     int (*init)(struct device *dev);
@@ -39,6 +41,9 @@ struct device {
         void *priv;
     };
     const void *api;
+    const struct nos_dt_driver *dt_driver;
+    const struct nos_dt_node *dt_node;
+    uint8_t dt_binding;
     uint8_t ready;
     int init_res;
     struct device_ops ops;
