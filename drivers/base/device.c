@@ -24,6 +24,9 @@ int device_init(struct device *dev)
 
     INIT_LIST_HEAD(&dev->list);
     dev->ref_count = 0;
+    dev->dt_driver = NULL;
+    dev->dt_node = NULL;
+    dev->dt_binding = 0;
     mutex_init(&dev->mutex);
 
     return 0;
