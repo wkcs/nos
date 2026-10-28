@@ -1,0 +1,8 @@
+{
+  "compatible": "st,stm32-uart",
+  "properties": {
+    "reg": {"type": "uint32-array", "required": true, "min-items": 2},
+    "interrupts": {"type": "uint32-array", "required": true, "min-items": 1},
+    "status": {"type": "string", "enum": ["okay", "ok", "disabled", "reserved", "fail", "fail-sss"]}
+  }
+}
