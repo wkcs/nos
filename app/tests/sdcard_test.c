@@ -21,7 +21,7 @@
 #include <kernel/sem.h>
 #include <kernel/list.h>
 
-#include "../drivers/spi/spi-sdcard.h"
+#include "../../drivers/spi/spi-sdcard.h"
 
 /* Private typedef -----------------------------------------------------------*/
 typedef enum {FAILED = 0, PASSED = !FAILED} TestStatus;
