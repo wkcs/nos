@@ -1,4 +1,5 @@
 """Validate linked Cortex-M vectors against the selected STM32 family."""
+import re
 import struct
 import subprocess
 import tempfile
@@ -37,6 +38,24 @@ class VectorTests(unittest.TestCase):
                 undefined = subprocess.check_output(
                     ['arm-none-eabi-nm', '--undefined-only', str(elf)], text=True)
                 self.assertNotIn('Reset_Handler', undefined)
+
+    def test_stm32f4_vectors_match_vendor_irq_numbers(self):
+        header = (ROOT / 'soc/stm32f4/inside-include/stm32f4xx.h').read_text()
+        start = header.index('typedef enum IRQn')
+        f405_start = header.index('#if defined (STM32F40_41xxx)', start)
+        f405_end = header.index('#if defined (STM32F427_437xx)', f405_start)
+        f401_start = header.index('#if defined (STM32F401xx) || defined (STM32F411xE)', start)
+        f401_end = header.index('#if defined (STM32F411xE)', f401_start)
+        common = header[start:f405_start]
+        for board, definitions in (('qemu-stm32', header[f405_start:f405_end]),
+                                   ('nk60-v2', header[f401_start:f401_end])):
+            vectors, symbols = vectors_and_symbols(board)
+            entries = re.findall(r'\b(\w+)_IRQn\s*=\s*(\d+)', common + definitions)
+            for name, irq in entries:
+                with self.subTest(board=board, irq=irq, name=name):
+                    symbol = symbols.get(name + '_IRQHandler')
+                    self.assertIsNotNone(symbol)
+                    self.assertEqual(vectors[16 + int(irq)] & ~1, symbol & ~1)
 
     def test_stm32f4_part_specific_interrupts(self):
         f405, symbols = vectors_and_symbols('qemu-stm32')
