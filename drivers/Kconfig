@@ -115,6 +115,13 @@ config I2C_CORE
 	help
 	  Enable I2C controller drivers. The shared transaction API is header-only.
 
+config I2C_GPIO
+	bool "GPIO bit-banged I2C controller"
+	select I2C_CORE
+	default n
+	help
+	  Enable the single-master GPIO I2C controller, including clock stretching.
+
 config STM32PWM
 	bool "STM32 PWM driver"
 	default n
