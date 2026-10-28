@@ -1,5 +1,9 @@
 # Include header manifests only for enabled SoCs.
-file(GLOB _nos_soc_headers "${CMAKE_CURRENT_LIST_DIR}/*/headers.cmake")
+if(CMAKE_SCRIPT_MODE_FILE)
+    file(GLOB _nos_soc_headers "${CMAKE_CURRENT_LIST_DIR}/*/headers.cmake")
+else()
+    file(GLOB _nos_soc_headers CONFIGURE_DEPENDS "${CMAKE_CURRENT_LIST_DIR}/*/headers.cmake")
+endif()
 foreach(_nos_soc_header IN LISTS _nos_soc_headers)
     get_filename_component(_nos_soc_dir "${_nos_soc_header}" DIRECTORY)
     get_filename_component(_nos_soc_name "${_nos_soc_dir}" NAME)

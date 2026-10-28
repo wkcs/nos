@@ -1,10 +1,13 @@
 set(SOC_SRCS "")
 set(SOC_PRIVATE_INCLUDES "")
 
-foreach(_soc stm32f1 stm32f4 nuc472)
+file(GLOB _soc_manifests CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/*/sources.cmake")
+foreach(_soc_manifest IN LISTS _soc_manifests)
+    get_filename_component(_soc_dir "${_soc_manifest}" DIRECTORY)
+    get_filename_component(_soc "${_soc_dir}" NAME)
     string(TOUPPER "${_soc}" _soc_symbol)
     if(CONFIG_SOC_${_soc_symbol})
-        include("${CMAKE_CURRENT_SOURCE_DIR}/${_soc}/sources.cmake")
+        include("${_soc_manifest}")
     endif()
 endforeach()
 
