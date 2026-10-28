@@ -39,6 +39,22 @@ class VectorTests(unittest.TestCase):
                     ['arm-none-eabi-nm', '--undefined-only', str(elf)], text=True)
                 self.assertNotIn('Reset_Handler', undefined)
 
+    def test_stm32f1_vectors_match_vendor_irq_numbers(self):
+        header = (ROOT / 'soc/stm32f1/inside-include/stm32f10x.h').read_text()
+        start = header.index('typedef enum IRQn')
+        common_end = header.index('#ifdef STM32F10X_LD', start)
+        for board, macro in (('wl-001', 'STM32F10X_MD'), ('zj-v3', 'STM32F10X_HD')):
+            part_start = header.index('#ifdef ' + macro + '\n', common_end)
+            part_end = header.index('#endif', part_start)
+            entries = re.findall(r'\b(\w+)_IRQn\s*=\s*(\d+)',
+                                 header[start:common_end] + header[part_start:part_end])
+            vectors, symbols = vectors_and_symbols(board)
+            for name, irq in entries:
+                with self.subTest(board=board, irq=irq, name=name):
+                    symbol = symbols.get(name + '_IRQHandler')
+                    self.assertIsNotNone(symbol)
+                    self.assertEqual(vectors[16 + int(irq)] & ~1, symbol & ~1)
+
     def test_stm32f4_vectors_match_vendor_irq_numbers(self):
         header = (ROOT / 'soc/stm32f4/inside-include/stm32f4xx.h').read_text()
         start = header.index('typedef enum IRQn')
