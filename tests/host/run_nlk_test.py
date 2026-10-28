@@ -17,6 +17,7 @@ def main():
         exe = Path(tmp) / "test_nlk"
         srcs = [
             ROOT / "kernel/printk/log.c",
+            ROOT / "kernel/printk/console_backend.c",
             ROOT / "kernel/tty/tty.c",
             ROOT / "libs/kfifo.c",
             NLK_DIR / "core/nlk_frame.c",

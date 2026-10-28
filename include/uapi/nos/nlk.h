@@ -415,8 +415,11 @@ enum nlk_shell_opcode {
     NLK_SHELL_OP_CLOSE          = 0x02U,
     NLK_SHELL_OP_SIGNAL         = 0x03U,
     NLK_SHELL_OP_FLOW_CRED      = 0x04U,
+    NLK_SHELL_OP_INPUT          = 0x05U,
+    NLK_SHELL_OP_HEARTBEAT      = 0x06U,
     NLK_SHELL_STREAM_STDIN      = 0x10U,
     NLK_SHELL_STREAM_STDOUT     = 0x11U,
+    NLK_SHELL_STREAM_STDOUT_V2  = 0x12U,
 };
 
 #define NLK_SHELL_SIG_INT           2U
@@ -427,6 +430,19 @@ struct nlk_shell_open_msg {
     uint16_t rows;
     uint16_t initial_credit;
     uint16_t flags;
+} __attribute__((packed));
+
+/* Optional reliable session extension. All integers use NLK little endian. */
+#define NLK_SHELL_OPEN_RELIABLE (1U << 0)
+#define NLK_SHELL_INPUT_CHUNK_MAX 64U
+struct nlk_shell_open_v2_msg {
+    struct nlk_shell_open_msg open;
+    uint64_t session_id;
+} __attribute__((packed));
+
+struct nlk_shell_input_hdr {
+    uint64_t session_id;
+    uint32_t offset;
 } __attribute__((packed));
 
 /* =========================================================================

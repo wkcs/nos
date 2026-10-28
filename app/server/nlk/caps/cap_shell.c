@@ -8,70 +8,99 @@
 #if !defined(NLK_HOST_TEST) && __has_include(<kernel/irq.h>)
 #include <kernel/types.h>
 #include <kernel/irq.h>
-#define NLK_SHELL_LOCK()        disable_irq_save()
-#define NLK_SHELL_UNLOCK(f)     enable_irq_save(f)
+#define NLK_SHELL_LOCK(ctx)     nlk_shell_lock(ctx)
+#define NLK_SHELL_UNLOCK(ctx, f) nlk_shell_unlock(ctx, f)
 #else
-#define NLK_SHELL_LOCK()        (0UL)
-#define NLK_SHELL_UNLOCK(f)     ((void)(f))
+#define NLK_SHELL_LOCK(ctx)      (0UL)
+#define NLK_SHELL_UNLOCK(ctx, f) ((void)(f))
 #endif
 #include <uapi/nos/errno.h>
 #include <string.h>
 
 static struct nlk_shell_ctx *g_default_shell_ctx;
 
-static int nlk_shell_tty_read(void *context, unsigned char *buf,
-                              unsigned int len, bool wait)
+#if !defined(NLK_HOST_TEST) && __has_include(<kernel/irq.h>)
+static unsigned long nlk_shell_lock(struct nlk_shell_ctx *ctx)
 {
-    struct nlk_shell_ctx *ctx = (struct nlk_shell_ctx *)context;
+    unsigned long flags = disable_irq_save();
+    spin_lock(&ctx->io_lock);
+    return flags;
+}
+
+static void nlk_shell_unlock(struct nlk_shell_ctx *ctx, unsigned long flags)
+{
+    spin_unlock(&ctx->io_lock);
+    enable_irq_save(flags);
+}
+#endif
+
+
+static int shell_read(struct nlk_shell_ctx *ctx, uint32_t generation, bool check_generation,
+                      unsigned char *buf, unsigned int len)
+{
     unsigned int copied = 0U;
     unsigned long irq_flags;
 
-    (void)wait;
-    if (ctx == NULL || buf == NULL || len == 0U) {
-        return -EINVAL;
-    }
-    irq_flags = NLK_SHELL_LOCK();
-    if (ctx->rx_count == 0U) {
-        NLK_SHELL_UNLOCK(irq_flags);
-        return -EAGAIN;
+    if (ctx == NULL || buf == NULL || len == 0U) return -EINVAL;
+    irq_flags = NLK_SHELL_LOCK(ctx);
+    if (!ctx->session_open || (check_generation && ctx->generation != generation)) {
+        NLK_SHELL_UNLOCK(ctx, irq_flags);
+        return -ENOTCONN;
     }
     while (copied < len && ctx->rx_count > 0U) {
         buf[copied++] = ctx->rx_buf[ctx->rx_tail];
         ctx->rx_tail = (uint16_t)((ctx->rx_tail + 1U) % CONFIG_NLK_SHELL_RX_BUF_SIZE);
         ctx->rx_count--;
     }
-    NLK_SHELL_UNLOCK(irq_flags);
-    return (int)copied;
+    NLK_SHELL_UNLOCK(ctx, irq_flags);
+    return copied != 0U ? (int)copied : -EAGAIN;
+}
+
+int nlk_cap_shell_read_session(struct nlk_shell_ctx *ctx, uint32_t generation,
+                               unsigned char *buf, unsigned int len)
+{
+    return shell_read(ctx, generation, true, buf, len);
+}
+
+static int nlk_shell_tty_read(void *context, unsigned char *buf,
+                              unsigned int len, bool wait)
+{
+    (void)wait;
+    return shell_read(context, 0, false, buf, len);
+}
+
+static int shell_write(struct nlk_shell_ctx *ctx, uint32_t generation, bool check_generation,
+                       const unsigned char *buf, unsigned int len)
+{
+    unsigned int copied = 0U;
+    unsigned long irq_flags;
+
+    if (ctx == NULL || buf == NULL) return -EINVAL;
+    irq_flags = NLK_SHELL_LOCK(ctx);
+    if (!ctx->session_open || ctx->node == NULL ||
+        (check_generation && ctx->generation != generation)) {
+        NLK_SHELL_UNLOCK(ctx, irq_flags);
+        return -ENOTCONN;
+    }
+    while (copied < len && ctx->tx_count < CONFIG_NLK_SHELL_TX_BUF_SIZE) {
+        ctx->tx_buf[ctx->tx_head] = buf[copied++];
+        ctx->tx_head = (uint16_t)((ctx->tx_head + 1U) % CONFIG_NLK_SHELL_TX_BUF_SIZE);
+        ctx->tx_count++;
+    }
+    NLK_SHELL_UNLOCK(ctx, irq_flags);
+    return copied != 0U ? (int)copied : -EAGAIN;
+}
+
+int nlk_cap_shell_write_session(struct nlk_shell_ctx *ctx, uint32_t generation,
+                                const unsigned char *buf, unsigned int len)
+{
+    return shell_write(ctx, generation, true, buf, len);
 }
 
 static int nlk_shell_tty_write(void *context, const unsigned char *buf,
                                unsigned int len)
 {
-    struct nlk_shell_ctx *ctx = (struct nlk_shell_ctx *)context;
-    unsigned int sent = 0U;
-
-    if (ctx == NULL || buf == NULL) {
-        return -EINVAL;
-    }
-    if (!ctx->session_open || ctx->node == NULL) {
-        return -ENOTCONN;
-    }
-    while (sent < len) {
-        uint16_t chunk = (uint16_t)(len - sent);
-        int rc;
-
-        if (chunk > CONFIG_NLK_PACKET_MTU) {
-            chunk = CONFIG_NLK_PACKET_MTU;
-        }
-        rc = nlk_node_stream_write(ctx->node, ctx->client_addr,
-                                   ctx->cap.cap_id, NLK_SHELL_STREAM_STDOUT,
-                                   buf + sent, chunk);
-        if (rc < 0) {
-            return (sent > 0U) ? (int)sent : rc;
-        }
-        sent += chunk;
-    }
-    return (int)sent;
+    return shell_write(context, 0, false, buf, len);
 }
 
 static const struct nos_tty_ops g_nlk_shell_tty_ops = {
@@ -93,10 +122,35 @@ static int cap_shell_on_rpc(struct nlk_node *node, struct nlk_capability *cap,
     }
     *resp_len = 0U;
 
+    if (hdr == NULL) return -EINVAL;
     switch (hdr->cmd_op) {
     case NLK_SHELL_OP_OPEN: {
         const struct nlk_shell_open_msg *open_msg =
             (const struct nlk_shell_open_msg *)req;
+        uint64_t session_id = 0U;
+        bool reliable = req != NULL && req_len >= sizeof(*open_msg) &&
+                        (open_msg->flags & NLK_SHELL_OPEN_RELIABLE) != 0U;
+        unsigned long irq_flags;
+        if (reliable) {
+            if (req_len < sizeof(struct nlk_shell_open_v2_msg)) return -EINVAL;
+            memcpy(&session_id, (const uint8_t *)req + sizeof(*open_msg), sizeof(session_id));
+            if (session_id == 0U) return -EINVAL;
+        }
+        irq_flags = NLK_SHELL_LOCK(ctx);
+        if (ctx->session_open) {
+            bool retry = reliable && ctx->reliable && ctx->session_id == session_id &&
+                         ctx->client_addr == hdr->src_addr;
+            if (retry) ctx->lease_touched = true;
+            NLK_SHELL_UNLOCK(ctx, irq_flags);
+            return retry ? 0 : -EBUSY;
+        }
+        ctx->reliable = reliable;
+        ctx->session_id = session_id;
+        ctx->input_offset = 0U;
+        ctx->lease_started = false;
+        ctx->lease_touched = true;
+        ctx->rx_head = ctx->rx_tail = ctx->rx_count = 0U;
+        ctx->tx_head = ctx->tx_tail = ctx->tx_count = 0U;
         if (req != NULL && req_len >= sizeof(*open_msg)) {
             ctx->cols = open_msg->cols;
             ctx->rows = open_msg->rows;
@@ -110,28 +164,126 @@ static int cap_shell_on_rpc(struct nlk_node *node, struct nlk_capability *cap,
         ctx->prompt_pending = true;
         ctx->client_addr = hdr->src_addr;
         ctx->client_cap = hdr->dst_cap;
+        __atomic_add_fetch(&ctx->generation, 1U, __ATOMIC_RELEASE);
+        NLK_SHELL_UNLOCK(ctx, irq_flags);
         return 0;
     }
 
     case NLK_SHELL_OP_CLOSE:
-        ctx->session_open = false;
-        ctx->prompt_pending = false;
+        {
+            unsigned long irq_flags = NLK_SHELL_LOCK(ctx);
+            if (!ctx->session_open || ctx->client_addr != hdr->src_addr) {
+                int rc = ctx->session_open ? -EPERM : -ENOTCONN;
+                NLK_SHELL_UNLOCK(ctx, irq_flags);
+                return rc;
+            }
+            if (ctx->reliable) {
+                uint64_t token;
+                if (req == NULL || req_len < sizeof(token)) {
+                    NLK_SHELL_UNLOCK(ctx, irq_flags);
+                    return -EPERM;
+                }
+                memcpy(&token, req, sizeof(token));
+                if (token != ctx->session_id) {
+                    NLK_SHELL_UNLOCK(ctx, irq_flags);
+                    return -EPERM;
+                }
+            }
+            ctx->session_open = false;
+            ctx->prompt_pending = false;
+            ctx->rx_head = ctx->rx_tail = ctx->rx_count = 0U;
+            ctx->tx_head = ctx->tx_tail = ctx->tx_count = 0U;
+            __atomic_add_fetch(&ctx->generation, 1U, __ATOMIC_RELEASE);
+            NLK_SHELL_UNLOCK(ctx, irq_flags);
+        }
         return 0;
+
+    case NLK_SHELL_OP_INPUT:
+    case NLK_SHELL_OP_HEARTBEAT: {
+        struct nlk_shell_input_hdr input;
+        unsigned int n, i;
+        unsigned long irq_flags;
+        uint64_t token;
+        if (req == NULL || req_len < sizeof(token)) return -EINVAL;
+        memcpy(&token, req, sizeof(token));
+        irq_flags = NLK_SHELL_LOCK(ctx);
+        if (!ctx->session_open || !ctx->reliable || ctx->client_addr != hdr->src_addr ||
+            ctx->session_id != token) {
+            NLK_SHELL_UNLOCK(ctx, irq_flags);
+            return -EPERM;
+        }
+        ctx->lease_touched = true;
+        if (hdr->cmd_op == NLK_SHELL_OP_HEARTBEAT) {
+            NLK_SHELL_UNLOCK(ctx, irq_flags);
+            return 0;
+        }
+        if (req_len <= sizeof(input)) {
+            NLK_SHELL_UNLOCK(ctx, irq_flags);
+            return -EINVAL;
+        }
+        memcpy(&input, req, sizeof(input));
+        n = req_len - sizeof(input);
+        if (n > NLK_SHELL_INPUT_CHUNK_MAX || n > CONFIG_NLK_SHELL_RX_BUF_SIZE) {
+            NLK_SHELL_UNLOCK(ctx, irq_flags);
+            return -EMSGSIZE;
+        }
+        if (input.offset != ctx->input_offset) {
+            bool duplicate = (uint32_t)(ctx->input_offset - input.offset) == n;
+            NLK_SHELL_UNLOCK(ctx, irq_flags);
+            return duplicate ? 0 : -EINVAL;
+        }
+        if (n > CONFIG_NLK_SHELL_RX_BUF_SIZE - ctx->rx_count) {
+            NLK_SHELL_UNLOCK(ctx, irq_flags);
+            return -ENOSPC;
+        }
+        for (i = 0U; i < n; i++) {
+            ctx->rx_buf[ctx->rx_head] = ((const uint8_t *)req)[sizeof(input) + i];
+            ctx->rx_head = (uint16_t)((ctx->rx_head + 1U) % CONFIG_NLK_SHELL_RX_BUF_SIZE);
+            ctx->rx_count++;
+        }
+        ctx->input_offset += n;
+        NLK_SHELL_UNLOCK(ctx, irq_flags);
+        return 0;
+    }
 
     case NLK_SHELL_OP_SIGNAL:
         if (req == NULL || req_len < 1U) {
             return -EINVAL;
         }
-        ctx->last_signal = *(const uint8_t *)req;
-        if (ctx->last_signal == NLK_SHELL_SIG_INT) {
-            unsigned long irq_flags = NLK_SHELL_LOCK();
-            /* Inject Ctrl+C (0x03) into shell RX stream */
-            if (ctx->rx_count < CONFIG_NLK_SHELL_RX_BUF_SIZE) {
+        {
+            unsigned long irq_flags = NLK_SHELL_LOCK(ctx);
+            if (!ctx->session_open || ctx->client_addr != hdr->src_addr) {
+                int rc = ctx->session_open ? -EPERM : -ENOTCONN;
+                NLK_SHELL_UNLOCK(ctx, irq_flags);
+                return rc;
+            }
+            if (ctx->reliable) {
+                uint64_t token;
+                if (req_len < sizeof(token) + 1U) {
+                    NLK_SHELL_UNLOCK(ctx, irq_flags);
+                    return -EPERM;
+                }
+                memcpy(&token, req, sizeof(token));
+                if (token != ctx->session_id) {
+                    NLK_SHELL_UNLOCK(ctx, irq_flags);
+                    return -EPERM;
+                }
+                ctx->last_signal = ((const uint8_t *)req)[sizeof(token)];
+                ctx->lease_touched = true;
+            } else {
+                ctx->last_signal = *(const uint8_t *)req;
+                ctx->lease_touched = true;
+            }
+            if (ctx->last_signal == NLK_SHELL_SIG_INT) {
+                if (ctx->rx_count >= CONFIG_NLK_SHELL_RX_BUF_SIZE) {
+                    NLK_SHELL_UNLOCK(ctx, irq_flags);
+                    return -ENOSPC;
+                }
                 ctx->rx_buf[ctx->rx_head] = 0x03U;
                 ctx->rx_head = (uint16_t)((ctx->rx_head + 1U) % CONFIG_NLK_SHELL_RX_BUF_SIZE);
                 ctx->rx_count++;
             }
-            NLK_SHELL_UNLOCK(irq_flags);
+            NLK_SHELL_UNLOCK(ctx, irq_flags);
         }
         return 0;
 
@@ -149,31 +301,43 @@ static int cap_shell_on_stream(struct nlk_node *node, struct nlk_capability *cap
     uint16_t i;
 
     (void)node;
-    if (ctx == NULL || data == NULL) {
+    if (ctx == NULL || hdr == NULL || data == NULL) {
         return -EINVAL;
     }
-
-    if (hdr->cmd_op == NLK_SHELL_OP_FLOW_CRED && len >= sizeof(uint16_t)) {
-        uint16_t add_cred;
-        memcpy(&add_cred, data, sizeof(add_cred));
-        ctx->rx_credit = (uint16_t)(ctx->rx_credit + add_cred);
-        return 0;
-    }
-
-    if (hdr->cmd_op == NLK_SHELL_STREAM_STDIN ||
-        hdr->cmd_op == NLK_SHELL_STREAM_STDOUT) {
-        unsigned long irq_flags = NLK_SHELL_LOCK();
-        for (i = 0U; i < len; i++) {
-            if (ctx->rx_count >= CONFIG_NLK_SHELL_RX_BUF_SIZE) {
-                NLK_SHELL_UNLOCK(irq_flags);
+    {
+        unsigned long irq_flags = NLK_SHELL_LOCK(ctx);
+        if (!ctx->session_open || ctx->client_addr != hdr->src_addr) {
+            int rc = ctx->session_open ? -EPERM : -ENOTCONN;
+            NLK_SHELL_UNLOCK(ctx, irq_flags);
+            return rc;
+        }
+        if (ctx->reliable) {
+            NLK_SHELL_UNLOCK(ctx, irq_flags);
+            return -ENOTSUP;
+        }
+        if (hdr->cmd_op == NLK_SHELL_OP_FLOW_CRED && len >= sizeof(uint16_t)) {
+            uint16_t add_cred;
+            memcpy(&add_cred, data, sizeof(add_cred));
+            ctx->rx_credit = (uint16_t)(ctx->rx_credit + add_cred);
+            ctx->lease_touched = true;
+            NLK_SHELL_UNLOCK(ctx, irq_flags);
+            return 0;
+        }
+        if (hdr->cmd_op == NLK_SHELL_STREAM_STDIN) {
+            if (len > CONFIG_NLK_SHELL_RX_BUF_SIZE - ctx->rx_count) {
+                NLK_SHELL_UNLOCK(ctx, irq_flags);
                 return -ENOSPC;
             }
-            ctx->rx_buf[ctx->rx_head] = bytes[i];
-            ctx->rx_head = (uint16_t)((ctx->rx_head + 1U) % CONFIG_NLK_SHELL_RX_BUF_SIZE);
-            ctx->rx_count++;
+            for (i = 0U; i < len; i++) {
+                ctx->rx_buf[ctx->rx_head] = bytes[i];
+                ctx->rx_head = (uint16_t)((ctx->rx_head + 1U) % CONFIG_NLK_SHELL_RX_BUF_SIZE);
+                ctx->rx_count++;
+            }
+            ctx->lease_touched = true;
+            NLK_SHELL_UNLOCK(ctx, irq_flags);
+            return (int)len;
         }
-        NLK_SHELL_UNLOCK(irq_flags);
-        return (int)len;
+        NLK_SHELL_UNLOCK(ctx, irq_flags);
     }
 
     return -ENOTSUP;
@@ -193,6 +357,7 @@ int nlk_cap_shell_init(struct nlk_node *node, struct nlk_shell_ctx *ctx)
     }
     memset(ctx, 0, sizeof(*ctx));
     ctx->node = node;
+    spin_lock_init(&ctx->io_lock);
     ctx->cols = 80U;
     ctx->rows = 24U;
     ctx->rx_credit = CONFIG_NLK_SHELL_RX_BUF_SIZE;
@@ -202,7 +367,7 @@ int nlk_cap_shell_init(struct nlk_node *node, struct nlk_shell_ctx *ctx)
         return rc;
     }
 
-    ctx->cap.cap_ver = 0x10U;
+    ctx->cap.cap_ver = 0x11U;
     ctx->cap.cap_type = NLK_CAP_SHELL;
     ctx->cap.sup_modes = NLK_SUP_MODE_RPC | NLK_SUP_MODE_STREAM;
     ctx->cap.sub_class = 0U;
@@ -211,8 +376,9 @@ int nlk_cap_shell_init(struct nlk_node *node, struct nlk_shell_ctx *ctx)
     ctx->cap.ops = &g_shell_ops;
     ctx->cap.priv = ctx;
 
-    g_default_shell_ctx = ctx;
-    return nlk_node_register_cap(node, &ctx->cap);
+    rc = nlk_node_register_cap(node, &ctx->cap);
+    if (rc >= 0) __atomic_store_n(&g_default_shell_ctx, ctx, __ATOMIC_RELEASE);
+    return rc;
 }
 
 struct nos_tty *nlk_cap_shell_tty(struct nlk_shell_ctx *ctx)
@@ -222,5 +388,71 @@ struct nos_tty *nlk_cap_shell_tty(struct nlk_shell_ctx *ctx)
 
 struct nlk_shell_ctx *nlk_cap_shell_default_ctx(void)
 {
-    return g_default_shell_ctx;
+    return __atomic_load_n(&g_default_shell_ctx, __ATOMIC_ACQUIRE);
+}
+
+int nlk_cap_shell_flush_pending(struct nlk_shell_ctx *ctx)
+{
+    uint8_t data[CONFIG_NLK_PACKET_MTU];
+    uint16_t count, i, tail;
+    uint32_t generation;
+    nlk_addr_t addr;
+    uint64_t session_id;
+    bool reliable;
+    unsigned int prefix;
+    unsigned long flags;
+    int rc;
+
+    if (ctx == NULL || ctx->node == NULL) return -EINVAL;
+    flags = NLK_SHELL_LOCK(ctx);
+    if (!ctx->session_open || ctx->tx_count == 0U) {
+        NLK_SHELL_UNLOCK(ctx, flags);
+        return 0;
+    }
+    reliable = ctx->reliable;
+    session_id = ctx->session_id;
+    prefix = reliable ? sizeof(session_id) : 0U;
+    count = ctx->tx_count;
+    if (count > sizeof(data) - prefix) count = (uint16_t)(sizeof(data) - prefix);
+    if (prefix != 0U) memcpy(data, &session_id, prefix);
+    tail = ctx->tx_tail;
+    for (i = 0; i < count; i++) {
+        data[prefix + i] = ctx->tx_buf[tail];
+        tail = (uint16_t)((tail + 1U) % CONFIG_NLK_SHELL_TX_BUF_SIZE);
+    }
+    generation = ctx->generation;
+    addr = ctx->client_addr;
+    NLK_SHELL_UNLOCK(ctx, flags);
+    rc = nlk_node_stream_write(ctx->node, addr, ctx->cap.cap_id,
+                               reliable ? NLK_SHELL_STREAM_STDOUT_V2 : NLK_SHELL_STREAM_STDOUT,
+                               data, (uint16_t)(prefix + count));
+    if (rc < 0) return rc;
+    flags = NLK_SHELL_LOCK(ctx);
+    if (ctx->session_open && generation == ctx->generation) {
+        ctx->tx_tail = tail;
+        ctx->tx_count -= count;
+    }
+    NLK_SHELL_UNLOCK(ctx, flags);
+    return count;
+}
+
+void nlk_cap_shell_tick(struct nlk_shell_ctx *ctx, uint32_t now_ms)
+{
+    unsigned long flags;
+    if (ctx == NULL) return;
+    flags = NLK_SHELL_LOCK(ctx);
+    if (ctx->session_open) {
+        if (ctx->lease_touched || !ctx->lease_started) {
+            ctx->lease_time_ms = now_ms;
+            ctx->lease_touched = false;
+            ctx->lease_started = true;
+        } else if ((uint32_t)(now_ms - ctx->lease_time_ms) > NLK_SHELL_LEASE_MS) {
+            ctx->session_open = false;
+            ctx->prompt_pending = false;
+            ctx->rx_head = ctx->rx_tail = ctx->rx_count = 0U;
+            ctx->tx_head = ctx->tx_tail = ctx->tx_count = 0U;
+            __atomic_add_fetch(&ctx->generation, 1U, __ATOMIC_RELEASE);
+        }
+    }
+    NLK_SHELL_UNLOCK(ctx, flags);
 }

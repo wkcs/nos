@@ -18,7 +18,7 @@ def main():
             [os.environ.get("CC", "cc"), "-std=gnu11", "-O1", "-fno-builtin",
              "-DCONFIG_LOG_BUFFERED", "-DCONFIG_LOG_FIFO_BUF_SIZE=32",
              "-DCONFIG_LOG_MESSAGE_SIZE=8", "-I", str(TEST_DIR / "stubs"),
-             "-I", str(ROOT / "include"), str(ROOT / "kernel/printk/log.c"),
+             "-I", str(ROOT / "include"), str(ROOT / "kernel/printk/log.c"), str(ROOT / "kernel/printk/console_backend.c"),
              str(ROOT / "libs/kfifo.c"), str(TEST_DIR / "test_log_ring.c"),
              "-o", str(exe)], check=True,
         )

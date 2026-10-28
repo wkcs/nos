@@ -64,6 +64,15 @@ static void nlk_server_task_entry(void *parameter)
             msleep(20);
         }
 
+        {
+            struct nlk_capability *shell_cap =
+                nlk_node_find_cap_by_type(srv->node, NLK_CAP_SHELL);
+            struct nlk_shell_ctx *ctx = nlk_cap_shell_default_ctx();
+            if (shell_cap != NULL && ctx != NULL && shell_cap->priv == ctx) {
+                nlk_cap_shell_tick(ctx, (uint32_t)(cpu_run_ticks() * CONFIG_SYS_TICK_MS));
+                (void)nlk_cap_shell_flush_pending(ctx);
+            }
+        }
         (void)nlk_cap_log_flush_pending(&srv->log_cap);
 
         tick_cnt++;

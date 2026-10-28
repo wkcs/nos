@@ -42,7 +42,7 @@ static struct inode *ramfs_get_inode(struct super_block *sb, int mode,
 
     struct ramfs_node *node = kzalloc(sizeof(struct ramfs_node), GFP_KERNEL);
     if (!node) {
-      // kfree inode
+      nos_vfs_destroy_inode(inode);
       return NULL;
     }
     inode->i_private = node;
@@ -63,75 +63,95 @@ static struct inode *ramfs_get_inode(struct super_block *sb, int mode,
  * File Operations
  */
 static ssize_t ramfs_read(struct file *file, char *buf, size_t count,
-                          loff_t *ppos) {
-  struct inode *inode = file->f_inode;
-  struct ramfs_node *node = inode->i_private;
-  size_t left;
+                          loff_t *ppos)
+{
+    struct inode *inode = file->f_inode;
+    struct ramfs_node *node = inode->i_private;
+    size_t left;
 
-  if (*ppos >= inode->i_size)
-    return 0;
-
-  left = inode->i_size - *ppos;
-  if (count > left)
-    count = left;
-
-  if (node && node->data)
-    memcpy(buf, (char *)node->data + *ppos, count);
-
-  *ppos += count;
-  return count;
+    mutex_lock(&inode->i_mutex);
+    if (*ppos >= inode->i_size) {
+        mutex_unlock(&inode->i_mutex);
+        return 0;
+    }
+    left = inode->i_size - *ppos;
+    if (count > left) count = left;
+    if (node && node->data) memcpy(buf, (char *)node->data + *ppos, count);
+    *ppos += count;
+    mutex_unlock(&inode->i_mutex);
+    return count;
 }
 
 static ssize_t ramfs_write(struct file *file, const char *buf, size_t count,
-                           loff_t *ppos) {
-  struct inode *inode = file->f_inode;
-  struct ramfs_node *node = inode->i_private;
-  size_t pos = *ppos;
-  size_t new_size = pos + count;
+                           loff_t *ppos)
+{
+    struct inode *inode = file->f_inode;
+    struct ramfs_node *node = inode->i_private;
+    size_t pos;
+    size_t new_size;
 
-  if (!node)
-    return -EIO;
-
-  if (new_size > node->size) {
-    void *new_data = krealloc(node->data, new_size, GFP_KERNEL);
-    if (!new_data)
-      return -ENOMEM;
-    node->data = new_data;
-    node->size = new_size;
-  }
-
-  memcpy((char *)node->data + pos, buf, count);
-  if (new_size > inode->i_size)
-    inode->i_size = new_size;
-
-  *ppos += count;
-  return count;
+    if (!node) return -EIO;
+    if (count == 0) return 0;
+    mutex_lock(&inode->i_mutex);
+    pos = *ppos;
+    new_size = pos + count;
+    if (new_size < pos) {
+        mutex_unlock(&inode->i_mutex);
+        return -EFBIG;
+    }
+    if (new_size > node->size) {
+        void *new_data = krealloc(node->data, new_size, GFP_KERNEL);
+        if (!new_data) {
+            mutex_unlock(&inode->i_mutex);
+            return -ENOMEM;
+        }
+        node->data = new_data;
+        node->size = new_size;
+    }
+    memcpy((char *)node->data + pos, buf, count);
+    if (new_size > inode->i_size) inode->i_size = new_size;
+    *ppos += count;
+    mutex_unlock(&inode->i_mutex);
+    return count;
 }
 
-static int ramfs_readdir(struct file *file, void *dirent, filldir_t filldir) {
-  struct inode *inode = file->f_inode;
-  struct ramfs_node *node = inode->i_private;
-  struct ramfs_dirent *de;
-  int i = 0;
+static int ramfs_readdir(struct file *file, void *dirent, filldir_t filldir)
+{
+    struct inode *inode = file->f_inode;
+    struct ramfs_node *node = inode->i_private;
 
-  if (!node || !(inode->i_mode & S_IFDIR))
-    return -ENOTDIR;
+    if (!node || !(inode->i_mode & S_IFDIR)) return -ENOTDIR;
+    for (;;) {
+        struct ramfs_dirent *de;
+        char *name = NULL;
+        size_t len = 0;
+        u64 ino = 0;
+        loff_t i = 0;
+        int rc;
 
-  // We don't support seeking in readdir properly here without offset logic,
-  // but essential for ls
-
-  // Skip based on f_pos? Simple linked list iteration for now.
-  // Assuming f_pos matches index.
-
-  list_for_each_entry(de, &node->dirents, list) {
-    if (i >= file->f_pos) {
-      if (filldir(dirent, de->name, strlen(de->name), i, de->inode->i_ino, 0))
-        break;
-      file->f_pos++;
+        /* Copy the entry while locked so a slow terminal callback does not
+         * hold the directory mutex and stall other users of the directory. */
+        mutex_lock(&inode->i_mutex);
+        list_for_each_entry(de, &node->dirents, list) {
+            if (i++ == file->f_pos) {
+                len = strlen(de->name);
+                name = kmalloc(len + 1, GFP_KERNEL);
+                if (name != NULL) {
+                    memcpy(name, de->name, len + 1);
+                    ino = de->inode->i_ino;
+                }
+                break;
+            }
+        }
+        mutex_unlock(&inode->i_mutex);
+        if (name == NULL) {
+            return i > file->f_pos ? -ENOMEM : 0;
+        }
+        rc = filldir(dirent, name, (int)len, file->f_pos, ino, 0);
+        kfree(name);
+        if (rc != 0) return 0;
+        file->f_pos++;
     }
-    i++;
-  }
-  return 0;
 }
 
 static const struct file_operations ramfs_file_ops = {
@@ -146,55 +166,72 @@ static const struct file_operations ramfs_dir_ops = {
 /*
  * Inode Operations
  */
-static int ramfs_add_entry(struct inode *dir, struct dentry *dentry, int mode) {
-  struct inode *inode = ramfs_get_inode(dir->i_sb, mode, 0);
-  if (!inode)
-    return -ENOMEM;
+static int ramfs_add_entry(struct inode *dir, struct dentry *dentry, int mode)
+{
+    struct ramfs_node *node = dir->i_private;
+    struct ramfs_dirent *de, *existing;
+    struct inode *inode;
 
-  struct ramfs_node *node = dir->i_private;
-  struct ramfs_dirent *de = kzalloc(sizeof(struct ramfs_dirent), GFP_KERNEL);
-  if (!de) {
-    // free inode
-    return -ENOMEM;
-  }
-
-  // Duplicate name
-  de->name = kzalloc(strlen(dentry->d_name.name) + 1, GFP_KERNEL);
-  strcpy(de->name, dentry->d_name.name);
-  de->inode = inode;
-
-  list_add_tail(&de->list, &node->dirents);
-
-  dentry->d_inode = inode;
-  return 0;
-}
-
-static int ramfs_create(struct inode *dir, struct dentry *dentry, int mode) {
-  return ramfs_add_entry(dir, dentry, mode | S_IFREG);
-}
-
-static int ramfs_mkdir(struct inode *dir, struct dentry *dentry, int mode) {
-  return ramfs_add_entry(dir, dentry, mode | S_IFDIR);
-}
-
-static struct dentry *ramfs_lookup(struct inode *dir, struct dentry *dentry) {
-  struct ramfs_node *node = dir->i_private;
-  struct ramfs_dirent *de;
-
-  if (dir->i_mode & S_IFDIR) {
-    list_for_each_entry(de, &node->dirents, list) {
-      if (strcmp(de->name, dentry->d_name.name) == 0) {
-        // Found
-        dentry->d_inode = de->inode;
-        // atomic_inc(&de->inode->i_count);
-        return NULL; // success (in Linux lookup returns NULL on success)
-      }
+    if (node == NULL || dentry == NULL || dentry->d_name.name == NULL) return -EINVAL;
+    inode = ramfs_get_inode(dir->i_sb, mode, 0);
+    if (inode == NULL) return -ENOMEM;
+    de = kzalloc(sizeof(*de), GFP_KERNEL);
+    if (de == NULL) goto no_memory;
+    de->name = kzalloc(strlen(dentry->d_name.name) + 1, GFP_KERNEL);
+    if (de->name == NULL) {
+        kfree(de);
+        goto no_memory;
     }
-  }
-  return NULL; // Not found (ENOENT in a way? but here returning NULL usually
-               // means dentry is negative/cached)
-  // Actually if not found, we return NULL and dentry->d_inode remains NULL
-  // (negative dentry).
+    strcpy(de->name, dentry->d_name.name);
+    de->inode = inode;
+
+    mutex_lock(&dir->i_mutex);
+    list_for_each_entry(existing, &node->dirents, list) {
+        if (strcmp(existing->name, de->name) == 0) {
+            mutex_unlock(&dir->i_mutex);
+            kfree(de->name);
+            kfree(de);
+            kfree(inode->i_private);
+            nos_vfs_destroy_inode(inode);
+            return -EEXIST;
+        }
+    }
+    list_add_tail(&de->list, &node->dirents);
+    dentry->d_inode = inode;
+    mutex_unlock(&dir->i_mutex);
+    return 0;
+
+no_memory:
+    kfree(inode->i_private);
+    nos_vfs_destroy_inode(inode);
+    return -ENOMEM;
+}
+
+static int ramfs_create(struct inode *dir, struct dentry *dentry, int mode)
+{
+    return ramfs_add_entry(dir, dentry, mode | S_IFREG);
+}
+
+static int ramfs_mkdir(struct inode *dir, struct dentry *dentry, int mode)
+{
+    return ramfs_add_entry(dir, dentry, mode | S_IFDIR);
+}
+
+static struct dentry *ramfs_lookup(struct inode *dir, struct dentry *dentry)
+{
+    struct ramfs_node *node = dir->i_private;
+    struct ramfs_dirent *de;
+
+    if (node == NULL || !(dir->i_mode & S_IFDIR)) return NULL;
+    mutex_lock(&dir->i_mutex);
+    list_for_each_entry(de, &node->dirents, list) {
+        if (strcmp(de->name, dentry->d_name.name) == 0) {
+            dentry->d_inode = de->inode;
+            break;
+        }
+    }
+    mutex_unlock(&dir->i_mutex);
+    return NULL;
 }
 
 static const struct inode_operations ramfs_dir_inode_ops = {

@@ -25,7 +25,16 @@ static int dev_stream_tx_raw(struct nlk_bearer *b, uint16_t next_hop_addr,
     if (sb == NULL || sb->dev == NULL || sb->dev->ops.write == NULL) {
         return -EINVAL;
     }
-    return (int)sb->dev->ops.write(sb->dev, 0, buf, len);
+    {
+        unsigned int sent = 0U;
+        while (sent < len) {
+            ssize_t rc = sb->dev->ops.write(sb->dev, 0, buf + sent, len - sent);
+            if (rc < 0) return (int)rc;
+            if (rc == 0 || (unsigned int)rc > len - sent) return -EIO;
+            sent += (unsigned int)rc;
+        }
+    }
+    return (int)len;
 }
 
 static int dev_stream_rx_poll(struct nlk_bearer *b, uint32_t timeout_ms)
@@ -107,7 +116,17 @@ static int ms_arbiter_tx_raw(struct nlk_bearer *b, uint16_t next_hop_addr,
     frame[2U + len] = (uint8_t)(crc16 & 0xFFU);
     frame[3U + len] = (uint8_t)((crc16 >> 8U) & 0xFFU);
 
-    return arb->bus_write(arb->bus_addr, frame, (uint16_t)(len + 4U), arb->bus_priv);
+    {
+        uint16_t frame_len = (uint16_t)(len + 4U);
+        int rc = arb->bus_write(arb->bus_addr, frame, frame_len, arb->bus_priv);
+        if (rc < 0) {
+            return rc;
+        }
+        if (rc > 0 && rc != (int)frame_len && rc != (int)len) {
+            return -EIO;
+        }
+        return (int)len;
+    }
 }
 
 static int ms_arbiter_rx_poll(struct nlk_bearer *b, uint32_t timeout_ms)
@@ -196,6 +215,9 @@ int nlk_ms_arbiter_poll(struct nlk_ms_arbiter *arb, uint32_t now_ms)
     if (rc < 0) {
         return rc;
     }
+    if (rc > 0 && rc != (int)sizeof(status_hdr)) {
+        return -EIO;
+    }
     if (status_hdr.magic != NLK_MS_READY_MAGIC || status_hdr.pending_len == 0U) {
         if (arb->slot.consec_empty < 255U) {
             arb->slot.consec_empty++;
@@ -217,6 +239,9 @@ int nlk_ms_arbiter_poll(struct nlk_ms_arbiter *arb, uint32_t now_ms)
                        (uint16_t)(status_hdr.pending_len + 2U), arb->bus_priv);
     if (rc < 0) {
         return rc;
+    }
+    if (rc > 0 && rc != (int)(status_hdr.pending_len + 2U)) {
+        return -EIO;
     }
 
     wire_crc = (uint16_t)frame_buf[status_hdr.pending_len] |

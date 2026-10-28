@@ -22,7 +22,7 @@ static struct nlk_bearer *nlk_find_bearer_by_port(struct nlk_node *node, uint8_t
 }
 
 /* Transmit a packet over a specific bearer, performing L3 fragmentation if payload > bearer MTU */
-static int nlk_router_xmit_bearer(struct nlk_node *node,
+static int nlk_router_xmit_bearer_locked(struct nlk_node *node,
                                   struct nlk_bearer *bearer,
                                   const struct nlk_pkt_hdr *hdr,
                                   const void *payload, uint16_t payload_len)
@@ -47,7 +47,7 @@ static int nlk_router_xmit_bearer(struct nlk_node *node,
             memcpy(pkt_buf + sizeof(*hdr), payload, payload_len);
         }
         node->tx_packets++;
-        return nlk_bearer_send_packet(bearer, hdr->dst_addr, pkt_buf,
+        return nlk_bearer_send_packet_locked(bearer, hdr->dst_addr, pkt_buf,
                                       (uint16_t)(sizeof(*hdr) + payload_len), 100U);
     }
 
@@ -85,7 +85,7 @@ static int nlk_router_xmit_bearer(struct nlk_node *node,
                src_bytes + offset, chunk);
 
         node->tx_packets++;
-        rc = nlk_bearer_send_packet(bearer, hdr->dst_addr, pkt_buf,
+        rc = nlk_bearer_send_packet_locked(bearer, hdr->dst_addr, pkt_buf,
                                     (uint16_t)(sizeof(frag_pkt_hdr) +
                                                sizeof(frag_ext) + chunk), 100U);
         if (rc < 0) {
@@ -95,6 +95,23 @@ static int nlk_router_xmit_bearer(struct nlk_node *node,
     }
 
     return (int)payload_len;
+}
+
+/* Claim the entire L3 packet, including all fragments and CAN frames.
+ * Never wait here: routing can also be reached from an interrupt. Callers
+ * with queued output may retry -EAGAIN on their next service iteration. */
+static int nlk_router_xmit_bearer(struct nlk_node *node,
+                                  struct nlk_bearer *bearer,
+                                  const struct nlk_pkt_hdr *hdr,
+                                  const void *payload, uint16_t payload_len)
+{
+    int rc;
+    if (bearer == NULL) return -EINVAL;
+    if (__atomic_exchange_n(&bearer->tx_busy, 1U, __ATOMIC_ACQUIRE) != 0U)
+        return -EAGAIN;
+    rc = nlk_router_xmit_bearer_locked(node, bearer, hdr, payload, payload_len);
+    __atomic_store_n(&bearer->tx_busy, 0U, __ATOMIC_RELEASE);
+    return rc;
 }
 
 int nlk_node_send_raw(struct nlk_node *node, nlk_addr_t dst_addr,

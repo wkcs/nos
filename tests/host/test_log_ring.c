@@ -53,8 +53,58 @@ int console_write_recordv(const char *first, unsigned int first_len,
 #endif
 void console_send_log(void) {}
 
+#ifdef NOS_LOG_BACKEND_API
+static unsigned int backend_a_count, backend_b_count;
+static int capture_log(const struct kernel_log_record *record, const void *data,
+                        void *priv)
+{
+    unsigned int *count = priv;
+    if (record->length == 2 && memcmp(data, "ok", 2) == 0) {
+        (*count)++;
+        return (int)record->length;
+    }
+    return 0;
+}
+#endif
+
 int main(void)
 {
+#ifndef NOS_LOG_BACKEND_API
+    fputs("FAIL: independent log backend API is unavailable\n", stderr);
+    return 1;
+#else
+    struct kernel_log_backend a = { .write = capture_log, .priv = &backend_a_count };
+    struct kernel_log_backend b = { .write = capture_log, .priv = &backend_b_count };
+    kernel_log_init();
+    room = 0;
+    if (kernel_log_backend_register(&a) != 0 || kernel_log_backend_register(&b) != 0 ||
+        kernel_log_write("ok", 2) != 2 || backend_a_count != 1 || backend_b_count != 1) {
+        fputs("FAIL: blocked console must not block registered backends\n", stderr);
+        return 1;
+    }
+#ifdef NOS_LOG_CONSOLE_BACKEND_API
+    kernel_log_backend_unregister(kernel_log_console_backend());
+    room = 20;
+    kernel_log_flush();
+    if (wire_len != 0) {
+        fputs("FAIL: unregistered console must not drain pending records\n", stderr);
+        return 1;
+    }
+    if (kernel_log_write("ok", 2) != 2 || backend_a_count != 2 || backend_b_count != 2 || wire_len != 0) {
+        fputs("FAIL: console must be an independently removable backend\n", stderr);
+        return 1;
+    }
+    if (kernel_log_backend_register(kernel_log_console_backend()) != 0) return 1;
+    kernel_log_flush();
+    if (wire_len != 2 || memcmp(wire, "ok", 2) != 0) return 1;
+    wire_len = 0;
+#else
+    fputs("FAIL: console is not a registered log backend\n", stderr);
+    return 1;
+#endif
+    kernel_log_backend_unregister(&a);
+    kernel_log_backend_unregister(&b);
+#endif
 #ifndef NOS_LOG_RECORD_RING
     fputs("FAIL: deferred record log ring is unavailable\n", stderr);
     return 1;

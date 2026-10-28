@@ -110,7 +110,7 @@ int nlk_discovery_send_hello(struct nlk_node *node, uint8_t port_id)
     hdr.dst_addr = NLK_ADDR_LOCAL;
     hdr.dst_cap = NLK_CAP_ID_CORE;
     hdr.cmd_op = NLK_CORE_OP_HELLO;
-    hdr.seq_id = ++node->next_seq_id;
+    hdr.seq_id = __atomic_add_fetch(&node->next_seq_id, 1U, __ATOMIC_RELAXED);
     hdr.payload_len = sizeof(hello);
 
     memcpy(pkt_buf, &hdr, sizeof(hdr));

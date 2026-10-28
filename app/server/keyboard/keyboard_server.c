@@ -25,6 +25,7 @@
 #include <kernel/mm.h>
 #include <kernel/sem.h>
 #include <kernel/mutex.h>
+#include <kernel/irq.h>
 #include <string.h>
 
 #include <nos/keyboard.h>
@@ -38,6 +39,7 @@
 
 #define KS_MAX_RAW_WORDS    KEY_RAW_WORDS(KEY_MAX_RAW_BITS)
 #define KS_MAX_KEY_WORDS    KEY_RAW_WORDS(KEY_MAX_NUM)
+#define KS_NLK_HID_QUEUE_LEN 8U
 
 struct keyboard_server {
     struct task_struct     *task;
@@ -57,6 +59,10 @@ struct keyboard_server {
     uint32_t                raw_prev[KS_MAX_KEY_WORDS];
     uint32_t                raw_stable[KS_MAX_KEY_WORDS];
     uint8_t                 last_usb_hid[8];
+    struct nlk_kb_hid_report pending_nlk_hid[KS_NLK_HID_QUEUE_LEN];
+    uint8_t                 nlk_hid_head;
+    uint8_t                 nlk_hid_tail;
+    uint8_t                 nlk_hid_count;
 };
 
 static const struct keyboard_profile *g_registered_kb_profile;
@@ -118,10 +124,15 @@ static void ks_on_hid_report(const struct nlk_kb_hid_report *report, void *priv)
     if (ks->nlk_node != NULL && ks->nlk_node->bearer_count > 0U &&
         ks->kb_cap.cap.cap_id != 0U &&
         (ks->hid_dev == NULL || ks->nlk_node->upstream_port != 0U)) {
-        (void)nlk_node_send_event(ks->nlk_node, NLK_ADDR_HOST,
-                                  ks->kb_cap.cap.cap_id,
-                                  NLK_KB_EVT_HID_REPORT,
-                                  report, sizeof(*report), false);
+        addr_t irq_flags = disable_irq_save();
+        if (ks->nlk_hid_count >= KS_NLK_HID_QUEUE_LEN) {
+            ks->nlk_hid_tail = (uint8_t)((ks->nlk_hid_tail + 1U) % KS_NLK_HID_QUEUE_LEN);
+            ks->nlk_hid_count--;
+        }
+        ks->pending_nlk_hid[ks->nlk_hid_head] = *report;
+        ks->nlk_hid_head = (uint8_t)((ks->nlk_hid_head + 1U) % KS_NLK_HID_QUEUE_LEN);
+        ks->nlk_hid_count++;
+        enable_irq_save(irq_flags);
     }
 }
 
@@ -384,6 +395,37 @@ static void keyboard_server_task_entry(void *parameter)
                     (void)nlk_cap_keyboard_update_local_keys(
                         &ks->kb_cap, ks->raw_stable, ks->profile.key_count);
                     mutex_unlock(&ks->lock);
+                }
+            }
+
+            if (ks->nlk_node != NULL) {
+                for (;;) {
+                    struct nlk_kb_hid_report next_report;
+                    uint8_t sent_tail;
+                    addr_t irq_flags = disable_irq_save();
+                    if (ks->nlk_hid_count == 0U) {
+                        enable_irq_save(irq_flags);
+                        break;
+                    }
+                    sent_tail = ks->nlk_hid_tail;
+                    next_report = ks->pending_nlk_hid[sent_tail];
+                    enable_irq_save(irq_flags);
+
+                    int rc = nlk_node_send_event(ks->nlk_node, NLK_ADDR_HOST,
+                                                 ks->kb_cap.cap.cap_id,
+                                                 NLK_KB_EVT_HID_REPORT,
+                                                 &next_report,
+                                                 sizeof(next_report), false);
+                    if (rc < 0) {
+                        break;
+                    }
+                    irq_flags = disable_irq_save();
+                    if (ks->nlk_hid_count > 0U && ks->nlk_hid_tail == sent_tail) {
+                        ks->nlk_hid_tail =
+                            (uint8_t)((ks->nlk_hid_tail + 1U) % KS_NLK_HID_QUEUE_LEN);
+                        ks->nlk_hid_count--;
+                    }
+                    enable_irq_save(irq_flags);
                 }
             }
 

@@ -399,8 +399,8 @@ struct nlk_fw_chunk_ack {
 
 #### 通信模式与操作码
 - `LOG_OP_SUBSCRIBE  (0x01)` [`RPC`]：订阅或取消订阅实时日志流。
-- `LOG_OP_SET_LEVEL  (0x02)` [`RPC`]：调用 `set_log_level()` / `set_log_enabled()` 动态修改运行时日志级别（`LOG_ALL` .. `LOG_DISABLE`）。
-- `LOG_OP_GET_STATS  (0x03)` [`RPC`]：调用 `kernel_log_get_stats()` 获取 `dropped_records`、`truncated_records`、`high_water`。
+- `LOG_OP_SET_LEVEL  (0x02)` [`RPC`]：调整此 NLK 后端的日志级别和可选开关，不改变串口等其他后端或全局过滤器。
+- `LOG_OP_GET_STATS  (0x03)` [`RPC`]：获取 NLK 后端的丢弃记录数和队列高水位，以及全局格式化截断次数。
 - `LOG_STREAM_RECORD (0x10)` [`STREAM`, 设备 -> 订阅端]：异步推送结构化日志记录。
 
 #### 报文载荷格式
@@ -421,7 +421,7 @@ struct nlk_log_wire_record {
     char     msg[];             /* UTF-8 / ASCII 日志内容 (可多条连续打包在一个 Stream 包中) */
 } __attribute__((packed));
 ```
-> **架构安全约束：** `NLK_CAP_LOG` 严禁在 `pr_log()` 持锁路径或关中断上下文中直接调用阻塞式总线发送，必须由独立的 NLK 工作线程或异步排空钩子从日志环形缓冲区读取后打包发送，且 NLK 内部调试日志需标记 `NLK_LOG_NO_ECHO` 防止递归死循环。
+> **架构安全约束：** `NLK_CAP_LOG` 的注册回调只将记录写入独立有界队列；NLK 服务任务分批发送。发送失败的记录暂存以供重试，队列满时丢弃旧记录并计数；每轮发送数量受限，避免发送路径产生的日志造成无限循环。
 
 ---
 
@@ -430,12 +430,16 @@ struct nlk_log_wire_record {
 基于 `include/nos/tty.h` 的 `struct nos_tty` 抽象，注册一个虚拟终端后端 `nlk_tty`。上位机可通过 USB、Wi-Fi、蓝牙甚至跨级联 I2C/SPI 直接打开任意节点的 `nshell` 交互式命令行。
 
 #### 通信模式与操作码
-- `SHELL_OP_OPEN       (0x01)` [`RPC`]：打开或接管远程 Shell 会话，协商初始接收窗口信用值（`rx_credit`）与终端行列数。
-- `SHELL_OP_CLOSE      (0x02)` [`RPC`]：关闭远程 Shell 会话，恢复本地 UART 控制台。
+- `SHELL_OP_OPEN       (0x01)` [`RPC`]：打开远程 Shell 会话。当前一个能力允许一个远程会话；本地 UART shell 始终独立运行。可靠会话使用随机 64 位 session ID，重试同一 OPEN 幂等，另一个会话返回 `EBUSY`。
+- `SHELL_OP_CLOSE      (0x02)` [`RPC`]：关闭远程 Shell 会话。可靠会话请求携带 64 位 session ID，防止旧客户端关闭新会话。
 - `SHELL_OP_SIGNAL     (0x03)` [`RPC`]：发送控制信号（如 `SIGINT` 中断当前命令、清屏复位）。
-- `SHELL_OP_FLOW_CRED  (0x04)` [`STREAM`]：接收端向发送端补充窗口字节信用额度（防止大段脚本粘贴导致小内存 MCU RX FIFO 溢出）。
+- `SHELL_OP_FLOW_CRED  (0x04)` [`STREAM`]：保留的传统流控操作；目前不提供可靠信用控制。
+- `SHELL_OP_INPUT      (0x05)` [`RPC`]：可靠输入，载荷为 session ID（u64）、字节偏移（u32）和最多 64 字节数据。设备仅在整块写入后确认；队列不足返回 `ENOSPC`，主机等待并重试同一偏移。重复的上一块返回成功而不重复写入，避免 ACK 丢失造成重复输入。
+- `SHELL_OP_HEARTBEAT  (0x06)` [`RPC`]：携带 session ID 刷新租约。可靠会话在 30 秒没有请求后由服务任务关闭，主机空闲时每 10 秒发送心跳。
 - `SHELL_STREAM_STDIN  (0x10)` [`STREAM`, 客户端 -> 设备]：终端输入字节流（支持 ANSI 转义序列、方向键、退格）。
 - `SHELL_STREAM_STDOUT (0x11)` [`STREAM`, 设备 -> 客户端]：终端输出字节流。
+
+可靠 OPEN 使用原有 8 字节 `nlk_shell_open_msg`，将 `flags` 位 0 设为 1，并追加非零的 64 位 session ID。可靠会话拒绝旧的无确认 stdin 流。传统 8 字节 OPEN 和 stdin 流仍可使用，但没有确认或自动租约，不应将其用于要求可靠输入或自动恢复的客户端。`scripts/nlk_tool.py shell` 和 `exec` 使用可靠扩展；会话双方都需支持该扩展。输入偏移按 32 位回绕。租约只处理客户端失联，未提供多远程会话复用。输出队列有界，发送由 NLK 服务任务完成；底层连接中断时未确认的输出不承诺跨连接重放。
 
 ---
 
