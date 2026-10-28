@@ -183,6 +183,9 @@ ssize_t nos_write(int fd, const void *buf, size_t count);
 loff_t nos_lseek(int fd, loff_t offset, int whence);
 int nos_mkdir(const char *pathname, mode_t mode);
 int nos_rmdir(const char *pathname);
+int nos_unlink(const char *pathname);
+int nos_rename(const char *oldpath, const char *newpath);
+int nos_truncate(const char *pathname, loff_t length);
 int vfs_bind_mount(struct dentry *target, struct dentry *mnt_root); // Add declaration
 
 /* Filesystem Initialization */

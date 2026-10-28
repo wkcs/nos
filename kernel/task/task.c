@@ -493,6 +493,46 @@ static size_t task_get_stack_max_used(struct task_struct *task)
     return used;
 }
 
+size_t task_stack_max_used(struct task_struct *task)
+{
+    if (task == NULL) {
+        return 0;
+    }
+    return task_get_stack_max_used(task);
+}
+
+struct task_struct *task_find_by_pid(pid_t pid)
+{
+    struct task_struct *task_temp;
+
+    spin_lock(&g_task_list_lock);
+    list_for_each_entry(task_temp, &g_task_list, tlist) {
+        if (task_temp->pid == pid) {
+            spin_unlock(&g_task_list_lock);
+            return task_temp;
+        }
+    }
+    spin_unlock(&g_task_list_lock);
+    return NULL;
+}
+
+int task_foreach(int (*cb)(struct task_struct *task, void *arg), void *arg)
+{
+    struct task_struct *task_temp;
+    int rc = 0;
+
+    if (cb == NULL) {
+        return -EINVAL;
+    }
+    list_for_each_entry(task_temp, &g_task_list, tlist) {
+        rc = cb(task_temp, arg);
+        if (rc != 0) {
+            break;
+        }
+    }
+    return rc;
+}
+
 static char *get_task_status_string(struct task_struct *task)
 {
     if (task == NULL) {

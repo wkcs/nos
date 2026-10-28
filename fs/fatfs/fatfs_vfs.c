@@ -29,12 +29,13 @@ static int get_fatfs_path(struct dentry *dentry, char *buf, int size) {
   struct dentry *root = dentry->d_sb->s_root;
   *p = '\0';
 
-  if (dentry == root) {
+  if (dentry == root || (root && dentry->d_inode == root->d_inode)) {
     strcpy(buf, "0:/");
     return 0;
   }
 
-  while (dentry && dentry != root) {
+  while (dentry && dentry != root &&
+         (!root || dentry->d_inode != root->d_inode)) {
     int len = dentry->d_name.len;
     p -= len;
     if (p <= buf)
@@ -113,6 +114,9 @@ static ssize_t fatfs_write(struct file *file, const char *buf, size_t count, lof
     if (res != FR_OK) return -EIO;
 
     *ppos += bw;
+    if (file->f_inode && *ppos > file->f_inode->i_size) {
+        file->f_inode->i_size = *ppos;
+    }
     return bw;
 }
 
@@ -252,6 +256,7 @@ static int fatfs_create(struct inode *dir, struct dentry *dentry, int mode) {
 static int fatfs_mkdir(struct inode *dir, struct dentry *dentry, int mode) {
     char path[256];
     FRESULT res;
+    (void)mode;
     
     if (get_fatfs_path(dentry, path, sizeof(path)) != 0) return -ENAMETOOLONG;
     
@@ -262,12 +267,93 @@ static int fatfs_mkdir(struct inode *dir, struct dentry *dentry, int mode) {
             dentry->d_inode = inode;
             return 0;
         }
+    } else if (res == FR_EXIST) {
+        return -EEXIST;
     } else {
         pr_err("FatFs: mkdir failed: %d\r\n", res);
     }
     return -EIO;
 }
 
+static int fatfs_unlink(struct inode *dir, struct dentry *dentry)
+{
+    char path[256];
+    FRESULT res;
+    (void)dir;
+
+    if (get_fatfs_path(dentry, path, sizeof(path)) != 0) {
+        return -ENAMETOOLONG;
+    }
+    res = f_unlink(path);
+    if (res == FR_OK) {
+        return 0;
+    }
+    if (res == FR_NO_FILE || res == FR_NO_PATH) {
+        return -ENOENT;
+    }
+    if (res == FR_DENIED) {
+        return -EACCES;
+    }
+    return -EIO;
+}
+
+static int fatfs_rmdir(struct inode *dir, struct dentry *dentry)
+{
+    char path[256];
+    FRESULT res;
+    (void)dir;
+
+    if (get_fatfs_path(dentry, path, sizeof(path)) != 0) {
+        return -ENAMETOOLONG;
+    }
+    res = f_unlink(path);
+    if (res == FR_OK) {
+        return 0;
+    }
+    if (res == FR_NO_FILE || res == FR_NO_PATH) {
+        return -ENOENT;
+    }
+    if (res == FR_DENIED) {
+        return -ENOTEMPTY;
+    }
+    return -EIO;
+}
+
+static int fatfs_rename(struct inode *old_dir, struct dentry *old_dentry,
+                        struct inode *new_dir, struct dentry *new_dentry)
+{
+    char old_path[256];
+    char new_path[256];
+    FRESULT res;
+    (void)old_dir;
+    (void)new_dir;
+
+    if (get_fatfs_path(old_dentry, old_path, sizeof(old_path)) != 0 ||
+        get_fatfs_path(new_dentry, new_path, sizeof(new_path)) != 0) {
+        return -ENAMETOOLONG;
+    }
+    res = f_rename(old_path, new_path);
+    if (res == FR_OK) {
+        new_dentry->d_inode = old_dentry->d_inode;
+        return 0;
+    }
+    if (res == FR_EXIST) {
+        return -EEXIST;
+    }
+    if (res == FR_NO_FILE || res == FR_NO_PATH) {
+        return -ENOENT;
+    }
+    return -EIO;
+}
+
+static int fatfs_truncate(struct inode *inode, loff_t length)
+{
+    if (inode == NULL || length < 0) {
+        return -EINVAL;
+    }
+    /* The inode does not carry a path or an open FIL needed by f_truncate. */
+    return -ENOTSUP;
+}
 
 // File Open
 
@@ -317,16 +403,20 @@ static struct inode_operations fatfs_dir_inode_ops = {
     .lookup = fatfs_lookup,
     .create = fatfs_create,
     .mkdir = fatfs_mkdir,
+    .rmdir = fatfs_rmdir,
+    .unlink = fatfs_unlink,
+    .rename = fatfs_rename,
 };
 
 static struct inode_operations fatfs_file_inode_ops = {
-    // Truncate?
+    .truncate = fatfs_truncate,
 };
 
 static int fatfs_file_open(struct inode *inode, struct file *file) {
     FIL *fp;
     char path[260] __attribute__((aligned(4)));
     FRESULT res;
+    BYTE mode = FA_READ | FA_WRITE;
 
     // Resolve path using dentry
     if (!file->f_path.dentry) {
@@ -339,19 +429,28 @@ static int fatfs_file_open(struct inode *inode, struct file *file) {
     fp = kzalloc(sizeof(FIL), GFP_KERNEL);
     if (!fp) return -ENOMEM;
 
-    // Open for Read/Write. VFS handles permission check usually?
-    // NOS VFS is simple. Open with FA_READ | FA_WRITE?
-    // Depends on flags. file->f_flags.
-    // For now simple read/write.
-    res = f_open(fp, path, FA_READ | FA_WRITE);
+    if (file->f_flags & O_TRUNC) {
+        mode = FA_CREATE_ALWAYS | FA_READ | FA_WRITE;
+    } else if (file->f_flags & O_CREAT) {
+        mode = FA_OPEN_ALWAYS | FA_READ | FA_WRITE;
+    }
+    res = f_open(fp, path, mode);
     if (res != FR_OK) {
         // Try read only
         res = f_open(fp, path, FA_READ);
         if (res != FR_OK) {
-            // pr_err("FatFs: open %s failed: %d\r\n", path, res);
             kfree(fp);
             return -ENOENT;
         }
+    }
+    if (file->f_flags & O_TRUNC) {
+        inode->i_size = 0;
+    } else {
+        inode->i_size = f_size(fp);
+    }
+    if (file->f_flags & O_APPEND) {
+        (void)f_lseek(fp, f_size(fp));
+        file->f_pos = f_size(fp);
     }
     
     file->private_data = fp;

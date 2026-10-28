@@ -32,11 +32,16 @@ static const struct file_operations ramfs_dir_ops;
 static const struct inode_operations ramfs_dir_inode_ops;
 static const struct inode_operations ramfs_file_inode_ops;
 
+static unsigned long g_ramfs_next_ino = 1;
+
 static struct inode *ramfs_get_inode(struct super_block *sb, int mode,
                                      dev_t dev) {
+  (void)dev;
   struct inode *inode = nos_vfs_alloc_inode(sb);
   if (inode) {
+    inode->i_ino = __atomic_fetch_add(&g_ramfs_next_ino, 1UL, __ATOMIC_RELAXED);
     inode->i_mode = mode;
+    inode->i_nlink = (mode & S_IFDIR) ? 2U : 1U;
     inode->i_size = 0;
     inode->i_atime = inode->i_mtime = inode->i_ctime = (struct timespec){0, 0};
 
@@ -126,6 +131,7 @@ static int ramfs_readdir(struct file *file, void *dirent, filldir_t filldir)
         char *name = NULL;
         size_t len = 0;
         u64 ino = 0;
+        unsigned dtype = DT_REG;
         loff_t i = 0;
         int rc;
 
@@ -139,6 +145,7 @@ static int ramfs_readdir(struct file *file, void *dirent, filldir_t filldir)
                 if (name != NULL) {
                     memcpy(name, de->name, len + 1);
                     ino = de->inode->i_ino;
+                    dtype = (de->inode->i_mode & S_IFDIR) ? DT_DIR : DT_REG;
                 }
                 break;
             }
@@ -147,7 +154,7 @@ static int ramfs_readdir(struct file *file, void *dirent, filldir_t filldir)
         if (name == NULL) {
             return i > file->f_pos ? -ENOMEM : 0;
         }
-        rc = filldir(dirent, name, (int)len, file->f_pos, ino, 0);
+        rc = filldir(dirent, name, (int)len, file->f_pos, ino, dtype);
         kfree(name);
         if (rc != 0) return 0;
         file->f_pos++;
@@ -162,6 +169,23 @@ static const struct file_operations ramfs_file_ops = {
 static const struct file_operations ramfs_dir_ops = {
     .readdir = ramfs_readdir,
 };
+
+static void ramfs_free_inode(struct inode *inode)
+{
+    struct ramfs_node *node;
+
+    if (inode == NULL) {
+        return;
+    }
+    node = inode->i_private;
+    if (node != NULL) {
+        if (!(inode->i_mode & S_IFDIR) && node->data != NULL) {
+            kfree(node->data);
+        }
+        kfree(node);
+    }
+    nos_vfs_destroy_inode(inode);
+}
 
 /*
  * Inode Operations
@@ -234,10 +258,213 @@ static struct dentry *ramfs_lookup(struct inode *dir, struct dentry *dentry)
     return NULL;
 }
 
+static int ramfs_unlink(struct inode *dir, struct dentry *dentry)
+{
+    struct ramfs_node *node = dir ? dir->i_private : NULL;
+    struct ramfs_dirent *de;
+
+    if (node == NULL || dentry == NULL || dentry->d_name.name == NULL) {
+        return -EINVAL;
+    }
+    mutex_lock(&dir->i_mutex);
+    list_for_each_entry(de, &node->dirents, list) {
+        if (strcmp(de->name, dentry->d_name.name) == 0) {
+            if (de->inode->i_mode & S_IFDIR) {
+                mutex_unlock(&dir->i_mutex);
+                return -EISDIR;
+            }
+            list_del(&de->list);
+            mutex_unlock(&dir->i_mutex);
+            kfree(de->name);
+            ramfs_free_inode(de->inode);
+            kfree(de);
+            return 0;
+        }
+    }
+    mutex_unlock(&dir->i_mutex);
+    return -ENOENT;
+}
+
+static int ramfs_rmdir(struct inode *dir, struct dentry *dentry)
+{
+    struct ramfs_node *node = dir ? dir->i_private : NULL;
+    struct ramfs_dirent *de;
+
+    if (node == NULL || dentry == NULL || dentry->d_name.name == NULL) {
+        return -EINVAL;
+    }
+    mutex_lock(&dir->i_mutex);
+    list_for_each_entry(de, &node->dirents, list) {
+        if (strcmp(de->name, dentry->d_name.name) == 0) {
+            struct ramfs_node *sub;
+
+            if (!(de->inode->i_mode & S_IFDIR)) {
+                mutex_unlock(&dir->i_mutex);
+                return -ENOTDIR;
+            }
+            sub = de->inode->i_private;
+            if (sub != NULL && !list_empty(&sub->dirents)) {
+                mutex_unlock(&dir->i_mutex);
+                return -ENOTEMPTY;
+            }
+            list_del(&de->list);
+            mutex_unlock(&dir->i_mutex);
+            kfree(de->name);
+            ramfs_free_inode(de->inode);
+            kfree(de);
+            return 0;
+        }
+    }
+    mutex_unlock(&dir->i_mutex);
+    return -ENOENT;
+}
+
+static int ramfs_rename(struct inode *old_dir, struct dentry *old_dentry,
+                        struct inode *new_dir, struct dentry *new_dentry)
+{
+    struct ramfs_node *old_node = old_dir ? old_dir->i_private : NULL;
+    struct ramfs_node *new_node = new_dir ? new_dir->i_private : NULL;
+    struct ramfs_dirent *de, *src_de = NULL, *dst_de = NULL;
+    char *new_name;
+
+    if (old_node == NULL || new_node == NULL ||
+        old_dentry == NULL || new_dentry == NULL ||
+        old_dentry->d_name.name == NULL || new_dentry->d_name.name == NULL) {
+        return -EINVAL;
+    }
+    if (old_dir == new_dir &&
+        strcmp(old_dentry->d_name.name, new_dentry->d_name.name) == 0) {
+        return 0;
+    }
+
+    new_name = kzalloc(strlen(new_dentry->d_name.name) + 1, GFP_KERNEL);
+    if (new_name == NULL) {
+        return -ENOMEM;
+    }
+    strcpy(new_name, new_dentry->d_name.name);
+
+    mutex_lock(&old_dir->i_mutex);
+    if (new_dir != old_dir) {
+        mutex_lock(&new_dir->i_mutex);
+    }
+
+    list_for_each_entry(de, &old_node->dirents, list) {
+        if (strcmp(de->name, old_dentry->d_name.name) == 0) {
+            src_de = de;
+            break;
+        }
+    }
+    if (src_de == NULL) {
+        if (new_dir != old_dir) {
+            mutex_unlock(&new_dir->i_mutex);
+        }
+        mutex_unlock(&old_dir->i_mutex);
+        kfree(new_name);
+        return -ENOENT;
+    }
+
+    list_for_each_entry(de, &new_node->dirents, list) {
+        if (strcmp(de->name, new_name) == 0) {
+            dst_de = de;
+            break;
+        }
+    }
+    if (dst_de != NULL) {
+        if ((dst_de->inode->i_mode & S_IFDIR) != (src_de->inode->i_mode & S_IFDIR)) {
+            if (new_dir != old_dir) {
+                mutex_unlock(&new_dir->i_mutex);
+            }
+            mutex_unlock(&old_dir->i_mutex);
+            kfree(new_name);
+            return (dst_de->inode->i_mode & S_IFDIR) ? -EISDIR : -ENOTDIR;
+        }
+        if (dst_de->inode->i_mode & S_IFDIR) {
+            struct ramfs_node *sub = dst_de->inode->i_private;
+            if (sub != NULL && !list_empty(&sub->dirents)) {
+                if (new_dir != old_dir) {
+                    mutex_unlock(&new_dir->i_mutex);
+                }
+                mutex_unlock(&old_dir->i_mutex);
+                kfree(new_name);
+                return -ENOTEMPTY;
+            }
+        }
+        list_del(&dst_de->list);
+        kfree(dst_de->name);
+        ramfs_free_inode(dst_de->inode);
+        kfree(dst_de);
+    }
+
+    list_del(&src_de->list);
+    kfree(src_de->name);
+    src_de->name = new_name;
+    list_add_tail(&src_de->list, &new_node->dirents);
+    new_dentry->d_inode = src_de->inode;
+
+    if (new_dir != old_dir) {
+        mutex_unlock(&new_dir->i_mutex);
+    }
+    mutex_unlock(&old_dir->i_mutex);
+    return 0;
+}
+
+static int ramfs_truncate(struct inode *inode, loff_t length)
+{
+    struct ramfs_node *node;
+    size_t target;
+
+    if (inode == NULL || length < 0) {
+        return -EINVAL;
+    }
+    if (inode->i_mode & S_IFDIR) {
+        return -EISDIR;
+    }
+    node = inode->i_private;
+    if (node == NULL) {
+        return -EIO;
+    }
+    target = (size_t)length;
+    mutex_lock(&inode->i_mutex);
+    if (target == 0) {
+        if (node->data != NULL) {
+            kfree(node->data);
+            node->data = NULL;
+        }
+        node->size = 0;
+        inode->i_size = 0;
+    } else if (target > node->size) {
+        void *new_data = krealloc(node->data, target, GFP_KERNEL);
+        if (new_data == NULL) {
+            mutex_unlock(&inode->i_mutex);
+            return -ENOMEM;
+        }
+        if (target > (size_t)inode->i_size) {
+            memset((char *)new_data + inode->i_size, 0, target - (size_t)inode->i_size);
+        }
+        node->data = new_data;
+        node->size = target;
+        inode->i_size = target;
+    } else {
+        if (target > (size_t)inode->i_size && node->data != NULL) {
+            memset((char *)node->data + inode->i_size, 0, target - (size_t)inode->i_size);
+        }
+        inode->i_size = target;
+    }
+    mutex_unlock(&inode->i_mutex);
+    return 0;
+}
+
 static const struct inode_operations ramfs_dir_inode_ops = {
     .create = ramfs_create,
     .lookup = ramfs_lookup,
     .mkdir = ramfs_mkdir,
+    .rmdir = ramfs_rmdir,
+    .unlink = ramfs_unlink,
+    .rename = ramfs_rename,
+};
+
+static const struct inode_operations ramfs_file_inode_ops = {
+    .truncate = ramfs_truncate,
 };
 
 /*

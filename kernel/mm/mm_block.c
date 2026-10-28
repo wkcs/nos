@@ -365,3 +365,36 @@ size_t mm_block_free_size(void)
 
     return size;
 }
+
+size_t mm_block_total_size(void)
+{
+    struct memblock *block;
+    size_t size = 0;
+
+    spin_lock_irq(&g_memblock_lock);
+    list_for_each_entry (block, &g_memblock_list, list) {
+        size += block->size;
+    }
+    spin_unlock_irq(&g_memblock_lock);
+
+    return size;
+}
+
+size_t mm_block_used_size(void)
+{
+    struct memblock *block;
+    struct mem_base *base;
+    size_t size = 0;
+
+    spin_lock_irq(&g_memblock_lock);
+    list_for_each_entry (block, &g_memblock_list, list) {
+        list_for_each_entry (base, &block->base, list) {
+            if (base->used) {
+                size += base->size;
+            }
+        }
+    }
+    spin_unlock_irq(&g_memblock_lock);
+
+    return size;
+}

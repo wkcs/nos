@@ -60,8 +60,10 @@ struct inode_operations {
   struct dentry *(*lookup)(struct inode *, struct dentry *);
   int (*mkdir)(struct inode *, struct dentry *, int);
   int (*rmdir)(struct inode *, struct dentry *);
+  int (*unlink)(struct inode *, struct dentry *);
   int (*rename)(struct inode *, struct dentry *, struct inode *,
                 struct dentry *);
+  int (*truncate)(struct inode *, loff_t);
 };
 
 /*
@@ -210,5 +212,28 @@ int unregister_filesystem(struct file_system_type *fs);
 int vfs_init(void);
 struct dentry *vfs_get_root(void);
 struct dentry *vfs_lookup(struct dentry *parent, struct qstr *name);
+
+struct vfs_mount_entry {
+  const char *dev_name;
+  const char *mount_path;
+  const char *fs_name;
+  struct dentry *dentry;
+};
+
+struct dentry *vfs_alloc_dentry(struct dentry *parent, const char *name,
+                                unsigned int len);
+struct dentry *vfs_lookup_path(struct dentry *base, const char *path);
+int vfs_create_file(struct dentry *dir, const char *name, int mode,
+                    struct dentry **out);
+int vfs_make_dir(struct dentry *dir, const char *name, int mode,
+                 struct dentry **out);
+int vfs_remove_entry(struct dentry *dir, const char *name, bool is_dir);
+int vfs_rename_entry(struct dentry *old_dir, const char *old_name,
+                     struct dentry *new_dir, const char *new_name);
+int vfs_truncate_dentry(struct dentry *dentry, loff_t length);
+int vfs_get_mount_count(void);
+int vfs_get_mount_entry(int index, struct vfs_mount_entry *entry);
+int vfs_list_filesystems(char *buf, size_t size);
+void vfs_setup_standard_mounts(void);
 
 #endif /* __NOS_FS_VFS_H__ */

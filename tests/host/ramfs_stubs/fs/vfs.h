@@ -16,16 +16,27 @@ struct file_operations {
 };
 struct inode_operations {
     int (*create)(struct inode *, struct dentry *, int);
-    int (*mkdir)(struct inode *, struct dentry *, int);
     struct dentry *(*lookup)(struct inode *, struct dentry *);
+    int (*mkdir)(struct inode *, struct dentry *, int);
+    int (*rmdir)(struct inode *, struct dentry *);
+    int (*unlink)(struct inode *, struct dentry *);
+    int (*rename)(struct inode *, struct dentry *, struct inode *, struct dentry *);
+    int (*truncate)(struct inode *, loff_t);
 };
 struct inode {
-    int i_mode; size_t i_size; uint64_t i_ino;
+    int i_mode; size_t i_size; uint64_t i_ino; unsigned int i_nlink;
     struct timespec i_atime, i_mtime, i_ctime;
     struct super_block *i_sb; void *i_private; struct mutex i_mutex;
     const struct inode_operations *i_op; const struct file_operations *i_fop;
 };
-struct dentry { struct inode *d_inode; struct super_block *d_sb; struct { const char *name; } d_name; };
+struct dentry {
+    struct inode *d_inode;
+    struct dentry *d_parent;
+    struct super_block *d_sb;
+    struct list_head d_child;
+    struct list_head d_subdirs;
+    struct { const char *name; unsigned int len; } d_name;
+};
 struct file { struct inode *f_inode; off_t f_pos; };
 struct super_operations { int (*statfs)(void *, void *); };
 struct super_block { unsigned long s_blocksize; unsigned char s_blocksize_bits; const struct super_operations *s_op; struct dentry *s_root; };
