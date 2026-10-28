@@ -6,8 +6,9 @@ The `help` command lists the built-in commands.
 
 The parser supports single and double quotes, backslash escapes, command lists
 (`;`, `&&`, `||`), pipelines (`|`), and file redirections (`<`, `>`, `>>`).
-Input redirection is currently consumed by `cat`; `cat -` also reads standard
-input. Output redirection and pipelines apply to built-in command output.
+Input redirection is consumed by `cat` and `wc`; both also read standard input
+when passed `-`. Output redirection and pipelines apply to built-in command
+output.
 
 Pipeline stages currently execute sequentially, using a 4096-byte buffer per
 stage. A producer that exceeds this limit fails with an output error and the

@@ -792,6 +792,154 @@ static int cmd_cat(int argc, char *argv[])
     return status;
 }
 
+struct wc_counts {
+    unsigned long long lines;
+    unsigned long long words;
+    unsigned long long bytes;
+    bool in_word;
+};
+
+static int wc_read(struct file *file, char *buf, size_t size)
+{
+    struct nshell *shell = nshell_current();
+    int ch;
+
+    if (file != NULL) return file->f_op->read(file, buf, size, &file->f_pos);
+    if (shell->input_file != NULL) {
+        file = shell->input_file;
+        return file->f_op->read(file, buf, size, &file->f_pos);
+    }
+    if (shell->pipe_input != NULL) {
+        struct shell_pipe_buffer *pipe = shell->pipe_input;
+        size_t count = pipe->len - pipe->pos;
+        if (count > size) count = size;
+        memcpy(buf, pipe->data + pipe->pos, count);
+        pipe->pos += count;
+        return (int)count;
+    }
+    ch = nshell_getc();
+    if (ch < 0) return ch;
+    if (ch == 4) return 0;
+    if (ch == 3) return -EINTR;
+    buf[0] = (char)ch;
+    return 1;
+}
+
+static int wc_count(struct file *file, struct wc_counts *counts)
+{
+    char buf[64];
+    int n;
+
+    memset(counts, 0, sizeof(*counts));
+    while ((n = wc_read(file, buf, sizeof(buf))) > 0) {
+        int i;
+        for (i = 0; i < n; i++) {
+            unsigned char c = (unsigned char)buf[i];
+            bool space = c == ' ' || c == '\t' || c == '\n' ||
+                         c == '\r' || c == '\v' || c == '\f';
+            counts->bytes++;
+            if (c == '\n') counts->lines++;
+            if (!space && !counts->in_word) counts->words++;
+            counts->in_word = !space;
+        }
+    }
+    return n;
+}
+
+static int wc_file(const char *path, struct wc_counts *counts)
+{
+    struct dentry *entry = resolve_path(path);
+    struct file file;
+    int rc;
+
+    if (entry == NULL || entry->d_inode == NULL) return -ENOENT;
+    if (S_ISDIR(entry->d_inode->i_mode)) return -EISDIR;
+    if (entry->d_inode->i_fop == NULL || entry->d_inode->i_fop->read == NULL) return -EACCES;
+    memset(&file, 0, sizeof(file));
+    file.f_inode = entry->d_inode;
+    file.f_op = entry->d_inode->i_fop;
+    file.f_path.dentry = entry;
+    file.f_flags = O_RDONLY;
+    if (file.f_op->open != NULL) {
+        rc = file.f_op->open(file.f_inode, &file);
+        if (rc != 0) return rc;
+    }
+    rc = wc_count(&file, counts);
+    if (file.f_op->release != NULL) {
+        int close_rc = file.f_op->release(file.f_inode, &file);
+        if (rc == 0 && close_rc != 0) rc = close_rc;
+    }
+    return rc;
+}
+
+static void wc_print(const struct wc_counts *counts, bool lines, bool words,
+                     bool bytes, const char *name)
+{
+    bool separator = false;
+    if (lines) {
+        shell_printf("%llu", counts->lines);
+        separator = true;
+    }
+    if (words) {
+        shell_printf("%s%llu", separator ? " " : "", counts->words);
+        separator = true;
+    }
+    if (bytes) shell_printf("%s%llu", separator ? " " : "", counts->bytes);
+    if (name != NULL) shell_printf(" %s", name);
+    shell_printf("\r\n");
+}
+
+static int cmd_wc(int argc, char *argv[])
+{
+    struct wc_counts total = {0};
+    bool lines = false, words = false, bytes = false;
+    int first = 1;
+    int status = 0;
+    int i;
+
+    while (first < argc && argv[first][0] == '-' && argv[first][1] != '\0') {
+        const char *option = argv[first] + 1;
+        if (strcmp(option, "-") == 0) {
+            first++;
+            break;
+        }
+        while (*option) {
+            if (*option == 'l') lines = true;
+            else if (*option == 'w') words = true;
+            else if (*option == 'c') bytes = true;
+            else {
+                shell_error("wc: invalid option -- '%c'\r\n", *option);
+                return -EINVAL;
+            }
+            option++;
+        }
+        first++;
+    }
+    if (!lines && !words && !bytes) lines = words = bytes = true;
+    if (first == argc) {
+        struct wc_counts counts;
+        int rc = wc_count(NULL, &counts);
+        if (rc < 0) return rc;
+        wc_print(&counts, lines, words, bytes, NULL);
+        return 0;
+    }
+    for (i = first; i < argc; i++) {
+        struct wc_counts counts;
+        int rc = strcmp(argv[i], "-") == 0 ? wc_count(NULL, &counts) : wc_file(argv[i], &counts);
+        if (rc < 0) {
+            shell_error("wc: %s: error %d\r\n", argv[i], rc);
+            status = rc;
+            continue;
+        }
+        wc_print(&counts, lines, words, bytes, argv[i]);
+        total.lines += counts.lines;
+        total.words += counts.words;
+        total.bytes += counts.bytes;
+    }
+    if (argc - first > 1) wc_print(&total, lines, words, bytes, "total");
+    return status;
+}
+
 static int cmd_mount(int argc, char *argv[]) {
   char *fs_type = NULL;
   char *dev = NULL;
@@ -1207,6 +1355,7 @@ static int nshell_init(void)
     shell_register_cmd("pwd", "Print working directory", cmd_pwd);
     shell_register_cmd("mkdir", "Make directory", cmd_mkdir);
     shell_register_cmd("cat", "Concatenate file", cmd_cat);
+    shell_register_cmd("wc", "Count lines, words and bytes", cmd_wc);
     shell_register_cmd("mount", "Mount filesystem", cmd_mount);
     shell_register_cmd("ps", "Dump task status", cmd_ps);
 #ifdef CONFIG_NLK_SERVER
