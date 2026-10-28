@@ -92,6 +92,14 @@ config STM32F4_SPI
 	help
 	  Enable the STM32F4 polling SPI controller driver.
 
+config STM32F1_SPI
+	bool "STM32F1 SPI controller"
+	depends on SOC_STM32F1
+	select SPI
+	default n
+	help
+	  Enable the STM32F1 polling SPI controller driver.
+
 config SPI_595
 	bool "74HC595 SPI shift register driver"
 	default n

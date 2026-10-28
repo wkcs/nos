@@ -199,6 +199,10 @@ int stm32_spi_init(struct device *dev)
     hw = dev->config;
     if (hw->regs == NULL || hw->gpio == NULL || hw->chip_selects == NULL ||
         hw->chip_select_count == 0 || hw->peripheral_clock == 0) return -EINVAL;
+#ifdef CONFIG_SOC_STM32F1
+    if (hw->miso_pin == 0 || (hw->pins & hw->miso_pin) != hw->miso_pin ||
+        (hw->pins & ~hw->miso_pin) == 0) return -EINVAL;
+#endif
     gpio_clocks = hw->gpio_clock;
     for (i = 0; i < hw->chip_select_count; i++) {
         if (hw->chip_selects[i].gpio == NULL || hw->chip_selects[i].pin == 0) return -EINVAL;
@@ -206,12 +210,25 @@ int stm32_spi_init(struct device *dev)
     }
     ret = device_init(dev);
     if (ret != 0) return ret;
+#ifdef CONFIG_SOC_STM32F1
+    RCC_APB2PeriphClockCmd(gpio_clocks, ENABLE);
+#else
     RCC_AHB1PeriphClockCmd(gpio_clocks, ENABLE);
+#endif
     if (hw->apb2) {
         RCC_APB2PeriphClockCmd(hw->spi_clock, ENABLE);
     } else {
         RCC_APB1PeriphClockCmd(hw->spi_clock, ENABLE);
     }
+#ifdef CONFIG_SOC_STM32F1
+    gpio.GPIO_Pin = hw->pins & ~hw->miso_pin;
+    gpio.GPIO_Mode = GPIO_Mode_AF_PP;
+    gpio.GPIO_Speed = GPIO_Speed_50MHz;
+    GPIO_Init(hw->gpio, &gpio);
+    gpio.GPIO_Pin = hw->miso_pin;
+    gpio.GPIO_Mode = GPIO_Mode_IN_FLOATING;
+    GPIO_Init(hw->gpio, &gpio);
+#else
     gpio.GPIO_Pin = hw->pins;
     gpio.GPIO_Mode = GPIO_Mode_AF;
     gpio.GPIO_OType = GPIO_OType_PP;
@@ -221,9 +238,14 @@ int stm32_spi_init(struct device *dev)
     GPIO_PinAFConfig(hw->gpio, hw->clock_pin_source, hw->gpio_af);
     GPIO_PinAFConfig(hw->gpio, hw->miso_pin_source, hw->gpio_af);
     GPIO_PinAFConfig(hw->gpio, hw->mosi_pin_source, hw->gpio_af);
+#endif
     for (i = 0; i < hw->chip_select_count; i++) {
         gpio.GPIO_Pin = hw->chip_selects[i].pin;
+#ifdef CONFIG_SOC_STM32F1
+        gpio.GPIO_Mode = GPIO_Mode_Out_PP;
+#else
         gpio.GPIO_Mode = GPIO_Mode_OUT;
+#endif
         GPIO_Init(hw->chip_selects[i].gpio, &gpio);
         stm32_spi_cs_set(&hw->chip_selects[i], 0);
     }

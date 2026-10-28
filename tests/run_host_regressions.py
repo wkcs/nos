@@ -17,6 +17,7 @@ TESTS = [
     ("run_serial_api_test.py",),
     ("run_spi_api_test.py",),
     ("run_stm32_spi_test.py",),
+    ("run_stm32_spi_test.py", "--f1"),
     ("run_sd_spi_test.py",),
     ("run_sd_spi_init_test.py",),
     ("run_sd_spi_io_test.py",),
