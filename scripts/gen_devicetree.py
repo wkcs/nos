@@ -45,8 +45,21 @@ def validate_bindings(nodes, bindings):
                 value = prop.to_nums()
                 if len(value) < rule.get('min-items', 0):
                     raise ValueError(f'{node.path}: property {name} has too few cells')
+                if 'max-items' in rule and len(value) > rule['max-items']:
+                    raise ValueError(f'{node.path}: property {name} has too many cells')
+                if 'minimum' in rule and any(item < rule['minimum'] for item in value):
+                    raise ValueError(f'{node.path}: property {name} is below the minimum')
             elif kind == 'string':
                 value = prop.to_string()
+            elif kind == 'boolean':
+                if prop.type != dtlib.Type.EMPTY:
+                    raise ValueError(f'{node.path}: property {name} must be boolean')
+                value = True
+            elif kind == 'phandle-array':
+                if prop.type not in (dtlib.Type.PHANDLE, dtlib.Type.PHANDLES,
+                                     dtlib.Type.PHANDLES_AND_NUMS):
+                    raise ValueError(f'{node.path}: property {name} must contain phandles')
+                value = prop.value
             else:
                 raise ValueError(f'{node.path}: unsupported binding type {kind}')
             if 'enum' in rule and value not in rule['enum']:

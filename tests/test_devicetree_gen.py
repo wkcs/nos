@@ -76,6 +76,21 @@ int main(void) {
                                     capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)
 
+    def test_spi_flash_binding_rejects_invalid_clock_and_flags(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory)
+            source = path / 'board.dts'
+            for frequency, flags, expected in ((0, '', 'frequency'), (1, 'spi-cpol = <1>;', 'spi-cpol')):
+                source.write_text(
+                    '/dts-v1/; / { flash@0 { compatible = "jedec,spi-nor"; '
+                    f'reg = <0>; spi-max-frequency = <{frequency}>; {flags}'
+                    ' }; };')
+                result = subprocess.run([sys.executable, str(GEN), '--input', str(source),
+                                         '--output', str(path / 'tree.c'), '--bindings',
+                                         str(ROOT / 'dts' / 'bindings')], capture_output=True, text=True)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(expected, result.stderr)
+
     def test_invalid_tree_fails(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory)
