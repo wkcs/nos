@@ -13,6 +13,9 @@ list(APPEND BOARD_PRIVATE_INCLUDES
     "${BOARD_DIR}/inside-include"
     "${BOARD_DIR}/usb"
 )
+if(CONFIG_ZJ_V3_SD_BLOCK)
+    list(APPEND BOARD_SRCS ${BOARD_DIR}/sd_block.c)
+endif()
 if(CONFIG_USB)
     list(APPEND BOARD_SRCS
         ${BOARD_DIR}/arch_usb.c
