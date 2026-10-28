@@ -111,8 +111,11 @@ int shell_split_commands(char *line, struct shell_command *commands, int capacit
             condition = next;
             word = 0;
             continue;
-        } else if (quote == 0 && (c == '<' || c == '>')) {
+        } else if (quote == 0 && c == '<') {
             return -1;
+        } else if (quote == 0 && c == '>') {
+            p++;
+            continue;
         } else if (c != ' ' && c != '\t') {
             word = 1;
         }
