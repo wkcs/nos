@@ -12,6 +12,9 @@
 #include <kernel/spinlock.h>
 #include <lib/kfifo.h>
 #include <nos/ipc.h>
+#if defined(CONFIG_DEVICE_TREE) && defined(CONFIG_BOARD_QEMU_STM32)
+#include <nos/devicetree.h>
+#endif
 #ifdef CONFIG_UART_DMA
 #include "arch_uart.h"
 extern struct uart_config_t uart_log_dev;
@@ -72,6 +75,7 @@ struct uart_stm32_config {
     uint8_t gpio_af;
 #endif
     uint32_t baud_rate;
+    uint32_t irq;
 };
 
 struct uart_stm32_data {
@@ -426,6 +430,30 @@ static int uart_stm32_init(struct device *dev)
     NVIC_InitTypeDef irq_init;
     int rc;
 
+#if defined(CONFIG_DEVICE_TREE) && defined(CONFIG_BOARD_QEMU_STM32)
+    const struct nos_dt_node *chosen = nos_dt_find_path("/chosen");
+    const struct nos_dt_node *node;
+    uint32_t console;
+    uint32_t address;
+    uint32_t length;
+    uint32_t irq;
+    struct uart_stm32_config *dt_config = (struct uart_stm32_config *)dev->config;
+
+    if (nos_dt_read_u32(chosen, "nos,console", 0, &console) != 0) {
+        return -EINVAL;
+    }
+    node = nos_dt_find_phandle(console);
+    if (!nos_dt_is_available(node) || !nos_dt_is_compatible(node, "st,stm32-uart") ||
+        nos_dt_read_u32(node, "reg", 0, &address) != 0 ||
+        nos_dt_read_u32(node, "reg", 1, &length) != 0 ||
+        nos_dt_read_u32(node, "interrupts", 0, &irq) != 0 ||
+        address != (uint32_t)(uintptr_t)USART1 || length < 0x400U ||
+        irq != USART1_IRQn) {
+        return -EINVAL;
+    }
+    dt_config->regs = USART1;
+    dt_config->irq = irq;
+#endif
     spin_lock_init(&data->lock);
     rc = kfifo_init(&data->rx_fifo, data->rx_buf, sizeof(data->rx_buf), 1);
     if (rc < 0) return rc;
@@ -489,7 +517,7 @@ static int uart_stm32_init(struct device *dev)
     USART_ITConfig(config->regs, USART_IT_RXNE, ENABLE);
     USART_Cmd(config->regs, ENABLE);
 
-    irq_init.NVIC_IRQChannel = USART1_IRQn;
+    irq_init.NVIC_IRQChannel = config->irq;
     irq_init.NVIC_IRQChannelPreemptionPriority = 3;
     irq_init.NVIC_IRQChannelSubPriority = 0;
     irq_init.NVIC_IRQChannelCmd = ENABLE;
@@ -510,7 +538,7 @@ static const struct uart_driver_api uart_stm32_api = {
     .panic_write = uart_stm32_poll_write,
 };
 
-static const struct uart_stm32_config qemu_stm32_uart1_config = {
+static struct uart_stm32_config qemu_stm32_uart1_config = {
     .regs = USART1,
     .clock = RCC_APB2Periph_USART1,
 #ifdef CONFIG_SOC_STM32F4
@@ -527,6 +555,7 @@ static const struct uart_stm32_config qemu_stm32_uart1_config = {
     .gpio_af = GPIO_AF_USART1,
 #endif
     .baud_rate = CONFIG_UART_BAUD_RATE,
+    .irq = USART1_IRQn,
 };
 
 DEVICE_DEFINE(qemu_stm32_uart1, "UART1", uart_stm32_init, &qemu_stm32_uart1_config,

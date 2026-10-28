@@ -15,6 +15,44 @@
 #endif
 #include "../../drivers/serial/uart_stm32.c"
 
+#ifdef CONFIG_DEVICE_TREE
+static int invalid_dt_irq;
+static const struct nos_dt_node mock_chosen;
+static const struct nos_dt_node mock_uart;
+const struct nos_dt_node *nos_dt_find_path(const char *path)
+{
+    return strcmp(path, "/chosen") == 0 ? &mock_chosen : NULL;
+}
+const struct nos_dt_node *nos_dt_find_phandle(uint32_t phandle)
+{
+    return phandle == 1 ? &mock_uart : NULL;
+}
+int nos_dt_is_available(const struct nos_dt_node *node)
+{
+    return node == &mock_uart;
+}
+int nos_dt_is_compatible(const struct nos_dt_node *node, const char *compatible)
+{
+    return node == &mock_uart && strcmp(compatible, "st,stm32-uart") == 0;
+}
+int nos_dt_read_u32(const struct nos_dt_node *node, const char *name,
+                    size_t index, uint32_t *value)
+{
+    if (node == &mock_chosen && strcmp(name, "nos,console") == 0 && index == 0) {
+        *value = 1;
+    } else if (node == &mock_uart && strcmp(name, "reg") == 0 && index == 0) {
+        *value = (uint32_t)(uintptr_t)USART1;
+    } else if (node == &mock_uart && strcmp(name, "reg") == 0 && index == 1) {
+        *value = 0x400;
+    } else if (node == &mock_uart && strcmp(name, "interrupts") == 0 && index == 0) {
+        *value = invalid_dt_irq ? 38 : USART1_IRQn;
+    } else {
+        return -EINVAL;
+    }
+    return 0;
+}
+#endif
+
 USART_TypeDef simulated_usart;
 GPIO_TypeDef simulated_gpio;
 DMA_Stream_TypeDef simulated_dma;
@@ -213,6 +251,14 @@ int main(void)
     unsigned char data[16];
     const unsigned char message[] = { 'A', 0, 0xff };
 
+#ifdef CONFIG_DEVICE_TREE
+    invalid_dt_irq = 1;
+    if (uart_stm32_init(dev) != -EINVAL || rx_interrupt_enabled) {
+        fputs("FAIL: reject unsupported device-tree IRQ before initializing hardware\n", stderr);
+        return 1;
+    }
+    invalid_dt_irq = 0;
+#endif
     if (uart_stm32_init(dev) != 0 || !rx_interrupt_enabled) {
         fputs("FAIL: initialize IRQ-backed UART\n", stderr);
         return 1;

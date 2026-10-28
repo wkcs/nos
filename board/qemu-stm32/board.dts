@@ -11,6 +11,10 @@
     #address-cells = <1>;
     #size-cells = <1>;
 
+    chosen {
+        nos,console = <&uart1>;
+    };
+
     cpus {
         #address-cells = <1>;
         #size-cells = <0>;
