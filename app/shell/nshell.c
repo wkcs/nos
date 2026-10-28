@@ -361,14 +361,58 @@ static int cmd_echo(int argc, char *argv[])
 }
 
 
+struct ls_context {
+    struct dentry *directory;
+    bool long_format;
+    bool show_all;
+};
+
+static void ls_print_entry(const char *name, struct inode *inode, bool long_format)
+{
+    char mode[11] = "----------";
+    static const char bits[] = "rwxrwxrwx";
+    unsigned int i;
+
+    if (!long_format || inode == NULL) {
+        shell_printf("%s\r\n", name);
+        return;
+    }
+    if (S_ISDIR(inode->i_mode)) {
+        mode[0] = 'd';
+    }
+    for (i = 0; i < 9; i++) {
+        if (inode->i_mode & (0400U >> i)) {
+            mode[i + 1] = bits[i];
+        }
+    }
+    shell_printf("%s %u %u %u %llu %s\r\n", mode, inode->i_nlink,
+                 inode->i_uid, inode->i_gid,
+                 (unsigned long long)inode->i_size, name);
+}
+
 static int shell_filldir(void *dirent, const char *name, int namelen,
-                         loff_t offset, u64 ino, unsigned d_type) {
-  if (nshell_current()->ls_long_format) {
-      shell_printf("-rw-rw-r-- 1 root root 0 %s\r\n", name); 
-  } else {
-     shell_printf("  %s\r\n", name); 
-  }
-  return 0;
+                         loff_t offset, u64 ino, unsigned d_type)
+{
+    struct ls_context *ctx = dirent;
+    struct inode *inode = NULL;
+    struct qstr q;
+    struct dentry *entry;
+
+    (void)offset;
+    (void)ino;
+    (void)d_type;
+    if (!ctx->show_all && name[0] == '.') {
+        return 0;
+    }
+    if (ctx->long_format) {
+        q.name = (const unsigned char *)name;
+        q.len = (unsigned int)namelen;
+        q.hash = 0;
+        entry = vfs_lookup(ctx->directory, &q);
+        inode = entry ? entry->d_inode : NULL;
+    }
+    ls_print_entry(name, inode, ctx->long_format);
+    return 0;
 }
 
 static int cmd_ls(int argc, char *argv[]) {
@@ -377,6 +421,8 @@ static int cmd_ls(int argc, char *argv[]) {
   struct inode *inode;
   struct dentry *target = shell_cwd;
   char *path_arg = NULL;
+  struct ls_context ctx = {0};
+  bool opened = false;
   
   nshell_current()->ls_long_format = false;
 
@@ -384,8 +430,19 @@ static int cmd_ls(int argc, char *argv[]) {
   for (i = 1; i < argc; i++) {
       if (strcmp(argv[i], "-l") == 0) {
           nshell_current()->ls_long_format = true;
+      } else if (strcmp(argv[i], "-a") == 0) {
+          ctx.show_all = true;
+      } else if (strcmp(argv[i], "-la") == 0 || strcmp(argv[i], "-al") == 0) {
+          nshell_current()->ls_long_format = true;
+          ctx.show_all = true;
+      } else if (argv[i][0] == '-') {
+          shell_printf("ls: unsupported option '%s'\r\n", argv[i]);
+          return -EINVAL;
       } else if (!path_arg) {
           path_arg = argv[i];
+      } else {
+          shell_printf("ls: multiple operands are not supported\r\n");
+          return -EINVAL;
       }
   }
 
@@ -399,9 +456,15 @@ static int cmd_ls(int argc, char *argv[]) {
 
   inode = target->d_inode;
 
+  if (inode == NULL) {
+    return -ENOENT;
+  }
   if (!S_ISDIR(inode->i_mode)) {
-    shell_printf("ls: not a directory\r\n");
-    return -1;
+    ls_print_entry(path_arg ? path_arg : ".", inode, nshell_current()->ls_long_format);
+    return 0;
+  }
+  if (inode->i_fop == NULL || inode->i_fop->readdir == NULL) {
+    return -ENOTDIR;
   }
 
   file = kzalloc(sizeof(struct file), GFP_KERNEL);
@@ -418,19 +481,22 @@ static int cmd_ls(int argc, char *argv[]) {
   if (file->f_op->open) {
       res = file->f_op->open(inode, file);
   }
+  opened = res == 0;
 
   if (res == 0 && file->f_op->readdir) {
-    file->f_op->readdir(file, NULL, shell_filldir);
+    ctx.directory = target;
+    ctx.long_format = nshell_current()->ls_long_format;
+    res = file->f_op->readdir(file, &ctx, shell_filldir);
   } else if (res != 0) {
       shell_printf("ls: open failed %d\r\n", res);
   }
 
-  if (file->f_op->release) {
+  if (opened && file->f_op->release) {
       file->f_op->release(inode, file);
   }
 
   kfree(file);
-  return 0;
+  return res;
 }
 
 static int cmd_pwd(int argc, char *argv[]) {
@@ -457,57 +523,76 @@ static int cmd_cd(int argc, char *argv[]) {
   return 0;
 }
 
-static int cmd_mkdir(int argc, char *argv[]) {
-  struct dentry *dentry;
-  struct dentry *parent_dentry = shell_cwd ? shell_cwd : vfs_get_root();
-  struct inode *dir = parent_dentry->d_inode;
-  struct dentry *new_dentry;
+static int cmd_mkdir(int argc, char *argv[])
+{
+    int status = 0;
+    int i;
 
-  if (argc < 2) {
-    shell_printf("Usage: mkdir <name>\r\n");
-    return 0;
-  }
+    if (argc < 2) {
+        shell_printf("mkdir: missing operand\r\n");
+        return -EINVAL;
+    }
+    shell_init_cwd();
+    for (i = 1; i < argc; i++) {
+        char path[SHELL_SESSION_INPUT_MAX + 1];
+        char *name;
+        char *slash = NULL;
+        char *p;
+        struct dentry *parent;
+        size_t len = strlen(argv[i]);
+        int rc;
 
-  // Assume input is just name for now (no path mkdir)
-  // Manually create dentry and calling mkdir ops
-  new_dentry = kzalloc(sizeof(struct dentry), GFP_KERNEL);
-  if (!new_dentry) {
-    shell_printf("mkdir: out of memory\r\n");
-    return -ENOMEM;
-  }
-  
-  new_dentry->d_parent = parent_dentry;
-  new_dentry->d_sb = parent_dentry->d_sb;
-
-  // set name
-  strncpy(new_dentry->d_iname, argv[1], FS_NAME_LEN);
-  new_dentry->d_iname[FS_NAME_LEN - 1] = '\0'; // Ensure null termination
-  new_dentry->d_name.name = new_dentry->d_iname;
-  new_dentry->d_name.len = strlen(new_dentry->d_iname);
-
-  if (dir->i_op && dir->i_op->mkdir &&
-      dir->i_op->mkdir(dir, new_dentry, 0) == 0) {
-    // success
-  } else {
-    shell_printf("mkdir failed\r\n");
-    kfree(new_dentry);
-  }
-  return 0;
+        if (len == 0 || len > SHELL_SESSION_INPUT_MAX) {
+            rc = -EINVAL;
+            goto error;
+        }
+        memcpy(path, argv[i], len + 1);
+        while (len > 1 && path[len - 1] == '/') {
+            path[--len] = '\0';
+        }
+        for (p = path; *p; p++) {
+            if (*p == '/') {
+                slash = p;
+            }
+        }
+        name = slash ? slash + 1 : path;
+        if (*name == '\0' || strcmp(name, ".") == 0 || strcmp(name, "..") == 0) {
+            rc = -EEXIST;
+            goto error;
+        }
+        if (slash == NULL) {
+            parent = shell_cwd;
+        } else if (slash == path) {
+            parent = vfs_get_root();
+        } else {
+            *slash = '\0';
+            parent = vfs_lookup_path(shell_cwd, path);
+        }
+        if (parent == NULL) {
+            rc = -ENOENT;
+            goto error;
+        }
+        rc = vfs_make_dir(parent, name, 0755, NULL);
+        if (rc == 0) {
+            continue;
+        }
+error:
+        shell_printf("mkdir: cannot create '%s': error %d\r\n", argv[i], rc);
+        status = rc;
+    }
+    return status;
 }
 
-static int cmd_cat(int argc, char *argv[]) {
+static int cat_file(const char *path)
+{
   struct dentry *dentry;
   struct file *f;
   char buf[64];
   int ret;
 
-  if (argc < 2) {
-    shell_printf("Usage: cat <file>\r\n");
-    return 0;
-  }
-  dentry = resolve_path(argv[1]);
+  dentry = resolve_path(path);
   if (!dentry || !dentry->d_inode) {
-    shell_printf("cat: %s: not found\r\n", argv[1]);
+    shell_printf("cat: %s: not found\r\n", path);
     return -1;
   }
 
@@ -523,7 +608,7 @@ static int cmd_cat(int argc, char *argv[]) {
   f->f_path.mnt = NULL;
 
   if (!f->f_op || !f->f_op->read) {
-    shell_printf("cat: %s: no read operation\r\n", argv[1]);
+    shell_printf("cat: %s: no read operation\r\n", path);
     kfree(f);
     return -1;
   }
@@ -556,6 +641,24 @@ out:
 
   kfree(f);
   return ret;
+}
+
+static int cmd_cat(int argc, char *argv[])
+{
+    int i;
+    int status = 0;
+
+    if (argc < 2) {
+        shell_printf("cat: missing operand\r\n");
+        return -EINVAL;
+    }
+    for (i = 1; i < argc; i++) {
+        int rc = cat_file(argv[i]);
+        if (rc < 0) {
+            status = rc;
+        }
+    }
+    return status;
 }
 
 static int cmd_mount(int argc, char *argv[]) {

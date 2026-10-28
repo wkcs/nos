@@ -103,7 +103,7 @@ void shell_session_reset(struct shell_session *session, struct dentry *cwd)
     session->ansi_param = 0;
     session->after_cr = false;
     session->overflow = false;
-    session->history_index = -1;
+    shell_session_history_clear(session);
     session->cwd = cwd;
     if (session->prompt[0] == '\0') {
         strcpy(session->prompt, SHELL_DEFAULT_PROMPT);

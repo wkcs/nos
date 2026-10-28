@@ -47,6 +47,9 @@ int main(void)
     shell_session_reset(&sa, cwd_b);
     assert(sa.input_len == 0 && sa.input[0] == '\0' && sa.cwd == cwd_b);
     assert(sb.cwd == cwd_b && b.used == 3);
+    shell_session_history_add(&sa, "private command");
+    shell_session_reset(&sa, cwd_a);
+    assert(shell_session_history_count(&sa) == 0);
 #ifdef NOS_SHELL_FEED_API
     a.used = b.used = 0;
     shell_session_reset(&sa, cwd_a);
