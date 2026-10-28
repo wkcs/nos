@@ -23,7 +23,7 @@
     },
     {
       "name": "qemu-stm32",
-      "displayName": "QEMU STM32 (STM32F103 / Cortex-M3)",
+      "displayName": "QEMU STM32 (STM32F405 / Cortex-M4F)",
       "inherits": "arm-base",
       "binaryDir": "${sourceDir}/build/qemu-stm32",
       "cacheVariables": {

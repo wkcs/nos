@@ -117,12 +117,13 @@
 *   `cmake/` - CMake 构建模块（Kconfig 解析桥接、编译标志、跨架构工具链定义）。
 *   `configs/` - 标准板级 `*_defconfig` 与配置片段。
 *   `arch/` - 架构特定代码（`arm`, `arm64`, `riscv`, `x86`），统一实现 `include/nos/hal_arch.h` 契约。
-*   `soc/` - SoC 芯片级外设库与系统初始化（`stm32f1`, `stm32f4`，供各板级共享，禁止拷贝到 `board/` 下）。
+*   `soc/` - SoC 芯片级外设库与系统初始化（`stm32f1`, `stm32f4`, `nuc472`，供各板级共享，禁止拷贝到 `board/` 下）。
+*   `dts/` - SoC 设备树片段和设备属性 binding；板级 DTS 位于 `board/<board>/`。
 *   `board/` - 板级支持包、引脚/时钟配置与链接脚本 `nos_kernel.ld.S`。
-*   `include/` - 头文件：`include/uapi/nos/`（UAPI 契约层）、`include/nos/`（微内核内部层）、`include/kernel/`（内核与驱动公共 API）。
+*   `include/` - 头文件：`include/uapi/nos/`（UAPI 契约层）、`include/nos/`（微内核与服务内部层）、`include/drivers/`（驱动接口）、`include/kernel/`（内核基础 API）。
 *   `init/` - 系统初始化 (`main.c`, `init.c`)。
 *   `kernel/` - 微内核核心逻辑（`task/`, `sched/`, `cap/`, `ipc/`, `syscall/`, `mm/`, `irq/`, `printk/`）。
-*   `libs/libc/` - 标准 C 库（Newlib / Picolibc）底层端口适配层 (`libs/libc/port/picolibc_newlib.c`)。
+*   `libs/` - 内核辅助库、标准 C 库端口 `libs/libc/` 和第三方库 `libs/third_party/`。
 *   `user/` - 用户态/服务客户端库 (`user/libnos/`) 与 POSIX FD 桥接。
 *   `drivers/` - 设备驱动 (UART, SPI, USB, Block 等)。
 *   `fs/` - 虚拟文件系统 (VFS, FatFs, RamFS, ProcFS, SysFS)。

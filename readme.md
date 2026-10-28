@@ -4,6 +4,7 @@ NOS 是一个面向多架构（`arm`、`arm64`、`riscv`、`x86_64`）演进的�
 
 完整的架构设计、四层头文件隔离规范、微内核 ABI 契约与构建系统说明见：
 - [NOS 微内核、多架构、POSIX/Libc 兼容与 CMake+Kconfig 构建系统设计规范](docs/ARCHITECTURE_AND_BUILD_SPEC.md)
+- [驱动模型与设备树实现说明](docs/DRIVER_MODEL_AND_DEVICETREE.md)
 
 ---
 
@@ -37,7 +38,7 @@ NOS 是一个面向多架构（`arm`、`arm64`、`riscv`、`x86_64`）演进的�
 cmake --preset nk60-v2
 cmake --build --preset nk60-v2
 
-# 2. QEMU-STM32 (STM32F103 Cortex-M3 仿真金标板，含 VFS + FatFs + RamFS + Shell)
+# 2. QEMU-STM32 (STM32F405 Cortex-M4F 仿真金标板，含 VFS + FatFs + RamFS + Shell)
 cmake --preset qemu-stm32
 cmake --build --preset qemu-stm32
 
@@ -89,23 +90,26 @@ cmake --build --preset nk60-v2 --target savedefconfig
 
 ```text
 nos/
-├── CMakeLists.txt             # 顶层 CMake 构建入口（含双遍 kallsyms 与固件打包）
+├── CMakeLists.txt             # 顶层 CMake 构建入口
 ├── CMakePresets.json          # 跨平台板级与多架构构建预设
 ├── Kconfig                    # 顶层 Kconfig 入口
 ├── cmake/                     # Kconfig 桥接、编译选项、辅助宏与跨架构 Toolchain
 ├── configs/                   # 板级 *_defconfig 与功能特性片段
+├── dts/                       # SoC 设备树片段和硬件属性 binding
 ├── docs/                      # 架构规范与重构设计文档
 ├── include/
 │   ├── uapi/nos/              # 第 1 层：内核与用户态共享 ABI 契约头（types/errno/syscall/ipc/cap/abi）
 │   ├── nos/                   # 第 2 层：微内核内部头（cap/ipc/syscall/hal_arch/klibc）
+│   ├── drivers/               # 驱动类别、总线与 USB 内部接口
 │   └── kernel/                # 内核基础服务与驱动兼容头文件
 ├── arch/                      # 多架构支持（arm / arm64 / riscv / x86）及统一 HAL 实现
 ├── soc/                       # 芯片级外设库与启动支持（stm32f1 / stm32f4）
 ├── board/                     # 板级配置、时钟/引脚初始化与链接脚本（nk60-v2 / qemu-stm32 / wl-001 / zj-v3）
 ├── kernel/                    # 微内核核心（task / sched / cap / ipc / syscall / mm / irq / printk）
-├── libc/                      # 标准 C 库（Newlib / Picolibc）底层系统调用与锁移植层
+├── libs/                      # 内核辅助库、libc 端口及 Lua/LVGL 第三方源码
 ├── user/                      # 用户态/客户端系统调用封装（libnos）与 POSIX FD 桥接
-├── drivers/                   # 设备驱动框架与外设驱动（UART / SPI / USB / Block / Key / LED）
+├── drivers/                   # 设备模型、总线控制器与外设驱动
 ├── fs/                        # 虚拟文件系统（VFS / FatFs / RamFS / ProcFS / SysFS）
-└── app/                       # 系统服务与应用（nShell / Lua 5.4 / Display Server / NDK）
+├── assets/qemu/               # QEMU 磁盘镜像模板
+└── app/                       # 系统服务、应用、组件适配及 tests/
 ```
