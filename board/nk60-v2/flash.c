@@ -8,7 +8,7 @@
 #include <drivers/stm32_spi.h>
 #include <drivers/w25q_flash.h>
 #ifdef CONFIG_DEVICE_TREE
-#include <drivers/w25q_dt.h>
+#include <drivers/spi_dt.h>
 #include <nos/driver.h>
 #endif
 #include <board/board.h>
@@ -59,11 +59,12 @@ static ssize_t w25qxx_write(struct device *dev, addr_t pos,
 #ifdef CONFIG_DEVICE_TREE
 static int nk60_flash_configure(const struct nos_dt_node *node)
 {
-    struct w25q_dt_resources resources;
+    struct spi_dt_resources resources;
     uint32_t spi_address;
     uint32_t gpio_address;
 
-    if (w25q_dt_resolve(node, &resources) != 0 ||
+    if (!nos_dt_is_compatible(node, "jedec,spi-nor") ||
+        spi_dt_resolve(node, &resources) != 0 ||
         !nos_dt_is_compatible(resources.bus, "st,stm32f4-spi") ||
         !nos_dt_is_compatible(resources.gpio, "st,stm32f4-gpio") ||
         nos_dt_read_u32(resources.bus, "reg", 0, &spi_address) != 0 ||
