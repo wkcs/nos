@@ -25,8 +25,5 @@ struct stm32_spi_config {
 
 extern const struct spi_driver_api stm32_spi_driver_api;
 int stm32_spi_init(struct device *dev);
-void stm32_spi_select(struct device *dev);
-void stm32_spi_deselect(struct device *dev);
-int stm32_spi_exchange(struct device *dev, uint8_t tx, uint8_t *rx);
 
 #endif /* __NOS_DRIVERS_STM32_SPI_H__ */
