@@ -24,6 +24,12 @@ def vectors_and_symbols(board):
 
 
 class VectorTests(unittest.TestCase):
+    def test_soc_early_init_is_linked(self):
+        for board in ('nk60-v2', 'qemu-stm32', 'wl-001', 'zj-v3', 'nutiny-nuc472'):
+            with self.subTest(board=board):
+                _, symbols = vectors_and_symbols(board)
+                self.assertIsNotNone(symbols.get('soc_early_init'))
+
     def test_firmware_has_no_unresolved_reset_symbol(self):
         for board in ('nk60-v2', 'qemu-stm32', 'wl-001', 'zj-v3'):
             with self.subTest(board=board):

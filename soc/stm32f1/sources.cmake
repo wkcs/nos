@@ -29,3 +29,5 @@ list(APPEND SOC_PRIVATE_INCLUDES
     "${CMAKE_CURRENT_SOURCE_DIR}/stm32f1/inside-include"
     "${CMAKE_CURRENT_SOURCE_DIR}/stm32f1/drivers/inc"
 )
+
+list(APPEND SOC_SRCS stm32f1/early_init.c)
