@@ -57,7 +57,7 @@ static int zj_sd_init(void)
         return ret;
     }
     sd_device.ready = 1;
-    pr_info("SD: %u sectors registered as sd0\r\n", sd_card.sector_count);
+    pr_info("SD: %lu sectors registered as sd0\r\n", (unsigned long)sd_card.sector_count);
     return 0;
 }
 

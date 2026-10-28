@@ -29,7 +29,7 @@ static int sd_command(const struct sd_spi *spi, uint8_t command, uint32_t argume
 
 int sd_spi_card_init(struct sd_spi_card *card, const struct sd_spi *spi)
 {
-    struct sd_spi init_spi;
+    struct sd_spi init_spi, normal_spi;
     uint8_t response, extra[4] = {0};
     unsigned int retries;
     int version2, ret;
@@ -41,7 +41,8 @@ int sd_spi_card_init(struct sd_spi_card *card, const struct sd_spi *spi)
     if (spi->config.frequency == 0 || spi->config.word_size != 8 || spi->config.mode != 0) {
         return -EINVAL;
     }
-    init_spi = *spi;
+    normal_spi = *spi;
+    init_spi = normal_spi;
     if (init_spi.config.frequency > SD_INIT_FREQUENCY) {
         init_spi.config.frequency = SD_INIT_FREQUENCY;
     }
@@ -90,6 +91,6 @@ int sd_spi_card_init(struct sd_spi_card *card, const struct sd_spi *spi)
         card->ready = 0;
         return ret;
     }
-    card->spi = *spi;
+    card->spi = normal_spi;
     return 0;
 }
