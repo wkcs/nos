@@ -16,6 +16,7 @@
 
     chosen {
         bootargs = "";
+        nos,flash = <&flash0>;
     };
 
     memory@20000000 {
@@ -100,7 +101,16 @@
             clocks = <&rcc>;
             #address-cells = <1>;
             #size-cells = <0>;
+            cs-gpios = <&gpiob 2 1>;
             status = "okay";
+
+            flash0: flash@0 {
+                compatible = "jedec,spi-nor";
+                reg = <0>;
+                spi-max-frequency = <21000000>;
+                spi-cpol;
+                spi-cpha;
+            };
         };
 
         gpioa: gpio@40020000 {

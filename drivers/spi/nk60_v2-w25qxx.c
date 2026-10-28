@@ -9,6 +9,9 @@
 #define pr_fmt(fmt) "[W25QXX]:%s[%d]:"fmt, __func__, __LINE__
 
 #include <drivers/w25q_spi.h>
+#ifdef CONFIG_DEVICE_TREE
+#include <drivers/w25q_dt.h>
+#endif
 #include <kernel/task.h>
 #include <kernel/errno.h>
 #include <kernel/sleep.h>
@@ -68,7 +71,7 @@ static struct device nk60_spi_bus = {
     .api = &nk60_spi_api,
 };
 
-static const struct w25q_spi nk60_flash_bus = {
+static struct w25q_spi nk60_flash_bus = {
     .bus = &nk60_spi_bus,
     .config = { .frequency = 21000000U, .chip_select = 0, .word_size = 8, .mode = 3 },
 };
@@ -466,7 +469,32 @@ int spi_w25qxx_init(void)
 {
     struct w25qxx_info *info;
     GPIO_InitTypeDef GPIO_InitStructure;
+#ifdef CONFIG_DEVICE_TREE
+    const struct nos_dt_node *chosen = nos_dt_find_path("/chosen");
+    const struct nos_dt_node *node;
+    struct w25q_dt_resources resources;
+    uint32_t phandle;
+    uint32_t spi_address;
+    uint32_t gpio_address;
 
+    if (nos_dt_read_u32(chosen, "nos,flash", 0, &phandle) != 0) {
+        return -EINVAL;
+    }
+    node = nos_dt_find_phandle(phandle);
+    if (w25q_dt_resolve(node, &resources) != 0 ||
+        !nos_dt_is_compatible(resources.bus, "st,stm32f4-spi") ||
+        !nos_dt_is_compatible(resources.gpio, "st,stm32f4-gpio") ||
+        nos_dt_read_u32(resources.bus, "reg", 0, &spi_address) != 0 ||
+        nos_dt_read_u32(resources.gpio, "reg", 0, &gpio_address) != 0 ||
+        spi_address != (uint32_t)(uintptr_t)SPI1 ||
+        gpio_address != (uint32_t)(uintptr_t)GPIOB ||
+        resources.gpio_pin != 2 || resources.gpio_flags != 1 ||
+        resources.config.chip_select != 0 || resources.config.mode != 3 ||
+        resources.config.frequency != 21000000U) {
+        return -EINVAL;
+    }
+    nk60_flash_bus.config = resources.config;
+#endif
     info = kmalloc(sizeof(*info), GFP_KERNEL);
     if (info == NULL) {
         pr_err("alloc w25qxx info buf err\r\n");
