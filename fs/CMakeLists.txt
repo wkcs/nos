@@ -5,9 +5,12 @@ set(FS_SRCS
     sysfs.c
 )
 
+if(CONFIG_FATFS OR CONFIG_VFS_SMOKE_TEST)
+    list(APPEND FS_SRCS vfs_smoke.c)
+endif()
+
 if(CONFIG_FATFS)
     list(APPEND FS_SRCS
-        vfs_smoke.c
         fatfs/diskio.c
         fatfs/ff.c
         fatfs/option/cc936.c

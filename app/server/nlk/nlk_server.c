@@ -60,7 +60,7 @@ static void nlk_server_task_entry(void *parameter)
 
     while (true) {
         int rc = nlk_node_poll_bearers(srv->node, 20U);
-        if (rc < 0 && rc != -ETIMEDOUT && rc != -EAGAIN) {
+        if (rc <= 0) {
             msleep(20);
         }
 

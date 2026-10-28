@@ -18,6 +18,11 @@ config SOC_STM32F4
 	help
 	  启用 STM32F4xx 系列 SoC 外设与 CMSIS 支持。
 
+config SOC_NUC472
+	bool "Nuvoton NUC472 (Cortex-M4)"
+	depends on ARCH_ARM
+	default y if BOARD_NUTINY_NUC472
+
 config SOC_QEMU_VIRT
 	bool "QEMU Generic Virtual Machine SoC"
 	default y if BOARD_QEMU_VIRT
