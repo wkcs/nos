@@ -18,7 +18,7 @@ def main():
         subprocess.run(
             [COMPILER, "-std=gnu11", "-O1", "-DCONFIG_LOG_FIFO_BUF_SIZE=512",
              "-I", str(TEST_DIR / "stubs"), "-I", str(ROOT / "include"),
-             str(ROOT / "kernel/printk/log.c"), str(TEST_DIR / "test_log_sink.c"),
+             str(ROOT / "kernel/printk/log.c"), str(ROOT / "kernel/printk/console_backend.c"), str(TEST_DIR / "test_log_sink.c"),
              "-o", str(exe)], check=True,
         )
         subprocess.run([str(exe)], check=True)

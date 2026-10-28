@@ -117,6 +117,7 @@ struct nlk_bearer {
     const struct nlk_bearer_ops *ops;
     struct nlk_node            *owner_node;
     void                       *priv;
+    uint8_t                     tx_busy;    /* Atomic whole-packet transmit ownership */
     struct nlk_stream_decoder   decoder;
     struct nlk_can_reasm        can_reasm;
 };
@@ -148,6 +149,9 @@ int  nlk_bearer_rx_can_frame(struct nlk_bearer *bearer, uint32_t ext_can_id,
 /* Send an NLK packet through a bearer using its configured framing profile */
 int  nlk_bearer_send_packet(struct nlk_bearer *bearer, uint16_t next_hop_addr,
                             const void *pkt_buf, uint16_t pkt_len, uint32_t timeout_ms);
+/* Router-only: caller owns bearer->tx_busy across an entire L3 packet. */
+int nlk_bearer_send_packet_locked(struct nlk_bearer *bearer, uint16_t next_hop_addr,
+                                  const void *pkt_buf, uint16_t pkt_len, uint32_t timeout_ms);
 
 /* Poll a single bearer for inbound RX frames/packets via its abstract ops->rx_poll */
 int  nlk_bearer_poll_rx(struct nlk_bearer *bearer, uint32_t timeout_ms);

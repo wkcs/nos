@@ -89,6 +89,7 @@ int nlk_node_register_bearer(struct nlk_node *node, struct nlk_bearer *bearer)
     }
 
     bearer->owner_node = node;
+    __atomic_store_n(&bearer->tx_busy, 0U, __ATOMIC_RELAXED);
     nlk_stream_decoder_init(&bearer->decoder);
     memset(&bearer->can_reasm, 0, sizeof(bearer->can_reasm));
     if (bearer->mtu == 0U) {
@@ -216,7 +217,7 @@ int nlk_node_rpc_call(struct nlk_node *node, nlk_addr_t dst_addr,
         return -EINVAL;
     }
 
-    seq_id = ++node->next_seq_id;
+    seq_id = __atomic_add_fetch(&node->next_seq_id, 1U, __ATOMIC_RELAXED);
     node->rpc_waiter.waiting = true;
     node->rpc_waiter.completed = false;
     node->rpc_waiter.is_err = false;
@@ -255,7 +256,7 @@ int nlk_node_send_event(struct nlk_node *node, nlk_addr_t dst_addr,
     if (node == NULL) {
         return -EINVAL;
     }
-    seq_id = ++node->next_seq_id;
+    seq_id = __atomic_add_fetch(&node->next_seq_id, 1U, __ATOMIC_RELAXED);
     return nlk_node_send_raw(node, dst_addr, dst_cap, NLK_MODE_EVENT,
                              ack_req ? NLK_FLAG_ACK_REQ : NLK_FLAG_NONE,
                              evt_op, seq_id, evt, evt_len);
@@ -270,7 +271,7 @@ int nlk_node_stream_write(struct nlk_node *node, nlk_addr_t dst_addr,
     if (node == NULL) {
         return -EINVAL;
     }
-    seq_id = ++node->next_seq_id;
+    seq_id = __atomic_add_fetch(&node->next_seq_id, 1U, __ATOMIC_RELAXED);
     return nlk_node_send_raw(node, dst_addr, dst_cap, NLK_MODE_STREAM,
                              NLK_FLAG_NONE, stream_op, seq_id, data, len);
 }

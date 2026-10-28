@@ -415,7 +415,7 @@ int nlk_bearer_rx_can_frame(struct nlk_bearer *bearer, uint32_t ext_can_id,
     return -EINVAL;
 }
 
-int nlk_bearer_send_packet(struct nlk_bearer *bearer, uint16_t next_hop_addr,
+int nlk_bearer_send_packet_locked(struct nlk_bearer *bearer, uint16_t next_hop_addr,
                            const void *pkt_buf, uint16_t pkt_len, uint32_t timeout_ms)
 {
     uint8_t frame_buf[NLK_MAX_FRAME_SIZE];
@@ -459,6 +459,18 @@ int nlk_bearer_send_packet(struct nlk_bearer *bearer, uint16_t next_hop_addr,
     default:
         return -EINVAL;
     }
+}
+
+int nlk_bearer_send_packet(struct nlk_bearer *bearer, uint16_t next_hop_addr,
+                           const void *pkt_buf, uint16_t pkt_len, uint32_t timeout_ms)
+{
+    int rc;
+    if (bearer == NULL) return -EINVAL;
+    if (__atomic_exchange_n(&bearer->tx_busy, 1U, __ATOMIC_ACQUIRE) != 0U)
+        return -EAGAIN;
+    rc = nlk_bearer_send_packet_locked(bearer, next_hop_addr, pkt_buf, pkt_len, timeout_ms);
+    __atomic_store_n(&bearer->tx_busy, 0U, __ATOMIC_RELEASE);
+    return rc;
 }
 
 int nlk_bearer_poll_rx(struct nlk_bearer *bearer, uint32_t timeout_ms)

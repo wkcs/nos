@@ -8,6 +8,8 @@
 #define __NOS_NLK_CAPS_H__
 
 #include <nos/nlk_core.h>
+#include <kernel/log_backend.h>
+#include <kernel/spinlock.h>
 #include <nos/tty.h>
 
 /* 0x0001: Firmware Update Capability */
@@ -56,11 +58,17 @@ int nlk_cap_fw_update_set_partitions(struct nlk_fw_update_ctx *ctx,
 
 struct nlk_log_ctx {
     bool                  subscribed;
-    bool                  flushing;
+    bool                  enabled;
+    struct kernel_log_backend backend;
+    spinlock_t            tap_lock;
     uint8_t               min_level;
     uint8_t               subscriber_cap;
     uint16_t              flush_interval_ms;
     nlk_addr_t            subscriber_addr;
+    uint32_t              dropped_records;
+    uint32_t              high_water;
+    uint16_t              pending_len;
+    uint8_t               pending_buf[CONFIG_NLK_PACKET_MTU];
     uint16_t              tap_head;
     uint16_t              tap_tail;
     uint16_t              tap_used;
@@ -76,10 +84,24 @@ int nlk_cap_log_flush_pending(struct nlk_log_ctx *ctx);
 #ifndef CONFIG_NLK_SHELL_RX_BUF_SIZE
 #define CONFIG_NLK_SHELL_RX_BUF_SIZE    128U
 #endif
+#ifndef CONFIG_NLK_SHELL_TX_BUF_SIZE
+#define CONFIG_NLK_SHELL_TX_BUF_SIZE    512U
+#endif
+#define NOS_NLK_SHELL_TX_QUEUE 1
+#define NOS_NLK_SHELL_GENERATION_IO 1
+#define NOS_NLK_SHELL_RELIABLE_API 1
+#define NLK_SHELL_LEASE_MS 30000U
 
 struct nlk_shell_ctx {
     bool                  session_open;
     bool                  prompt_pending;
+    uint32_t              generation;
+    bool                  reliable;
+    bool                  lease_touched;
+    bool                  lease_started;
+    uint64_t              session_id;
+    uint32_t              input_offset;
+    uint32_t              lease_time_ms;
     nlk_addr_t            client_addr;
     uint8_t               client_cap;
     uint16_t              cols;
@@ -90,12 +112,23 @@ struct nlk_shell_ctx {
     uint16_t              rx_tail;
     uint16_t              rx_count;
     uint8_t               rx_buf[CONFIG_NLK_SHELL_RX_BUF_SIZE];
+    spinlock_t            io_lock;
+    uint16_t              tx_head;
+    uint16_t              tx_tail;
+    uint16_t              tx_count;
+    uint8_t               tx_buf[CONFIG_NLK_SHELL_TX_BUF_SIZE];
     struct nos_tty        tty;
     struct nlk_node      *node;
     struct nlk_capability cap;
 };
 
 int nlk_cap_shell_init(struct nlk_node *node, struct nlk_shell_ctx *ctx);
+int nlk_cap_shell_flush_pending(struct nlk_shell_ctx *ctx);
+void nlk_cap_shell_tick(struct nlk_shell_ctx *ctx, uint32_t now_ms);
+int nlk_cap_shell_read_session(struct nlk_shell_ctx *ctx, uint32_t generation,
+                               unsigned char *buf, unsigned int len);
+int nlk_cap_shell_write_session(struct nlk_shell_ctx *ctx, uint32_t generation,
+                                const unsigned char *buf, unsigned int len);
 struct nos_tty *nlk_cap_shell_tty(struct nlk_shell_ctx *ctx);
 struct nlk_shell_ctx *nlk_cap_shell_default_ctx(void);
 

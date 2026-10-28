@@ -1,6 +1,7 @@
 set(KERNEL_SRCS
     printk/printk.c
     printk/log.c
+    printk/console_backend.c
     cpu/cpu.c
     mm/mm_block.c
     mm/mm_core.c

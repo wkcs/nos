@@ -21,13 +21,21 @@ struct file_system_type **find_filesystem(const char *name, unsigned len);
 
 static struct dentry *root_dentry = NULL;
 static struct super_block *root_sb;
+static SPINLOCK(vfs_mount_lock);
 
 /* Keep the initial public descriptor table deliberately small and static. */
 #define VFS_MAX_OPEN_FILES 16
 
 static struct file *open_files[VFS_MAX_OPEN_FILES];
 
-struct dentry *vfs_get_root(void) { return root_dentry; }
+struct dentry *vfs_get_root(void)
+{
+    struct dentry *root;
+    spin_lock(&vfs_mount_lock);
+    root = root_dentry;
+    spin_unlock(&vfs_mount_lock);
+    return root;
+}
 
 extern int init_ramfs(void);
 
@@ -153,8 +161,11 @@ struct dentry *vfs_mount(const char *fs_name, int flags, const char *dev_name,
   pr_info("VFS: vfs_mount lookup %s\r\n", fs_name);
   
   // Simple lookup for now
-  struct file_system_type **p = find_filesystem(fs_name, strlen(fs_name));
+  struct file_system_type **p;
+  spin_lock(&file_systems_lock);
+  p = find_filesystem(fs_name, strlen(fs_name));
   type = *p;
+  spin_unlock(&file_systems_lock);
 
   if (!type) {
       pr_info("VFS: vfs_mount fs type not found\r\n");
@@ -168,10 +179,12 @@ struct dentry *vfs_mount(const char *fs_name, int flags, const char *dev_name,
     return NULL;
 
   // If it's the first mount, set as root
+  spin_lock(&vfs_mount_lock);
   if (!root_dentry) {
     root_dentry = mnt_root;
     root_sb = mnt_root->d_sb;
   }
+  spin_unlock(&vfs_mount_lock);
 
   return mnt_root;
 }
@@ -354,18 +367,28 @@ struct mount_point {
 static struct mount_point mount_points[8];
 static int mount_count = 0;
 
-int vfs_bind_mount(struct dentry *target, struct dentry *mnt_root) {
-    pr_info("vfs_bind: target=%s root=%p count=%d\r\n", target->d_name.name, mnt_root, mount_count);
-    if (mount_count >= 8) {
-        return -1; // Max mounts reached
+int vfs_bind_mount(struct dentry *target, struct dentry *mnt_root)
+{
+    char *name;
+
+    if (target == NULL || target->d_parent == NULL ||
+        target->d_parent->d_inode == NULL || target->d_name.name == NULL ||
+        mnt_root == NULL) {
+        return -EINVAL;
     }
-    
-    // Store necessary info to intercept lookup
+    name = kstrdup(target->d_name.name, GFP_KERNEL);
+    if (name == NULL) return -ENOMEM;
+    spin_lock(&vfs_mount_lock);
+    if (mount_count >= 8) {
+        spin_unlock(&vfs_mount_lock);
+        kfree(name);
+        return -ENOSPC;
+    }
     mount_points[mount_count].parent = target->d_parent->d_inode;
-    mount_points[mount_count].name = kstrdup(target->d_name.name, GFP_KERNEL); 
+    mount_points[mount_count].name = name;
     mount_points[mount_count].root = mnt_root;
-    
     mount_count++;
+    spin_unlock(&vfs_mount_lock);
     return 0;
 }
 
@@ -403,6 +426,7 @@ struct dentry *vfs_lookup(struct dentry *parent, struct qstr *name) {
     }
     
     // Check for mount points
+    spin_lock(&vfs_mount_lock);
     for (i = 0; i < mount_count; i++) {
         if (mount_points[i].parent == dir) {
              if (strcmp(dentry->d_name.name, mount_points[i].name) == 0) {
@@ -416,7 +440,8 @@ struct dentry *vfs_lookup(struct dentry *parent, struct qstr *name) {
              }
         }
     }
-    
+    spin_unlock(&vfs_mount_lock);
+
     return dentry;
   }
 

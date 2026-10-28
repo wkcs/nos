@@ -41,8 +41,9 @@ int console_write_recordv(const char *f, unsigned int fl, const char *s, unsigne
     return -EAGAIN;
 }
 void console_send_log(void) {}
-void set_log_level(enum log_level level) { (void)level; }
-void set_log_enabled(bool enabled) { (void)enabled; }
+static unsigned int global_level_changes, global_enabled_changes;
+void set_log_level(enum log_level level) { (void)level; global_level_changes++; }
+void set_log_enabled(bool enabled) { (void)enabled; global_enabled_changes++; }
 
 /* --------------------------------------------------------------------------
  * Virtual Physical Link Adapters (Datagram, Stream, CAN 8B, I2C Master-Slave)
@@ -54,6 +55,13 @@ struct vlink_pair {
     uint32_t           tx_count_a;
     uint32_t           tx_count_b;
 };
+
+static int fail_tx(struct nlk_bearer *bearer, uint16_t addr,
+                   const uint8_t *buf, uint16_t len, uint32_t timeout)
+{
+    (void)bearer; (void)addr; (void)buf; (void)len; (void)timeout;
+    return -EAGAIN;
+}
 
 static int vlink_datagram_tx_a(struct nlk_bearer *b, uint16_t next_hop,
                                const uint8_t *buf, uint16_t len, uint32_t timeout_ms)
@@ -289,6 +297,7 @@ struct host_capture {
     uint8_t                 last_log_level;
     char                    shell_stdout[128];
     uint16_t                shell_stdout_len;
+    uint64_t                shell_token;
     struct nlk_kb_hid_report last_hid_report;
     uint32_t                hid_reports_rx;
     struct nlk_capability   cap_log_sink;
@@ -317,7 +326,14 @@ static int host_sink_on_stream(struct nlk_node *node, struct nlk_capability *cap
         return 0;
     }
 
-    if (hdr->cmd_op == NLK_SHELL_STREAM_STDOUT) {
+    if (hdr->cmd_op == NLK_SHELL_STREAM_STDOUT_V2 && len >= sizeof(uint64_t)) {
+        memcpy(&hc->shell_token, data, sizeof(uint64_t));
+        data = (const uint8_t *)data + sizeof(uint64_t);
+        len = (uint16_t)(len - sizeof(uint64_t));
+    } else if (hdr->cmd_op != NLK_SHELL_STREAM_STDOUT) {
+        return 0;
+    }
+    {
         if ((uint32_t)hc->shell_stdout_len + len < sizeof(hc->shell_stdout)) {
             memcpy(hc->shell_stdout + hc->shell_stdout_len, data, len);
             hc->shell_stdout_len = (uint16_t)(hc->shell_stdout_len + len);
@@ -762,17 +778,48 @@ int main(void)
         assert(nlk_node_rpc_call(&node_host, 0x0001U, 2U,
                                  NLK_LOG_OP_SUBSCRIBE, &sub, sizeof(sub),
                                  NULL, &rlen, 100U) == 0);
+        {
+            const uint8_t level_req[] = { LOG_INFO, 1 };
+            assert(nlk_node_rpc_call(&node_host, 0x0001U, 2U,
+                                     NLK_LOG_OP_SET_LEVEL, level_req, sizeof(level_req),
+                                     NULL, &rlen, 100U) == 0);
+            assert(global_level_changes == 0 && global_enabled_changes == 0);
+        }
         /* Point NK60 log cap to Host's Cap 1 for test verify */
         nk60_log.cap.cap_id = 1U;
 
         assert(kernel_log_write_record("debug skipped", 13, LOG_DEBUG, 0, 100) == 13);
         assert(kernel_log_write_record("nlk bus ready", 13, LOG_WARNING, 0, 250) == 13);
         assert(nlk_cap_log_flush_pending(&nk60_log) == 1);
+        {
+            char local[32];
+            struct kernel_log_record local_record;
+            assert(kernel_log_read_record(local, sizeof(local), &local_record) == 13);
+            assert(memcmp(local, "debug skipped", 13) == 0);
+        }
         nk60_log.cap.cap_id = 2U;
 
         assert(host_cap.log_records_rx == 1U);
         assert(host_cap.last_log_level == (uint8_t)LOG_WARNING);
         assert(strcmp(host_cap.last_log_msg, "nlk bus ready") == 0);
+        {
+            struct nlk_bearer *up = node_nk60.bearers[0];
+            const struct nlk_bearer_ops *original = up->ops;
+            struct nlk_bearer_ops blocked = *original;
+            blocked.tx_raw = fail_tx;
+            assert(kernel_log_write_record("retry log", 9, LOG_WARNING, 0, 300) == 9);
+            nk60_log.cap.cap_id = 1U;
+            up->tx_busy = 1U;
+            assert(nlk_cap_log_flush_pending(&nk60_log) == -EAGAIN);
+            assert(nk60_log.pending_len != 0U);
+            up->tx_busy = 0U;
+            up->ops = &blocked;
+            assert(nlk_cap_log_flush_pending(&nk60_log) < 0);
+            up->ops = original;
+            assert(nlk_cap_log_flush_pending(&nk60_log) == 1);
+            assert(strcmp(host_cap.last_log_msg, "retry log") == 0);
+            nk60_log.cap.cap_id = 2U;
+        }
 
         rlen = sizeof(stats);
         assert(nlk_node_rpc_call(&node_host, 0x0001U, 2U,
@@ -812,8 +859,33 @@ int main(void)
         /* NK60 shell writes response to its TTY -> Host receives NLK_SHELL_STREAM_STDOUT */
         nk60_shell.cap.cap_id = 2U; /* Route to Host cap_shell_sink (ID 2) */
         assert(nos_tty_write(sh_tty, (const unsigned char *)"NOS 1.0 NLK\r\n", 13U) == 13);
+#ifdef NOS_NLK_SHELL_TX_QUEUE
+        assert(host_cap.shell_stdout[0] == '\0');
+        assert(nlk_cap_shell_flush_pending(&nk60_shell) > 0);
+#else
+        assert(!"shell must queue output until the service task flushes it");
+#endif
         nk60_shell.cap.cap_id = 3U;
         assert(strcmp(host_cap.shell_stdout, "NOS 1.0 NLK\r\n") == 0);
+        {
+            struct nlk_bearer *up = node_nk60.bearers[0];
+            const struct nlk_bearer_ops *original = up->ops;
+            struct nlk_bearer_ops blocked = *original;
+            blocked.tx_raw = fail_tx;
+            nk60_shell.cap.cap_id = 2U;
+            assert(nos_tty_write(sh_tty, (const unsigned char *)"retry", 5U) == 5);
+            up->tx_busy = 1U;
+            assert(nlk_cap_shell_flush_pending(&nk60_shell) == -EAGAIN);
+            assert(nk60_shell.tx_count == 5U);
+            up->tx_busy = 0U;
+            up->ops = &blocked;
+            assert(nlk_cap_shell_flush_pending(&nk60_shell) < 0);
+            assert(nk60_shell.tx_count == 5U);
+            up->ops = original;
+            assert(nlk_cap_shell_flush_pending(&nk60_shell) == 5);
+            assert(nk60_shell.tx_count == 0U);
+            nk60_shell.cap.cap_id = 3U;
+        }
 
         /* Host sends Ctrl+C signal */
         assert(nlk_node_rpc_call(&node_host, 0x0001U, 3U,
@@ -821,6 +893,119 @@ int main(void)
                                  NULL, &rlen, 100U) == 0);
         n = nos_tty_read(sh_tty, rx_cmd, 1U, false);
         assert(n == 1 && rx_cmd[0] == 0x03U);
+        {
+            struct nlk_pkt_hdr hdr = {0};
+            uint16_t resp_len = 0;
+            uint32_t old_generation = nk60_shell.generation;
+            hdr.src_addr = NLK_ADDR_HOST;
+            hdr.cmd_op = NLK_SHELL_OP_OPEN;
+            assert(nk60_shell.cap.ops->on_rpc(&node_nk60, &nk60_shell.cap,
+                                              &hdr, &open_req, sizeof(open_req),
+                                              NULL, &resp_len) == -EBUSY);
+            hdr.src_addr = 0x1234;
+            hdr.cmd_op = NLK_SHELL_OP_CLOSE;
+            assert(nk60_shell.cap.ops->on_rpc(&node_nk60, &nk60_shell.cap,
+                                              &hdr, NULL, 0, NULL, &resp_len) < 0);
+            hdr.cmd_op = NLK_SHELL_STREAM_STDIN;
+            assert(nk60_shell.cap.ops->on_stream(&node_nk60, &nk60_shell.cap,
+                                                 &hdr, "x", 1) < 0);
+            hdr.src_addr = NLK_ADDR_HOST;
+            assert(nk60_shell.cap.ops->on_stream(&node_nk60, &nk60_shell.cap,
+                                                 &hdr, "stale", 5) == 5);
+            hdr.cmd_op = NLK_SHELL_OP_CLOSE;
+            assert(nk60_shell.cap.ops->on_rpc(&node_nk60, &nk60_shell.cap,
+                                              &hdr, NULL, 0, NULL, &resp_len) == 0);
+            hdr.cmd_op = NLK_SHELL_OP_OPEN;
+            assert(nk60_shell.cap.ops->on_rpc(&node_nk60, &nk60_shell.cap,
+                                              &hdr, &open_req, sizeof(open_req),
+                                              NULL, &resp_len) == 0);
+            assert(nos_tty_read(sh_tty, rx_cmd, 1, false) == -EAGAIN);
+#ifdef NOS_NLK_SHELL_GENERATION_IO
+            assert(nlk_cap_shell_write_session(&nk60_shell, old_generation,
+                                               (const unsigned char *)"stale", 5) == -ENOTCONN);
+            assert(nlk_cap_shell_read_session(&nk60_shell, old_generation, rx_cmd, 1) == -ENOTCONN);
+#else
+            assert(!"shell IO must reject stale session generations");
+#endif
+        }
+    }
+
+    /* Confirmed shell input must deduplicate retries and enforce backpressure. */
+    {
+#ifndef NOS_NLK_SHELL_RELIABLE_API
+        assert(!"reliable shell input and lease are unavailable");
+#else
+        struct nlk_shell_open_v2_msg op = {0};
+        struct nlk_pkt_hdr hdr = {0};
+        struct nlk_shell_input_hdr input = {0};
+        uint8_t packet[sizeof(input) + 64];
+        uint8_t data[128];
+        uint16_t rlen = 0;
+        int rc;
+        hdr.src_addr = NLK_ADDR_HOST;
+        hdr.cmd_op = NLK_SHELL_OP_CLOSE;
+        assert(nk60_shell.cap.ops->on_rpc(&node_nk60, &nk60_shell.cap, &hdr,
+                                         NULL, 0, NULL, &rlen) == 0);
+        op.open.flags = NLK_SHELL_OPEN_RELIABLE;
+        op.session_id = 0x12345678U;
+        hdr.cmd_op = NLK_SHELL_OP_OPEN;
+        assert(nk60_shell.cap.ops->on_rpc(&node_nk60, &nk60_shell.cap, &hdr,
+                                         &op, sizeof(op), NULL, &rlen) == 0);
+        nlk_cap_shell_tick(&nk60_shell, 1000);
+        host_cap.shell_stdout_len = 0;
+        nk60_shell.cap.cap_id = 2U;
+        assert(nlk_cap_shell_write_session(&nk60_shell, nk60_shell.generation,
+                                           (const unsigned char *)"new", 3) == 3);
+        assert(nlk_cap_shell_flush_pending(&nk60_shell) == 3);
+        assert(host_cap.shell_token == op.session_id);
+        assert(strcmp(host_cap.shell_stdout, "new") == 0);
+        nk60_shell.cap.cap_id = 3U;
+        /* A lost OPEN ACK may be retried without resetting the session. */
+        assert(nk60_shell.cap.ops->on_rpc(&node_nk60, &nk60_shell.cap, &hdr,
+                                         &op, sizeof(op), NULL, &rlen) == 0);
+        op.session_id++;
+        assert(nk60_shell.cap.ops->on_rpc(&node_nk60, &nk60_shell.cap, &hdr,
+                                         &op, sizeof(op), NULL, &rlen) == -EBUSY);
+        hdr.cmd_op = NLK_SHELL_OP_CLOSE;
+        assert(nk60_shell.cap.ops->on_rpc(&node_nk60, &nk60_shell.cap, &hdr,
+                                         &op.session_id, sizeof(op.session_id),
+                                         NULL, &rlen) == -EPERM);
+        assert(nk60_shell.session_open);
+        input.session_id = 0x12345678U;
+        memset(packet + sizeof(input), 'a', 64);
+        hdr.cmd_op = NLK_SHELL_OP_INPUT;
+        memcpy(packet, &input, sizeof(input));
+        assert(nk60_shell.cap.ops->on_rpc(&node_nk60, &nk60_shell.cap, &hdr,
+                                         packet, sizeof(packet), NULL, &rlen) == 0);
+        /* Retrying the same offset must not duplicate bytes. */
+        assert(nk60_shell.cap.ops->on_rpc(&node_nk60, &nk60_shell.cap, &hdr,
+                                         packet, sizeof(packet), NULL, &rlen) == 0);
+        input.offset = 64;
+        memcpy(packet, &input, sizeof(input));
+        assert(nk60_shell.cap.ops->on_rpc(&node_nk60, &nk60_shell.cap, &hdr,
+                                         packet, sizeof(packet), NULL, &rlen) == 0);
+        input.offset = 128;
+        memcpy(packet, &input, sizeof(input));
+        rc = nk60_shell.cap.ops->on_rpc(&node_nk60, &nk60_shell.cap, &hdr,
+                                        packet, sizeof(packet), NULL, &rlen);
+        assert(rc == -ENOSPC);
+        assert(nos_tty_read(nlk_cap_shell_tty(&nk60_shell), data, sizeof(data), false) == 128);
+        assert(nk60_shell.cap.ops->on_rpc(&node_nk60, &nk60_shell.cap, &hdr,
+                                         packet, sizeof(packet), NULL, &rlen) == 0);
+        nlk_cap_shell_tick(&nk60_shell, 2000);
+        hdr.cmd_op = NLK_SHELL_OP_HEARTBEAT;
+        assert(nk60_shell.cap.ops->on_rpc(&node_nk60, &nk60_shell.cap, &hdr,
+                                         &input.session_id, sizeof(input.session_id),
+                                         NULL, &rlen) == 0);
+        nlk_cap_shell_tick(&nk60_shell, 29000);
+        nlk_cap_shell_tick(&nk60_shell, 2000 + NLK_SHELL_LEASE_MS + 1);
+        assert(nk60_shell.session_open);
+        nlk_cap_shell_tick(&nk60_shell, 29000 + NLK_SHELL_LEASE_MS + 1);
+        assert(!nk60_shell.session_open);
+        hdr.cmd_op = NLK_SHELL_OP_OPEN;
+        assert(nk60_shell.cap.ops->on_rpc(&node_nk60, &nk60_shell.cap, &hdr,
+                                         &op, sizeof(op), NULL, &rlen) == 0);
+#endif
     }
 
     /* ----------------------------------------------------------------------

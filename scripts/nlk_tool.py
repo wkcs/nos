@@ -13,6 +13,7 @@ dependencies required) or UART Stream framing to perform:
 """
 
 import argparse
+import codecs
 import ctypes
 import ctypes.util
 import os
@@ -152,8 +153,12 @@ NLK_SHELL_OP_OPEN = 0x01
 NLK_SHELL_OP_CLOSE = 0x02
 NLK_SHELL_OP_SIGNAL = 0x03
 NLK_SHELL_OP_FLOW_CRED = 0x04
+NLK_SHELL_OP_INPUT = 0x05
+NLK_SHELL_OP_HEARTBEAT = 0x06
+NLK_SHELL_OPEN_RELIABLE = 1
 NLK_SHELL_STREAM_STDIN = 0x10
 NLK_SHELL_STREAM_STDOUT = 0x11
+NLK_SHELL_STREAM_STDOUT_V2 = 0x12
 NLK_SHELL_SIG_INT = 2
 
 # Keyboard Opcodes (Cap 0x0100)
@@ -557,12 +562,63 @@ class WinUSBTransport:
 # ============================================================================
 # NLK Host Session Client (RPC, Bulk OTA, Async Stream/Event Multiplexer)
 # ============================================================================
+class NLKRPCError(RuntimeError):
+    def __init__(self, error_code, detail="NLK RPC failed"):
+        self.error_code = error_code
+        super().__init__(f"{detail}: errno={error_code}")
+
+
 class NLKHostClient:
     def __init__(self, transport):
         self.transport = transport
         self.seq_id = 0
-        self.async_queue = deque()
+        self.async_queue = deque(maxlen=1024)
+        self.async_dropped = 0
+        self.fragments = {}
         self.cap_Cache = {}
+
+    def _queue_async(self, packet):
+        if len(self.async_queue) == self.async_queue.maxlen:
+            self.async_dropped += 1
+        self.async_queue.append(packet)
+
+    def _recv_packet(self, timeout_ms):
+        deadline = time.monotonic() + timeout_ms / 1000.0
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("packet receive timed out")
+            packet = self.transport.recv_packet(timeout_ms=max(1, int(remaining * 1000)))
+            if not packet["flags"] & NLK_FLAG_FRAG:
+                return packet
+            payload = packet["payload"]
+            if len(payload) < 4:
+                continue
+            total, offset = struct.unpack_from("<HH", payload)
+            part = payload[4:]
+            key = tuple(packet[k] for k in ("src_addr", "dst_addr", "dst_cap", "mode", "cmd_op", "seq_id"))
+            if offset == 0:
+                if len(self.fragments) >= 16:
+                    self.fragments.pop(next(iter(self.fragments)))
+                self.fragments[key] = (total, bytearray(), packet)
+            state = self.fragments.get(key)
+            if state is None:
+                continue
+            expected, data, first = state
+            if total != expected or offset != len(data) or len(data) + len(part) > total:
+                self.fragments.pop(key, None)
+                continue
+            data.extend(part)
+            if packet["flags"] & NLK_FLAG_MORE_FRAG:
+                continue
+            self.fragments.pop(key, None)
+            if len(data) != total:
+                continue
+            result = dict(first)
+            result["flags"] &= ~(NLK_FLAG_FRAG | NLK_FLAG_MORE_FRAG)
+            result["payload"] = bytes(data)
+            result["payload_len"] = total
+            return result
 
     def next_seq(self) -> int:
         self.seq_id = (self.seq_id + 1) & 0xFFFF
@@ -596,19 +652,20 @@ class NLKHostClient:
                 deadline = time.monotonic() + (timeout_ms / 1000.0)
                 while time.monotonic() < deadline:
                     rem_ms = max(20, int((deadline - time.monotonic()) * 1000))
-                    rx = self.transport.recv_packet(timeout_ms=rem_ms)
-                    if (rx["flags"] & NLK_FLAG_IS_ACK) and rx["seq_id"] == seq:
+                    rx = self._recv_packet(timeout_ms=rem_ms)
+                    if ((rx["flags"] & NLK_FLAG_IS_ACK) and rx["seq_id"] == seq and
+                            rx.get("src_addr") == dst_addr and rx.get("dst_cap") == dst_cap):
                         if rx["flags"] & NLK_FLAG_IS_ERR:
                             err_code = -1
                             if len(rx["payload"]) >= 2:
                                 (err_code,) = struct.unpack_from("<h", rx["payload"], 0)
-                            raise RuntimeError(
-                                f"NLK RPC error from 0x{dst_addr:04x} cap={dst_cap} op=0x{cmd_op:02x}: errno={err_code}"
+                            raise NLKRPCError(
+                                err_code, f"NLK RPC error from 0x{dst_addr:04x} cap={dst_cap} op=0x{cmd_op:02x}"
                             )
                         return rx["payload"]
                     else:
                         # Preserve asynchronous stream/event packets received during RPC wait
-                        self.async_queue.append(rx)
+                        self._queue_async(rx)
                 last_err = TimeoutError(
                     f"RPC timeout waiting for seq={seq} (dst=0x{dst_addr:04x}, cap={dst_cap}, op=0x{cmd_op:02x})"
                 )
@@ -644,7 +701,7 @@ class NLKHostClient:
                 deadline = time.monotonic() + (timeout_ms / 1000.0)
                 while time.monotonic() < deadline:
                     rem_ms = max(20, int((deadline - time.monotonic()) * 1000))
-                    rx = self.transport.recv_packet(timeout_ms=rem_ms)
+                    rx = self._recv_packet(timeout_ms=rem_ms)
                     if (rx["flags"] & NLK_FLAG_IS_ACK) and rx["seq_id"] == seq:
                         if rx["flags"] & NLK_FLAG_IS_ERR:
                             err_code = -1
@@ -662,7 +719,7 @@ class NLKHostClient:
                             "status": status,
                         }
                     else:
-                        self.async_queue.append(rx)
+                        self._queue_async(rx)
                 last_err = TimeoutError(f"Bulk chunk timeout at offset {offset}")
             except TimeoutError as e:
                 last_err = e
@@ -688,9 +745,30 @@ class NLKHostClient:
         if self.async_queue:
             return self.async_queue.popleft()
         try:
-            return self.transport.recv_packet(timeout_ms=timeout_ms)
+            return self._recv_packet(timeout_ms=timeout_ms)
         except TimeoutError:
             return None
+
+    def poll_matching(self, addr, cap, op, timeout_ms=100, token=None):
+        def matches(pkt):
+            return (pkt.get("src_addr") == addr and pkt.get("dst_cap") == cap and
+                    pkt.get("mode") == NLK_MODE_STREAM and pkt.get("cmd_op") == op and
+                    (token is None or (len(pkt.get("payload", b"")) >= 8 and
+                     struct.unpack_from("<Q", pkt["payload"])[0] == token)))
+        for index, pkt in enumerate(self.async_queue):
+            if matches(pkt):
+                del self.async_queue[index]
+                return pkt
+        deadline = time.monotonic() + timeout_ms / 1000.0
+        while time.monotonic() < deadline:
+            try:
+                pkt = self._recv_packet(timeout_ms=max(1, int((deadline - time.monotonic()) * 1000)))
+            except TimeoutError:
+                return None
+            if matches(pkt):
+                return pkt
+            self._queue_async(pkt)
+        return None
 
     # --- High-level Capability Discovery Helpers ---
     def get_device_desc(self, addr: int = NLK_ADDR_PRIMARY) -> dict:
@@ -965,111 +1043,173 @@ def cmd_fw_update(
         print("[FW-UPDATE] Reboot ACK received.")
 
 
+class RemoteShellSession:
+    """A leased session with acknowledged, ordered and idempotent stdin chunks."""
+    def __init__(self, client, addr, cap):
+        self.client = client
+        self.addr = addr
+        self.cap = cap
+        self.token = int.from_bytes(os.urandom(8), "little") or 1
+        self.offset = 0
+        self.last_heartbeat = time.monotonic()
+        self.active = False
+        self.reliable = True
+
+    def open(self, cols=120, rows=40):
+        payload = SHELL_OPEN_STRUCT.pack(cols, rows, 128, NLK_SHELL_OPEN_RELIABLE)
+        payload += struct.pack("<Q", self.token)
+        self.active = True
+        self.reliable = True
+        try:
+            self.client.rpc_call(self.addr, self.cap, NLK_SHELL_OP_OPEN, payload)
+        except NLKRPCError as exc:
+            if exc.error_code in (-22, -95):
+                self.reliable = False
+                legacy = SHELL_OPEN_STRUCT.pack(cols, rows, 128, 0)
+                try:
+                    self.client.rpc_call(self.addr, self.cap, NLK_SHELL_OP_OPEN, legacy)
+                except Exception:
+                    self.close()
+                    raise
+            else:
+                self.close()
+                raise
+        except Exception:
+            self.close()
+            raise
+        self.last_heartbeat = time.monotonic()
+
+    def close(self):
+        if self.active:
+            self.active = False
+            try:
+                close_payload = struct.pack("<Q", self.token) if self.reliable else b""
+                self.client.rpc_call(self.addr, self.cap, NLK_SHELL_OP_CLOSE,
+                                     close_payload)
+            except Exception:
+                pass
+
+    def heartbeat(self):
+        if self.reliable and time.monotonic() - self.last_heartbeat >= 10:
+            self.client.rpc_call(self.addr, self.cap, NLK_SHELL_OP_HEARTBEAT,
+                                 struct.pack("<Q", self.token))
+            self.last_heartbeat = time.monotonic()
+
+    def write(self, data, timeout=30.0):
+        for index in range(0, len(data), 64):
+            chunk = data[index:index + 64]
+            if not self.reliable:
+                self.client.stream_write(self.addr, self.cap, NLK_SHELL_STREAM_STDIN, chunk)
+                self.last_heartbeat = time.monotonic()
+                continue
+            payload = struct.pack("<QI", self.token, self.offset) + chunk
+            deadline = time.monotonic() + timeout
+            while True:
+                try:
+                    self.client.rpc_call(self.addr, self.cap, NLK_SHELL_OP_INPUT, payload)
+                    break
+                except NLKRPCError as exc:
+                    if exc.error_code != -28 or time.monotonic() >= deadline:
+                        raise
+                    time.sleep(0.02)
+            self.offset = (self.offset + len(chunk)) & 0xFFFFFFFF
+            self.last_heartbeat = time.monotonic()
+
+    def poll(self, timeout_ms=100):
+        self.heartbeat()
+        if hasattr(self.client, "poll_matching"):
+            if not self.reliable:
+                return self.client.poll_matching(self.addr, self.cap, NLK_SHELL_STREAM_STDOUT,
+                                                 timeout_ms, token=None)
+            pkt = self.client.poll_matching(self.addr, self.cap, NLK_SHELL_STREAM_STDOUT_V2,
+                                            timeout_ms, token=self.token)
+            if pkt is not None:
+                pkt = dict(pkt, payload=pkt["payload"][8:])
+            return pkt
+        return self.client.poll_async_packet(timeout_ms=timeout_ms)
+
+
 def cmd_shell_exec(
     client: NLKHostClient, addr: int, command_str: str, timeout_sec: float = 2.0
 ) -> str:
     sh_cap_id = client.find_cap_id(addr, NLK_CAP_SHELL)
-    open_msg = SHELL_OPEN_STRUCT.pack(100, 30, 128, 0)
-    client.rpc_call(addr, sh_cap_id, NLK_SHELL_OP_OPEN, open_msg)
-
-    # Wait briefly for initial prompt and drain it
-    deadline_init = time.monotonic() + 0.15
-    init_buf = ""
-    while time.monotonic() < deadline_init:
-        pkt = client.poll_async_packet(timeout_ms=25)
-        if pkt is not None and pkt["mode"] == NLK_MODE_STREAM:
-            init_buf += pkt["payload"].decode("utf-8", errors="replace")
-            if "nos# " in init_buf:
+    session = RemoteShellSession(client, addr, sh_cap_id)
+    session.open(100, 30)
+    try:
+        deadline_init = time.monotonic() + 0.15
+        while time.monotonic() < deadline_init:
+            pkt = session.poll(timeout_ms=25)
+            if pkt is not None and b"nos# " in pkt["payload"]:
                 break
-
-    # Send command + newline
-    cmd_clean = command_str.rstrip("\r\n")
-    payload = (cmd_clean + "\r").encode("utf-8")
-    for i in range(0, len(payload), 64):
-        client.stream_write(addr, sh_cap_id, NLK_SHELL_STREAM_STDIN, payload[i : i + 64])
-
-    out_chunks = []
-    deadline = time.monotonic() + timeout_sec
-    last_rx_time = time.monotonic()
-    while time.monotonic() < deadline:
-        pkt = client.poll_async_packet(timeout_ms=40)
-        if pkt is not None:
-            if (
-                pkt["mode"] == NLK_MODE_STREAM
-                and pkt["cmd_op"] == NLK_SHELL_STREAM_STDOUT
-            ):
-                text = pkt["payload"].decode("utf-8", errors="replace")
-                out_chunks.append(text)
-                last_rx_time = time.monotonic()
-                combined = "".join(out_chunks)
-                echo_pos = combined.find(cmd_clean)
-                if echo_pos >= 0 and combined[echo_pos + len(cmd_clean) :].endswith("nos# "):
-                    extra = client.poll_async_packet(timeout_ms=30)
-                    if extra is None:
-                        break
-                    elif (
-                        extra["mode"] == NLK_MODE_STREAM
-                        and extra["cmd_op"] == NLK_SHELL_STREAM_STDOUT
-                    ):
-                        out_chunks.append(
-                            extra["payload"].decode("utf-8", errors="replace")
-                        )
-                        break
-        else:
-            combined = "".join(out_chunks)
-            echo_pos = combined.find(cmd_clean)
-            if (
-                echo_pos >= 0
-                and "nos# " in combined[echo_pos + len(cmd_clean) :]
-                and (time.monotonic() - last_rx_time) > 0.1
-            ):
-                break
-
-    client.rpc_call(addr, sh_cap_id, NLK_SHELL_OP_CLOSE, b"")
-    full_output = "".join(out_chunks)
-    return full_output
+        cmd_clean = command_str.rstrip("\r\n")
+        session.write((cmd_clean + "\r").encode("utf-8"))
+        decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+        chunks = []
+        deadline = time.monotonic() + timeout_sec
+        while time.monotonic() < deadline:
+            pkt = session.poll(timeout_ms=40)
+            if pkt is not None:
+                chunks.append(decoder.decode(pkt["payload"]))
+                combined = "".join(chunks)
+                if combined.endswith("nos# "):
+                    break
+        chunks.append(decoder.decode(b"", final=True))
+        return "".join(chunks)
+    finally:
+        session.close()
 
 
 def cmd_shell_interactive(client: NLKHostClient, addr: int):
     sh_cap_id = client.find_cap_id(addr, NLK_CAP_SHELL)
-    open_msg = SHELL_OPEN_STRUCT.pack(120, 40, 128, 0)
-    client.rpc_call(addr, sh_cap_id, NLK_SHELL_OP_OPEN, open_msg)
-    print(
-        f"Connected to NK60-V2 nShell over NLK (node=0x{addr:04x}, cap={sh_cap_id}). Type 'exit' or Ctrl+D to quit."
-    )
+    session = RemoteShellSession(client, addr, sh_cap_id)
+    session.open()
+    decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+    saved_term = None
+    fd = None
     try:
+        print(f"Connected to NLK shell (node=0x{addr:04x}, cap={sh_cap_id}). Ctrl+D disconnects.")
+        if os.name != "nt":
+            fd = sys.stdin.fileno()
+            if sys.stdin.isatty():
+                import termios
+                import tty
+                saved_term = termios.tcgetattr(fd)
+                tty.setraw(fd)
+        else:
+            import msvcrt
         while True:
-            # Poll remote stdout stream
-            while True:
-                pkt = client.poll_async_packet(timeout_ms=20)
-                if pkt is None:
-                    break
-                if (
-                    pkt["mode"] == NLK_MODE_STREAM
-                    and pkt["cmd_op"] == NLK_SHELL_STREAM_STDOUT
-                ):
-                    sys.stdout.write(pkt["payload"].decode("utf-8", errors="replace"))
-                    sys.stdout.flush()
-
-            # Check local stdin
-            rlist, _, _ = select.select([sys.stdin], [], [], 0.01)
-            if rlist:
-                line = sys.stdin.readline()
-                if not line or line.strip() == "exit":
-                    break
-                data = (line.rstrip("\r\n") + "\r").encode("utf-8")
-                client.stream_write(addr, sh_cap_id, NLK_SHELL_STREAM_STDIN, data)
-    except KeyboardInterrupt:
-        sig = struct.pack("<B", NLK_SHELL_SIG_INT)
-        try:
-            client.rpc_call(addr, sh_cap_id, NLK_SHELL_OP_SIGNAL, sig)
-        except Exception:
-            pass
+            pkt = session.poll(timeout_ms=20)
+            if pkt is not None:
+                sys.stdout.write(decoder.decode(pkt["payload"]))
+                sys.stdout.flush()
+            if os.name == "nt":
+                if not msvcrt.kbhit():
+                    continue
+                char = msvcrt.getwch()
+                if char in ("\x00", "\xe0"):
+                    key = msvcrt.getwch()
+                    data = {"H": b"\x1b[A", "P": b"\x1b[B",
+                            "K": b"\x1b[D", "M": b"\x1b[C"}.get(key, b"")
+                    if not data:
+                        continue
+                else:
+                    data = char.encode("utf-8")
+            else:
+                ready, _, _ = select.select([fd], [], [], 0.01)
+                if not ready:
+                    continue
+                data = os.read(fd, 64)
+            if not data:
+                break
+            before_eof, separator, _ = data.partition(b"\x04")
+            if before_eof:
+                session.write(before_eof)
+            if separator:
+                break
     finally:
-        try:
-            client.rpc_call(addr, sh_cap_id, NLK_SHELL_OP_CLOSE, b"")
-        except Exception:
-            pass
+        if saved_term is not None:
+            termios.tcsetattr(fd, termios.TCSADRAIN, saved_term)
+        session.close()
         print("\nDisconnected from NLK remote nShell.")
 
 

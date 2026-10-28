@@ -5,8 +5,14 @@
  */
 
 #include <kernel/printk.h>
+#include <kernel/types.h>
 #include <lib/kfifo.h>
 #include <stdio.h>
+
+addr_t disable_irq_save(void) { return 0; }
+void enable_irq_save(addr_t flags) { (void)flags; }
+
+bool console_is_panic(void) { return false; }
 
 static int sink_result;
 static int record_calls;

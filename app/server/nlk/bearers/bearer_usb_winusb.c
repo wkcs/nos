@@ -44,6 +44,7 @@ static int winusb_tx_raw(struct nlk_bearer *b, uint16_t next_hop_addr,
     } else {
         return -ENOTSUP;
     }
+    if (written >= 0 && (size_t)written != len) return -EAGAIN;
     return (int)written;
 }
 

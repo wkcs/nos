@@ -23,6 +23,7 @@
 #include <fs/fs.h>
 #include <fs/vfs.h>
 #include <lib/vsprintf.h>
+#include <nos/shell_session.h>
 #include <stdarg.h>
 #ifdef CONFIG_NLK_SERVER
 #include <nos/nlk_core.h>
@@ -49,45 +50,78 @@ struct shell_cmd {
 
 static struct shell_cmd *cmd_list = NULL;
 
-#define ANSI_CMD_PARAM_MAX 10
-struct ansi_cmd {
-    bool is_escape_sequence;
-    bool has_param;
-    char cmd;
-    char params[ANSI_CMD_PARAM_MAX];
-};
-
-#define SHELL_CMD_STR_MAX 256
-/* Renamed from shell_cmd to nshell_input to avoid conflict */
-struct nshell_input {
-    char buf[SHELL_CMD_STR_MAX + 1];
-    size_t index;
-};
+#define SHELL_CMD_STR_MAX SHELL_SESSION_INPUT_MAX
 
 struct nshell {
     struct task_struct *task;
-    struct nshell_input cmd;
-    struct ansi_cmd ansi_cmd;
+    struct shell_session session;
+    struct nshell *next;
+    bool remote;
+    bool ls_long_format;
+    uint32_t generation;
 };
+
+static struct nshell *shell_sessions;
+
+static struct nshell *nshell_current(void)
+{
+    struct nshell *shell;
+    for (shell = shell_sessions; shell != NULL; shell = shell->next) {
+        if (shell->task == task_current()) return shell;
+    }
+    return NULL;
+}
 
 /* --- Helper Functions from kernel/shell.c --- */
 
-static int nshell_write(const char *buf, int len)
+static int nshell_transport_write(void *context, const char *buf, unsigned int len)
 {
-    int rc = console_write(buf, len);
+    struct nshell *shell = context;
+    if (shell == NULL) return -EINVAL;
+    if (!shell->remote && shell->session.tty == NULL) return console_write(buf, len);
 #ifdef CONFIG_NLK_SERVER
-    struct nlk_shell_ctx *sh_ctx = nlk_cap_shell_default_ctx();
-    if (sh_ctx != NULL && sh_ctx->session_open && len > 0) {
-        (void)nos_tty_write(nlk_cap_shell_tty(sh_ctx),
-                            (const unsigned char *)buf, (unsigned int)len);
+    if (shell->remote) {
+        struct nlk_shell_ctx *ctx = nlk_cap_shell_default_ctx();
+        if (ctx == NULL || !ctx->session_open || shell->generation != __atomic_load_n(&ctx->generation, __ATOMIC_ACQUIRE))
+            return -ENOTCONN;
     }
 #endif
-    return rc;
+    if (shell->remote) {
+        unsigned int total = 0;
+        while (total < len) {
+#ifdef CONFIG_NLK_SERVER
+            struct nlk_shell_ctx *ctx = nlk_cap_shell_default_ctx();
+            int rc = nlk_cap_shell_write_session(ctx, shell->generation,
+                         (const unsigned char *)buf + total, (unsigned int)(len - total));
+#else
+            int rc = -ENOTCONN;
+#endif
+            if (rc == -EAGAIN) {
+                msleep(10);
+#ifdef CONFIG_NLK_SERVER
+                {
+                    struct nlk_shell_ctx *ctx = nlk_cap_shell_default_ctx();
+                    if (ctx == NULL || shell->generation !=
+                        __atomic_load_n(&ctx->generation, __ATOMIC_ACQUIRE))
+                        return total != 0 ? (int)total : -ENOTCONN;
+                }
+#endif
+            } else if (rc <= 0) {
+                return total != 0 ? (int)total : rc;
+            } else {
+                total += rc;
+            }
+        }
+        return (int)total;
+    }
+    return nos_tty_write(shell->session.tty, (const unsigned char *)buf, len);
 }
 
-static int nshell_putc(char ch)
+static int nshell_write(const char *buf, int len)
 {
-    return nshell_write(&ch, 1);
+    struct nshell *shell = nshell_current();
+    if (shell == NULL || len < 0) return -EINVAL;
+    return shell_session_write(&shell->session, buf, (unsigned int)len);
 }
 
 // Helper for shell output to avoid log tags
@@ -111,35 +145,23 @@ static int shell_printf(const char *fmt, ...) {
 
 static int nshell_getc(void)
 {
+    struct nshell *shell = nshell_current();
+    if (shell == NULL) return -EINVAL;
 #ifdef CONFIG_NLK_SERVER
-    unsigned char ch;
-    for (;;) {
-        struct nlk_shell_ctx *sh_ctx = nlk_cap_shell_default_ctx();
-        if (sh_ctx != NULL) {
-            if (sh_ctx->prompt_pending) {
-                sh_ctx->prompt_pending = false;
-                shell_printf("\r\n" SHELL_PROMPT);
-            }
-            struct nos_tty *sh_tty = nlk_cap_shell_tty(sh_ctx);
-            if (sh_tty != NULL && nos_tty_read(sh_tty, &ch, 1U, false) == 1) {
-                return (int)ch;
-            }
-        }
-#ifdef CONFIG_TTY
-        struct nos_tty *con_tty = nos_console_tty();
-        if (con_tty != NULL) {
-            if (nos_tty_read(con_tty, &ch, 1U, false) == 1) {
-                return (int)ch;
+    if (shell->remote) {
+        for (;;) {
+            struct nlk_shell_ctx *ctx = nlk_cap_shell_default_ctx();
+            unsigned char ch;
+            if (ctx != NULL) {
+                if (shell->generation != __atomic_load_n(&ctx->generation, __ATOMIC_ACQUIRE)) return -1;
+                if (ctx->session_open && nlk_cap_shell_read_session(ctx, shell->generation,
+                                                                    &ch, 1U) == 1) return ch;
             }
             msleep(10);
-            continue;
         }
-#endif
-        return console_getc();
     }
-#else
-    return console_getc();
 #endif
+    return console_getc();
 }
 
 static void shell_register_cmd(const char *name, const char *desc,
@@ -156,7 +178,7 @@ static void shell_register_cmd(const char *name, const char *desc,
 
 /* --- Filesystem Helper Functions --- */
 
-static struct dentry *shell_cwd = NULL;
+#define shell_cwd (nshell_current()->session.cwd)
 
 static void shell_init_cwd(void) {
   if (!shell_cwd) {
@@ -329,11 +351,10 @@ static int cmd_clear(int argc, char *argv[]) {
   return 0;
 }
 
-static bool ls_long_format = false;
 
 static int shell_filldir(void *dirent, const char *name, int namelen,
                          loff_t offset, u64 ino, unsigned d_type) {
-  if (ls_long_format) {
+  if (nshell_current()->ls_long_format) {
       shell_printf("-rw-rw-r-- 1 root root 0 %s\r\n", name); 
   } else {
      shell_printf("  %s\r\n", name); 
@@ -348,12 +369,12 @@ static int cmd_ls(int argc, char *argv[]) {
   struct dentry *target = shell_cwd;
   char *path_arg = NULL;
   
-  ls_long_format = false;
+  nshell_current()->ls_long_format = false;
 
   int i;
   for (i = 1; i < argc; i++) {
       if (strcmp(argv[i], "-l") == 0) {
-          ls_long_format = true;
+          nshell_current()->ls_long_format = true;
       } else if (!path_arg) {
           path_arg = argv[i];
       }
@@ -630,126 +651,15 @@ static int cmd_nlk(int argc, char *argv[])
 }
 #endif
 
-/* --- ANSI and nshell logic --- */
-
-#define isdigit(c) ((unsigned)((c) - '0') < 10)
-
-static bool isprint(char ch)
-{
-    return (ch >= 0x20 && ch <= 0x7e);
-}
-
-static char nshell_parse_ansi_cmd(struct ansi_cmd *cmd)
-{
-    char ch;
-    size_t index = 0;
-    bool start = false;
-
-    memset(cmd, 0, sizeof(struct ansi_cmd));
-    cmd->is_escape_sequence = false;
-    cmd->has_param = false;
-    cmd->is_escape_sequence = true;
-
-    while (true) {
-        ch = (char)nshell_getc();
-        nshell_putc(ch);
-        if (ch != '[') {
-            break;
-        }
-        start = true;
-    }
-    if (!start) {
-        return ch;
-    }
-
-    while (true) {
-        ch = (char)nshell_getc();
-        nshell_putc(ch);
-        if (isdigit(ch) || ch == ';' || ch == '?') {
-            cmd->params[index++] = ch;
-            if (index >= ANSI_CMD_PARAM_MAX) {
-                pr_err("too many params\r\n");
-                break;
-            }
-            continue;
-        }
-        break;
-    }
-
-    if (index > 0) {
-        cmd->has_param = true;
-    }
-    // 读取命令
-    cmd->cmd = (char)nshell_getc();
-    nshell_putc(cmd->cmd);
-
-    return 0;
-}
-
-void nshell_exec_ansi_cmd(struct nshell *shell) {
-    const struct ansi_cmd *cmd = &shell->ansi_cmd;
-    struct nshell_input *shell_cmd = &shell->cmd;
-
-    if (!cmd->is_escape_sequence) {
-        pr_err("Not an escape sequence.\r\n");
-        return;
-    }
-
-    if (cmd->has_param) {
-        pr_debug("Parameters: %s\r\n", cmd->params);
-    }
-
-    switch (cmd->cmd) {
-        case 'A':  // 上移
-            pr_info("Move cursor up.\r\n");
-            break;
-        case 'B':  // 下移
-            pr_info("Move cursor down.\r\n");
-            break;
-        case 'C':  // 右移
-            if (shell_cmd->index < SHELL_CMD_STR_MAX - 1)
-                shell_cmd->index++;
-            size_t len = strlen(shell_cmd->buf);
-            if (shell_cmd->index > len)
-                shell_cmd->index = len;
-            pr_info("Move cursor right.\r\n");
-            break;
-        case 'D':  // 左移
-            if (shell_cmd->index > 0)
-                shell_cmd->index--;
-            pr_info("Move cursor left.\r\n");
-            break;
-        case 'J':  // 清除屏幕
-            if (cmd->params[0] == '2') {
-                pr_info("Clear entire screen.\r\n");
-            } else {
-                pr_info("Clear from current position to end of screen.\r\n");
-            }
-            break;
-        case 'K':  // 清除当前行
-            if (cmd->params[0] == '2') {
-                pr_info("Clear entire line.\r\n");
-            } else {
-                pr_info("Clear from current position to end of line.\r\n");
-            }
-            break;
-        case 'm':  // 文本样式
-            pr_info("Set text style.\r\n");
-            break;
-        default:
-            pr_err("Unknown cmd: %c\r\n", cmd->cmd);
-    }
-}
-
 static void nshell_exec_cmd(struct nshell *shell)
 {
     char *argv[MAX_ARGS];
     int argc;
 
-    if (shell->cmd.index == 0 && strlen(shell->cmd.buf) == 0)
+    if (shell->session.input_len == 0 && strlen(shell->session.input) == 0)
         return;
 
-    argc = parse_line(shell->cmd.buf, argv);
+    argc = parse_line(shell->session.input, argv);
     if (argc > 0) {
         struct shell_cmd *curr = cmd_list;
         while (curr) {
@@ -763,25 +673,73 @@ static void nshell_exec_cmd(struct nshell *shell)
     }
 }
 
-static void nshell_new_line(struct nshell *shell)
+static void nshell_execute_line(struct shell_session *session, void *context)
 {
-    shell_printf("\r\n");
-    nshell_exec_cmd(shell);
-    memset(shell->cmd.buf, 0, SHELL_CMD_STR_MAX);
-    shell->cmd.index = 0;
-    shell_printf(SHELL_PROMPT);
+    (void)session;
+    nshell_exec_cmd(context);
 }
 
 static void nshell_task_entry(void* parameter)
 {
     struct nshell *shell = parameter;
-    char ch;
-    size_t len = 0;
-    bool ansi_cmd = false;
-    bool newline = false;
 
-    shell_init_cwd();
+    if (!shell->remote) {
+        shell->session.tty = nos_console_tty();
+        shell_init_cwd();
+        shell_printf("\033[2J\033[H"); /* Clear screen */
+        shell_printf("\033[1;36m");
+        shell_printf("  _   _  ___  ____  \r\n");
+        shell_printf(" | \\ | |/ _ \\/ ___| \r\n");
+        shell_printf(" |  \\| | | | \\___ \\ \r\n");
+        shell_printf(" | |\\  | |_| |___) |\r\n");
+        shell_printf(" |_| \\_|\\___/|____/ \r\n");
+        shell_printf("\033[0m");
+        shell_printf("Welcome to NOS Shell\r\n");
+        shell_printf(SHELL_PROMPT);
+    }
 
+    while (true) {
+        int value = nshell_getc();
+        if (value < 0) {
+#ifdef CONFIG_NLK_SERVER
+            struct nlk_shell_ctx *ctx = nlk_cap_shell_default_ctx();
+            if (shell->remote && ctx != NULL) {
+                shell->generation = __atomic_load_n(&ctx->generation, __ATOMIC_ACQUIRE);
+                shell->session.tty = nlk_cap_shell_tty(ctx);
+                shell_session_reset(&shell->session, vfs_get_root());
+                if (ctx->session_open) shell_printf("\r\n" SHELL_PROMPT);
+            }
+#endif
+            continue;
+        }
+        shell_session_feed(&shell->session, (unsigned char)value,
+                           nshell_execute_line, shell);
+    }
+}
+
+static int nshell_start(bool remote)
+{
+    struct nshell *shell = kzalloc(sizeof(*shell), GFP_KERNEL);
+    if (shell == NULL) return -ENOMEM;
+    shell_session_init(&shell->session, NULL, NULL);
+    shell->session.writer = nshell_transport_write;
+    shell->session.writer_context = shell;
+    shell->remote = remote;
+    shell->task = task_create(remote ? "nshell_nlk" : "nshell",
+        nshell_task_entry, shell, 5, CONFIG_SHELL_STACK_SIZE, 10, NULL);
+    if (shell->task == NULL) {
+        kfree(shell);
+        return -ENOMEM;
+    }
+    shell->next = shell_sessions;
+    shell_sessions = shell;
+    task_ready(shell->task);
+    return 0;
+}
+
+static int nshell_init(void)
+{
+    int rc;
     // Register basic commands
     shell_register_cmd("help", "List commands", cmd_help);
     shell_register_cmd("ver", "Show NOS kernel version & uptime", cmd_ver);
@@ -798,98 +756,13 @@ static void nshell_task_entry(void* parameter)
     shell_register_cmd("nlk", "Show NLK soft-bus status & topology", cmd_nlk);
 #endif
 
-    shell_printf("\033[2J\033[H"); /* Clear screen */
-    shell_printf("\033[1;36m");
-    shell_printf("  _   _  ___  ____  \r\n");
-    shell_printf(" | \\ | |/ _ \\/ ___| \r\n");
-    shell_printf(" |  \\| | | | \\___ \\ \r\n");
-    shell_printf(" | |\\  | |_| |___) |\r\n");
-    shell_printf(" |_| \\_|\\___/|____/ \r\n");
-    shell_printf("\033[0m");
-    shell_printf("Welcome to NOS Shell\r\n");
-    shell_printf(SHELL_PROMPT);
 
-    memset(shell->cmd.buf, 0, SHELL_CMD_STR_MAX);
-    shell->cmd.index = 0;
-
-    while (true) {
-        if (ansi_cmd) {
-            ansi_cmd = false;
-            ch = nshell_parse_ansi_cmd(&shell->ansi_cmd);
-            if (ch == 0) {
-                nshell_exec_ansi_cmd(shell);
-                continue;
-            }
-        } else {
-            ch = (char)nshell_getc();
-        }
-
-        if (isprint(ch)) {
-            if (shell->cmd.index >= len) {
-                shell->cmd.index = len; // Corrected assignment
-            } else {
-                for (int i = len; i > shell->cmd.index; i--) {
-                    shell->cmd.buf[i] = shell->cmd.buf[i - 1];
-                }
-            }
-            shell->cmd.buf[shell->cmd.index++] = ch;
-            len++;
-            nshell_putc(ch);
-            if (len >= SHELL_CMD_STR_MAX) {
-                nshell_new_line(shell);
-                len = 0;
-            }
-        } else if (ch == '\r') {
-            nshell_new_line(shell);
-            len = 0;
-            newline = true;
-        } else if (ch == '\n') {
-            if (newline) {
-                newline = false;
-                continue;
-            }
-            nshell_new_line(shell);
-            len = 0;
-            newline = false;
-        } else if (ch == 0x03) {
-            memset(shell->cmd.buf, 0, SHELL_CMD_STR_MAX);
-            shell->cmd.index = 0;
-            len = 0;
-            newline = false;
-            shell_printf("^C\r\n" SHELL_PROMPT);
-        } else if (ch == '\033') {
-            ansi_cmd = true;
-            nshell_putc(ch);
-        } else if (ch == 0x08 || ch == 0x7F) { // Backspace handling
-             if (shell->cmd.index > 0) {
-                shell->cmd.index--;
-                len--;
-                shell->cmd.buf[shell->cmd.index] = 0; // Simple truncate for now
-                shell_printf("\b \b");
-            }
-        }
-    }
-}
-
-static int nshell_init(void)
-{
-    struct nshell *shell;
-
-    shell = kzalloc(sizeof(struct nshell), GFP_KERNEL);
-    if (shell == NULL) {
-        pr_err("alloc nshell buf error\r\n");
-        return -ENOMEM;
-    }
-
-    shell->task = task_create("nshell",
-        nshell_task_entry, shell, 5, CONFIG_SHELL_STACK_SIZE, 10, NULL);
-    if (shell->task == NULL) {
-        pr_fatal("creat nshell task err\r\n");
-
-        return -EINVAL;
-    }
-    task_ready(shell->task);
-
+    rc = nshell_start(false);
+    if (rc < 0) return rc;
+#ifdef CONFIG_NLK_SERVER
+    rc = nshell_start(true);
+    if (rc < 0) pr_err("cannot start NLK shell: %d\r\n", rc);
+#endif
     return 0;
 }
 task_init(nshell_init);

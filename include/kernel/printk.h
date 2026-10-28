@@ -10,6 +10,7 @@
 #define __NOS_PRINTK_H__
 
 #include <kernel/kernel.h>
+#include <kernel/log_backend.h>
 #include <stdarg.h>
 #include <stdbool.h>
 
@@ -23,6 +24,7 @@ enum log_level {
   LOG_DISABLE,
 };
 
+#define NOS_LOG_BACKEND_API 1
 #define NOS_LOG_RECORD_RING 1
 #define NOS_LOG_METADATA_API 1
 #define NOS_LOG_VECTOR_API 1
@@ -43,11 +45,6 @@ struct kernel_log_stats {
     uint32_t high_water;
 };
 
-typedef void (*kernel_log_observer_fn)(const struct kernel_log_record *record,
-                                       const void *first, unsigned int first_len,
-                                       const void *second, unsigned int second_len,
-                                       void *priv);
-
 __printf(3, 4) int pr_log(bool no_tag, enum log_level level, const char *fmt,
                           ...);
 void set_log_level(enum log_level level);
@@ -66,7 +63,6 @@ void kernel_log_flush(void);
 void kernel_log_panic_flush(void);
 void kernel_log_record_truncated(void);
 void kernel_log_get_stats(struct kernel_log_stats *stats);
-void kernel_log_set_observer(kernel_log_observer_fn fn, void *priv);
 
 #ifndef pr_fmt
 #define pr_fmt(fmt) fmt
