@@ -13,4 +13,11 @@ struct w25q_spi {
 int w25q_spi_read(const struct w25q_spi *flash, uint32_t address,
                   void *buffer, size_t length);
 
+int w25q_spi_write_enable(const struct w25q_spi *flash);
+int w25q_spi_read_status(const struct w25q_spi *flash, uint8_t *status);
+int w25q_spi_read_id(const struct w25q_spi *flash, uint16_t *id);
+int w25q_spi_erase_sector(const struct w25q_spi *flash, uint32_t address);
+int w25q_spi_program_page(const struct w25q_spi *flash, uint32_t address,
+                          const void *buffer, size_t length);
+
 #endif /* __NOS_DRIVERS_W25Q_SPI_H__ */
