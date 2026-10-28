@@ -101,10 +101,6 @@ config STM32F1_SPI
 	help
 	  Enable the STM32F1 polling SPI controller driver.
 
-config SPI_595
-	bool "74HC595 SPI shift register driver"
-	default n
-
 config ZJ_V3_SD_BLOCK
 	bool "ZJ-V3 SPI SD block device"
 	depends on BOARD_ZJ_V3
@@ -133,10 +129,6 @@ config I2C_GPIO
 	default n
 	help
 	  Enable the single-master GPIO I2C controller, including clock stretching.
-
-config STM32PWM
-	bool "STM32 PWM driver"
-	default n
 
 endmenu
 
@@ -252,10 +244,6 @@ endmenu
 
 # 板级特定驱动
 menu "Board-specific Drivers"
-
-config NK60_V1_KEY
-	bool "NK60 V1 keyboard driver"
-	default n
 
 config NK60_V2_KEY
 	bool "NK60 V2 keyboard driver"
