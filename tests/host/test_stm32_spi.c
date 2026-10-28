@@ -2,7 +2,7 @@
 #include <drivers/stm32_spi.h>
 #include <stdio.h>
 
-static int selected, lock_error, count, fail_tx;
+static int selected, lock_error, count, fail_tx, fail_busy;
 static uint8_t sent[8];
 static struct device *controller;
 int device_init(struct device *dev) { dev->mutex.locked = 0; return 0; }
@@ -21,6 +21,7 @@ void SPI_Cmd(SPI_TypeDef *a, int b) { (void)a; (void)b; }
 int SPI_I2S_GetFlagStatus(SPI_TypeDef *a, uint16_t b)
 {
     (void)a;
+    if (b == SPI_I2S_FLAG_BSY) return fail_busy ? 1 : RESET;
     return fail_tx && b == SPI_I2S_FLAG_TXE ? RESET : 1;
 }
 void SPI_I2S_SendData(SPI_TypeDef *a, uint16_t value)
@@ -63,6 +64,13 @@ int main(void)
     if (spi_transceive(&dev, &config, buffers, 2) != -ETIMEDOUT ||
         selected || dev.mutex.locked || lock_error) {
         fputs("timeout did not release chip select and lock\n", stderr);
+        return 1;
+    }
+    fail_tx = 0;
+    fail_busy = 1;
+    if (spi_transceive(&dev, &config, buffers, 2) != -ETIMEDOUT ||
+        selected || dev.mutex.locked || lock_error) {
+        fputs("busy timeout did not release chip select and lock\n", stderr);
         return 1;
     }
     puts("STM32 SPI checks passed");
