@@ -92,6 +92,5 @@ set(NOS_LINK_FLAGS
     -Wl,--gc-sections
     -Wl,--no-warn-rwx-segments
     -Wl,-cref
-    -Wl,-u,Reset_Handler
     -Wl,--defsym=malloc_getpagesize_P=0x80
 )
