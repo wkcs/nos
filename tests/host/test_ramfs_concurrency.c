@@ -7,6 +7,8 @@
 #include <unistd.h>
 #include "../../fs/ramfs.c"
 
+int ramfs_fail_alloc;
+
 struct inode *nos_vfs_alloc_inode(struct super_block *sb)
 {
     struct inode *inode = calloc(1, sizeof(*inode));
@@ -130,6 +132,26 @@ int main(void)
         assert(atomic_load(&duplicate_exists) == 1);
         verify_file_lock(file_writer);
         verify_file_lock(file_reader);
+        {
+            struct file f = { .f_inode = regular };
+            off_t pos = 3;
+            char data[3];
+            ramfs_fail_alloc = 1;
+            assert(ramfs_write(&f, "x", 1, &pos) == -ENOMEM);
+            ramfs_fail_alloc = 0;
+            pos = 0;
+            assert(ramfs_read(&f, data, sizeof(data), &pos) == 3);
+            assert(memcmp(data, "abc", 3) == 0);
+            assert(ramfs_truncate(regular, 1) == 0);
+            pos = 5;
+            assert(ramfs_write(&f, "z", 1, &pos) == 1);
+            {
+                char sparse[6];
+                pos = 0;
+                assert(ramfs_read(&f, sparse, sizeof(sparse), &pos) == 6);
+                assert(memcmp(sparse, "a\0\0\0\0z", 6) == 0);
+            }
+        }
     }
     puts("ramfs directory concurrency checks passed");
     return 0;
