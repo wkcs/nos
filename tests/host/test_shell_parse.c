@@ -13,6 +13,10 @@ int main(void)
     char list[] = "echo 'a;b' && false || echo ok; echo done";
     char invalid[] = "echo ok && ; echo bad";
     struct shell_command commands[8];
+    struct shell_redirection redir;
+    char redirected[] = "echo 'a>b'>>\"my file\"";
+    char missing[] = "echo x >";
+    char duplicate[] = "echo x > one > two";
     int argc = shell_parse_line(line, argv, 8);
 
     assert(argc == 5);
@@ -30,5 +34,10 @@ int main(void)
     assert(commands[2].condition == SHELL_ON_FAILURE);
     assert(commands[3].condition == SHELL_ALWAYS);
     assert(shell_split_commands(invalid, commands, 8) < 0);
+    argc = shell_parse_redirect(redirected, argv, 8, &redir);
+    assert(argc == 2 && strcmp(argv[1], "a>b") == 0);
+    assert(redir.append && strcmp(redir.path, "my file") == 0);
+    assert(shell_parse_redirect(missing, argv, 8, &redir) < 0);
+    assert(shell_parse_redirect(duplicate, argv, 8, &redir) < 0);
     return 0;
 }
