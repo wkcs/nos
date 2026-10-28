@@ -37,6 +37,7 @@
 #define SHELL_PROMPT "nos# "
 #define CMD_MAX_LEN 256
 #define MAX_ARGS 16
+#define SHELL_PIPE_CAPACITY 4096U
 
 /* Define command function type */
 typedef int (*cmd_func_t)(int argc, char *argv[]);
@@ -53,6 +54,12 @@ static struct shell_cmd *cmd_list = NULL;
 
 #define SHELL_CMD_STR_MAX SHELL_SESSION_INPUT_MAX
 
+struct shell_pipe_buffer {
+    size_t len;
+    size_t pos;
+    char data[SHELL_PIPE_CAPACITY];
+};
+
 struct nshell {
     struct task_struct *task;
     struct shell_session session;
@@ -62,6 +69,8 @@ struct nshell {
     int last_status;
     struct file *input_file;
     struct file *output_file;
+    struct shell_pipe_buffer *pipe_input;
+    struct shell_pipe_buffer *pipe_output;
     int output_error;
     uint32_t generation;
 };
@@ -139,6 +148,16 @@ static int nshell_write(const char *buf, int len)
         }
         return total;
     }
+    if (shell->pipe_output != NULL) {
+        struct shell_pipe_buffer *pipe = shell->pipe_output;
+        if ((size_t)len > sizeof(pipe->data) - pipe->len) {
+            shell->output_error = -ENOSPC;
+            return -ENOSPC;
+        }
+        memcpy(pipe->data + pipe->len, buf, (size_t)len);
+        pipe->len += (size_t)len;
+        return len;
+    }
     return shell_session_write(&shell->session, buf, (unsigned int)len);
 }
 
@@ -159,6 +178,22 @@ static int shell_printf(const char *fmt, ...) {
     len = sizeof(buf) - 1;
   }
   return nshell_write(buf, len);
+}
+
+static int shell_error(const char *fmt, ...)
+{
+    struct nshell *shell = nshell_current();
+    char buf[CONFIG_SHELL_OUTPUT_SIZE];
+    va_list args;
+    int len;
+
+    if (shell == NULL) return -EINVAL;
+    va_start(args, fmt);
+    len = vsnprintf(buf, sizeof(buf), fmt, args);
+    va_end(args);
+    if (len < 0) return len;
+    if ((size_t)len >= sizeof(buf)) len = sizeof(buf) - 1;
+    return shell_session_write(&shell->session, buf, (unsigned int)len);
 }
 
 static int nshell_getc(void)
@@ -372,7 +407,7 @@ static int cmd_echo(int argc, char *argv[])
         nshell_write(argv[i], strlen(argv[i]));
     }
     if (newline) {
-        if (nshell_current()->output_file != NULL) {
+        if (nshell_current()->output_file != NULL || nshell_current()->pipe_output != NULL) {
             nshell_write("\n", 1);
         } else {
             nshell_write("\r\n", 2);
@@ -661,6 +696,15 @@ static int cat_stdin(void)
 
     if (shell == NULL) return -EINVAL;
     if (shell->input_file != NULL) return cat_stream(shell->input_file);
+    if (shell->pipe_input != NULL) {
+        struct shell_pipe_buffer *pipe = shell->pipe_input;
+        while (pipe->pos < pipe->len) {
+            int rc = nshell_write(pipe->data + pipe->pos, (int)(pipe->len - pipe->pos));
+            if (rc <= 0) return rc < 0 ? rc : -EIO;
+            pipe->pos += (size_t)rc;
+        }
+        return 0;
+    }
     for (;;) {
         int value = nshell_getc();
         char ch;
@@ -681,13 +725,13 @@ static int cat_file(const char *path)
 
   dentry = resolve_path(path);
   if (!dentry || !dentry->d_inode) {
-    shell_printf("cat: %s: not found\r\n", path);
+    shell_error("cat: %s: not found\r\n", path);
     return -1;
   }
 
   f = kzalloc(sizeof(struct file), GFP_KERNEL);
   if (!f) {
-    shell_printf("cat: out of memory\r\n");
+    shell_error("cat: out of memory\r\n");
     return -ENOMEM;
   }
   f->f_inode = dentry->d_inode;
@@ -697,7 +741,7 @@ static int cat_file(const char *path)
   f->f_path.mnt = NULL;
 
   if (!f->f_op || !f->f_op->read) {
-    shell_printf("cat: %s: no read operation\r\n", path);
+    shell_error("cat: %s: no read operation\r\n", path);
     kfree(f);
     return -1;
   }
@@ -705,7 +749,7 @@ static int cat_file(const char *path)
   if (f->f_op->open) {
       ret = f->f_op->open(dentry->d_inode, f);
       if (ret != 0) {
-          shell_printf("cat: open failed %d\r\n", ret);
+          shell_error("cat: open failed %d\r\n", ret);
           kfree(f);
           return ret;
       }
@@ -958,6 +1002,7 @@ static void nshell_exec_cmd(struct nshell *shell)
     struct shell_redirection redir;
     int count;
     int i;
+    bool skip_pipeline = false;
 
     if (shell->session.input_len == 0 && strlen(shell->session.input) == 0)
         return;
@@ -987,27 +1032,40 @@ static void nshell_exec_cmd(struct nshell *shell)
     for (i = 0; i < count; i++) {
         struct shell_cmd *curr = cmd_list;
         int argc;
-        if ((workspace->commands[i].condition == SHELL_ON_SUCCESS && shell->last_status != 0) ||
-            (workspace->commands[i].condition == SHELL_ON_FAILURE && shell->last_status == 0)) {
+        if (workspace->commands[i].condition != SHELL_PIPE) {
+            skip_pipeline = (workspace->commands[i].condition == SHELL_ON_SUCCESS && shell->last_status != 0) ||
+                            (workspace->commands[i].condition == SHELL_ON_FAILURE && shell->last_status == 0);
+        }
+        if (skip_pipeline) {
             continue;
         }
         argc = shell_parse_redirect(workspace->commands[i].text, argv, MAX_ARGS + 1, &redir);
         if (argc <= 0) continue;
+        shell->output_error = 0;
+        if (i + 1 < count && workspace->commands[i + 1].condition == SHELL_PIPE) {
+            shell->pipe_output = kzalloc(sizeof(*shell->pipe_output), GFP_KERNEL);
+            if (shell->pipe_output == NULL) {
+                shell_printf("shell: pipe: out of memory\r\n");
+                shell->last_status = 1;
+                skip_pipeline = true;
+                goto next_command;
+            }
+        }
         if (redir.input_path != NULL) {
             int rc = nshell_open_input(shell, redir.input_path);
             if (rc < 0) {
-                shell_printf("shell: %s: cannot redirect (error %d)\r\n", redir.input_path, rc);
+                shell_error("shell: %s: cannot redirect (error %d)\r\n", redir.input_path, rc);
                 shell->last_status = 1;
-                continue;
+                goto next_command;
             }
         }
         if (redir.path != NULL) {
             int rc = nshell_open_output(shell, redir.path, redir.append);
             if (rc < 0) {
-                shell_printf("shell: %s: cannot redirect (error %d)\r\n", redir.path, rc);
+                shell_error("shell: %s: cannot redirect (error %d)\r\n", redir.path, rc);
                 shell->last_status = 1;
                 nshell_close_input(shell);
-                continue;
+                goto next_command;
             }
         }
         while (curr) {
@@ -1018,7 +1076,7 @@ static void nshell_exec_cmd(struct nshell *shell)
             curr = curr->next;
         }
         if (curr == NULL) {
-            shell_printf("%s: command not found\r\n", argv[0]);
+            shell_error("%s: command not found\r\n", argv[0]);
             shell->last_status = 127;
         }
         nshell_close_input(shell);
@@ -1029,11 +1087,27 @@ static void nshell_exec_cmd(struct nshell *shell)
                 shell->last_status = 1;
             }
             kfree(file);
-            if (shell->output_error != 0) {
-                shell_printf("shell: output error %d\r\n", shell->output_error);
-                shell->last_status = 1;
-            }
         }
+next_command:
+        if (shell->pipe_input != NULL) {
+            kfree(shell->pipe_input);
+            shell->pipe_input = NULL;
+        }
+        if (shell->output_error != 0) {
+            int error = shell->output_error;
+            if (shell->pipe_output != NULL) kfree(shell->pipe_output);
+            shell->pipe_output = NULL;
+            shell_error("shell: output error %d\r\n", error);
+            shell->last_status = 1;
+            skip_pipeline = true;
+        } else {
+            shell->pipe_input = shell->pipe_output;
+        }
+        shell->pipe_output = NULL;
+    }
+    if (shell->pipe_input != NULL) {
+        kfree(shell->pipe_input);
+        shell->pipe_input = NULL;
     }
     kfree(workspace);
 }

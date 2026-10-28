@@ -12,6 +12,8 @@ int main(void)
     char many[] = "a b c";
     char list[] = "echo 'a;b' && false || echo ok; echo done";
     char invalid[] = "echo ok && ; echo bad";
+    char pipeline[] = "echo ok | cat && echo done";
+    char bad_pipeline[] = "echo ok |";
     struct shell_command commands[8];
     struct shell_redirection redir;
     char redirected[] = "echo 'a>b'>>\"my file\"";
@@ -37,6 +39,10 @@ int main(void)
     assert(commands[2].condition == SHELL_ON_FAILURE);
     assert(commands[3].condition == SHELL_ALWAYS);
     assert(shell_split_commands(invalid, commands, 8) < 0);
+    assert(shell_split_commands(pipeline, commands, 8) == 3);
+    assert(commands[1].condition == SHELL_PIPE);
+    assert(commands[2].condition == SHELL_ON_SUCCESS);
+    assert(shell_split_commands(bad_pipeline, commands, 8) < 0);
     argc = shell_parse_redirect(redirected, argv, 8, &redir);
     assert(argc == 2 && strcmp(argv[1], "a>b") == 0);
     assert(redir.append && strcmp(redir.path, "my file") == 0);

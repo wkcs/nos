@@ -109,6 +109,8 @@ int shell_split_commands(char *line, struct shell_command *commands, int capacit
             } else if (p[1] == c) {
                 next = c == '&' ? SHELL_ON_SUCCESS : SHELL_ON_FAILURE;
                 length = 2;
+            } else if (c == '|') {
+                next = SHELL_PIPE;
             } else {
                 return -1;
             }
