@@ -76,6 +76,12 @@ static int end(const struct device *dev)
     (void)dev; active = 0;
     return fail_end ? -EIO : 0;
 }
+static int end_with_idle(const struct device *dev, size_t bytes)
+{
+    if (!active || bytes != 1) return -EIO;
+    idle_bytes += (int)bytes;
+    return end(dev);
+}
 static int clock_idle(const struct device *dev, const struct spi_config *cfg, size_t bytes)
 {
     (void)dev;
@@ -86,7 +92,7 @@ static int clock_idle(const struct device *dev, const struct spi_config *cfg, si
 int main(void)
 {
     const struct spi_driver_api api = { .session_begin = begin, .session_transfer = transfer,
-        .session_end = end, .clock_idle = clock_idle };
+        .session_end = end, .session_end_with_idle = end_with_idle, .clock_idle = clock_idle };
     const struct device bus = { .api = &api, .ready = true };
     const struct sd_spi sd = { .bus = &bus, .config = {
         .frequency = 12000000, .word_size = 8, .mode = 0 } };

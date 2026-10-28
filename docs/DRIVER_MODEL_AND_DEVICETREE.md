@@ -34,6 +34,8 @@ QEMU STM32 控制台、NK60 闪存和可选的 ZJ-V3 SD 卡已接入设备树，
 `spi_session_begin()` / `spi_session_transfer()` / `spi_session_end()`
 允许多次调用之间保持片选；会话必须在同一任务中结束，期间不可从该任务
 再次访问同一控制器。传输失败时会自动结束会话。
+`spi_session_end_with_idle()` 在释放总线锁之前撤销片选并发送空闲时钟，
+供 SD 卡等设备释放 MISO；控制器需显式实现该操作。
 
 STM32F1/F4 SPI 控制器支持 APB1/APB2、多个 GPIO 片选、8 位帧、四种模式和
 不超过设备要求的时钟频率。板卡负责实例化控制器并提供引脚及总线时钟。

@@ -3,6 +3,12 @@
 #include <stdio.h>
 
 static int calls;
+static int closed;
+static int begin_session(const struct device *dev, const struct spi_config *config)
+{ (void)dev; (void)config; return 0; }
+static int transfer_session(const struct device *dev, const struct spi_buf *buffers, size_t count)
+{ (void)dev; (void)buffers; (void)count; return 0; }
+static int end_session(const struct device *dev) { (void)dev; closed++; return 0; }
 static int transfer(const struct device *dev, const struct spi_config *config,
                     const struct spi_buf *buffers, size_t count)
 {
@@ -34,6 +40,17 @@ int main(void)
         spi_session_begin(&session, &dev, &config) != -ENOSYS) {
         fputs("controller without session callbacks must report ENOSYS\n", stderr);
         return 1;
+    }
+    {
+        const struct spi_driver_api session_api = { .session_begin = begin_session,
+            .session_transfer = transfer_session, .session_end = end_session };
+        dev.api = &session_api;
+        if (spi_session_begin(&session, &dev, &config) != 0 ||
+            spi_session_end_with_idle(&session, 1) != -ENOSYS || session.active || closed != 1) {
+            fputs("unsupported idle session did not close\n", stderr);
+            return 1;
+        }
+        dev.api = &api;
     }
     if (spi_transceive(&dev, &config, buffers, 2) != -EIO || calls != 1) {
         fputs("multi-segment transaction or error propagation failed\n", stderr);
