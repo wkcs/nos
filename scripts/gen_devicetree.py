@@ -13,9 +13,50 @@ def c_string(value):
     return json.dumps(value, ensure_ascii=True)
 
 
-def generate(source, include_dirs=()):
+def load_bindings(directory):
+    bindings = {}
+    if directory is None:
+        return bindings
+    for path in sorted(directory.rglob('*.json')):
+        binding = json.loads(path.read_text(encoding='utf-8'))
+        compatible = binding['compatible']
+        if compatible in bindings:
+            raise ValueError(f'duplicate binding for {compatible}')
+        bindings[compatible] = binding
+    return bindings
+
+
+def validate_bindings(nodes, bindings):
+    for node in nodes:
+        compatible = node.props.get('compatible')
+        if compatible is None:
+            continue
+        binding = next((bindings[name] for name in compatible.to_strings() if name in bindings), None)
+        if binding is None:
+            continue
+        for name, rule in binding.get('properties', {}).items():
+            prop = node.props.get(name)
+            if prop is None:
+                if rule.get('required', False):
+                    raise ValueError(f'{node.path}: missing required property {name}')
+                continue
+            kind = rule['type']
+            if kind == 'uint32-array':
+                value = prop.to_nums()
+                if len(value) < rule.get('min-items', 0):
+                    raise ValueError(f'{node.path}: property {name} has too few cells')
+            elif kind == 'string':
+                value = prop.to_string()
+            else:
+                raise ValueError(f'{node.path}: unsupported binding type {kind}')
+            if 'enum' in rule and value not in rule['enum']:
+                raise ValueError(f'{node.path}: invalid value for {name}: {value}')
+
+
+def generate(source, include_dirs=(), bindings=None):
     tree = dtlib.DT(str(source), include_path=include_dirs)
     nodes = list(tree.node_iter())
+    validate_bindings(nodes, bindings or {})
     indices = {node.path: index for index, node in enumerate(nodes)}
     lines = ['/* Generated from DTS; do not edit. */', '#include <nos/devicetree.h>', '']
     for index, node in enumerate(nodes):
@@ -43,12 +84,13 @@ def main():
     parser.add_argument('--input', required=True, type=Path)
     parser.add_argument('--output', required=True, type=Path)
     parser.add_argument('--include-dir', action='append', default=[])
+    parser.add_argument('--bindings', type=Path)
     args = parser.parse_args()
     try:
-        result = generate(args.input, args.include_dir)
+        result = generate(args.input, args.include_dir, load_bindings(args.bindings))
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(result, encoding='utf-8')
-    except (dtlib.DTError, OSError) as exc:
+    except (dtlib.DTError, OSError, ValueError, KeyError) as exc:
         print(f'device tree: {exc}', file=sys.stderr)
         return 1
     return 0

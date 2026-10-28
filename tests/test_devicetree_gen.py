@@ -46,6 +46,36 @@ int main(void) {
                             str(ROOT / 'drivers/base/devicetree.c'), '-o', str(path / 'check')], check=True)
             subprocess.run([str(path / 'check')], check=True)
 
+    def test_binding_rejects_missing_required_property(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory)
+            bindings = path / 'bindings'
+            bindings.mkdir()
+            (bindings / 'device.json').write_text(
+                '{"compatible": "vendor,device", "properties": '
+                '{"reg": {"type": "uint32-array", "required": true, "min-items": 2}}}')
+            (path / 'board.dts').write_text(
+                '/dts-v1/; / { dev@0 { compatible = "vendor,device"; }; };')
+            result = subprocess.run([sys.executable, str(GEN), '--input', str(path / 'board.dts'),
+                                     '--output', str(path / 'tree.c'), '--bindings', str(bindings)],
+                                    capture_output=True, text=True)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn('reg', result.stderr)
+            self.assertFalse((path / 'tree.c').exists())
+            (path / 'board.dts').write_text(
+                '/dts-v1/; / { dev@0 { compatible = "vendor,device"; reg = "bad"; }; };')
+            result = subprocess.run([sys.executable, str(GEN), '--input', str(path / 'board.dts'),
+                                     '--output', str(path / 'tree.c'), '--bindings', str(bindings)],
+                                    capture_output=True, text=True)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn('reg', result.stderr)
+            (path / 'board.dts').write_text(
+                '/dts-v1/; / { dev@0 { compatible = "vendor,device"; reg = <0 4>; }; };')
+            result = subprocess.run([sys.executable, str(GEN), '--input', str(path / 'board.dts'),
+                                     '--output', str(path / 'tree.c'), '--bindings', str(bindings)],
+                                    capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_invalid_tree_fails(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory)
