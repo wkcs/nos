@@ -16,6 +16,7 @@ TESTS = [
     ("run_console_test.py",),
     ("run_serial_api_test.py",),
     ("run_spi_api_test.py",),
+    ("run_stm32_spi_test.py",),
     ("run_i2c_api_test.py",),
     ("run_devicetree_api_test.py",),
     ("run_w25q_spi_test.py",),

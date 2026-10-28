@@ -31,3 +31,7 @@ if(CONFIG_NLK_SERVER OR CONFIG_NDK_SERVER)
         ${BOARD_DIR}/nk60_nlk.c
     )
 endif()
+
+if(CONFIG_NK60_V2_W25QXX)
+    list(APPEND BOARD_SRCS ${BOARD_DIR}/spi.c)
+endif()

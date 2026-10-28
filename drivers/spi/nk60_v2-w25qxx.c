@@ -9,6 +9,8 @@
 #define pr_fmt(fmt) "[W25QXX]:%s[%d]:"fmt, __func__, __LINE__
 
 #include <drivers/w25q_spi.h>
+#include <drivers/stm32_spi.h>
+#include <board/nk60_spi.h>
 #ifdef CONFIG_DEVICE_TREE
 #include <drivers/w25q_dt.h>
 #endif
@@ -30,7 +32,6 @@
 #define W25Q64 	0XEF16
 #define W25Q128	0XEF17
 
-#define W25QXX_CS PBout(2) //W25QXX的片选信号
 
 // 指令表
 #define W25X_WriteEnable      0x06
@@ -58,125 +59,28 @@ struct w25qxx_info {
     //uint8_t buf[BLOACK_BUF_SIZE];
 };
 
-static int nk60_spi_transceive(const struct device *dev,
-                               const struct spi_config *config,
-                               const struct spi_buf *buffers, size_t count);
-
-static const struct spi_driver_api nk60_spi_api = {
-    .transceive = nk60_spi_transceive,
-};
-
-static struct device nk60_spi_bus = {
-    .name = "nk60-spi1",
-    .api = &nk60_spi_api,
-};
-
 static struct w25q_spi nk60_flash_bus = {
     .bus = &nk60_spi_bus,
     .config = { .frequency = 21000000U, .chip_select = 0, .word_size = 8, .mode = 3 },
 };
 
-uint8_t spi1_read_write_byte(uint8_t tx_data)
+/* Legacy write commands still use byte transfers, serialized with the SPI API. */
+static uint8_t spi1_read_write_byte(uint8_t tx_data)
 {
+    uint8_t value = 0xffU;
 
-    while (SPI_I2S_GetFlagStatus(SPI1, SPI_I2S_FLAG_TXE) == RESET)
-    {
-    } //等待发送区空
-
-    SPI_I2S_SendData(SPI1, tx_data); //通过外设SPIx发送一个byte  数据
-
-    while (SPI_I2S_GetFlagStatus(SPI1, SPI_I2S_FLAG_RXNE) == RESET)
-    {
-    } //等待接收完一个byte
-
-    return SPI_I2S_ReceiveData(SPI1); //返回通过SPIx最近接收的数据
+    (void)stm32_spi_exchange(&nk60_spi_bus, tx_data, &value);
+    return value;
 }
 
-void spi1_init(void)
-{
-    GPIO_InitTypeDef GPIO_InitStructure;
-    SPI_InitTypeDef SPI_InitStructure;
-
-    RCC_AHB1PeriphClockCmd(RCC_AHB1Periph_GPIOB, ENABLE);
-    RCC_APB2PeriphClockCmd(RCC_APB2Periph_SPI1, ENABLE);
-
-    GPIO_InitStructure.GPIO_Pin = GPIO_Pin_3 | GPIO_Pin_4 | GPIO_Pin_5;
-    GPIO_InitStructure.GPIO_Mode = GPIO_Mode_AF;
-    GPIO_InitStructure.GPIO_OType = GPIO_OType_PP;
-    GPIO_InitStructure.GPIO_Speed = GPIO_Speed_100MHz;
-    GPIO_InitStructure.GPIO_PuPd = GPIO_PuPd_UP;
-    GPIO_Init(GPIOB, &GPIO_InitStructure);
-
-    GPIO_PinAFConfig(GPIOB, GPIO_PinSource3, GPIO_AF_SPI1);
-    GPIO_PinAFConfig(GPIOB, GPIO_PinSource4, GPIO_AF_SPI1);
-    GPIO_PinAFConfig(GPIOB, GPIO_PinSource5, GPIO_AF_SPI1);
-
-    RCC_APB2PeriphResetCmd(RCC_APB2Periph_SPI1, ENABLE);
-    RCC_APB2PeriphResetCmd(RCC_APB2Periph_SPI1, DISABLE);
-
-    SPI_InitStructure.SPI_Direction = SPI_Direction_2Lines_FullDuplex;
-    SPI_InitStructure.SPI_Mode = SPI_Mode_Master;
-    SPI_InitStructure.SPI_DataSize = SPI_DataSize_8b;
-    SPI_InitStructure.SPI_CPOL = SPI_CPOL_High;
-    SPI_InitStructure.SPI_CPHA = SPI_CPHA_2Edge;
-    SPI_InitStructure.SPI_NSS = SPI_NSS_Soft;
-    SPI_InitStructure.SPI_BaudRatePrescaler = SPI_BaudRatePrescaler_256;
-    SPI_InitStructure.SPI_FirstBit = SPI_FirstBit_MSB;
-    SPI_InitStructure.SPI_CRCPolynomial = 7;
-    SPI_Init(SPI1, &SPI_InitStructure);
-
-    SPI_Cmd(SPI1, ENABLE);
-
-    spi1_read_write_byte(0xff);
-}
-
-void spi1_set_speed(uint8_t SPI_BaudRatePrescaler)
-{
-    assert_param(IS_SPI_BAUDRATE_PRESCALER(SPI_BaudRatePrescaler));
-    SPI1->CR1 &= 0XFFC7;                // 位3-5清零，用来设置波特率
-    SPI1->CR1 |= SPI_BaudRatePrescaler; // 设置SPI1速度
-    SPI_Cmd(SPI1, ENABLE);              // 使能SPI1
-}
-
-/* All legacy command sequences and the generic SPI API share this lock. */
 static void w25qxx_select(void)
 {
-    mutex_lock(&nk60_spi_bus.mutex);
-    W25QXX_CS = 0;
+    stm32_spi_select(&nk60_spi_bus);
 }
 
 static void w25qxx_deselect(void)
 {
-    W25QXX_CS = 1;
-    mutex_unlock(&nk60_spi_bus.mutex);
-}
-
-static int nk60_spi_transceive(const struct device *dev,
-                               const struct spi_config *config,
-                               const struct spi_buf *buffers, size_t count)
-{
-    size_t i;
-    size_t j;
-
-    (void)dev;
-    if (config->chip_select != 0 || config->word_size != 8 ||
-        config->mode != 3 || config->frequency != 21000000U) {
-        return -EINVAL;
-    }
-    w25qxx_select();
-    for (i = 0; i < count; i++) {
-        const uint8_t *tx = buffers[i].tx;
-        uint8_t *rx = buffers[i].rx;
-
-        for (j = 0; j < buffers[i].len; j++) {
-            uint8_t value = spi1_read_write_byte(tx != NULL ? tx[j] : 0xffU);
-            if (rx != NULL) {
-                rx[j] = value;
-            }
-        }
-    }
-    w25qxx_deselect();
-    return 0;
+    stm32_spi_deselect(&nk60_spi_bus);
 }
 
 //读取W25QXX的状态寄存器
@@ -468,7 +372,7 @@ ssize_t w25qxx_write(struct device *dev, addr_t pos, const void *buffer, size_t 
 int spi_w25qxx_init(void)
 {
     struct w25qxx_info *info;
-    GPIO_InitTypeDef GPIO_InitStructure;
+    int ret;
 #ifdef CONFIG_DEVICE_TREE
     const struct nos_dt_node *chosen = nos_dt_find_path("/chosen");
     const struct nos_dt_node *node;
@@ -495,36 +399,33 @@ int spi_w25qxx_init(void)
     }
     nk60_flash_bus.config = resources.config;
 #endif
+    ret = stm32_spi_init(&nk60_spi_bus);
+    if (ret != 0) {
+        return ret;
+    }
     info = kmalloc(sizeof(*info), GFP_KERNEL);
     if (info == NULL) {
         pr_err("alloc w25qxx info buf err\r\n");
         return -ENOMEM;
     }
+    memset(info, 0, sizeof(*info));
     info->erased_secpos = -1;
 
-    device_init(&nk60_spi_bus);
-    device_init(&info->dev);
+    ret = device_init(&info->dev);
+    if (ret != 0) {
+        kfree(info);
+        return ret;
+    }
     info->dev.name = "nk60_v2-flash";
     info->dev.ops.write = w25qxx_write;
     info->dev.ops.read = w25qxx_read;
-    device_register(&info->dev);
-
-    RCC_AHB1PeriphClockCmd(RCC_AHB1Periph_GPIOB, ENABLE);
-
-    GPIO_InitStructure.GPIO_Pin = GPIO_Pin_2;
-    GPIO_InitStructure.GPIO_Mode = GPIO_Mode_OUT;
-    GPIO_InitStructure.GPIO_OType = GPIO_OType_PP;
-    GPIO_InitStructure.GPIO_Speed = GPIO_Speed_100MHz;
-    GPIO_InitStructure.GPIO_PuPd = GPIO_PuPd_UP;
-    GPIO_Init(GPIOB, &GPIO_InitStructure);
-
-    W25QXX_CS = 1;
-    spi1_init();
-    spi1_set_speed(SPI_BaudRatePrescaler_4);
-    nk60_spi_bus.ready = 1;
     info->id = w25qxx_read_id();
     pr_info("w25qxx: chip id = 0x%x\r\n", info->id);
-
+    ret = device_register(&info->dev);
+    if (ret != 0) {
+        kfree(info);
+        return ret;
+    }
     return 0;
 }
 task_init(spi_w25qxx_init);

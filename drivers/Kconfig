@@ -84,6 +84,14 @@ config SPI
 	bool "SPI bus support"
 	default n
 
+config STM32F4_SPI
+	bool "STM32F4 SPI controller"
+	depends on SOC_STM32F4
+	select SPI
+	default n
+	help
+	  Enable the STM32F4 polling SPI controller driver.
+
 config SPI_595
 	bool "74HC595 SPI shift register driver"
 	default n
@@ -245,6 +253,8 @@ config NK60_V2_LED
 
 config NK60_V2_W25QXX
 	bool "NK60 V2 W25Qxx flash driver"
+	depends on BOARD_NK60 && SOC_STM32F4
+	select STM32F4_SPI
 	default n
 	help
 	  NK60 V2 板级 W25Qxx Flash 驱动。
