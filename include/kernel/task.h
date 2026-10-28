@@ -35,6 +35,7 @@ struct task_struct {
     addr_t *entry;
     addr_t *parameter;
     addr_t *stack;
+    void *stack_alloc;
 
     uint32_t  init_tick;
     uint32_t  remaining_tick;

@@ -58,20 +58,26 @@ static void timeout(void *parameter)
     add_task_to_ready_list(task);
 }
 
-static void *alloc_task_stack(uint32_t stack_size)
+static void *alloc_task_stack(uint32_t stack_size, void **stack_base)
 {
     char *buf;
+    char *base;
     uint32_t i;
 
-    buf = kmalloc(stack_size, GFP_KERNEL);
+    if (stack_size > UINT32_MAX - 15U) return NULL;
+    buf = kmalloc(stack_size + 15U, GFP_KERNEL);
     if (buf == NULL) {
         pr_err("alloc stack error\r\n");
         return NULL;
     }
 
-    for (i = 0; i < stack_size; i++) {
-        buf[i] = '#';
-    }
+#ifdef CONFIG_STACK_GROWSUP
+    base = (char *)ALIGNED((addr_t)buf, (addr_t)16U);
+#else
+    base = (char *)(ALIGNED_DONE((addr_t)buf + stack_size + 15U, (addr_t)16U) - stack_size);
+#endif
+    for (i = 0; i < stack_size; i++) base[i] = '#';
+    *stack_base = base;
 
     return buf;
 }
@@ -159,6 +165,7 @@ struct task_struct *task_create(const char *name,
     addr_t *stack_start;
     pid_t pid;
     void *stack_addr;
+    void *stack_base;
     int rc;
 
 #if CONFIG_MAX_PRIORITY < 256
@@ -175,16 +182,17 @@ struct task_struct *task_create(const char *name,
     }
 
     task->stack_size = stack_size;
-    stack_addr = alloc_task_stack(stack_size);
+    stack_addr = alloc_task_stack(stack_size, &stack_base);
     if (stack_addr == NULL) {
         pr_err("%s: alloc task stack buf error\r\n", name);
         goto task_stack_err;
     }
 #ifdef CONFIG_STACK_GROWSUP
-    stack_start = (addr_t *)(stack_addr);
+    stack_start = (addr_t *)(stack_base);
 #else
-    stack_start = (addr_t *)((addr_t)stack_addr + stack_size - sizeof(addr_t));
+    stack_start = (addr_t *)((addr_t)stack_base + stack_size - sizeof(addr_t));
 #endif
+    task->stack_alloc = stack_addr;
 
     pid = pid_alloc();
     if (!pid) {
@@ -450,7 +458,7 @@ u32 task_get_cpu_usage(struct task_struct *task)
 static bool task_stack_check(struct task_struct *task)
 {
 #ifndef CONFIG_STACK_GROWSUP
-    if (*(char *)((addr_t)task->stack - task->stack_size + 4) != '#')
+    if (*(char *)((addr_t)task->stack - task->stack_size + sizeof(addr_t)) != '#')
         return false;
     else
         return true;
@@ -473,7 +481,7 @@ static size_t task_get_stack_max_used(struct task_struct *task)
     used = task->stack_size;
 
 #ifndef CONFIG_STACK_GROWSUP
-    addr = (addr_t)task->stack - task->stack_size + 4;
+    addr = (addr_t)task->stack - task->stack_size + sizeof(addr_t);
     for (i = 0; i < task->stack_size; i++) {
         if (*(char *)(addr + i) == '#')
             used--;
@@ -601,16 +609,9 @@ void dump_all_task(void)
 
 static void task_free(struct task_struct *task)
 {
-    void *stack_addr;
-
-#ifdef CONFIG_STACK_GROWSUP
-    stack_addr = (void *)(task->stack);
-#else
-    stack_addr = (void *)((addr_t)task->stack + sizeof(addr_t) - task->stack_size);
-#endif
     nos_cap_table_destroy(&task->cap_table);
     pid_free(task->pid);
-    free_task_stack(stack_addr);
+    free_task_stack(task->stack_alloc);
     kfree(task);
 }
 
