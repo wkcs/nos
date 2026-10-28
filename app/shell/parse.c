@@ -10,11 +10,12 @@ int shell_parse_redirect(char *line, char **argv, int capacity,
     char *read = source;
     char *write = line;
     int argc = 0;
-    bool expect_path = false;
+    int expect_path = 0;
 
     if (line == NULL || argv == NULL || capacity < 1 || redir == NULL ||
         strlen(line) >= sizeof(source)) return -1;
     strcpy(source, line);
+    redir->input_path = NULL;
     redir->path = NULL;
     redir->append = false;
     while (*read != '\0') {
@@ -22,20 +23,26 @@ int shell_parse_redirect(char *line, char **argv, int capacity,
         char *word;
         while (*read == ' ' || *read == '\t') read++;
         if (*read == '\0') break;
-        if (*read == '>') {
-            if (expect_path || redir->path != NULL) return -1;
-            read++;
-            redir->append = *read == '>';
-            if (redir->append) read++;
-            expect_path = true;
+        if (*read == '>' || *read == '<') {
+            char op = *read++;
+            if (expect_path || (op == '>' && redir->path != NULL) ||
+                (op == '<' && redir->input_path != NULL)) return -1;
+            if (op == '>') {
+                redir->append = *read == '>';
+                if (redir->append) read++;
+                expect_path = 1;
+            } else {
+                if (*read == '<') return -1;
+                expect_path = 2;
+            }
             continue;
         }
-        if (*read == '<' || *read == '|' || *read == '&' || *read == ';') return -1;
+        if (*read == '|' || *read == '&' || *read == ';') return -1;
         word = write;
         while (*read != '\0') {
             char c = *read;
-            if (quote == 0 && (c == ' ' || c == '\t' || c == '>')) break;
-            if (quote == 0 && (c == '<' || c == '|' || c == '&' || c == ';')) return -1;
+            if (quote == 0 && (c == ' ' || c == '\t' || c == '>' || c == '<')) break;
+            if (quote == 0 && (c == '|' || c == '&' || c == ';')) return -1;
             read++;
             if (c == '\'' && quote != '"') {
                 quote = quote == '\'' ? 0 : '\'';
@@ -52,9 +59,12 @@ int shell_parse_redirect(char *line, char **argv, int capacity,
         }
         if (quote != 0) return -1;
         *write++ = '\0';
-        if (expect_path) {
+        if (expect_path == 1) {
             redir->path = word;
-            expect_path = false;
+            expect_path = 0;
+        } else if (expect_path == 2) {
+            redir->input_path = word;
+            expect_path = 0;
         } else {
             if (argc >= capacity - 1) return -1;
             argv[argc++] = word;
@@ -111,9 +121,7 @@ int shell_split_commands(char *line, struct shell_command *commands, int capacit
             condition = next;
             word = 0;
             continue;
-        } else if (quote == 0 && c == '<') {
-            return -1;
-        } else if (quote == 0 && c == '>') {
+        } else if (quote == 0 && (c == '>' || c == '<')) {
             p++;
             continue;
         } else if (c != ' ' && c != '\t') {

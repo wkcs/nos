@@ -17,6 +17,9 @@ int main(void)
     char redirected[] = "echo 'a>b'>>\"my file\"";
     char missing[] = "echo x >";
     char duplicate[] = "echo x > one > two";
+    char input[] = "cat <'input file' >output";
+    char duplicate_input[] = "cat <a <b";
+    char missing_input[] = "cat <";
     int argc = shell_parse_line(line, argv, 8);
 
     assert(argc == 5);
@@ -39,5 +42,11 @@ int main(void)
     assert(redir.append && strcmp(redir.path, "my file") == 0);
     assert(shell_parse_redirect(missing, argv, 8, &redir) < 0);
     assert(shell_parse_redirect(duplicate, argv, 8, &redir) < 0);
+    argc = shell_parse_redirect(input, argv, 8, &redir);
+    assert(argc == 1 && strcmp(argv[0], "cat") == 0);
+    assert(strcmp(redir.input_path, "input file") == 0);
+    assert(strcmp(redir.path, "output") == 0);
+    assert(shell_parse_redirect(duplicate_input, argv, 8, &redir) < 0);
+    assert(shell_parse_redirect(missing_input, argv, 8, &redir) < 0);
     return 0;
 }
