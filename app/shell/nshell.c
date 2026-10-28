@@ -627,17 +627,77 @@ static int cmd_cd(int argc, char *argv[]) {
   return 0;
 }
 
+static int shell_mkdir_parents(const char *path)
+{
+    struct dentry *dir;
+    const char *p = path;
+
+    if (*p == '\0') return -ENOENT;
+    dir = *p == '/' ? vfs_get_root() : shell_cwd;
+    while (*p != '\0') {
+        const char *start;
+        size_t len;
+        char name[FS_NAME_LEN];
+        struct qstr q;
+        struct dentry *next;
+        int rc;
+
+        while (*p == '/') p++;
+        if (*p == '\0') break;
+        start = p;
+        while (*p != '\0' && *p != '/') p++;
+        len = (size_t)(p - start);
+        if (dir == NULL || dir->d_inode == NULL) return -ENOENT;
+        if (!S_ISDIR(dir->d_inode->i_mode)) return -ENOTDIR;
+        if (len >= sizeof(name)) return -ENAMETOOLONG;
+        if (len == 1 && start[0] == '.') continue;
+        if (len == 2 && start[0] == '.' && start[1] == '.') {
+            if (dir->d_parent != NULL) dir = dir->d_parent;
+            continue;
+        }
+        memcpy(name, start, len);
+        name[len] = '\0';
+        q.name = (const unsigned char *)name;
+        q.len = (unsigned int)len;
+        q.hash = 0;
+        next = vfs_lookup(dir, &q);
+        if (next == NULL) {
+            rc = vfs_make_dir(dir, name, 0755, &next);
+            if (rc == -EEXIST && next == NULL) next = vfs_lookup(dir, &q);
+            else if (rc != 0 && rc != -EEXIST) return rc;
+        }
+        if (next == NULL || next->d_inode == NULL) return -EIO;
+        if (!S_ISDIR(next->d_inode->i_mode)) return -ENOTDIR;
+        dir = next;
+    }
+    return dir != NULL ? 0 : -ENOENT;
+}
+
 static int cmd_mkdir(int argc, char *argv[])
 {
     int status = 0;
     int i;
+    int first = 1;
+    bool parents = false;
 
-    if (argc < 2) {
+    while (first < argc && argv[first][0] == '-' && argv[first][1] != '\0') {
+        if (strcmp(argv[first], "--") == 0) {
+            first++;
+            break;
+        }
+        if (strcmp(argv[first], "-p") != 0) {
+            shell_error("mkdir: unsupported option '%s'\r\n", argv[first]);
+            return -EINVAL;
+        }
+        parents = true;
+        first++;
+    }
+    if (first == argc) {
         shell_error("mkdir: missing operand\r\n");
         return -EINVAL;
     }
     shell_init_cwd();
-    for (i = 1; i < argc; i++) {
+    for (i = first; i < argc; i++) {
         char path[SHELL_SESSION_INPUT_MAX + 1];
         char *name;
         char *slash = NULL;
@@ -646,6 +706,11 @@ static int cmd_mkdir(int argc, char *argv[])
         size_t len = strlen(argv[i]);
         int rc;
 
+        if (parents) {
+            rc = shell_mkdir_parents(argv[i]);
+            if (rc == 0) continue;
+            goto error;
+        }
         if (len == 0 || len > SHELL_SESSION_INPUT_MAX) {
             rc = -EINVAL;
             goto error;
