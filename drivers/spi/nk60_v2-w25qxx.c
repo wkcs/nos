@@ -8,6 +8,7 @@
 
 #define pr_fmt(fmt) "[W25QXX]:%s[%d]:"fmt, __func__, __LINE__
 
+#include <drivers/w25q_spi.h>
 #include <kernel/task.h>
 #include <kernel/errno.h>
 #include <kernel/sleep.h>
@@ -52,6 +53,24 @@ struct w25qxx_info {
     uint16_t id;
     int32_t erased_secpos;
     //uint8_t buf[BLOACK_BUF_SIZE];
+};
+
+static int nk60_spi_transceive(const struct device *dev,
+                               const struct spi_config *config,
+                               const struct spi_buf *buffers, size_t count);
+
+static const struct spi_driver_api nk60_spi_api = {
+    .transceive = nk60_spi_transceive,
+};
+
+static struct device nk60_spi_bus = {
+    .name = "nk60-spi1",
+    .api = &nk60_spi_api,
+};
+
+static const struct w25q_spi nk60_flash_bus = {
+    .bus = &nk60_spi_bus,
+    .config = { .frequency = 21000000U, .chip_select = 0, .word_size = 8, .mode = 3 },
 };
 
 uint8_t spi1_read_write_byte(uint8_t tx_data)
@@ -116,6 +135,47 @@ void spi1_set_speed(uint8_t SPI_BaudRatePrescaler)
     SPI_Cmd(SPI1, ENABLE);              // 使能SPI1
 }
 
+/* All legacy command sequences and the generic SPI API share this lock. */
+static void w25qxx_select(void)
+{
+    mutex_lock(&nk60_spi_bus.mutex);
+    W25QXX_CS = 0;
+}
+
+static void w25qxx_deselect(void)
+{
+    W25QXX_CS = 1;
+    mutex_unlock(&nk60_spi_bus.mutex);
+}
+
+static int nk60_spi_transceive(const struct device *dev,
+                               const struct spi_config *config,
+                               const struct spi_buf *buffers, size_t count)
+{
+    size_t i;
+    size_t j;
+
+    (void)dev;
+    if (config->chip_select != 0 || config->word_size != 8 ||
+        config->mode != 3 || config->frequency != 21000000U) {
+        return -EINVAL;
+    }
+    w25qxx_select();
+    for (i = 0; i < count; i++) {
+        const uint8_t *tx = buffers[i].tx;
+        uint8_t *rx = buffers[i].rx;
+
+        for (j = 0; j < buffers[i].len; j++) {
+            uint8_t value = spi1_read_write_byte(tx != NULL ? tx[j] : 0xffU);
+            if (rx != NULL) {
+                rx[j] = value;
+            }
+        }
+    }
+    w25qxx_deselect();
+    return 0;
+}
+
 //读取W25QXX的状态寄存器
 //BIT7  6   5   4   3   2   1   0
 //SPR   RV  TB BP2 BP1 BP0 WEL BUSY
@@ -127,36 +187,36 @@ void spi1_set_speed(uint8_t SPI_BaudRatePrescaler)
 uint8_t w25qxx_read_sr(void)
 {
     uint8_t byte = 0;
-    W25QXX_CS = 0;                          //使能器件
+    w25qxx_select();                          //使能器件
     spi1_read_write_byte(W25X_ReadStatusReg); //发送读取状态寄存器命令
     byte = spi1_read_write_byte(0Xff);        //读取一个字节
-    W25QXX_CS = 1;                          //取消片选
+    w25qxx_deselect();                          //取消片选
     return byte;
 }
 //写W25QXX状态寄存器
 //只有SPR,TB,BP2,BP1,BP0(bit 7,5,4,3,2)可以写!!!
 void w25qxx_write_sr(uint8_t sr)
 {
-    W25QXX_CS = 0;                           //使能器件
+    w25qxx_select();                           //使能器件
     spi1_read_write_byte(W25X_WriteStatusReg); //发送写取状态寄存器命令
     spi1_read_write_byte(sr);                  //写入一个字节
-    W25QXX_CS = 1;                           //取消片选
+    w25qxx_deselect();                           //取消片选
 }
 //W25QXX写使能
 //将WEL置位
 void w25qxx_write_enable(void)
 {
-    W25QXX_CS = 0;                        //使能器件
+    w25qxx_select();                        //使能器件
     spi1_read_write_byte(W25X_WriteEnable); //发送写使能
-    W25QXX_CS = 1;                        //取消片选
+    w25qxx_deselect();                        //取消片选
 }
 //W25QXX写禁止
 //将WEL清零
 void w25qxx_write_disable(void)
 {
-    W25QXX_CS = 0;                         //使能器件
+    w25qxx_select();                         //使能器件
     spi1_read_write_byte(W25X_WriteDisable); //发送写禁止指令
-    W25QXX_CS = 1;                         //取消片选
+    w25qxx_deselect();                         //取消片选
 }
 //等待空闲
 void w25qxx_wait_busy(void)
@@ -179,9 +239,9 @@ void w25qxx_erase_chip(void)
 {
     w25qxx_write_enable(); //SET WEL
     w25qxx_wait_busy();
-    W25QXX_CS = 0;                      //使能器件
+    w25qxx_select();                      //使能器件
     spi1_read_write_byte(W25X_ChipErase); //发送片擦除命令
-    W25QXX_CS = 1;                      //取消片选
+    w25qxx_deselect();                      //取消片选
     w25qxx_wait_busy();                 //等待芯片擦除结束
 }
 //擦除一个扇区
@@ -194,28 +254,28 @@ void w25qxx_erase_sector(uint32_t Dst_Addr)
     w25qxx_write_enable(); //SET WEL
     w25qxx_wait_busy();
     //pr_info("next\r\n");
-    W25QXX_CS = 0;                              //使能器件
+    w25qxx_select();                              //使能器件
     spi1_read_write_byte(W25X_SectorErase);       //发送扇区擦除指令
     spi1_read_write_byte((uint8_t)((Dst_Addr) >> 16)); //发送24bit地址
     spi1_read_write_byte((uint8_t)((Dst_Addr) >> 8));
     spi1_read_write_byte((uint8_t)Dst_Addr);
-    W25QXX_CS = 1;      //取消片选
+    w25qxx_deselect();      //取消片选
     w25qxx_wait_busy(); //等待擦除完成
 }
 //进入掉电模式
 void w25qxx_power_down(void)
 {
-    W25QXX_CS = 0;                      //使能器件
+    w25qxx_select();                      //使能器件
     spi1_read_write_byte(W25X_PowerDown); //发送掉电命令
-    W25QXX_CS = 1;                      //取消片选
+    w25qxx_deselect();                      //取消片选
     usleep(3);                        //等待TPD
 }
 //唤醒
 void w25qxx_wakeup(void)
 {
-    W25QXX_CS = 0;                             //使能器件
+    w25qxx_select();                             //使能器件
     spi1_read_write_byte(W25X_ReleasePowerDown); //  send W25X_PowerDown command 0xAB
-    W25QXX_CS = 1;                             //取消片选
+    w25qxx_deselect();                             //取消片选
     usleep(3);                               //等待TRES1
 }
 
@@ -229,31 +289,31 @@ void w25qxx_wakeup(void)
 uint16_t w25qxx_read_id(void)
 {
     uint16_t Temp = 0;
-    W25QXX_CS = 0;
+    w25qxx_select();
     spi1_read_write_byte(0x90); //发送读取ID命令
     spi1_read_write_byte(0x00);
     spi1_read_write_byte(0x00);
     spi1_read_write_byte(0x00);
     Temp |= spi1_read_write_byte(0xFF) << 8;
     Temp |= spi1_read_write_byte(0xFF);
-    W25QXX_CS = 1;
+    w25qxx_deselect();
     return Temp;
 }
 //读取SPI FLASH
 //在指定地址开始读取指定长度的数据
-ssize_t w25qxx_read(__maybe_unused struct device *dev, addr_t pos, void *buffer, size_t size)
+ssize_t w25qxx_read(__maybe_unused struct device *dev, addr_t pos,
+                    void *buffer, size_t size)
 {
-    uint16_t i;
-    W25QXX_CS = 0;                              //使能器件
-    spi1_read_write_byte(W25X_ReadData);          //发送读取命令
-    spi1_read_write_byte((uint8_t)((pos) >> 16)); //发送24bit地址
-    spi1_read_write_byte((uint8_t)((pos) >> 8));
-    spi1_read_write_byte((uint8_t)pos);
-    for (i = 0; i < size; i++)
-        ((uint8_t *)buffer)[i] = spi1_read_write_byte(0xff); //循环读数
-    W25QXX_CS = 1;
+    int ret;
 
-    return size;
+    if (size == 0) {
+        return 0;
+    }
+    if (pos > 0xffffffU) {
+        return -EINVAL;
+    }
+    ret = w25q_spi_read(&nk60_flash_bus, (uint32_t)pos, buffer, size);
+    return ret == 0 ? (ssize_t)size : ret;
 }
 //SPI在一页(0~65535)内写入少于256个字节的数据
 //在指定地址开始写入最大256字节的数据
@@ -264,14 +324,14 @@ void w25qxx_write_page(uint8_t *pBuffer, uint32_t WriteAddr, uint16_t NumByteToW
 {
     uint16_t i;
     w25qxx_write_enable();                       //SET WEL
-    W25QXX_CS = 0;                               //使能器件
+    w25qxx_select();                               //使能器件
     spi1_read_write_byte(W25X_PageProgram);        //发送写页命令
     spi1_read_write_byte((uint8_t)((WriteAddr) >> 16)); //发送24bit地址
     spi1_read_write_byte((uint8_t)((WriteAddr) >> 8));
     spi1_read_write_byte((uint8_t)WriteAddr);
     for (i = 0; i < NumByteToWrite; i++)
         spi1_read_write_byte(pBuffer[i]); //循环写数
-    W25QXX_CS = 1;                      //取消片选
+    w25qxx_deselect();                      //取消片选
     w25qxx_wait_busy();                 //等待写入结束
 }
 //无检验写SPI FLASH
@@ -414,6 +474,7 @@ int spi_w25qxx_init(void)
     }
     info->erased_secpos = -1;
 
+    device_init(&nk60_spi_bus);
     device_init(&info->dev);
     info->dev.name = "nk60_v2-flash";
     info->dev.ops.write = w25qxx_write;
@@ -432,6 +493,7 @@ int spi_w25qxx_init(void)
     W25QXX_CS = 1;
     spi1_init();
     spi1_set_speed(SPI_BaudRatePrescaler_4);
+    nk60_spi_bus.ready = 1;
     info->id = w25qxx_read_id();
     pr_info("w25qxx: chip id = 0x%x\r\n", info->id);
 
