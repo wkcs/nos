@@ -20,9 +20,10 @@ cmake --build --preset nk60-v2
 
 当前支持的预设与配置文件（均位于根目录 `configs/` 下）：
 - `configs/nk60-v2_defconfig` - NK60 V2 键盘主控板（STM32F401 Cortex-M4F）
-- `configs/qemu-stm32_defconfig` - QEMU STM32 仿真金标板（STM32F103 Cortex-M3）
+- `configs/qemu-stm32_defconfig` - QEMU STM32 仿真金标板（STM32F405 Cortex-M4F）
 - `configs/wl-001_defconfig` - WL-001 节点板（STM32F103 Cortex-M3）
 - `configs/zj-v3_defconfig` - ZJ V3 开发板（STM32F103 Cortex-M3）
+- `configs/nutiny-nuc472_defconfig` - NuTiny NUC472 Cortex-M4 预设
 - `configs/qemu-virt-arm64_defconfig` - QEMU Virt ARM64 预设
 - `configs/qemu-virt-riscv64_defconfig` - QEMU Virt RISC-V 64 预设
 - `configs/qemu-q35-x86_64_defconfig` - QEMU Q35 x86_64 预设
@@ -57,7 +58,7 @@ cmake --build --preset nk60-v2 --target savedefconfig
 ### 4. 保存最小配置
 
 ```bash
-make savedefconfig
+cmake --build --preset nk60-v2 --target savedefconfig
 ```
 
 这将保存一个最小化的配置文件，只包含与默认值不同的选项。
@@ -72,7 +73,7 @@ make savedefconfig
   - `arch/riscv/Kconfig` - RISC-V 特定配置
   - `arch/x86/Kconfig` - x86_64 特定配置
   - `soc/Kconfig` - SoC 芯片选择
-  - `libc/Kconfig` - 标准 C 库与 POSIX 配置
+  - 顶层 `Kconfig` - 标准 C 库与 POSIX 配置
   - `drivers/Kconfig` - 驱动配置
   - `fs/Kconfig` - 文件系统配置
   - `board/Kconfig` - 板级配置
@@ -269,7 +270,7 @@ config MMU
 迁移步骤：
 1. 使用旧配置文件生成配置：`make nk60-v2_config`
 2. 使用 menuconfig 调整配置：`make menuconfig`
-3. 保存为新的 defconfig：`make savedefconfig`
+3. 保存为新的 defconfig：`cmake --build --preset nk60-v2 --target savedefconfig`
 
 ## 故障排除
 
@@ -298,7 +299,7 @@ config MY_FEATURE
 A: 
 1. 复制现有的 defconfig：`cp arch/arm/configs/defconfig arch/arm/configs/myboard_defconfig`
 2. 使用 menuconfig 调整：`make menuconfig`
-3. 保存配置：`make savedefconfig`
+3. 保存配置：`cmake --build --preset nk60-v2 --target savedefconfig`
 4. 重命名：`mv arch/arm/configs/defconfig arch/arm/configs/myboard_defconfig`
 
 ## 配置文件格式

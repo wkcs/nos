@@ -16,11 +16,12 @@ def main():
     parser.add_argument("--log", type=Path)
     args = parser.parse_args()
 
+    elf = args.elf.resolve()
     command = ["qemu-system-arm", "-M", "netduinoplus2", "-nographic",
                "-semihosting", "-semihosting-config", "enable=on,target=native",
-               "-kernel", str(args.elf)]
+               "-kernel", str(elf)]
     proc = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                            stderr=subprocess.STDOUT, start_new_session=True)
+                            stderr=subprocess.STDOUT, start_new_session=True, cwd=elf.parent)
     selector = selectors.DefaultSelector()
     selector.register(proc.stdout, selectors.EVENT_READ)
     output = bytearray()

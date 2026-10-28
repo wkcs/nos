@@ -1,6 +1,6 @@
 # NOS 微内核、多架构、POSIX/Libc 兼容与 CMake+Kconfig 构建系统设计规范
 
-> **状态:** 正式实施蓝图 (Master Specification v1.0)
+> **状态:** 演进蓝图 (Master Specification v1.0)。实际驱动与设备树支持范围见 [驱动模型与设备树](DRIVER_MODEL_AND_DEVICETREE.md)。
 > **适用范围:** NOS (`/Volumes/nick-disk/projects/nos`) 演进与微内核重构 (`/Volumes/nick-disk/projects/codex/nos` 融合)
 > **目标架构:** `arm` (ARMv7-M / ARMv7-A), `arm64` (ARMv8-A), `riscv` (RV32 / RV64), `x86` (`x86_64`)
 
@@ -129,7 +129,7 @@ nos/
 │       ├── time_clock.c           # clock_gettime/nanosleep/timer_create -> Kernel Tick & Timer Object
 │       ├── mman.c                 # mmap/munmap/mprotect -> Kernel VM Space / VFS Server
 │       └── poll_select.c          # poll/select/epoll -> Kernel Notification + VFS Server
-├── libc/                          # 【标准库桥接层】
+├── libs/libc/                     # 【标准库桥接层】
 │   ├── Kconfig
 │   └── port/
 │       ├── picolibc_newlib.c      # 对接 arm-none-eabi / riscv-none-embed 的 _reent、_sbrk、__malloc_lock、stdio

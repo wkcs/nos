@@ -202,7 +202,7 @@ config LIBC_MINIMAL
 config LIBC_NEWLIB
 	bool "Toolchain Newlib / Newlib-nano"
 	help
-	  使用交叉编译工具链自带的 Newlib / Newlib-nano，通过 libc/port 对接。
+	  使用交叉编译工具链自带的 Newlib / Newlib-nano，通过 libs/libc/port 对接。
 
 config LIBC_PICOLIBC
 	bool "Picolibc (Lightweight embedded C library)"
