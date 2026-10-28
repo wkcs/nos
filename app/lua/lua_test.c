@@ -20,9 +20,9 @@
 #include <string.h>
 #include <kernel/sem.h>
 
-#include "lib/lua.h"
-#include "lib/lauxlib.h"
-#include "lib/lualib.h"
+#include <lua.h>
+#include <lauxlib.h>
+#include <lualib.h>
 
 const char LUA_SCRIPT_GLOBAL[] ="\
 print('hello world')\
