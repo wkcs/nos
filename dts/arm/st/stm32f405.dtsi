@@ -1,0 +1,25 @@
+/* Copyright (C) 2026 Nick Hu <huqihan@live.com> */
+#include <arm/st/stm32f4_common.dtsi>
+
+/ {
+    compatible = "st,stm32f405";
+
+    cpus {
+        #address-cells = <1>;
+        #size-cells = <0>;
+        cpu@0 {
+            compatible = "arm,cortex-m4";
+            device_type = "cpu";
+            reg = <0>;
+        };
+    };
+
+    memory@20000000 {
+        device_type = "memory";
+        reg = <0x20000000 0x20000>;
+    };
+
+    flash@8000000 {
+        reg = <0x08000000 0x100000>;
+    };
+};
