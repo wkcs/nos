@@ -17,15 +17,27 @@ typedef struct { int SPI_Direction, SPI_Mode, SPI_DataSize, SPI_CPOL, SPI_CPHA, 
 #define SPI_Direction_2Lines_FullDuplex 1
 #define SPI_Mode_Master 1
 #define SPI_DataSize_8b 8
+#define SPI_CPOL_Low 0
 #define SPI_CPOL_High 1
+#define SPI_CPHA_1Edge 0
 #define SPI_CPHA_2Edge 1
 #define SPI_NSS_Soft 1
+#define SPI_BaudRatePrescaler_2 0
+#define SPI_BaudRatePrescaler_4 8
+#define SPI_BaudRatePrescaler_8 16
+#define SPI_BaudRatePrescaler_16 24
+#define SPI_BaudRatePrescaler_32 32
+#define SPI_BaudRatePrescaler_64 40
+#define SPI_BaudRatePrescaler_128 48
+#define SPI_BaudRatePrescaler_256 56
 #define SPI_FirstBit_MSB 1
 #define SPI_I2S_FLAG_TXE 1
 #define SPI_I2S_FLAG_RXNE 2
 #define SPI_I2S_FLAG_BSY 3
 void RCC_AHB1PeriphClockCmd(uint32_t, int);
+void RCC_APB1PeriphClockCmd(uint32_t, int);
 void RCC_APB2PeriphClockCmd(uint32_t, int);
+void RCC_APB1PeriphResetCmd(uint32_t, int);
 void RCC_APB2PeriphResetCmd(uint32_t, int);
 void GPIO_Init(GPIO_TypeDef *, GPIO_InitTypeDef *);
 void GPIO_PinAFConfig(GPIO_TypeDef *, uint16_t, uint8_t);

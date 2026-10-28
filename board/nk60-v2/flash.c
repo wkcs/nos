@@ -77,8 +77,8 @@ static int nk60_flash_configure(void)
         spi_address != (uint32_t)(uintptr_t)SPI1 ||
         gpio_address != (uint32_t)(uintptr_t)GPIOB ||
         resources.gpio_pin != 2 || resources.gpio_flags != 1 ||
-        resources.config.chip_select != 0 || resources.config.mode != 3 ||
-        resources.config.frequency != 21000000U) {
+        resources.config.chip_select != 0 ||
+        (resources.config.mode != 0 && resources.config.mode != 3)) {
         return -EINVAL;
     }
     nk60_flash_bus.config = resources.config;

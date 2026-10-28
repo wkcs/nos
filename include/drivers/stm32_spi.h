@@ -5,6 +5,13 @@
 #include <drivers/spi.h>
 #include <soc/stm32f4xx.h>
 
+struct stm32_spi_cs {
+    GPIO_TypeDef *gpio;
+    uint32_t clock;
+    uint16_t pin;
+    uint8_t active_low;
+};
+
 struct stm32_spi_config {
     SPI_TypeDef *regs;
     GPIO_TypeDef *gpio;
@@ -15,12 +22,10 @@ struct stm32_spi_config {
     uint8_t miso_pin_source;
     uint8_t mosi_pin_source;
     uint8_t gpio_af;
-    GPIO_TypeDef *cs_gpio;
-    uint32_t cs_clock;
-    uint16_t cs_pin;
-    uint32_t frequency;
-    uint16_t prescaler;
-    uint8_t mode;
+    const struct stm32_spi_cs *chip_selects;
+    size_t chip_select_count;
+    uint32_t peripheral_clock;
+    uint8_t apb2;
 };
 
 extern const struct spi_driver_api stm32_spi_driver_api;
