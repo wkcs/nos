@@ -11,6 +11,7 @@ host-regressions:
     - python3 tests/run_host_regressions.py
     - python3 -m unittest discover -s tests -p 'test_*.py'
     - cmake -P tests/test_arch_flags.cmake
+    - cmake -P tests/test_soc_headers.cmake
 
 board-builds:
   stage: build
