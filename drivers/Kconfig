@@ -71,6 +71,7 @@ config RAMDISK
 
 config BLOCK_SPI_SD
 	bool "SPI SD card block device adapter"
+	select SPI
 	default n
 	help
 	  启用 SPI SD 卡块设备适配层。
@@ -104,19 +105,16 @@ config SPI_595
 	bool "74HC595 SPI shift register driver"
 	default n
 
-config SPI_SDCARD
-	bool "SPI SD card driver"
-	default n
-
 config ZJ_V3_SD_BLOCK
 	bool "ZJ-V3 SPI SD block device"
-	depends on BOARD_ZJ_V3 && SPI_SDCARD && !SDCARD_TEST
+	depends on BOARD_ZJ_V3
 	select STM32F1_SPI
 	select DEVICE_TREE
+	select BLOCK_SPI_SD
 	default n
 	help
 	  Initialize the ZJ-V3 SD socket as block device sd0 after scheduling
-	  starts. The legacy SD test cannot run while this driver owns SPI2.
+	  starts.
 
 config QEMU_SD
 	bool "QEMU SPI SD card emulation driver"
