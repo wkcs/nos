@@ -344,8 +344,8 @@ static int cmd_help(int argc, char *argv[]) {
 
 static int cmd_log(int argc, char *argv[]) {
   if (argc < 2) {
-    shell_printf("Usage: log <on|off|stats|test [msg]>\r\n");
-    return 0;
+    shell_error("Usage: log <on|off|stats|test [msg]>\r\n");
+    return -EINVAL;
   }
 
   if (strcmp(argv[1], "stats") == 0) {
@@ -367,7 +367,8 @@ static int cmd_log(int argc, char *argv[]) {
     pr_err("NLK log test error: %s\r\n", msg);
     shell_printf("Emitted 3 kernel log records (%s)\r\n", msg);
   } else {
-    shell_printf("Unknown option: %s\r\n", argv[1]);
+    shell_error("Unknown option: %s\r\n", argv[1]);
+    return -EINVAL;
   }
   return 0;
 }
@@ -441,7 +442,7 @@ static int cmd_history(int argc, char *argv[])
         return 0;
     }
     if (argc != 1) {
-        shell_printf("history: usage: history [-c]\r\n");
+        shell_error("history: usage: history [-c]\r\n");
         return -EINVAL;
     }
     for (i = 0; i < shell_session_history_count(&shell->session); i++) {
@@ -527,12 +528,12 @@ static int cmd_ls(int argc, char *argv[]) {
           nshell_current()->ls_long_format = true;
           ctx.show_all = true;
       } else if (argv[i][0] == '-') {
-          shell_printf("ls: unsupported option '%s'\r\n", argv[i]);
+          shell_error("ls: unsupported option '%s'\r\n", argv[i]);
           return -EINVAL;
       } else if (!path_arg) {
           path_arg = argv[i];
       } else {
-          shell_printf("ls: multiple operands are not supported\r\n");
+          shell_error("ls: multiple operands are not supported\r\n");
           return -EINVAL;
       }
   }
@@ -540,7 +541,7 @@ static int cmd_ls(int argc, char *argv[]) {
   if (path_arg) {
     target = resolve_path(path_arg);
     if (!target) {
-      shell_printf("ls: cannot access '%s'\r\n", path_arg);
+      shell_error("ls: cannot access '%s'\r\n", path_arg);
       return -1;
     }
   }
@@ -579,7 +580,7 @@ static int cmd_ls(int argc, char *argv[]) {
     ctx.long_format = nshell_current()->ls_long_format;
     res = file->f_op->readdir(file, &ctx, shell_filldir);
   } else if (res != 0) {
-      shell_printf("ls: open failed %d\r\n", res);
+      shell_error("ls: open failed %d\r\n", res);
   }
 
   if (opened && file->f_op->release) {
@@ -608,7 +609,7 @@ static int cmd_cd(int argc, char *argv[]) {
   if (dentry && dentry->d_inode && S_ISDIR(dentry->d_inode->i_mode)) {
     shell_cwd = dentry;
   } else {
-    shell_printf("cd: %s: No such directory\r\n", argv[1]);
+    shell_error("cd: %s: No such directory\r\n", argv[1]);
     return -ENOENT;
   }
   return 0;
@@ -620,7 +621,7 @@ static int cmd_mkdir(int argc, char *argv[])
     int i;
 
     if (argc < 2) {
-        shell_printf("mkdir: missing operand\r\n");
+        shell_error("mkdir: missing operand\r\n");
         return -EINVAL;
     }
     shell_init_cwd();
@@ -668,7 +669,7 @@ static int cmd_mkdir(int argc, char *argv[])
             continue;
         }
 error:
-        shell_printf("mkdir: cannot create '%s': error %d\r\n", argv[i], rc);
+        shell_error("mkdir: cannot create '%s': error %d\r\n", argv[i], rc);
         status = rc;
     }
     return status;
@@ -786,8 +787,8 @@ static int cmd_mount(int argc, char *argv[]) {
   int i;
   
   if (argc < 2) {
-      shell_printf("Usage: mount [-t type] device dir\r\n");
-      return 0;
+      shell_error("Usage: mount [-t type] device dir\r\n");
+      return -EINVAL;
   }
   
   for (i = 1; i < argc; i++) {
@@ -804,10 +805,10 @@ static int cmd_mount(int argc, char *argv[]) {
   
   if (!fs_type || !dev || !dir) {
       if (fs_type && dev && !dir) {
-           shell_printf("Usage: mount -t <type> <dev> <dir>\r\n");
+           shell_error("Usage: mount -t <type> <dev> <dir>\r\n");
            return -1;
       }
-      shell_printf("Missing arguments\r\n");
+      shell_error("Missing arguments\r\n");
       return -1;
   }
   
@@ -815,12 +816,12 @@ static int cmd_mount(int argc, char *argv[]) {
   shell_printf("mount: resolving path %s\r\n", dir);
   struct dentry *target = resolve_path(dir);
   if (!target) {
-      shell_printf("mount: mount point %s does not exist\r\n", dir);
+      shell_error("mount: mount point %s does not exist\r\n", dir);
       return -1;
   }
   
   if (!target->d_inode || !S_ISDIR(target->d_inode->i_mode)) {
-       shell_printf("mount: mount point %s is not a directory\r\n", dir);
+       shell_error("mount: mount point %s is not a directory\r\n", dir);
        return -1;
   }
   
@@ -828,13 +829,13 @@ static int cmd_mount(int argc, char *argv[]) {
   // 2. Call vfs_mount to get the new root
   struct dentry *mnt_root = vfs_mount(fs_type, 0, dev, NULL);
   if (!mnt_root) {
-      shell_printf("mount: mounting failed (type=%s)\r\n", fs_type);
+      shell_error("mount: mounting failed (type=%s)\r\n", fs_type);
       return -1;
   }
   
   // 3. Register bind mount
   if (vfs_bind_mount(target, mnt_root) != 0) {
-      shell_printf("mount: failed to register bind mount\r\n");
+      shell_error("mount: failed to register bind mount\r\n");
       return -1;
   }
   
