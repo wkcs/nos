@@ -18,6 +18,10 @@ struct sd_spi_card {
 /* Call from task context, with exclusive access to the card. */
 int sd_spi_card_init(struct sd_spi_card *card, const struct sd_spi *spi);
 
+/* Transfer one 512-byte sector; the caller serializes access to this card. */
+int sd_spi_read_block(struct sd_spi_card *card, uint32_t lba, void *buffer);
+int sd_spi_write_block(struct sd_spi_card *card, uint32_t lba, const void *buffer);
+
 /* Pass an inactive session. On success, the caller owns the active session and
  * must end it after any command-specific response or data. On failure, a
  * session opened by this function is closed. */
