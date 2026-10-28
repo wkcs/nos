@@ -12,6 +12,7 @@ include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/kconfig.cmake")
 include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/compiler_flags.cmake")
 include("${CMAKE_CURRENT_SOURCE_DIR}/soc/chip_flags.cmake")
 include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/helpers.cmake")
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/devicetree.cmake")
 
 # ------------------------------------------------------------------------------
 # Global Header Search Contract (nos_headers INTERFACE library)
