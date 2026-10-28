@@ -1,5 +1,6 @@
 set(FS_SRCS
     vfs.c
+    vfs_fd.c
     ramfs.c
     procfs.c
     sysfs.c

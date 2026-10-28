@@ -185,6 +185,7 @@ struct file {
   struct inode *f_inode; /* cached value */
   const struct file_operations *f_op;
   unsigned int f_flags;
+  unsigned int f_refs;
   fmode_t f_mode;
   loff_t f_pos;
   void *private_data;

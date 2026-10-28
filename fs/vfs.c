@@ -13,6 +13,7 @@
 #include <kernel/printk.h>
 #include <lib/vsprintf.h>
 #include <string.h>
+#include "vfs_fd.h"
 
 static struct file_system_type *file_systems;
 SPINLOCK(file_systems_lock);
@@ -26,37 +27,7 @@ static const char *root_fs_name = "rootfs";
 static const char *root_dev_name = "rootfs";
 static SPINLOCK(vfs_mount_lock);
 
-/* Keep the initial public descriptor table deliberately small and static. */
-#define VFS_MAX_OPEN_FILES 16
 #define VFS_MAX_MOUNT_POINTS 8
-
-static struct file *open_files[VFS_MAX_OPEN_FILES];
-static bool open_file_slots[VFS_MAX_OPEN_FILES];
-static SPINLOCK(open_files_lock);
-
-static int vfs_reserve_fd(void)
-{
-    int fd;
-
-    spin_lock(&open_files_lock);
-    for (fd = 0; fd < VFS_MAX_OPEN_FILES; fd++) {
-        if (!open_file_slots[fd]) {
-            open_file_slots[fd] = true;
-            spin_unlock(&open_files_lock);
-            return fd;
-        }
-    }
-    spin_unlock(&open_files_lock);
-    return -EMFILE;
-}
-
-static void vfs_release_fd(int fd)
-{
-    spin_lock(&open_files_lock);
-    open_files[fd] = NULL;
-    open_file_slots[fd] = false;
-    spin_unlock(&open_files_lock);
-}
 
 struct mount_point {
     struct inode *parent;
@@ -730,7 +701,7 @@ int nos_open(const char *path, int flags, ...)
 
   if ((flags & O_TRUNC) && (flags & O_ACCMODE) == O_RDONLY)
     return -EINVAL;
-  fd = vfs_reserve_fd();
+  fd = vfs_fd_reserve();
   if (fd < 0)
     return fd;
   dentry = vfs_resolve_path(path, flags & O_CREAT);
@@ -773,49 +744,55 @@ int nos_open(const char *path, int flags, ...)
     }
   }
 
-  spin_lock(&open_files_lock);
-  open_files[fd] = file;
-  spin_unlock(&open_files_lock);
+  vfs_fd_publish(fd, file);
   return fd;
 
 free_file:
   kfree(file);
 release_fd:
-  vfs_release_fd(fd);
+  vfs_fd_cancel(fd);
   return ret;
 }
 
 ssize_t nos_read(int fd, void *buf, size_t count)
 {
   struct file *file;
+  ssize_t ret;
 
-  if (fd < 0 || fd >= VFS_MAX_OPEN_FILES || !buf)
+  if (!buf)
     return -EBADF;
 
-  file = open_files[fd];
-  if (!file || (file->f_flags & O_ACCMODE) == O_WRONLY ||
-      !file->f_op || !file->f_op->read)
+  file = vfs_fd_get(fd);
+  if (!file)
     return -EBADF;
-
-  return file->f_op->read(file, buf, count, &file->f_pos);
+  if ((file->f_flags & O_ACCMODE) == O_WRONLY || !file->f_op || !file->f_op->read)
+    ret = -EBADF;
+  else
+    ret = file->f_op->read(file, buf, count, &file->f_pos);
+  (void)vfs_fd_put(file);
+  return ret;
 }
 
 ssize_t nos_write(int fd, const void *buf, size_t count)
 {
   struct file *file;
+  ssize_t ret;
 
-  if (fd < 0 || fd >= VFS_MAX_OPEN_FILES || !buf)
+  if (!buf)
     return -EBADF;
 
-  file = open_files[fd];
-  if (!file || (file->f_flags & O_ACCMODE) == O_RDONLY ||
-      !file->f_op || !file->f_op->write)
+  file = vfs_fd_get(fd);
+  if (!file)
     return -EBADF;
-
-  if (file->f_flags & O_APPEND) {
-    file->f_pos = file->f_inode->i_size;
+  if ((file->f_flags & O_ACCMODE) == O_RDONLY || !file->f_op || !file->f_op->write) {
+    ret = -EBADF;
+  } else {
+    if (file->f_flags & O_APPEND)
+      file->f_pos = file->f_inode->i_size;
+    ret = file->f_op->write(file, buf, count, &file->f_pos);
   }
-  return file->f_op->write(file, buf, count, &file->f_pos);
+  (void)vfs_fd_put(file);
+  return ret;
 }
 
 loff_t nos_lseek(int fd, loff_t offset, int whence)
@@ -823,12 +800,14 @@ loff_t nos_lseek(int fd, loff_t offset, int whence)
   struct file *file;
   loff_t new_pos;
 
-  if (fd < 0 || fd >= VFS_MAX_OPEN_FILES || !open_files[fd])
+  file = vfs_fd_get(fd);
+  if (!file)
     return -EBADF;
-
-  file = open_files[fd];
-  if (file->f_op && file->f_op->llseek)
-    return file->f_op->llseek(file, offset, whence);
+  if (file->f_op && file->f_op->llseek) {
+    new_pos = file->f_op->llseek(file, offset, whence);
+    (void)vfs_fd_put(file);
+    return new_pos;
+  }
 
   switch (whence) {
   case SEEK_SET:
@@ -841,11 +820,16 @@ loff_t nos_lseek(int fd, loff_t offset, int whence)
     new_pos = (file->f_inode ? file->f_inode->i_size : 0) + offset;
     break;
   default:
-    return -EINVAL;
+    new_pos = -EINVAL;
+    goto out;
   }
-  if (new_pos < 0)
-    return -EINVAL;
+  if (new_pos < 0) {
+    new_pos = -EINVAL;
+    goto out;
+  }
   file->f_pos = new_pos;
+out:
+  (void)vfs_fd_put(file);
   return new_pos;
 }
 
@@ -904,25 +888,7 @@ int nos_truncate(const char *pathname, loff_t length)
 
 int nos_close(int fd)
 {
-  struct file *file;
-  int ret = 0;
-
-  if (fd < 0 || fd >= VFS_MAX_OPEN_FILES)
-    return -EBADF;
-
-  spin_lock(&open_files_lock);
-  file = open_files[fd];
-  if (file == NULL) {
-    spin_unlock(&open_files_lock);
-    return -EBADF;
-  }
-  open_files[fd] = NULL;
-  open_file_slots[fd] = false;
-  spin_unlock(&open_files_lock);
-  if (file->f_op && file->f_op->release)
-    ret = file->f_op->release(file->f_inode, file);
-  kfree(file);
-  return ret;
+  return vfs_fd_close(fd);
 }
 
 int vfs_bind_mount(struct dentry *target, struct dentry *mnt_root)
