@@ -108,6 +108,15 @@ config SPI_SDCARD
 	bool "SPI SD card driver"
 	default n
 
+config ZJ_V3_SD_BLOCK
+	bool "ZJ-V3 SPI SD block device"
+	depends on BOARD_ZJ_V3 && SPI_SDCARD && !SDCARD_TEST
+	select STM32F1_SPI
+	default n
+	help
+	  Initialize the ZJ-V3 SD socket as block device sd0 after scheduling
+	  starts. The legacy SD test cannot run while this driver owns SPI2.
+
 config QEMU_SD
 	bool "QEMU SPI SD card emulation driver"
 	default n
