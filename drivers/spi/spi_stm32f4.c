@@ -69,6 +69,15 @@ static int stm32_spi_transceive(const struct device *dev,
             }
         }
     }
+    if (ret == 0) {
+        uint32_t remaining = CONFIG_STM32_SPI_POLL_TIMEOUT;
+        while (SPI_I2S_GetFlagStatus(hw->regs, SPI_I2S_FLAG_BSY) != RESET) {
+            if (remaining-- == 0) {
+                ret = -ETIMEDOUT;
+                break;
+            }
+        }
+    }
     stm32_spi_deselect(controller);
     return ret;
 }

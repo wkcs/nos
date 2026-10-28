@@ -23,6 +23,7 @@ typedef struct { int SPI_Direction, SPI_Mode, SPI_DataSize, SPI_CPOL, SPI_CPHA, 
 #define SPI_FirstBit_MSB 1
 #define SPI_I2S_FLAG_TXE 1
 #define SPI_I2S_FLAG_RXNE 2
+#define SPI_I2S_FLAG_BSY 3
 void RCC_AHB1PeriphClockCmd(uint32_t, int);
 void RCC_APB2PeriphClockCmd(uint32_t, int);
 void RCC_APB2PeriphResetCmd(uint32_t, int);
