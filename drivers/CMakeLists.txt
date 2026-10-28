@@ -20,10 +20,6 @@ if(CONFIG_SSD1106_OLED)
     list(APPEND DRIVERS_SRCS display/ssd1106-oled.c)
 endif()
 
-if(CONFIG_I2C_CORE)
-    list(APPEND DRIVERS_SRCS i2c/i2c-core.c)
-endif()
-
 if(CONFIG_NK60_V1_KEY)
     list(APPEND DRIVERS_SRCS key/keyboard.c)
 endif()
