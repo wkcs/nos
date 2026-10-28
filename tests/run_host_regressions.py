@@ -42,6 +42,7 @@ TESTS = [
     ("run_shell_session_test.py",),
     ("run_shell_parse_test.py",),
     ("run_task_stack_layout_test.py",),
+    ("run_vfs_fd_lifetime_test.py",),
     ("run_ramfs_concurrency_test.py",),
 ]
 
