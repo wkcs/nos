@@ -15,6 +15,7 @@ TESTS = [
     ("run_log_ring_test.py",),
     ("run_console_test.py",),
     ("run_serial_api_test.py",),
+    ("run_spi_api_test.py",),
     ("run_stm32_uart_test.py",),
     ("run_stm32_uart_test.py", "--dma"),
     ("run_tty_test.py",),
