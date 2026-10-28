@@ -3,6 +3,10 @@ set(DRIVERS_SRCS
     base/null_device.c
 )
 
+if(CONFIG_DEVICE_TREE)
+    list(APPEND DRIVERS_SRCS base/devicetree.c "${NOS_DTS_C}")
+endif()
+
 if(CONFIG_RAMDISK)
     list(APPEND DRIVERS_SRCS block/ramdisk.c)
 endif()
