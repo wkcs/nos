@@ -59,6 +59,7 @@ struct nshell {
     struct nshell *next;
     bool remote;
     bool ls_long_format;
+    int last_status;
     uint32_t generation;
 };
 
@@ -358,6 +359,20 @@ static int cmd_echo(int argc, char *argv[])
         nshell_write("\r\n", 2);
     }
     return 0;
+}
+
+static int cmd_true(int argc, char *argv[])
+{
+    (void)argc;
+    (void)argv;
+    return 0;
+}
+
+static int cmd_false(int argc, char *argv[])
+{
+    (void)argc;
+    (void)argv;
+    return 1;
 }
 
 
@@ -774,27 +789,60 @@ static int cmd_nlk(int argc, char *argv[])
 static void nshell_exec_cmd(struct nshell *shell)
 {
     char *argv[MAX_ARGS + 1];
-    int argc;
+    struct shell_parse_workspace {
+        char check[SHELL_SESSION_INPUT_MAX + 1];
+        struct shell_command commands[16];
+    } *workspace;
+    int count;
+    int i;
 
     if (shell->session.input_len == 0 && strlen(shell->session.input) == 0)
         return;
 
-    argc = shell_parse_line(shell->session.input, argv, MAX_ARGS + 1);
-    if (argc < 0) {
-        shell_printf("shell: syntax error or too many arguments\r\n");
+    workspace = kmalloc(sizeof(*workspace), GFP_KERNEL);
+    if (workspace == NULL) {
+        shell_printf("shell: out of memory\r\n");
+        shell->last_status = 1;
         return;
     }
-    if (argc > 0) {
+    count = shell_split_commands(shell->session.input, workspace->commands, 16);
+    if (count < 0) {
+        shell_printf("shell: syntax error or too many arguments\r\n");
+        shell->last_status = 2;
+        kfree(workspace);
+        return;
+    }
+    for (i = 0; i < count; i++) {
+        strcpy(workspace->check, workspace->commands[i].text);
+        if (shell_parse_line(workspace->check, argv, MAX_ARGS + 1) <= 0) {
+            shell_printf("shell: syntax error or too many arguments\r\n");
+            shell->last_status = 2;
+            kfree(workspace);
+            return;
+        }
+    }
+    for (i = 0; i < count; i++) {
         struct shell_cmd *curr = cmd_list;
+        int argc;
+        if ((workspace->commands[i].condition == SHELL_ON_SUCCESS && shell->last_status != 0) ||
+            (workspace->commands[i].condition == SHELL_ON_FAILURE && shell->last_status == 0)) {
+            continue;
+        }
+        argc = shell_parse_line(workspace->commands[i].text, argv, MAX_ARGS + 1);
+        if (argc <= 0) continue;
         while (curr) {
             if (strcmp(curr->name, argv[0]) == 0) {
-                curr->func(argc, argv);
-                return;
+                shell->last_status = curr->func(argc, argv);
+                break;
             }
             curr = curr->next;
         }
-        shell_printf("Command not found: %s\r\n", argv[0]);
+        if (curr == NULL) {
+            shell_printf("%s: command not found\r\n", argv[0]);
+            shell->last_status = 127;
+        }
     }
+    kfree(workspace);
 }
 
 static void nshell_execute_line(struct shell_session *session, void *context)
@@ -831,6 +879,7 @@ static void nshell_task_entry(void* parameter)
                 shell->generation = __atomic_load_n(&ctx->generation, __ATOMIC_ACQUIRE);
                 shell->session.tty = nlk_cap_shell_tty(ctx);
                 shell_session_reset(&shell->session, vfs_get_root());
+                shell->last_status = 0;
                 if (ctx->session_open) shell_printf("\r\n" SHELL_PROMPT);
             }
 #endif
@@ -869,6 +918,8 @@ static int nshell_init(void)
     shell_register_cmd("ver", "Show NOS kernel version & uptime", cmd_ver);
     shell_register_cmd("clear", "Clear screen", cmd_clear);
     shell_register_cmd("echo", "Print arguments", cmd_echo);
+    shell_register_cmd("true", "Return success", cmd_true);
+    shell_register_cmd("false", "Return failure", cmd_false);
     shell_register_cmd("log", "Toggle kernel log (on/off)", cmd_log);
     shell_register_cmd("ls", "List directory", cmd_ls);
     shell_register_cmd("cd", "Change directory", cmd_cd);
