@@ -31,6 +31,32 @@ static SPINLOCK(vfs_mount_lock);
 #define VFS_MAX_MOUNT_POINTS 8
 
 static struct file *open_files[VFS_MAX_OPEN_FILES];
+static bool open_file_slots[VFS_MAX_OPEN_FILES];
+static SPINLOCK(open_files_lock);
+
+static int vfs_reserve_fd(void)
+{
+    int fd;
+
+    spin_lock(&open_files_lock);
+    for (fd = 0; fd < VFS_MAX_OPEN_FILES; fd++) {
+        if (!open_file_slots[fd]) {
+            open_file_slots[fd] = true;
+            spin_unlock(&open_files_lock);
+            return fd;
+        }
+    }
+    spin_unlock(&open_files_lock);
+    return -EMFILE;
+}
+
+static void vfs_release_fd(int fd)
+{
+    spin_lock(&open_files_lock);
+    open_files[fd] = NULL;
+    open_file_slots[fd] = false;
+    spin_unlock(&open_files_lock);
+}
 
 struct mount_point {
     struct inode *parent;
@@ -704,24 +730,32 @@ int nos_open(const char *path, int flags, ...)
 
   if ((flags & O_TRUNC) && (flags & O_ACCMODE) == O_RDONLY)
     return -EINVAL;
+  fd = vfs_reserve_fd();
+  if (fd < 0)
+    return fd;
   dentry = vfs_resolve_path(path, flags & O_CREAT);
-  if (!dentry)
-    return -ENOENT;
+  if (!dentry) {
+    ret = -ENOENT;
+    goto release_fd;
+  }
 
-  if (!dentry->d_inode || !dentry->d_inode->i_fop)
-    return -EACCES;
+  if (!dentry->d_inode || !dentry->d_inode->i_fop) {
+    ret = -EACCES;
+    goto release_fd;
+  }
 
+  file = kzalloc(sizeof(*file), GFP_KERNEL);
+  if (!file) {
+    ret = -ENOMEM;
+    goto release_fd;
+  }
   if ((flags & O_TRUNC) && !S_ISDIR(dentry->d_inode->i_mode)) {
     ret = vfs_truncate_dentry(dentry, 0);
     if (ret != 0 && !(ret == -ENOTSUP && dentry->d_sb &&
                       dentry->d_sb->s_type &&
                       strcmp(dentry->d_sb->s_type->name, "fatfs") == 0))
-      return ret;
+      goto free_file;
   }
-
-  file = kzalloc(sizeof(*file), GFP_KERNEL);
-  if (!file)
-    return -ENOMEM;
 
   file->f_path.dentry = dentry;
   file->f_path.mnt = NULL;
@@ -735,22 +769,20 @@ int nos_open(const char *path, int flags, ...)
   if (file->f_op->open) {
     ret = file->f_op->open(file->f_inode, file);
     if (ret) {
-      kfree(file);
-      return ret;
+      goto free_file;
     }
   }
 
-  for (fd = 0; fd < VFS_MAX_OPEN_FILES; fd++) {
-    if (!open_files[fd]) {
-      open_files[fd] = file;
-      return fd;
-    }
-  }
+  spin_lock(&open_files_lock);
+  open_files[fd] = file;
+  spin_unlock(&open_files_lock);
+  return fd;
 
-  if (file->f_op->release)
-    file->f_op->release(file->f_inode, file);
+free_file:
   kfree(file);
-  return -EMFILE;
+release_fd:
+  vfs_release_fd(fd);
+  return ret;
 }
 
 ssize_t nos_read(int fd, void *buf, size_t count)
@@ -875,11 +907,18 @@ int nos_close(int fd)
   struct file *file;
   int ret = 0;
 
-  if (fd < 0 || fd >= VFS_MAX_OPEN_FILES || !open_files[fd])
+  if (fd < 0 || fd >= VFS_MAX_OPEN_FILES)
     return -EBADF;
 
+  spin_lock(&open_files_lock);
   file = open_files[fd];
+  if (file == NULL) {
+    spin_unlock(&open_files_lock);
+    return -EBADF;
+  }
   open_files[fd] = NULL;
+  open_file_slots[fd] = false;
+  spin_unlock(&open_files_lock);
   if (file->f_op && file->f_op->release)
     ret = file->f_op->release(file->f_inode, file);
   kfree(file);
