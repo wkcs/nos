@@ -65,6 +65,34 @@ static int vfs_smoke(void)
         return -EIO;
     }
 
+    {
+        int descriptors[16];
+        int i;
+        for (i = 0; i < 16; i++) {
+            descriptors[i] = nos_open("/sys/arch", O_RDONLY);
+            if (descriptors[i] < 0) {
+                while (--i >= 0) nos_close(descriptors[i]);
+                return -EIO;
+            }
+        }
+        fd = nos_open("/smoke.txt", O_WRONLY | O_TRUNC);
+        for (i = 0; i < 16; i++) nos_close(descriptors[i]);
+        if (fd != -EMFILE) {
+            pr_err("vfs_smoke: expected descriptor exhaustion: %d\r\n", fd);
+            if (fd >= 0) nos_close(fd);
+            return -EIO;
+        }
+        fd = nos_open("/smoke.txt", O_RDONLY);
+        if (fd < 0) return fd;
+        count = nos_read(fd, actual, sizeof(expected) - 1);
+        nos_close(fd);
+        if (count != (ssize_t)(sizeof(expected) - 1) ||
+            memcmp(actual, expected, sizeof(expected) - 1) != 0) {
+            pr_err("vfs_smoke: failed open changed file contents\r\n");
+            return -EIO;
+        }
+    }
+
     pr_info("vfs_smoke OK\r\n");
     return 0;
 }
