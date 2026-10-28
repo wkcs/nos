@@ -28,6 +28,10 @@ struct stm32_spi_config {
     uint8_t apb2;
 };
 
+struct stm32_spi_data {
+    uint16_t selected;
+};
+
 extern const struct spi_driver_api stm32_spi_driver_api;
 int stm32_spi_init(struct device *dev);
 

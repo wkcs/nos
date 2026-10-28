@@ -51,7 +51,10 @@ int main(void)
         .mosi_pin_source = 5, .gpio_af = 5,
         .chip_selects = selects, .chip_select_count = 2, .peripheral_clock = 84000000, .apb2 = 1,
     };
-    struct device dev = { .name = "spi1", .config = &hw, .api = &stm32_spi_driver_api };
+    struct stm32_spi_data state = {0};
+    struct device dev = { .name = "spi1", .config = &hw, .data = &state,
+                          .api = &stm32_spi_driver_api };
+    struct spi_session session = {0};
     struct spi_config config = { .frequency = 21000000, .word_size = 8, .mode = 3 };
     uint8_t command = 0x9f, rx[2] = {0};
     struct spi_buf buffers[] = { { .tx = &command, .len = 1 }, { .rx = rx, .len = 2 } };
@@ -62,6 +65,22 @@ int main(void)
         fputs("STM32 SPI transaction failed\n", stderr);
         return 1;
     }
+    count = 0;
+    if (spi_session_begin(&session, &dev, &config) != 0 || selected != 4 ||
+        !dev.mutex.locked || spi_session_transfer(&session, &buffers[0], 1) != 0 ||
+        spi_session_transfer(&session, &buffers[1], 1) != 0 || selected != 4 ||
+        spi_session_end(&session) != 0 || selected || dev.mutex.locked || count != 3) {
+        fputs("held SPI session failed\n", stderr);
+        return 1;
+    }
+    fail_tx = 1;
+    if (spi_session_begin(&session, &dev, &config) != 0 ||
+        spi_session_transfer(&session, &buffers[0], 1) != -ETIMEDOUT ||
+        selected || dev.mutex.locked || session.active) {
+        fputs("failed SPI session did not release resources\n", stderr);
+        return 1;
+    }
+    fail_tx = 0;
     config.mode = 0;
     config.chip_select = 1;
     config.frequency = 10000000;
@@ -95,7 +114,13 @@ int main(void)
         return 1;
     }
     fail_tx = 0;
+    if (spi_session_begin(&session, &dev, &config) != 0) return 1;
     fail_busy = 1;
+    if (spi_session_end(&session) != -ETIMEDOUT || session.active ||
+        selected || dev.mutex.locked) {
+        fputs("SPI session end timeout did not release resources\n", stderr);
+        return 1;
+    }
     if (spi_transceive(&dev, &config, buffers, 2) != -ETIMEDOUT ||
         selected || dev.mutex.locked || lock_error) {
         fputs("busy timeout did not release chip select and lock\n", stderr);
@@ -103,7 +128,8 @@ int main(void)
     }
     {
         struct stm32_spi_config apb1_hw = hw;
-        struct device apb1_dev = { .name = "spi2", .config = &apb1_hw,
+        struct stm32_spi_data apb1_state = {0};
+        struct device apb1_dev = { .name = "spi2", .config = &apb1_hw, .data = &apb1_state,
                                    .api = &stm32_spi_driver_api };
         apb1_hw.apb2 = 0;
         fail_busy = 0;

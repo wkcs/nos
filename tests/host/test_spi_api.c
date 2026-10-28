@@ -21,6 +21,7 @@ int main(void)
     struct device dev = { .api = &api, .ready = true };
     struct spi_config config = { .frequency = 1000000, .chip_select = 2,
                                  .word_size = 8, .mode = 0 };
+    struct spi_session session = {0};
     unsigned char command = 0x9f;
     unsigned char data[3];
     struct spi_buf buffers[] = {
@@ -28,6 +29,10 @@ int main(void)
         { .rx = data, .len = sizeof(data) },
     };
 
+    if (spi_session_begin(&session, &dev, &config) != -ENOSYS) {
+        fputs("controller without session callbacks must report ENOSYS\n", stderr);
+        return 1;
+    }
     if (spi_transceive(&dev, &config, buffers, 2) != -EIO || calls != 1) {
         fputs("multi-segment transaction or error propagation failed\n", stderr);
         return 1;
