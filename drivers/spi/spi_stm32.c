@@ -111,12 +111,14 @@ static int stm32_spi_session_transfer(const struct device *dev,
     return 0;
 }
 
-static int stm32_spi_session_end(const struct device *dev)
+static int stm32_spi_session_finish(const struct device *dev, size_t idle_bytes)
 {
     const struct stm32_spi_config *hw = dev->config;
     struct stm32_spi_data *data = dev->data;
     struct device *controller = (struct device *)dev;
     uint32_t remaining = CONFIG_STM32_SPI_POLL_TIMEOUT;
+    uint8_t ignored;
+    size_t i;
     int ret = 0;
 
     while (SPI_I2S_GetFlagStatus(hw->regs, SPI_I2S_FLAG_BSY) != RESET) {
@@ -126,8 +128,31 @@ static int stm32_spi_session_end(const struct device *dev)
         }
     }
     stm32_spi_cs_set(&hw->chip_selects[data->selected], 0);
+    if (ret == 0) {
+        for (i = 0; i < idle_bytes; i++) {
+            ret = stm32_spi_exchange(controller, 0xffU, &ignored);
+            if (ret != 0) break;
+        }
+        remaining = CONFIG_STM32_SPI_POLL_TIMEOUT;
+        while (SPI_I2S_GetFlagStatus(hw->regs, SPI_I2S_FLAG_BSY) != RESET) {
+            if (remaining-- == 0) {
+                if (ret == 0) ret = -ETIMEDOUT;
+                break;
+            }
+        }
+    }
     mutex_unlock(&controller->mutex);
     return ret;
+}
+
+static int stm32_spi_session_end(const struct device *dev)
+{
+    return stm32_spi_session_finish(dev, 0);
+}
+
+static int stm32_spi_session_end_with_idle(const struct device *dev, size_t bytes)
+{
+    return stm32_spi_session_finish(dev, bytes);
 }
 
 static int stm32_spi_transceive(const struct device *dev,
@@ -183,6 +208,7 @@ const struct spi_driver_api stm32_spi_driver_api = {
     .session_begin = stm32_spi_session_begin,
     .session_transfer = stm32_spi_session_transfer,
     .session_end = stm32_spi_session_end,
+    .session_end_with_idle = stm32_spi_session_end_with_idle,
     .clock_idle = stm32_spi_clock_idle,
 };
 

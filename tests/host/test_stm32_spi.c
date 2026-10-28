@@ -89,6 +89,21 @@ int main(void)
     }
 #endif
     count = 0;
+    if (spi_session_begin(&session, &dev, &config) != 0) return 1;
+    expected_pin = 0;
+    if (spi_session_end_with_idle(&session, 1) != 0 || selected || dev.mutex.locked ||
+        count != 1 || sent[0] != 0xff || lock_error) {
+        fputs("SPI session idle clocks did not stay locked\n", stderr);
+        return 1;
+    }
+    count = 0;
+    if (spi_session_begin(&session, &dev, &config) != 0) return 1;
+    fail_tx = 1;
+    if (spi_session_end_with_idle(&session, 1) != -ETIMEDOUT || selected ||
+        dev.mutex.locked || session.active) {
+        fputs("SPI session idle timeout did not release resources\n", stderr);
+        return 1;
+    }
     fail_tx = 1;
     if (spi_clock_idle(&dev, &config, 1) != -ETIMEDOUT || dev.mutex.locked || selected) {
         fputs("SPI idle timeout did not release resources\n", stderr);

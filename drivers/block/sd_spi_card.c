@@ -19,11 +19,12 @@ static int sd_command(const struct sd_spi *spi, uint8_t command, uint32_t argume
         ret = spi_session_transfer(&session, &buffer, 1);
     }
     if (session.active) {
-        cleanup = spi_session_end(&session);
+        cleanup = spi_session_end_with_idle(&session, 1);
+        if (ret == 0) ret = cleanup;
+    } else {
+        cleanup = spi_clock_idle(spi->bus, &spi->config, 1);
         if (ret == 0) ret = cleanup;
     }
-    cleanup = spi_clock_idle(spi->bus, &spi->config, 1);
-    if (ret == 0) ret = cleanup;
     return ret;
 }
 

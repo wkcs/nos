@@ -33,6 +33,8 @@ struct spi_driver_api {
     int (*session_transfer)(const struct device *dev, const struct spi_buf *buffers,
                             size_t count);
     int (*session_end)(const struct device *dev);
+    /* Deassert CS, send idle clocks, then release the bus lock. */
+    int (*session_end_with_idle)(const struct device *dev, size_t bytes);
     /* Send bytes of ones with every chip select inactive. */
     int (*clock_idle)(const struct device *dev, const struct spi_config *config,
                       size_t bytes);
@@ -119,6 +121,24 @@ static inline int spi_session_end(struct spi_session *session)
 
     if (session == NULL || !session->active) return -EINVAL;
     ret = session->api->session_end(session->dev);
+    session->active = 0;
+    session->dev = NULL;
+    session->api = NULL;
+    return ret;
+}
+
+/* Always closes an active session. Controllers without this operation release
+ * the session and return ENOSYS, without sending any idle clocks. */
+static inline int spi_session_end_with_idle(struct spi_session *session, size_t bytes)
+{
+    int ret;
+
+    if (session == NULL || !session->active || bytes == 0) return -EINVAL;
+    if (session->api->session_end_with_idle == NULL) {
+        (void)spi_session_end(session);
+        return -ENOSYS;
+    }
+    ret = session->api->session_end_with_idle(session->dev, bytes);
     session->active = 0;
     session->dev = NULL;
     session->api = NULL;

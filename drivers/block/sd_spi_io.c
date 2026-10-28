@@ -36,10 +36,10 @@ static int sd_end(const struct sd_spi_card *card, struct spi_session *session, i
     int cleanup;
 
     if (session->active) {
-        cleanup = spi_session_end(session);
-        if (ret == 0) ret = cleanup;
+        cleanup = spi_session_end_with_idle(session, 1);
+    } else {
+        cleanup = spi_clock_idle(card->spi.bus, &card->spi.config, 1);
     }
-    cleanup = spi_clock_idle(card->spi.bus, &card->spi.config, 1);
     return ret != 0 ? ret : cleanup;
 }
 
