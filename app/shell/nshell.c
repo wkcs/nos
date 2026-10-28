@@ -1005,6 +1005,178 @@ static int cmd_wc(int argc, char *argv[])
     return status;
 }
 
+struct grep_options {
+    const char *pattern;
+    bool ignore_case;
+    bool invert;
+    bool line_number;
+    bool count_only;
+    bool show_filename;
+};
+
+static unsigned char grep_fold(unsigned char c, bool ignore_case)
+{
+    if (ignore_case && c >= 'A' && c <= 'Z') return (unsigned char)(c + ('a' - 'A'));
+    return c;
+}
+
+static bool grep_matches(const char *line, size_t length, const struct grep_options *options)
+{
+    size_t pattern_len = strlen(options->pattern);
+    size_t i;
+
+    if (pattern_len == 0) return true;
+    if (pattern_len > length) return false;
+    for (i = 0; i <= length - pattern_len; i++) {
+        size_t j;
+        for (j = 0; j < pattern_len; j++) {
+            if (grep_fold((unsigned char)line[i + j], options->ignore_case) !=
+                grep_fold((unsigned char)options->pattern[j], options->ignore_case)) break;
+        }
+        if (j == pattern_len) return true;
+    }
+    return false;
+}
+
+static int grep_line(const char *line, size_t length, unsigned long long number,
+                     const char *name, const struct grep_options *options,
+                     unsigned long long *matches)
+{
+    bool selected = grep_matches(line, length, options) != options->invert;
+    int rc;
+
+    if (!selected) return 0;
+    (*matches)++;
+    if (options->count_only) return 0;
+    if (options->show_filename && name != NULL) shell_printf("%s:", name);
+    if (options->line_number) shell_printf("%llu:", number);
+    rc = nshell_write(line, (int)length);
+    if (rc != (int)length) return rc < 0 ? rc : -EIO;
+    if (length == 0 || line[length - 1] != '\n') {
+        rc = nshell_write("\n", 1);
+        if (rc != 1) return rc < 0 ? rc : -EIO;
+    }
+    return 0;
+}
+
+static int grep_stream(struct file *file, const char *name,
+                       const struct grep_options *options, bool *matched)
+{
+    char input[64];
+    char *line;
+    size_t used = 0, capacity = 128;
+    unsigned long long number = 1, matches = 0;
+    int n, rc = 0;
+
+    line = kmalloc(capacity, GFP_KERNEL);
+    if (line == NULL) return -ENOMEM;
+    while ((n = wc_read(file, input, sizeof(input))) > 0) {
+        int i;
+        for (i = 0; i < n; i++) {
+            if (used == capacity) {
+                char *expanded;
+                size_t new_capacity = capacity * 2U;
+                if (new_capacity > 65536U) { rc = -EFBIG; goto out; }
+                expanded = kmalloc(new_capacity, GFP_KERNEL);
+                if (expanded == NULL) { rc = -ENOMEM; goto out; }
+                memcpy(expanded, line, used);
+                kfree(line);
+                line = expanded;
+                capacity = new_capacity;
+            }
+            line[used++] = input[i];
+            if (input[i] == '\n') {
+                rc = grep_line(line, used, number++, name, options, &matches);
+                if (rc != 0) goto out;
+                used = 0;
+            }
+        }
+    }
+    if (n < 0) { rc = n; goto out; }
+    if (used != 0) {
+        rc = grep_line(line, used, number, name, options, &matches);
+        if (rc != 0) goto out;
+    }
+    if (options->count_only) {
+        if (options->show_filename && name != NULL) shell_printf("%s:", name);
+        shell_printf("%llu\r\n", matches);
+    }
+    if (matches != 0) *matched = true;
+out:
+    kfree(line);
+    return rc;
+}
+
+static int grep_file(const char *path, const struct grep_options *options, bool *matched)
+{
+    struct dentry *entry = resolve_path(path);
+    struct file file;
+    int rc;
+
+    if (entry == NULL || entry->d_inode == NULL) return -ENOENT;
+    if (S_ISDIR(entry->d_inode->i_mode)) return -EISDIR;
+    if (entry->d_inode->i_fop == NULL || entry->d_inode->i_fop->read == NULL) return -EACCES;
+    memset(&file, 0, sizeof(file));
+    file.f_inode = entry->d_inode;
+    file.f_op = entry->d_inode->i_fop;
+    file.f_path.dentry = entry;
+    file.f_flags = O_RDONLY;
+    if (file.f_op->open != NULL) {
+        rc = file.f_op->open(file.f_inode, &file);
+        if (rc != 0) return rc;
+    }
+    rc = grep_stream(&file, path, options, matched);
+    if (file.f_op->release != NULL) {
+        int close_rc = file.f_op->release(file.f_inode, &file);
+        if (rc == 0 && close_rc != 0) rc = close_rc;
+    }
+    return rc;
+}
+
+static int cmd_grep(int argc, char *argv[])
+{
+    struct grep_options options = {0};
+    bool matched = false, error = false, fixed = false, no_filename = false;
+    int first = 1, i;
+
+    while (first < argc && argv[first][0] == '-' && argv[first][1] != '\0') {
+        const char *option = argv[first] + 1;
+        if (strcmp(option, "-") == 0) { first++; break; }
+        while (*option) {
+            if (*option == 'F') fixed = true;
+            else if (*option == 'i') options.ignore_case = true;
+            else if (*option == 'v') options.invert = true;
+            else if (*option == 'n') options.line_number = true;
+            else if (*option == 'c') options.count_only = true;
+            else if (*option == 'h') no_filename = true;
+            else {
+                shell_error("grep: invalid option -- '%c'\r\n", *option);
+                return 2;
+            }
+            option++;
+        }
+        first++;
+    }
+    if (first == argc) { shell_error("grep: missing pattern\r\n"); return 2; }
+    options.pattern = argv[first++];
+    if (!fixed && strpbrk(options.pattern, ".*[\\^$") != NULL) {
+        shell_error("grep: regular expressions are not supported; use -F for literal patterns\r\n");
+        return 2;
+    }
+    options.show_filename = !no_filename && argc - first > 1;
+    if (first == argc) {
+        int rc = grep_stream(NULL, NULL, &options, &matched);
+        if (rc < 0) { shell_error("grep: input error %d\r\n", rc); return 2; }
+    }
+    for (i = first; i < argc; i++) {
+        int rc = strcmp(argv[i], "-") == 0 ?
+                 grep_stream(NULL, "(standard input)", &options, &matched) :
+                 grep_file(argv[i], &options, &matched);
+        if (rc < 0) { shell_error("grep: %s: error %d\r\n", argv[i], rc); error = true; }
+    }
+    return error ? 2 : matched ? 0 : 1;
+}
+
 static int cmd_mount(int argc, char *argv[]) {
   char *fs_type = NULL;
   char *dev = NULL;
@@ -1421,6 +1593,7 @@ static int nshell_init(void)
     shell_register_cmd("mkdir", "Make directory", cmd_mkdir);
     shell_register_cmd("cat", "Concatenate file", cmd_cat);
     shell_register_cmd("wc", "Count lines, words and bytes", cmd_wc);
+    shell_register_cmd("grep", "Search lines for a fixed string", cmd_grep);
     shell_register_cmd("mount", "Mount filesystem", cmd_mount);
     shell_register_cmd("ps", "Dump task status", cmd_ps);
 #ifdef CONFIG_NLK_SERVER

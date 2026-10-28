@@ -6,7 +6,7 @@ The `help` command lists the built-in commands.
 
 The parser supports single and double quotes, backslash escapes, command lists
 (`;`, `&&`, `||`), pipelines (`|`), and file redirections (`<`, `>`, `>>`).
-Input redirection is consumed by `cat` and `wc`; both also read standard input
+Input redirection is consumed by `cat`, `wc`, and `grep`; these also read standard input
 when passed `-`. Output redirection and pipelines apply to built-in command
 output.
 
@@ -22,3 +22,9 @@ subshells, external processes, job control, and a complete standard error
 stream remain to be implemented. Some NOS-specific commands and VFS behavior
 also differ from Unix. Avoid using destructive operations until VFS object
 lifetime and concurrent access are fully addressed.
+
+`grep` supports fixed-string matching (`-F`), ASCII case folding (`-i`),
+inverted selection (`-v`), line numbers (`-n`), counts (`-c`) and suppression of
+filename prefixes (`-h`). Regular expressions are not implemented; patterns
+containing regex metacharacters require `-F`. Lines longer than 65536 bytes or
+larger than available heap memory fail with an error rather than being truncated.
