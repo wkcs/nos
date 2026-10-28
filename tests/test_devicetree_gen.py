@@ -100,6 +100,17 @@ int main(void) {
             self.assertNotEqual(result.returncode, 0)
             self.assertFalse((path / 'tree.c').exists())
 
+    def test_sd_binding_requires_frequency(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory)
+            source = path / 'board.dts'
+            source.write_text('/dts-v1/; / { sd@0 { compatible = "mmc-spi-slot"; reg = <0>; }; };')
+            result = subprocess.run([sys.executable, str(GEN), '--input', str(source),
+                                     '--output', str(path / 'tree.c'), '--bindings',
+                                     str(ROOT / 'dts' / 'bindings')], capture_output=True, text=True)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn('spi-max-frequency', result.stderr)
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -30,6 +30,7 @@ TESTS = [
     ("run_w25q_spi_test.py",),
     ("run_w25q_flash_test.py",),
     ("run_spi_dt_test.py",),
+    ("run_zj_sd_dt_test.py",),
     ("run_stm32_uart_test.py",),
     ("run_stm32_uart_test.py", "--dt"),
     ("run_stm32_uart_test.py", "--dma"),

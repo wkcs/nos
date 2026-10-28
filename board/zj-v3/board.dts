@@ -1,0 +1,19 @@
+/* Copyright (C) 2026 Nick Hu */
+/dts-v1/;
+#include <arm/st/stm32f103.dtsi>
+
+/ {
+    compatible = "nos,zj-v3", "st,stm32f103";
+    model = "ZJ-V3";
+    chosen { nos,sd = <&sd0>; };
+};
+
+&spi2 {
+    status = "okay";
+    cs-gpios = <&gpioa 7 1>;
+    sd0: sd@0 {
+        compatible = "mmc-spi-slot";
+        reg = <0>;
+        spi-max-frequency = <18000000>;
+    };
+};

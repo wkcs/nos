@@ -112,6 +112,7 @@ config ZJ_V3_SD_BLOCK
 	bool "ZJ-V3 SPI SD block device"
 	depends on BOARD_ZJ_V3 && SPI_SDCARD && !SDCARD_TEST
 	select STM32F1_SPI
+	select DEVICE_TREE
 	default n
 	help
 	  Initialize the ZJ-V3 SD socket as block device sd0 after scheduling

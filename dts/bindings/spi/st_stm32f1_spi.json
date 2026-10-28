@@ -1,0 +1,9 @@
+{
+  "compatible": "st,stm32f1-spi",
+  "properties": {
+    "reg": {"type": "uint32-array", "required": true, "min-items": 2, "max-items": 2},
+    "interrupts": {"type": "uint32-array", "required": true, "min-items": 1},
+    "cs-gpios": {"type": "phandle-array"},
+    "status": {"type": "string", "enum": ["okay", "ok", "disabled", "reserved", "fail", "fail-sss"]}
+  }
+}
