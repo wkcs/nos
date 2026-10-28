@@ -177,6 +177,18 @@ static int shell_printf(const char *fmt, ...) {
   if ((size_t)len >= sizeof(buf)) {
     len = sizeof(buf) - 1;
   }
+  {
+    struct nshell *shell = nshell_current();
+    if (shell != NULL && (shell->output_file != NULL || shell->pipe_output != NULL)) {
+      int read_pos, write_pos = 0;
+      for (read_pos = 0; read_pos < len; read_pos++) {
+        if (buf[read_pos] == '\r' && read_pos + 1 < len && buf[read_pos + 1] == '\n')
+          continue;
+        buf[write_pos++] = buf[read_pos];
+      }
+      len = write_pos;
+    }
+  }
   return nshell_write(buf, len);
 }
 
