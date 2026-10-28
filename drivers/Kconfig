@@ -248,12 +248,13 @@ menu "Board-specific Drivers"
 config NK60_V2_KEY
 	bool "NK60 V2 keyboard driver"
 	default n
-	depends on KEYBOARD
+	depends on KEYBOARD && BOARD_NK60 && SOC_STM32F4
 	help
 	  NK60 V2 板级键盘驱动。
 
 config NK60_V2_LED
 	bool "NK60 V2 LED driver"
+	depends on BOARD_NK60 && SOC_STM32F4
 	default n
 	help
 	  NK60 V2 板级 LED 驱动。
