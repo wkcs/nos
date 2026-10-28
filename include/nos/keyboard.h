@@ -373,12 +373,6 @@ enum key_action {
     KA_##K40, KA_##K41, KA_##K42,                               KA_##K46,                               KA_##K4A, KA_##K4B, KA_##K4C, KA_##K4D  \
 }
 
-struct key_info {
-    uint8_t code;
-    uint8_t val;
-    uint8_t action;
-};
-
 /* Hardware Key Matrix Driver Control Commands & Descriptor */
 #define KEY_MAX_LAYERS              4U
 #define KEY_MAX_NUM                 128U
@@ -432,6 +426,4 @@ enum ks_ctrl_cmd {
 };
 
 void keyboard_server_register_profile(const struct keyboard_profile *profile);
-int key_action_run(enum key_action action);
-
 #endif /* __NOS_KEYBOARD_H__ */
