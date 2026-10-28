@@ -12,7 +12,7 @@ NOS 是一个面向多架构（`arm`、`arm64`、`riscv`、`x86_64`）演进的�
 - **100% 纯 CMake + Ninja + Kconfiglib 跨平台构建**：彻底移除传统 `Makefile` 与 Unix Shell 依赖，在 **Windows (PowerShell / CMD / VS Code)**、**macOS** 和 **Linux** 上拥有完全一致的构建体验。
 - **四层头文件隔离与零冲突标准库兼容**：
   - 编译器内置头（`<stdint.h>`、`<stdarg.h>` 等）与工具链标准 C 库头（`<stdio.h>`、`<string.h>`、`<stdlib.h>`、`<errno.h>`）零劫持、零重定义警告。
-  - `libc/port/picolibc_newlib.c` 提供递归中断安全的 `__malloc_lock`、`kmalloc`/`kfree` 桥接以及基于控制台和 VFS 的 `_read_r`/`_write_r`/`_open_r`/`_close_r`/`_lseek_r`。
+  - `libs/libc/port/picolibc_newlib.c` 提供递归中断安全的 `__malloc_lock`、`kmalloc`/`kfree` 桥接以及基于控制台和 VFS 的 `_read_r`/`_write_r`/`_open_r`/`_close_r`/`_lseek_r`。
 - **微内核核心机制**：
   - **代数句柄与 Capability 权限表**（`kernel/cap/cap_table.c`）：16 位代数计数器防止 ABA 悬空句柄，支持单调权限衰减（`NOS_CAP_RIGHT_*`）与跨任务授权（`NOS_CAP_RIGHT_GRANT`）。
   - **同步会合 Endpoint IPC**（`kernel/ipc/endpoint.c`）：固定 64 字节 `struct nos_ipc_msg` ABI（编译期静态断言保护，绝不随 `#ifdef` 改变大小），支持内核防伪造 `badge` 注入、随消息传递 Capability 句柄以及客户端到服务端的优先级继承。

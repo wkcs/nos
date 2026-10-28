@@ -10,6 +10,7 @@ project(nos VERSION 1.0.0 LANGUAGES C ASM)
 
 include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/kconfig.cmake")
 include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/compiler_flags.cmake")
+include("${CMAKE_CURRENT_SOURCE_DIR}/soc/chip_flags.cmake")
 include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/helpers.cmake")
 
 # ------------------------------------------------------------------------------
@@ -62,7 +63,6 @@ add_subdirectory(soc)
 add_subdirectory(board)
 add_subdirectory(kernel)
 add_subdirectory(libs)
-add_subdirectory(libc)
 add_subdirectory(user)
 add_subdirectory(drivers)
 add_subdirectory(fs)
@@ -217,15 +217,22 @@ add_custom_target(stflash
 )
 
 if("${CONFIG_BOARD}" STREQUAL "qemu-stm32")
+    # Create a writable per-build image once; never overwrite guest data.
+    if(NOT EXISTS "${CMAKE_CURRENT_BINARY_DIR}/disk.img")
+        configure_file("${CMAKE_CURRENT_SOURCE_DIR}/assets/qemu/disk.img"
+                       "${CMAKE_CURRENT_BINARY_DIR}/disk.img" COPYONLY)
+    endif()
     add_custom_target(qemu-run
         COMMAND qemu-system-arm -M netduinoplus2 -nographic -semihosting -semihosting-config enable=on,target=native -kernel "$<TARGET_FILE:nos.elf>"
         DEPENDS nos.elf
+        WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
         COMMENT "Running nos.elf in QEMU (netduinoplus2)"
         VERBATIM
     )
     add_custom_target(qemu-run-gdb
         COMMAND qemu-system-arm -M netduinoplus2 -nographic -semihosting -semihosting-config enable=on,target=native -kernel "$<TARGET_FILE:nos.elf>" -S -s
         DEPENDS nos.elf
+        WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
         COMMENT "Running nos.elf in QEMU waiting for GDB on :1234"
         VERBATIM
     )

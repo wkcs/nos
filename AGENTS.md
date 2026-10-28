@@ -122,7 +122,7 @@
 *   `include/` - 头文件：`include/uapi/nos/`（UAPI 契约层）、`include/nos/`（微内核内部层）、`include/kernel/`（内核与驱动公共 API）。
 *   `init/` - 系统初始化 (`main.c`, `init.c`)。
 *   `kernel/` - 微内核核心逻辑（`task/`, `sched/`, `cap/`, `ipc/`, `syscall/`, `mm/`, `irq/`, `printk/`）。
-*   `libc/` - 标准 C 库（Newlib / Picolibc）底层端口适配层 (`libc/port/picolibc_newlib.c`)。
+*   `libs/libc/` - 标准 C 库（Newlib / Picolibc）底层端口适配层 (`libs/libc/port/picolibc_newlib.c`)。
 *   `user/` - 用户态/服务客户端库 (`user/libnos/`) 与 POSIX FD 桥接。
 *   `drivers/` - 设备驱动 (UART, SPI, USB, Block 等)。
 *   `fs/` - 虚拟文件系统 (VFS, FatFs, RamFS, ProcFS, SysFS)。

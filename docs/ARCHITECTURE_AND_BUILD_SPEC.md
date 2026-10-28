@@ -20,7 +20,7 @@
 - **内核内部头文件命名空间化：** 内核内部只包含 `<nos/...>`（或 `<kernel/...>`），**严禁在全局 `-Iinclude` 根目录下放置 `stdio.h`、`stdlib.h`、`string.h`、`errno.h`、`sys/types.h`**。
 - **分层编译选项：**
   - **微内核层 (`kernel/`)：** 使用 `-ffreestanding -nostdlib`，仅使用编译器内置头文件与 `<nos/klibc.h>`（提供 `kmemcpy`/`kmemset`/`ksnprintf` 等内核自包含实现），不依赖外部 `libc`。
-  - **用户态服务与应用层 (`servers/`, `user/`, `apps/`)：** 根据 `CONFIG_LIBC_*` 选择 Picolibc / Newlib（MCU/No-MMU）或 musl libc（MMU/A-profile），通过 `libc/port/` 实现底层 `_read`/`_write`/`_sbrk`/`__malloc_lock` 或 `__syscall_cp`。
+  - **用户态服务与应用层 (`servers/`, `user/`, `apps/`)：** 根据 `CONFIG_LIBC_*` 选择 Picolibc / Newlib（MCU/No-MMU）或 musl libc（MMU/A-profile），通过 `libs/libc/port/` 实现底层 `_read`/`_write`/`_sbrk`/`__malloc_lock` 或 `__syscall_cp`。
 
 ---
 
@@ -153,11 +153,11 @@ nos/
    - **铁律：** `include/kernel/compiler-gcc.h` 中定义 `__always_inline`、`__packed`、`__pure`、`__aligned`、`__weak`、`__used` 等属性宏时，必须使用 `#ifndef __packed ... #endif` 保护，防止与 Newlib/Picolibc `<sys/cdefs.h>` 产生重定义警告。
    - **清理计划：** 逐步移除顶层 `include/stdio.h` 与 `include/string.h`。对于内核内部的 `memcpy`/`memset`/`strcmp`/`snprintf`，统一由 `<nos/klibc.h>` 提供声明；在过渡期保留 `include/string.h` 时，其函数签名必须与标准 C 完全一致。
 4. **层 3：用户态 C 标准库与 POSIX 头**
-   - **MCU 档（Cortex-M / RV32，无 MMU 或仅 MPU）：** 直接使用交叉工具链自带的 **Newlib-nano / Picolibc** 头文件（编译器默认 system include 路径），由 `libc/port/picolibc_newlib.c` 实现：
+   - **MCU 档（Cortex-M / RV32，无 MMU 或仅 MPU）：** 直接使用交叉工具链自带的 **Newlib-nano / Picolibc** 头文件（编译器默认 system include 路径），由 `libs/libc/port/picolibc_newlib.c` 实现：
      - 每个任务 TCB 维护独立的 `struct _reent` 指针，在 `arch_context_switch` 时切换 `_impure_ptr`（或通过 `__getreent()` 返回 `current->tls_reent`）；
      - 实现递归安全的 `__malloc_lock` / `__malloc_unlock`；
      - 实现 `_read_r` / `_write_r` / `_open_r` / `_close_r` / `_lseek_r` / `_fstat_r` / `_sbrk_r`，无缝对接 NOS VFS（宏内核模式下直接调用 `vfs_*`，微内核模式下通过 `libnos` 发送 VFS IPC）。
-   - **MMU 档（ARMv7-A / ARM64 / RV64 / x86_64）：** 采用 **musl libc**，完全遵循标准 POSIX 头文件，底层由 `user/posix/` + `libc/port/musl_port.c` 桥接至微内核 IPC，不再使用任何 Linux `glibc` 仿真层。
+   - **MMU 档（ARMv7-A / ARM64 / RV64 / x86_64）：** 采用 **musl libc**，完全遵循标准 POSIX 头文件，底层由 `user/posix/` + `libs/libc/port/musl_port.c` 桥接至微内核 IPC，不再使用任何 Linux `glibc` 仿真层。
 
 ### 3.2 统一 `errno` 策略
 - 当使用外部工具链 `libc`（Newlib/Picolibc/musl）时，`<errno.h>` 直接使用工具链提供的标准值；
@@ -277,7 +277,7 @@ ninja -C build/nk60-v2
 
 - **阶段 2（头文件净化与标准库端口层落地）：**
   1. 建立 `include/uapi/nos/{types.h,errno.h,syscall.h,ipc.h,cap.h,abi.h}` 与 `include/nos/klibc.h`。
-  2. 迁移 `codex/nos/libc/port/newlib.c` 为 `libc/port/picolibc_newlib.c`，接管 `_reent`、`malloc_lock` 与 VFS `_read/_write/_open/_close`，随后删除顶层伪造的 `include/stdio.h`。
+  2. 迁移 `codex/nos/libc/port/newlib.c` 为 `libs/libc/port/picolibc_newlib.c`，接管 `_reent`、`malloc_lock` 与 VFS `_read/_write/_open/_close`，随后删除顶层伪造的 `include/stdio.h`。
   3. 清理 `board/{nk60-v2,qemu-stm32,wl-001,zj-v3}/drivers` 中与 `soc/stm32f1`、`soc/stm32f4` 重复的 SPL 外设库源码。
 
 - **阶段 3（微内核核心机制与用户态服务抽取）：**

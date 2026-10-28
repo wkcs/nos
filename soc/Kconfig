@@ -18,6 +18,23 @@ config SOC_STM32F4
 	help
 	  启用 STM32F4xx 系列 SoC 外设与 CMSIS 支持。
 
+# Part selections describe the silicon independently of the board name.
+config SOC_STM32F401
+	bool
+	default y if BOARD_NK60 && SOC_STM32F4
+
+config SOC_STM32F405
+	bool
+	default y if BOARD_QEMU_STM32 && SOC_STM32F4
+
+config SOC_STM32F1_MD
+	bool
+	default y if BOARD_WL_001 && SOC_STM32F1
+
+config SOC_STM32F1_HD
+	bool
+	default y if BOARD_ZJ_V3 && SOC_STM32F1
+
 config SOC_NUC472
 	bool "Nuvoton NUC472 (Cortex-M4)"
 	depends on ARCH_ARM
