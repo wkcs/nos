@@ -3,7 +3,11 @@
 #define __NOS_DRIVERS_STM32_SPI_H__
 
 #include <drivers/spi.h>
+#ifdef CONFIG_SOC_STM32F1
+#include <soc/stm32f1xx.h>
+#else
 #include <soc/stm32f4xx.h>
+#endif
 
 struct stm32_spi_cs {
     GPIO_TypeDef *gpio;
@@ -18,6 +22,8 @@ struct stm32_spi_config {
     uint32_t gpio_clock;
     uint32_t spi_clock;
     uint16_t pins;
+    /* F1 configures MISO as an input; the remaining pins are AF outputs. */
+    uint16_t miso_pin;
     uint8_t clock_pin_source;
     uint8_t miso_pin_source;
     uint8_t mosi_pin_source;

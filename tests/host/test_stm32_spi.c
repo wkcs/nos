@@ -5,6 +5,9 @@
 static int selected, lock_error, count, fail_tx, fail_busy, expected_pin = 4;
 static SPI_InitTypeDef last_init;
 static int apb1_clock_calls, apb1_reset_calls;
+#ifdef CONFIG_SOC_STM32F1
+static int f1_output, f1_input, f1_cs;
+#endif
 static uint8_t sent[16];
 static struct device *controller;
 int device_init(struct device *dev) { dev->mutex.locked = 0; return 0; }
@@ -16,7 +19,17 @@ void RCC_APB1PeriphClockCmd(uint32_t a, int b) { (void)a; (void)b; apb1_clock_ca
 void RCC_APB2PeriphClockCmd(uint32_t a, int b) { (void)a; (void)b; }
 void RCC_APB1PeriphResetCmd(uint32_t a, int b) { (void)a; (void)b; apb1_reset_calls++; }
 void RCC_APB2PeriphResetCmd(uint32_t a, int b) { (void)a; (void)b; }
-void GPIO_Init(GPIO_TypeDef *a, GPIO_InitTypeDef *b) { (void)a; (void)b; }
+void GPIO_Init(GPIO_TypeDef *a, GPIO_InitTypeDef *b)
+{
+    (void)a;
+#ifdef CONFIG_SOC_STM32F1
+    if (b->GPIO_Mode == GPIO_Mode_AF_PP && b->GPIO_Pin == 0x28) f1_output++;
+    if (b->GPIO_Mode == GPIO_Mode_IN_FLOATING && b->GPIO_Pin == 0x10) f1_input++;
+    if (b->GPIO_Mode == GPIO_Mode_Out_PP && (b->GPIO_Pin == 4 || b->GPIO_Pin == 8)) f1_cs++;
+#else
+    (void)b;
+#endif
+}
 void GPIO_PinAFConfig(GPIO_TypeDef *a, uint16_t b, uint8_t c) { (void)a; (void)b; (void)c; }
 void GPIO_SetBits(GPIO_TypeDef *a, uint16_t b) { (void)a; (void)b; selected = 0; }
 void GPIO_ResetBits(GPIO_TypeDef *a, uint16_t b) { (void)a; selected = b; }
@@ -49,6 +62,9 @@ int main(void)
         .regs = &spi, .gpio = &gpio, .gpio_clock = 1, .spi_clock = 2,
         .pins = 0x38, .clock_pin_source = 3, .miso_pin_source = 4,
         .mosi_pin_source = 5, .gpio_af = 5,
+#ifdef CONFIG_SOC_STM32F1
+        .miso_pin = 0x10,
+#endif
         .chip_selects = selects, .chip_select_count = 2, .peripheral_clock = 84000000, .apb2 = 1,
     };
     struct stm32_spi_data state = {0};
@@ -66,6 +82,12 @@ int main(void)
         fputs("SPI idle clocks failed\n", stderr);
         return 1;
     }
+#ifdef CONFIG_SOC_STM32F1
+    if (f1_output != 1 || f1_input != 1 || f1_cs != 2) {
+        fputs("STM32F1 GPIO configuration failed\n", stderr);
+        return 1;
+    }
+#endif
     count = 0;
     fail_tx = 1;
     if (spi_clock_idle(&dev, &config, 1) != -ETIMEDOUT || dev.mutex.locked || selected) {
