@@ -5,7 +5,7 @@
 #define CONFIG_STM32_SPI_POLL_TIMEOUT 1000000U
 #endif
 
-int stm32_spi_exchange(struct device *dev, uint8_t tx, uint8_t *rx)
+static int stm32_spi_exchange(struct device *dev, uint8_t tx, uint8_t *rx)
 {
     const struct stm32_spi_config *hw = dev->config;
     uint32_t remaining = CONFIG_STM32_SPI_POLL_TIMEOUT;
@@ -26,14 +26,14 @@ int stm32_spi_exchange(struct device *dev, uint8_t tx, uint8_t *rx)
     return 0;
 }
 
-void stm32_spi_select(struct device *dev)
+static void stm32_spi_select(struct device *dev)
 {
     const struct stm32_spi_config *hw = dev->config;
     mutex_lock(&dev->mutex);
     GPIO_ResetBits(hw->cs_gpio, hw->cs_pin);
 }
 
-void stm32_spi_deselect(struct device *dev)
+static void stm32_spi_deselect(struct device *dev)
 {
     const struct stm32_spi_config *hw = dev->config;
     GPIO_SetBits(hw->cs_gpio, hw->cs_pin);
