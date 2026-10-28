@@ -22,7 +22,7 @@
 #include <kernel/mutex.h>
 #include <string.h>
 #include <board/board.h>
-#include <keyboard/keyboard.h>
+#include <nos/keyboard.h>
 
 #define HC595_EN   PBout(12)
 #define HC595_CLK  PBout(13)

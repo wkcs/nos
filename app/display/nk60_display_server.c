@@ -21,7 +21,7 @@
 #include <kernel/sem.h>
 #include <kernel/console.h>
 
-#include <display/display.h>
+#include <nos/display.h>
 
 #define LED_WIDTH  14
 #define LED_HEIGHT 5

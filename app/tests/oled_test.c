@@ -21,8 +21,8 @@
 #include <kernel/sem.h>
 #include <kernel/list.h>
 
-#include <display/led.h>
-#include <display/display.h>
+#include <drivers/led.h>
+#include <nos/display.h>
 
 struct oled_test {
     struct task_struct *task;

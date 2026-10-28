@@ -23,7 +23,7 @@
 #include <kernel/sem.h>
 #include <kernel/mutex.h>
 
-#include <display/display.h>
+#include <nos/display.h>
 
 #define LCD_WIDTH 240
 #define LCD_HEIGHT 240

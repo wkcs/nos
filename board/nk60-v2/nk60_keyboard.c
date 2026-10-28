@@ -12,7 +12,7 @@
  */
 
 #include <kernel/init.h>
-#include <keyboard/keyboard.h>
+#include <nos/keyboard.h>
 
 #define NK60_KEY_NUM        61U
 #define NK60_KEY_LAYER_NUM  3U
