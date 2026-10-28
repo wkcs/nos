@@ -23,7 +23,7 @@
 #include <kernel/sem.h>
 #include <kernel/mutex.h>
 
-#include <display/display.h>
+#include <nos/display.h>
 
 #define OLED_WIDTH 128
 #define OLED_HEIGHT 64

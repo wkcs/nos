@@ -21,8 +21,8 @@
 #include <kernel/sem.h>
 #include <kernel/list.h>
 
-#include <display/led.h>
-#include <display/display.h>
+#include <drivers/led.h>
+#include <nos/display.h>
 
 struct display_server {
     struct task_struct *task;

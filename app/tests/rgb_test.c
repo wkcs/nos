@@ -20,7 +20,7 @@
 #include <string.h>
 #include <kernel/sem.h>
 
-#include <display/display.h>
+#include <nos/display.h>
 
 struct rgb_test {
     struct task_struct *task;

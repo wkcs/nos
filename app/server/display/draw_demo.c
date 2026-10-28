@@ -20,7 +20,7 @@
 #include <string.h>
 #include <kernel/sem.h>
 
-#include <display/display.h>
+#include <nos/display.h>
 
 #define LED_NUM 61
 #define DEMO_LEN 5

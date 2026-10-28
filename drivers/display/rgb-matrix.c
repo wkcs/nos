@@ -23,8 +23,8 @@
 #include <kernel/sem.h>
 #include <kernel/mutex.h>
 
-#include <display/led.h>
-#include <display/display.h>
+#include <drivers/led.h>
+#include <nos/display.h>
 
 #define LED_WIDTH 64
 #define LED_HEIGHT 64

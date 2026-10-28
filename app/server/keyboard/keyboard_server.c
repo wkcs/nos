@@ -27,8 +27,8 @@
 #include <kernel/mutex.h>
 #include <string.h>
 
-#include <keyboard/keyboard.h>
-#include <display/display.h>
+#include <nos/keyboard.h>
+#include <nos/display.h>
 #include <nos/nlk_core.h>
 #include <nos/nlk_caps.h>
 
