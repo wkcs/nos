@@ -18,8 +18,8 @@
 #include <kernel/clk.h>
 #include <string.h>
 #include <lib/kfifo.h>
-#include <usb/usb_common.h>
-#include <usb/usb_device.h>
+#include <drivers/usb/usb_common.h>
+#include <drivers/usb/usb_device.h>
 
 #include "cdc.h"
 

@@ -12,8 +12,8 @@
 #include <kernel/msg_queue.h>
 #include <kernel/mutex.h>
 #include <kernel/printk.h>
-#include <usb/usb_common.h>
-#include <usb/usb_device.h>
+#include <drivers/usb/usb_common.h>
+#include <drivers/usb/usb_device.h>
 
 static struct list_head usb_device_list;
 static struct mutex ep_write_lock;
