@@ -246,6 +246,21 @@ int stm32_spi_init(struct device *dev)
     } else {
         RCC_APB1PeriphClockCmd(hw->spi_clock, ENABLE);
     }
+    for (i = 0; i < hw->chip_select_count; i++) {
+        /* Preload the output latch before enabling the GPIO output driver. */
+        stm32_spi_cs_set(&hw->chip_selects[i], 0);
+        gpio.GPIO_Pin = hw->chip_selects[i].pin;
+#ifdef CONFIG_SOC_STM32F1
+        gpio.GPIO_Mode = GPIO_Mode_Out_PP;
+        gpio.GPIO_Speed = GPIO_Speed_50MHz;
+#else
+        gpio.GPIO_Mode = GPIO_Mode_OUT;
+        gpio.GPIO_OType = GPIO_OType_PP;
+        gpio.GPIO_Speed = GPIO_Speed_100MHz;
+        gpio.GPIO_PuPd = GPIO_PuPd_UP;
+#endif
+        GPIO_Init(hw->chip_selects[i].gpio, &gpio);
+    }
 #ifdef CONFIG_SOC_STM32F1
     gpio.GPIO_Pin = hw->pins & ~hw->miso_pin;
     gpio.GPIO_Mode = GPIO_Mode_AF_PP;
@@ -265,16 +280,6 @@ int stm32_spi_init(struct device *dev)
     GPIO_PinAFConfig(hw->gpio, hw->miso_pin_source, hw->gpio_af);
     GPIO_PinAFConfig(hw->gpio, hw->mosi_pin_source, hw->gpio_af);
 #endif
-    for (i = 0; i < hw->chip_select_count; i++) {
-        gpio.GPIO_Pin = hw->chip_selects[i].pin;
-#ifdef CONFIG_SOC_STM32F1
-        gpio.GPIO_Mode = GPIO_Mode_Out_PP;
-#else
-        gpio.GPIO_Mode = GPIO_Mode_OUT;
-#endif
-        GPIO_Init(hw->chip_selects[i].gpio, &gpio);
-        stm32_spi_cs_set(&hw->chip_selects[i], 0);
-    }
     if (hw->apb2) {
         RCC_APB2PeriphResetCmd(hw->spi_clock, ENABLE);
         RCC_APB2PeriphResetCmd(hw->spi_clock, DISABLE);

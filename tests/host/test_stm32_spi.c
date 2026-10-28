@@ -3,6 +3,7 @@
 #include <stdio.h>
 
 static int selected, lock_error, count, fail_tx, fail_busy, expected_pin = 4;
+static unsigned int pin_levels;
 static SPI_InitTypeDef last_init;
 static int apb1_clock_calls, apb1_reset_calls;
 #ifdef CONFIG_SOC_STM32F1
@@ -26,13 +27,14 @@ void GPIO_Init(GPIO_TypeDef *a, GPIO_InitTypeDef *b)
     if (b->GPIO_Mode == GPIO_Mode_AF_PP && b->GPIO_Pin == 0x28) f1_output++;
     if (b->GPIO_Mode == GPIO_Mode_IN_FLOATING && b->GPIO_Pin == 0x10) f1_input++;
     if (b->GPIO_Mode == GPIO_Mode_Out_PP && (b->GPIO_Pin == 4 || b->GPIO_Pin == 8)) f1_cs++;
+    if (b->GPIO_Mode == GPIO_Mode_Out_PP && (pin_levels & b->GPIO_Pin) == 0) lock_error = 1;
 #else
-    (void)b;
+    if (b->GPIO_Mode == GPIO_Mode_OUT && (pin_levels & b->GPIO_Pin) == 0) lock_error = 1;
 #endif
 }
 void GPIO_PinAFConfig(GPIO_TypeDef *a, uint16_t b, uint8_t c) { (void)a; (void)b; (void)c; }
-void GPIO_SetBits(GPIO_TypeDef *a, uint16_t b) { (void)a; (void)b; selected = 0; }
-void GPIO_ResetBits(GPIO_TypeDef *a, uint16_t b) { (void)a; selected = b; }
+void GPIO_SetBits(GPIO_TypeDef *a, uint16_t b) { (void)a; pin_levels |= b; selected = 0; }
+void GPIO_ResetBits(GPIO_TypeDef *a, uint16_t b) { (void)a; pin_levels &= ~b; selected = b; }
 void SPI_Init(SPI_TypeDef *a, SPI_InitTypeDef *b) { (void)a; last_init = *b; }
 void SPI_Cmd(SPI_TypeDef *a, int b) { (void)a; (void)b; }
 int SPI_I2S_GetFlagStatus(SPI_TypeDef *a, uint16_t b)
