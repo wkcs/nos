@@ -29,7 +29,9 @@ int main(void)
         { .rx = data, .len = sizeof(data) },
     };
 
-    if (spi_session_begin(&session, &dev, &config) != -ENOSYS) {
+    if (spi_clock_idle(&dev, &config, 10) != -ENOSYS ||
+        spi_clock_idle(&dev, &config, 0) != -EINVAL ||
+        spi_session_begin(&session, &dev, &config) != -ENOSYS) {
         fputs("controller without session callbacks must report ENOSYS\n", stderr);
         return 1;
     }
