@@ -10,6 +10,9 @@ int main(void)
     char bad[] = "echo 'unterminated";
     char operators[] = "echo hi > file";
     char many[] = "a b c";
+    char list[] = "echo 'a;b' && false || echo ok; echo done";
+    char invalid[] = "echo ok && ; echo bad";
+    struct shell_command commands[8];
     int argc = shell_parse_line(line, argv, 8);
 
     assert(argc == 5);
@@ -21,5 +24,11 @@ int main(void)
     assert(shell_parse_line(bad, argv, 8) < 0);
     assert(shell_parse_line(operators, argv, 8) < 0);
     assert(shell_parse_line(many, argv, 3) < 0);
+    assert(shell_split_commands(list, commands, 8) == 4);
+    assert(strcmp(commands[0].text, "echo 'a;b' ") == 0);
+    assert(commands[1].condition == SHELL_ON_SUCCESS);
+    assert(commands[2].condition == SHELL_ON_FAILURE);
+    assert(commands[3].condition == SHELL_ALWAYS);
+    assert(shell_split_commands(invalid, commands, 8) < 0);
     return 0;
 }
