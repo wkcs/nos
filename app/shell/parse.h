@@ -1,9 +1,18 @@
 /** Copyright (C) 2026 Nick Hu <huqihan@live.com> */
 #ifndef NOS_SHELL_PARSE_H
 #define NOS_SHELL_PARSE_H
+#include <stdbool.h>
 
 /* argv_capacity includes the trailing NULL pointer. */
 int shell_parse_line(char *line, char **argv, int argv_capacity);
+
+struct shell_redirection {
+    char *path;
+    bool append;
+};
+
+int shell_parse_redirect(char *line, char **argv, int argv_capacity,
+                         struct shell_redirection *redir);
 
 enum shell_condition {
     SHELL_ALWAYS,
