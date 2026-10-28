@@ -60,6 +60,8 @@ struct nshell {
     bool remote;
     bool ls_long_format;
     int last_status;
+    struct file *output_file;
+    int output_error;
     uint32_t generation;
 };
 
@@ -123,6 +125,19 @@ static int nshell_write(const char *buf, int len)
 {
     struct nshell *shell = nshell_current();
     if (shell == NULL || len < 0) return -EINVAL;
+    if (shell->output_file != NULL) {
+        struct file *file = shell->output_file;
+        int total = 0;
+        while (total < len) {
+            int rc = file->f_op->write(file, buf + total, (size_t)(len - total), &file->f_pos);
+            if (rc <= 0) {
+                shell->output_error = rc < 0 ? rc : -EIO;
+                return total ? total : shell->output_error;
+            }
+            total += rc;
+        }
+        return total;
+    }
     return shell_session_write(&shell->session, buf, (unsigned int)len);
 }
 
@@ -356,7 +371,11 @@ static int cmd_echo(int argc, char *argv[])
         nshell_write(argv[i], strlen(argv[i]));
     }
     if (newline) {
-        nshell_write("\r\n", 2);
+        if (nshell_current()->output_file != NULL) {
+            nshell_write("\n", 1);
+        } else {
+            nshell_write("\r\n", 2);
+        }
     }
     return 0;
 }
@@ -807,6 +826,74 @@ static int cmd_nlk(int argc, char *argv[])
 }
 #endif
 
+static int nshell_open_output(struct nshell *shell, const char *path, bool append)
+{
+    char *copy;
+    char *p;
+    char *slash = NULL;
+    char *name;
+    struct dentry *parent;
+    struct dentry *entry = NULL;
+    struct file *file;
+    int rc;
+
+    if (path == NULL || *path == '\0') return -EINVAL;
+    copy = kstrdup(path, GFP_KERNEL);
+    if (copy == NULL) return -ENOMEM;
+    for (p = copy; *p; p++) {
+        if (*p == '/') slash = p;
+    }
+    name = slash ? slash + 1 : copy;
+    if (*name == '\0' || strcmp(name, ".") == 0 || strcmp(name, "..") == 0) {
+        kfree(copy);
+        return -EINVAL;
+    }
+    if (slash == NULL) {
+        parent = shell->session.cwd ? shell->session.cwd : vfs_get_root();
+    } else if (slash == copy) {
+        parent = vfs_get_root();
+    } else {
+        *slash = '\0';
+        parent = vfs_lookup_path(shell->session.cwd, copy);
+    }
+    if (parent == NULL) {
+        kfree(copy);
+        return -ENOENT;
+    }
+    rc = vfs_create_file(parent, name, 0644, &entry);
+    kfree(copy);
+    if (rc != 0) return rc;
+    if (entry == NULL || entry->d_inode == NULL) return -EIO;
+    if (S_ISDIR(entry->d_inode->i_mode)) return -EISDIR;
+    if (entry->d_inode->i_fop == NULL || entry->d_inode->i_fop->write == NULL) return -EACCES;
+    file = kzalloc(sizeof(*file), GFP_KERNEL);
+    if (file == NULL) return -ENOMEM;
+    file->f_inode = entry->d_inode;
+    file->f_path.dentry = entry;
+    file->f_op = entry->d_inode->i_fop;
+    file->f_flags = O_WRONLY | O_CREAT | (append ? O_APPEND : O_TRUNC);
+    if (!append) {
+        rc = vfs_truncate_dentry(entry, 0);
+        if (rc != 0 && !(rc == -ENOTSUP && entry->d_sb != NULL &&
+                         entry->d_sb->s_type != NULL &&
+                         strcmp(entry->d_sb->s_type->name, "fatfs") == 0)) {
+            kfree(file);
+            return rc;
+        }
+    }
+    if (file->f_op->open != NULL) {
+        rc = file->f_op->open(file->f_inode, file);
+        if (rc != 0) {
+            kfree(file);
+            return rc;
+        }
+    }
+    if (append) file->f_pos = file->f_inode->i_size;
+    shell->output_error = 0;
+    shell->output_file = file;
+    return 0;
+}
+
 static void nshell_exec_cmd(struct nshell *shell)
 {
     char *argv[MAX_ARGS + 1];
@@ -814,6 +901,7 @@ static void nshell_exec_cmd(struct nshell *shell)
         char check[SHELL_SESSION_INPUT_MAX + 1];
         struct shell_command commands[16];
     } *workspace;
+    struct shell_redirection redir;
     int count;
     int i;
 
@@ -835,7 +923,7 @@ static void nshell_exec_cmd(struct nshell *shell)
     }
     for (i = 0; i < count; i++) {
         strcpy(workspace->check, workspace->commands[i].text);
-        if (shell_parse_line(workspace->check, argv, MAX_ARGS + 1) <= 0) {
+        if (shell_parse_redirect(workspace->check, argv, MAX_ARGS + 1, &redir) <= 0) {
             shell_printf("shell: syntax error or too many arguments\r\n");
             shell->last_status = 2;
             kfree(workspace);
@@ -849,8 +937,16 @@ static void nshell_exec_cmd(struct nshell *shell)
             (workspace->commands[i].condition == SHELL_ON_FAILURE && shell->last_status == 0)) {
             continue;
         }
-        argc = shell_parse_line(workspace->commands[i].text, argv, MAX_ARGS + 1);
+        argc = shell_parse_redirect(workspace->commands[i].text, argv, MAX_ARGS + 1, &redir);
         if (argc <= 0) continue;
+        if (redir.path != NULL) {
+            int rc = nshell_open_output(shell, redir.path, redir.append);
+            if (rc < 0) {
+                shell_printf("shell: %s: cannot redirect (error %d)\r\n", redir.path, rc);
+                shell->last_status = 1;
+                continue;
+            }
+        }
         while (curr) {
             if (strcmp(curr->name, argv[0]) == 0) {
                 shell->last_status = curr->func(argc, argv);
@@ -861,6 +957,18 @@ static void nshell_exec_cmd(struct nshell *shell)
         if (curr == NULL) {
             shell_printf("%s: command not found\r\n", argv[0]);
             shell->last_status = 127;
+        }
+        if (shell->output_file != NULL) {
+            struct file *file = shell->output_file;
+            shell->output_file = NULL;
+            if (file->f_op->release != NULL && file->f_op->release(file->f_inode, file) != 0) {
+                shell->last_status = 1;
+            }
+            kfree(file);
+            if (shell->output_error != 0) {
+                shell_printf("shell: output error %d\r\n", shell->output_error);
+                shell->last_status = 1;
+            }
         }
     }
     kfree(workspace);
