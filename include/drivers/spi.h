@@ -33,6 +33,9 @@ struct spi_driver_api {
     int (*session_transfer)(const struct device *dev, const struct spi_buf *buffers,
                             size_t count);
     int (*session_end)(const struct device *dev);
+    /* Send bytes of ones with every chip select inactive. */
+    int (*clock_idle)(const struct device *dev, const struct spi_config *config,
+                      size_t bytes);
 };
 
 /* Initialize to zero and end in the task that began it. The bus stays locked;
@@ -73,6 +76,19 @@ static inline int spi_transceive(const struct device *dev,
         return -ENOSYS;
     }
     return api->transceive(dev, config, buffers, count);
+}
+
+static inline int spi_clock_idle(const struct device *dev,
+                                 const struct spi_config *config, size_t bytes)
+{
+    const struct spi_driver_api *api;
+
+    if (config == NULL || config->frequency == 0 || config->word_size == 0 ||
+        config->mode > 3 || bytes == 0) return -EINVAL;
+    if (!device_is_ready(dev)) return -ENODEV;
+    api = dev->api;
+    if (api == NULL || api->clock_idle == NULL) return -ENOSYS;
+    return api->clock_idle(dev, config, bytes);
 }
 
 static inline int spi_session_begin(struct spi_session *session, const struct device *dev,

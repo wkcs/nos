@@ -5,7 +5,7 @@
 static int selected, lock_error, count, fail_tx, fail_busy, expected_pin = 4;
 static SPI_InitTypeDef last_init;
 static int apb1_clock_calls, apb1_reset_calls;
-static uint8_t sent[8];
+static uint8_t sent[16];
 static struct device *controller;
 int device_init(struct device *dev) { dev->mutex.locked = 0; return 0; }
 int device_register(struct device *dev) { (void)dev; return 0; }
@@ -59,7 +59,22 @@ int main(void)
     uint8_t command = 0x9f, rx[2] = {0};
     struct spi_buf buffers[] = { { .tx = &command, .len = 1 }, { .rx = rx, .len = 2 } };
     controller = &dev;
-    if (stm32_spi_init(&dev) != 0 || !dev.ready ||
+    expected_pin = 0;
+    if (stm32_spi_init(&dev) != 0 || spi_clock_idle(&dev, &config, 10) != 0 ||
+        selected || dev.mutex.locked || lock_error || count != 10 || sent[0] != 0xff ||
+        sent[9] != 0xff) {
+        fputs("SPI idle clocks failed\n", stderr);
+        return 1;
+    }
+    count = 0;
+    fail_tx = 1;
+    if (spi_clock_idle(&dev, &config, 1) != -ETIMEDOUT || dev.mutex.locked || selected) {
+        fputs("SPI idle timeout did not release resources\n", stderr);
+        return 1;
+    }
+    fail_tx = 0;
+    expected_pin = 4;
+    if (!dev.ready ||
         spi_transceive(&dev, &config, buffers, 2) != 0 || selected || lock_error ||
         count != 3 || sent[0] != 0x9f || sent[1] != 0xff || rx[0] != 0x5a || rx[1] != 0x5a) {
         fputs("STM32 SPI transaction failed\n", stderr);

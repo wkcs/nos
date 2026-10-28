@@ -143,11 +143,47 @@ static int stm32_spi_transceive(const struct device *dev,
     return ret != 0 ? ret : end_ret;
 }
 
+static int stm32_spi_clock_idle(const struct device *dev,
+                                const struct spi_config *config, size_t bytes)
+{
+    const struct stm32_spi_config *hw = dev->config;
+    struct device *controller = (struct device *)dev;
+    uint16_t prescaler;
+    uint8_t ignored;
+    uint32_t remaining;
+    size_t i;
+    int ret = 0;
+
+    if (config->word_size != 8 ||
+        stm32_spi_prescaler(hw->peripheral_clock, config->frequency, &prescaler) != 0) {
+        return -EINVAL;
+    }
+    mutex_lock(&controller->mutex);
+    stm32_spi_configure(hw, config->mode, prescaler);
+    for (i = 0; i < hw->chip_select_count; i++) {
+        stm32_spi_cs_set(&hw->chip_selects[i], 0);
+    }
+    for (i = 0; i < bytes; i++) {
+        ret = stm32_spi_exchange(controller, 0xffU, &ignored);
+        if (ret != 0) break;
+    }
+    remaining = CONFIG_STM32_SPI_POLL_TIMEOUT;
+    while (SPI_I2S_GetFlagStatus(hw->regs, SPI_I2S_FLAG_BSY) != RESET) {
+        if (remaining-- == 0) {
+            if (ret == 0) ret = -ETIMEDOUT;
+            break;
+        }
+    }
+    mutex_unlock(&controller->mutex);
+    return ret;
+}
+
 const struct spi_driver_api stm32_spi_driver_api = {
     .transceive = stm32_spi_transceive,
     .session_begin = stm32_spi_session_begin,
     .session_transfer = stm32_spi_session_transfer,
     .session_end = stm32_spi_session_end,
+    .clock_idle = stm32_spi_clock_idle,
 };
 
 int stm32_spi_init(struct device *dev)
