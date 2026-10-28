@@ -116,10 +116,6 @@ config ZJ_V3_SD_BLOCK
 	  Initialize the ZJ-V3 SD socket as block device sd0 after scheduling
 	  starts.
 
-config QEMU_SD
-	bool "QEMU SPI SD card emulation driver"
-	default n
-
 endmenu
 
 # I2C 与 PWM 驱动

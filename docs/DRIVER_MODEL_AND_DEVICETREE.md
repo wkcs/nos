@@ -65,6 +65,5 @@ cmake --build --preset qemu-stm32
 python3 tests/qemu_stm32_smoke.py build/qemu-stm32/nos.elf
 ```
 
-`qemu-run` 首次配置时从 `assets/qemu/disk.img` 创建构建目录中的可写
-`disk.img`，之后不自动覆盖；QEMU 工作目录为对应构建目录。当前默认
-FatFs 块设备是 `ramdisk0`，并不会自动使用该镜像。
+QEMU 当前默认 FatFs 块设备是 `ramdisk0`。历史镜像
+`assets/qemu/disk.img` 保留原有数据，但不会被当前构建或仿真自动使用。

@@ -110,6 +110,6 @@ nos/
 ├── user/                      # 用户态/客户端系统调用封装（libnos）与 POSIX FD 桥接
 ├── drivers/                   # 设备模型、总线控制器与外设驱动
 ├── fs/                        # 虚拟文件系统（VFS / FatFs / RamFS / ProcFS / SysFS）
-├── assets/qemu/               # QEMU 磁盘镜像模板
+├── assets/qemu/               # 保留的历史 QEMU 磁盘镜像
 └── app/                       # 系统服务、应用、组件适配及 tests/
 ```

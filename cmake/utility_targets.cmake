@@ -26,11 +26,6 @@ add_custom_target(stflash
 )
 
 if("${CONFIG_BOARD}" STREQUAL "qemu-stm32")
-    # Create a writable per-build image once; never overwrite guest data.
-    if(NOT EXISTS "${CMAKE_CURRENT_BINARY_DIR}/disk.img")
-        configure_file("${CMAKE_CURRENT_SOURCE_DIR}/assets/qemu/disk.img"
-                       "${CMAKE_CURRENT_BINARY_DIR}/disk.img" COPYONLY)
-    endif()
     add_custom_target(qemu-run
         COMMAND qemu-system-arm -M netduinoplus2 -nographic -semihosting -semihosting-config enable=on,target=native -kernel "$<TARGET_FILE:nos.elf>"
         DEPENDS nos.elf
