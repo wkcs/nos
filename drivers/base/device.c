@@ -110,3 +110,20 @@ int device_is_ready(const struct device *dev)
 {
     return dev != NULL && dev->ready && dev->init_res == 0;
 }
+
+int device_foreach(int (*cb)(struct device *dev, void *arg), void *arg)
+{
+    struct device *dev;
+    int rc = 0;
+
+    if (cb == NULL) {
+        return -EINVAL;
+    }
+    list_for_each_entry(dev, &g_sys_device_list, list) {
+        rc = cb(dev, arg);
+        if (rc != 0) {
+            break;
+        }
+    }
+    return rc;
+}

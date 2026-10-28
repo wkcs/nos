@@ -25,6 +25,7 @@
 #include <lib/vsprintf.h>
 #include <nos/shell_session.h>
 #include <stdarg.h>
+#include "parse.h"
 #ifdef CONFIG_NLK_SERVER
 #include <nos/nlk_core.h>
 #include <nos/nlk_caps.h>
@@ -230,9 +231,8 @@ static struct dentry *resolve_path(const char *path) {
       continue;
     }
 
-    // Access 'name'
-    if (len >= 32)
-      len = 31;
+    if (len >= (int)sizeof(name))
+      return NULL;
     strncpy(name, start, len);
     name[len] = 0;
 
@@ -265,30 +265,17 @@ static void shell_getcwd(char *buf, size_t size) {
 
   while (dentry && dentry != root) {
     int len = dentry->d_name.len;
+    if ((size_t)(p - buf) <= (size_t)len) {
+      buf[0] = '\0';
+      return;
+    }
     p -= len;
-    if (p <= buf) break; // buffer overflow protection
     memcpy(p, dentry->d_name.name, len);
     *--p = '/';
     dentry = dentry->d_parent;
   }
   
   memmove(buf, p, buf + size - p);
-}
-
-static int parse_line(char *line, char *argv[]) {
-  int argc = 0;
-  char *p = line;
-  while (*p) {
-    while (*p && *p <= ' ')
-      *p++ = 0;
-    if (!*p)
-      break;
-    if (argc < MAX_ARGS)
-      argv[argc++] = p;
-    while (*p && *p > ' ')
-      p++;
-  }
-  return argc;
 }
 
 /* --- Command Implementations --- */
@@ -349,6 +336,28 @@ static int cmd_ver(int argc, char *argv[]) {
 static int cmd_clear(int argc, char *argv[]) {
   shell_printf("\033[2J\033[H");
   return 0;
+}
+
+static int cmd_echo(int argc, char *argv[])
+{
+    int i;
+    int start = 1;
+    bool newline = true;
+
+    if (argc > 1 && strcmp(argv[1], "-n") == 0) {
+        newline = false;
+        start = 2;
+    }
+    for (i = start; i < argc; i++) {
+        if (i != start) {
+            nshell_write(" ", 1);
+        }
+        nshell_write(argv[i], strlen(argv[i]));
+    }
+    if (newline) {
+        nshell_write("\r\n", 2);
+    }
+    return 0;
 }
 
 
@@ -443,6 +452,7 @@ static int cmd_cd(int argc, char *argv[]) {
     shell_cwd = dentry;
   } else {
     shell_printf("cd: %s: No such directory\r\n", argv[1]);
+    return -ENOENT;
   }
   return 0;
 }
@@ -527,18 +537,25 @@ static int cmd_cat(int argc, char *argv[]) {
       }
   }
 
-  while ((ret = f->f_op->read(f, buf, sizeof(buf) - 1, &f->f_pos)) > 0) {
-    buf[ret] = 0;
-    shell_printf("%s", buf);
+  while ((ret = f->f_op->read(f, buf, sizeof(buf), &f->f_pos)) > 0) {
+    int pos = 0;
+    while (pos < ret) {
+      int written = nshell_write(buf + pos, ret - pos);
+      if (written <= 0) {
+        ret = written < 0 ? written : -EIO;
+        goto out;
+      }
+      pos += written;
+    }
   }
-  shell_printf("\r\n");
 
+out:
   if (f->f_op->release) {
       f->f_op->release(dentry->d_inode, f);
   }
 
   kfree(f);
-  return 0;
+  return ret;
 }
 
 static int cmd_mount(int argc, char *argv[]) {
@@ -653,13 +670,17 @@ static int cmd_nlk(int argc, char *argv[])
 
 static void nshell_exec_cmd(struct nshell *shell)
 {
-    char *argv[MAX_ARGS];
+    char *argv[MAX_ARGS + 1];
     int argc;
 
     if (shell->session.input_len == 0 && strlen(shell->session.input) == 0)
         return;
 
-    argc = parse_line(shell->session.input, argv);
+    argc = shell_parse_line(shell->session.input, argv, MAX_ARGS + 1);
+    if (argc < 0) {
+        shell_printf("shell: syntax error or too many arguments\r\n");
+        return;
+    }
     if (argc > 0) {
         struct shell_cmd *curr = cmd_list;
         while (curr) {
@@ -744,6 +765,7 @@ static int nshell_init(void)
     shell_register_cmd("help", "List commands", cmd_help);
     shell_register_cmd("ver", "Show NOS kernel version & uptime", cmd_ver);
     shell_register_cmd("clear", "Clear screen", cmd_clear);
+    shell_register_cmd("echo", "Print arguments", cmd_echo);
     shell_register_cmd("log", "Toggle kernel log (on/off)", cmd_log);
     shell_register_cmd("ls", "List directory", cmd_ls);
     shell_register_cmd("cd", "Change directory", cmd_cd);

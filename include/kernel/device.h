@@ -60,6 +60,7 @@ int device_unregister(struct device *dev);
 struct device *device_find_by_name(const char *name);
 struct device *device_get_binding(const char *name);
 int device_is_ready(const struct device *dev);
+int device_foreach(int (*cb)(struct device *dev, void *arg), void *arg);
 
 /*
  * Define a static device and initialize it at the requested SYS_INIT level.

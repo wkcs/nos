@@ -40,6 +40,7 @@ TESTS = [
     ("run_pl011_uart_test.py",),
     ("run_nlk_test.py",),
     ("run_shell_session_test.py",),
+    ("run_shell_parse_test.py",),
     ("run_ramfs_concurrency_test.py",),
 ]
 

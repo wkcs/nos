@@ -74,6 +74,9 @@ int nos_start(void) {
              pr_err("VFS: Failed to mount RootFS\r\n");
         }
     }
+    if (root) {
+        vfs_setup_standard_mounts();
+    }
   }
 
   board_late_init();

@@ -11,6 +11,7 @@
 #include <kernel/kernel.h>
 #include <kernel/mm.h>
 #include <kernel/printk.h>
+#include <lib/vsprintf.h>
 #include <string.h>
 
 static struct file_system_type *file_systems;
@@ -21,12 +22,102 @@ struct file_system_type **find_filesystem(const char *name, unsigned len);
 
 static struct dentry *root_dentry = NULL;
 static struct super_block *root_sb;
+static const char *root_fs_name = "rootfs";
+static const char *root_dev_name = "rootfs";
 static SPINLOCK(vfs_mount_lock);
 
 /* Keep the initial public descriptor table deliberately small and static. */
 #define VFS_MAX_OPEN_FILES 16
+#define VFS_MAX_MOUNT_POINTS 8
 
 static struct file *open_files[VFS_MAX_OPEN_FILES];
+
+struct mount_point {
+    struct inode *parent;
+    char *name;
+    char *mount_path;
+    char *dev_name;
+    const char *fs_name;
+    struct dentry *target;
+    struct dentry *root;
+    struct inode *orig_inode;
+    struct super_block *orig_sb;
+};
+
+static struct mount_point mount_points[VFS_MAX_MOUNT_POINTS];
+static int mount_count = 0;
+
+static void vfs_ensure_dentry_lists(struct dentry *dentry)
+{
+    if (dentry == NULL) {
+        return;
+    }
+    if (dentry->d_subdirs.next == NULL || dentry->d_subdirs.prev == NULL) {
+        INIT_LIST_HEAD(&dentry->d_subdirs);
+    }
+    if (dentry->d_child.next == NULL || dentry->d_child.prev == NULL) {
+        INIT_LIST_HEAD(&dentry->d_child);
+    }
+}
+
+struct dentry *vfs_alloc_dentry(struct dentry *parent, const char *name,
+                                unsigned int len)
+{
+    struct dentry *dentry;
+
+    if (len >= FS_NAME_LEN) {
+        len = FS_NAME_LEN - 1U;
+    }
+    dentry = kzalloc(sizeof(*dentry), GFP_KERNEL);
+    if (dentry == NULL) {
+        return NULL;
+    }
+    dentry->d_parent = parent;
+    dentry->d_sb = parent ? parent->d_sb : NULL;
+    if (name != NULL && len > 0U) {
+        memcpy(dentry->d_iname, name, len);
+    }
+    dentry->d_iname[len] = '\0';
+    dentry->d_name.name = (const unsigned char *)dentry->d_iname;
+    dentry->d_name.len = len;
+    INIT_LIST_HEAD(&dentry->d_subdirs);
+    INIT_LIST_HEAD(&dentry->d_child);
+    return dentry;
+}
+
+static void vfs_free_dentry_Subtree(struct dentry *dentry)
+{
+    struct dentry *child, *tmp;
+
+    if (dentry == NULL) {
+        return;
+    }
+    vfs_ensure_dentry_lists(dentry);
+    list_for_each_entry_safe(child, tmp, &dentry->d_subdirs, d_child) {
+        list_del(&child->d_child);
+        vfs_free_dentry_Subtree(child);
+        kfree(child);
+    }
+}
+
+static struct dentry *vfs_find_cached_child(struct dentry *parent,
+                                            const char *name, unsigned int len)
+{
+    struct dentry *child;
+
+    if (parent == NULL || name == NULL) {
+        return NULL;
+    }
+    vfs_ensure_dentry_lists(parent);
+    list_for_each_entry(child, &parent->d_subdirs, d_child) {
+        if (child->d_name.len == len &&
+            strncmp((const char *)child->d_name.name, name, len) == 0 &&
+            child->d_inode != NULL) {
+            return child;
+        }
+    }
+    return NULL;
+}
 
 struct dentry *vfs_get_root(void)
 {
@@ -178,92 +269,430 @@ struct dentry *vfs_mount(const char *fs_name, int flags, const char *dev_name,
   if (!mnt_root)
     return NULL;
 
+  if (mnt_root->d_sb != NULL) {
+    mnt_root->d_sb->s_type = type;
+    if (dev_name != NULL) {
+      strncpy(mnt_root->d_sb->s_id, dev_name, sizeof(mnt_root->d_sb->s_id) - 1U);
+      mnt_root->d_sb->s_id[sizeof(mnt_root->d_sb->s_id) - 1U] = '\0';
+    }
+  }
+  vfs_ensure_dentry_lists(mnt_root);
+
   // If it's the first mount, set as root
   spin_lock(&vfs_mount_lock);
   if (!root_dentry) {
     root_dentry = mnt_root;
     root_sb = mnt_root->d_sb;
+    root_fs_name = type->name;
+    root_dev_name = (dev_name && dev_name[0]) ? dev_name : type->name;
   }
   spin_unlock(&vfs_mount_lock);
 
   return mnt_root;
 }
 
-/*
- * Public API Wrappers
- */
-static struct dentry *vfs_create_dentry(struct dentry *parent,
-                                        const char *name, unsigned int len)
+static void vfs_build_dentry_path(struct dentry *dentry, char *buf, size_t size)
 {
-  struct dentry *dentry;
+    struct dentry *root = vfs_get_root();
+    char *p;
 
-  dentry = kzalloc(sizeof(*dentry), GFP_KERNEL);
-  if (!dentry)
-    return NULL;
+    if (buf == NULL || size == 0U) {
+        return;
+    }
+    if (dentry == NULL || dentry == root) {
+        strncpy(buf, "/", size - 1U);
+        buf[size - 1U] = '\0';
+        return;
+    }
+    p = buf + size - 1U;
+    *p = '\0';
+    while (dentry != NULL && dentry != root) {
+        unsigned int len = dentry->d_name.len;
+        if ((size_t)(p - buf) <= len + 1U) {
+            break;
+        }
+        p -= len;
+        memcpy(p, dentry->d_name.name, len);
+        *--p = '/';
+        dentry = dentry->d_parent;
+    }
+    if (*p == '\0') {
+        *--p = '/';
+    }
+    memmove(buf, p, (size_t)((buf + size) - p));
+}
 
-  dentry->d_parent = parent;
-  dentry->d_sb = parent->d_sb;
-  dentry->d_name.name = dentry->d_iname;
-  dentry->d_name.len = len;
-  memcpy(dentry->d_iname, name, len);
-  dentry->d_iname[len] = '\0';
-  return dentry;
+struct dentry *vfs_lookup_path(struct dentry *base, const char *path)
+{
+    struct dentry *curr;
+    const char *p;
+
+    if (path == NULL || *path == '\0') {
+        return NULL;
+    }
+    curr = (path[0] == '/' || base == NULL) ? vfs_get_root() : base;
+    if (curr == NULL) {
+        return NULL;
+    }
+    p = path;
+    while (*p == '/') {
+        p++;
+    }
+    while (*p != '\0') {
+        const char *start = p;
+        unsigned int len = 0U;
+        struct qstr q;
+        struct dentry *next;
+
+        while (*p != '\0' && *p != '/') {
+            p++;
+            len++;
+        }
+        while (*p == '/') {
+            p++;
+        }
+        if (len == 0U || (len == 1U && start[0] == '.')) {
+            continue;
+        }
+        if (len == 2U && start[0] == '.' && start[1] == '.') {
+            if (curr->d_parent != NULL) {
+                curr = curr->d_parent;
+            }
+            continue;
+        }
+        if (len >= FS_NAME_LEN) {
+            return NULL;
+        }
+        if (curr->d_inode == NULL || !S_ISDIR(curr->d_inode->i_mode)) {
+            return NULL;
+        }
+        q.name = (const unsigned char *)start;
+        q.len = len;
+        q.hash = 0U;
+        next = vfs_lookup(curr, &q);
+        if (next == NULL) {
+            return NULL;
+        }
+        curr = next;
+    }
+    return curr;
+}
+
+static int vfs_split_parent(struct dentry *base, const char *path,
+                            struct dentry **parent_out, char *name_out,
+                            size_t name_cap)
+{
+    const char *slash;
+    const char *end;
+    size_t len;
+
+    if (path == NULL || parent_out == NULL || name_out == NULL || name_cap == 0U) {
+        return -EINVAL;
+    }
+    end = path + strlen(path);
+    while (end > path && *(end - 1) == '/') {
+        end--;
+    }
+    if (end == path) {
+        return -EINVAL;
+    }
+    slash = end;
+    while (slash > path && *(slash - 1) != '/') {
+        slash--;
+    }
+    len = (size_t)(end - slash);
+    if (len == 0U || len >= name_cap || len >= FS_NAME_LEN) {
+        return -ENAMETOOLONG;
+    }
+    if ((len == 1U && slash[0] == '.') ||
+        (len == 2U && slash[0] == '.' && slash[1] == '.')) {
+        return -EINVAL;
+    }
+    memcpy(name_out, slash, len);
+    name_out[len] = '\0';
+
+    if (slash == path) {
+        *parent_out = (path[0] == '/' || base == NULL) ? vfs_get_root() : base;
+    } else {
+        size_t dir_len = (size_t)(slash - path);
+        char *dir_path = kmalloc((u32)(dir_len + 1U), GFP_KERNEL);
+        if (dir_path == NULL) {
+            return -ENOMEM;
+        }
+        memcpy(dir_path, path, dir_len);
+        dir_path[dir_len] = '\0';
+        *parent_out = vfs_lookup_path(base, dir_path);
+        kfree(dir_path);
+    }
+    if (*parent_out == NULL || (*parent_out)->d_inode == NULL) {
+        return -ENOENT;
+    }
+    if (!S_ISDIR((*parent_out)->d_inode->i_mode)) {
+        return -ENOTDIR;
+    }
+    return 0;
+}
+
+int vfs_create_file(struct dentry *dir, const char *name, int mode,
+                    struct dentry **out)
+{
+    struct dentry *dentry;
+    struct qstr q;
+    unsigned int len;
+    int rc;
+
+    if (dir == NULL || dir->d_inode == NULL || name == NULL) {
+        return -EINVAL;
+    }
+    if (!S_ISDIR(dir->d_inode->i_mode)) {
+        return -ENOTDIR;
+    }
+    len = (unsigned int)strlen(name);
+    if (len == 0U || len >= FS_NAME_LEN) {
+        return -EINVAL;
+    }
+    q.name = (const unsigned char *)name;
+    q.len = len;
+    q.hash = 0U;
+    dentry = vfs_lookup(dir, &q);
+    if (dentry != NULL) {
+        if (out != NULL) {
+            *out = dentry;
+        }
+        return 0;
+    }
+    if (dir->d_inode->i_op == NULL || dir->d_inode->i_op->create == NULL) {
+        return -EROFS;
+    }
+    dentry = vfs_alloc_dentry(dir, name, len);
+    if (dentry == NULL) {
+        return -ENOMEM;
+    }
+    rc = dir->d_inode->i_op->create(dir->d_inode, dentry, (mode & 0777) | S_IFREG);
+    if (rc != 0 || dentry->d_inode == NULL) {
+        kfree(dentry);
+        return rc != 0 ? rc : -EIO;
+    }
+    spin_lock(&vfs_mount_lock);
+    vfs_ensure_dentry_lists(dir);
+    list_add_tail(&dentry->d_child, &dir->d_subdirs);
+    spin_unlock(&vfs_mount_lock);
+    if (out != NULL) {
+        *out = dentry;
+    }
+    return 0;
+}
+
+int vfs_make_dir(struct dentry *dir, const char *name, int mode,
+                 struct dentry **out)
+{
+    struct dentry *dentry;
+    struct qstr q;
+    unsigned int len;
+    int rc;
+
+    if (dir == NULL || dir->d_inode == NULL || name == NULL) {
+        return -EINVAL;
+    }
+    if (!S_ISDIR(dir->d_inode->i_mode)) {
+        return -ENOTDIR;
+    }
+    len = (unsigned int)strlen(name);
+    if (len == 0U || len >= FS_NAME_LEN) {
+        return -EINVAL;
+    }
+    q.name = (const unsigned char *)name;
+    q.len = len;
+    q.hash = 0U;
+    dentry = vfs_lookup(dir, &q);
+    if (dentry != NULL) {
+        if (out != NULL) {
+            *out = dentry;
+        }
+        return -EEXIST;
+    }
+    if (dir->d_inode->i_op == NULL || dir->d_inode->i_op->mkdir == NULL) {
+        return -EROFS;
+    }
+    dentry = vfs_alloc_dentry(dir, name, len);
+    if (dentry == NULL) {
+        return -ENOMEM;
+    }
+    rc = dir->d_inode->i_op->mkdir(dir->d_inode, dentry, (mode & 0777) | S_IFDIR);
+    if (rc != 0 || dentry->d_inode == NULL) {
+        kfree(dentry);
+        return rc != 0 ? rc : -EIO;
+    }
+    spin_lock(&vfs_mount_lock);
+    vfs_ensure_dentry_lists(dir);
+    list_add_tail(&dentry->d_child, &dir->d_subdirs);
+    spin_unlock(&vfs_mount_lock);
+    if (out != NULL) {
+        *out = dentry;
+    }
+    return 0;
+}
+
+int vfs_remove_entry(struct dentry *dir, const char *name, bool is_dir)
+{
+    struct dentry *cached;
+    struct dentry temp;
+    unsigned int len;
+    int i;
+    int rc;
+
+    if (dir == NULL || dir->d_inode == NULL || name == NULL) {
+        return -EINVAL;
+    }
+    len = (unsigned int)strlen(name);
+    if (len == 0U || len >= FS_NAME_LEN) {
+        return -EINVAL;
+    }
+
+    spin_lock(&vfs_mount_lock);
+    for (i = 0; i < mount_count; i++) {
+        if (mount_points[i].parent == dir->d_inode &&
+            strcmp(mount_points[i].name, name) == 0) {
+            spin_unlock(&vfs_mount_lock);
+            return -EBUSY;
+        }
+    }
+    spin_unlock(&vfs_mount_lock);
+
+    memset(&temp, 0, sizeof(temp));
+    temp.d_parent = dir;
+    temp.d_sb = dir->d_sb;
+    memcpy(temp.d_iname, name, len);
+    temp.d_iname[len] = '\0';
+    temp.d_name.name = (const unsigned char *)temp.d_iname;
+    temp.d_name.len = len;
+
+    if (dir->d_inode->i_op == NULL) {
+        return -EROFS;
+    }
+    if (is_dir) {
+        if (dir->d_inode->i_op->rmdir == NULL) {
+            return -EROFS;
+        }
+        rc = dir->d_inode->i_op->rmdir(dir->d_inode, &temp);
+    } else {
+        if (dir->d_inode->i_op->unlink == NULL) {
+            return -EROFS;
+        }
+        rc = dir->d_inode->i_op->unlink(dir->d_inode, &temp);
+    }
+    if (rc == 0) {
+        spin_lock(&vfs_mount_lock);
+        cached = vfs_find_cached_child(dir, name, len);
+        if (cached != NULL) {
+            list_del(&cached->d_child);
+            vfs_free_dentry_Subtree(cached);
+            kfree(cached);
+        }
+        spin_unlock(&vfs_mount_lock);
+    }
+    return rc;
+}
+
+int vfs_rename_entry(struct dentry *old_dir, const char *old_name,
+                     struct dentry *new_dir, const char *new_name)
+{
+    struct dentry old_temp, new_temp;
+    struct dentry *cached_old, *cached_new;
+    unsigned int old_len, new_len;
+    int rc;
+
+    if (old_dir == NULL || new_dir == NULL ||
+        old_dir->d_inode == NULL || new_dir->d_inode == NULL ||
+        old_name == NULL || new_name == NULL) {
+        return -EINVAL;
+    }
+    if (old_dir->d_sb != new_dir->d_sb) {
+        return -EXDEV;
+    }
+    if (old_dir->d_inode->i_op == NULL ||
+        old_dir->d_inode->i_op->rename == NULL) {
+        return -EROFS;
+    }
+    old_len = (unsigned int)strlen(old_name);
+    new_len = (unsigned int)strlen(new_name);
+    if (old_len == 0U || old_len >= FS_NAME_LEN ||
+        new_len == 0U || new_len >= FS_NAME_LEN) {
+        return -ENAMETOOLONG;
+    }
+
+    memset(&old_temp, 0, sizeof(old_temp));
+    old_temp.d_parent = old_dir;
+    old_temp.d_sb = old_dir->d_sb;
+    memcpy(old_temp.d_iname, old_name, old_len);
+    old_temp.d_iname[old_len] = '\0';
+    old_temp.d_name.name = (const unsigned char *)old_temp.d_iname;
+    old_temp.d_name.len = old_len;
+
+    memset(&new_temp, 0, sizeof(new_temp));
+    new_temp.d_parent = new_dir;
+    new_temp.d_sb = new_dir->d_sb;
+    memcpy(new_temp.d_iname, new_name, new_len);
+    new_temp.d_iname[new_len] = '\0';
+    new_temp.d_name.name = (const unsigned char *)new_temp.d_iname;
+    new_temp.d_name.len = new_len;
+
+    rc = old_dir->d_inode->i_op->rename(old_dir->d_inode, &old_temp,
+                                        new_dir->d_inode, &new_temp);
+    if (rc == 0) {
+        spin_lock(&vfs_mount_lock);
+        cached_new = vfs_find_cached_child(new_dir, new_name, new_len);
+        if (cached_new != NULL) {
+            list_del(&cached_new->d_child);
+            vfs_free_dentry_Subtree(cached_new);
+            kfree(cached_new);
+        }
+        cached_old = vfs_find_cached_child(old_dir, old_name, old_len);
+        if (cached_old != NULL) {
+            list_del(&cached_old->d_child);
+            cached_old->d_parent = new_dir;
+            memcpy(cached_old->d_iname, new_name, new_len);
+            cached_old->d_iname[new_len] = '\0';
+            cached_old->d_name.name = (const unsigned char *)cached_old->d_iname;
+            cached_old->d_name.len = new_len;
+            vfs_ensure_dentry_lists(new_dir);
+            list_add_tail(&cached_old->d_child, &new_dir->d_subdirs);
+        }
+        spin_unlock(&vfs_mount_lock);
+    }
+    return rc;
+}
+
+int vfs_truncate_dentry(struct dentry *dentry, loff_t length)
+{
+    if (dentry == NULL || dentry->d_inode == NULL || length < 0) {
+        return -EINVAL;
+    }
+    if (S_ISDIR(dentry->d_inode->i_mode)) {
+        return -EISDIR;
+    }
+    if (dentry->d_inode->i_op != NULL && dentry->d_inode->i_op->truncate != NULL) {
+        return dentry->d_inode->i_op->truncate(dentry->d_inode, length);
+    }
+    return -EROFS;
 }
 
 static struct dentry *vfs_resolve_path(const char *path, int create)
 {
-  struct dentry *dentry;
-  const char *name;
+    struct dentry *dentry;
 
-  if (!path || path[0] != '/' || !root_dentry)
-    return NULL;
-
-  dentry = root_dentry;
-  name = path;
-  while (*name == '/')
-    name++;
-
-  while (*name) {
-    struct dentry *parent;
-    struct qstr qstr;
-    const char *next = name;
-    unsigned int len;
-    int last;
-
-    while (*next && *next != '/')
-      next++;
-    len = next - name;
-    if (len == 0 || len >= FS_NAME_LEN)
-      return NULL;
-
-    while (*next == '/')
-      next++;
-    last = *next == '\0';
-
-    qstr.name = (const unsigned char *)name;
-    qstr.len = len;
-    qstr.hash = 0;
-    parent = dentry;
-    dentry = vfs_lookup(parent, &qstr);
-    if (!dentry && create && last) {
-      dentry = vfs_create_dentry(parent, name, len);
-      if (!dentry || !dentry->d_parent->d_inode->i_op ||
-          !dentry->d_parent->d_inode->i_op->create ||
-          dentry->d_parent->d_inode->i_op->create(
-              dentry->d_parent->d_inode, dentry, S_IFREG | 0644) != 0) {
-        if (dentry)
-          kfree(dentry);
+    if (path == NULL || path[0] != '/') {
         return NULL;
-      }
     }
-    if (!dentry || (!last && (!dentry->d_inode ||
-                              !S_ISDIR(dentry->d_inode->i_mode))))
-      return NULL;
-
-    name = next;
-  }
-
-  return dentry;
+    dentry = vfs_lookup_path(vfs_get_root(), path);
+    if (dentry == NULL && create) {
+        struct dentry *parent = NULL;
+        char name[FS_NAME_LEN];
+        if (vfs_split_parent(vfs_get_root(), path, &parent, name, sizeof(name)) == 0) {
+            (void)vfs_create_file(parent, name, S_IFREG | 0644, &dentry);
+        }
+    }
+    return dentry;
 }
 
 int nos_open(const char *path, int flags, ...)
@@ -280,6 +709,12 @@ int nos_open(const char *path, int flags, ...)
   if (!dentry->d_inode || !dentry->d_inode->i_fop)
     return -EACCES;
 
+  if ((flags & O_TRUNC) && !S_ISDIR(dentry->d_inode->i_mode)) {
+    if (dentry->d_inode->i_op && dentry->d_inode->i_op->truncate) {
+      (void)dentry->d_inode->i_op->truncate(dentry->d_inode, 0);
+    }
+  }
+
   file = kzalloc(sizeof(*file), GFP_KERNEL);
   if (!file)
     return -ENOMEM;
@@ -289,6 +724,9 @@ int nos_open(const char *path, int flags, ...)
   file->f_inode = dentry->d_inode;
   file->f_op = dentry->d_inode->i_fop;
   file->f_flags = flags;
+  if (flags & O_APPEND) {
+    file->f_pos = file->f_inode->i_size;
+  }
 
   if (file->f_op->open) {
     ret = file->f_op->open(file->f_inode, file);
@@ -336,7 +774,94 @@ ssize_t nos_write(int fd, const void *buf, size_t count)
   if (!file || !file->f_op || !file->f_op->write)
     return -EBADF;
 
+  if (file->f_flags & O_APPEND) {
+    file->f_pos = file->f_inode->i_size;
+  }
   return file->f_op->write(file, buf, count, &file->f_pos);
+}
+
+loff_t nos_lseek(int fd, loff_t offset, int whence)
+{
+  struct file *file;
+  loff_t new_pos;
+
+  if (fd < 0 || fd >= VFS_MAX_OPEN_FILES || !open_files[fd])
+    return -EBADF;
+
+  file = open_files[fd];
+  if (file->f_op && file->f_op->llseek)
+    return file->f_op->llseek(file, offset, whence);
+
+  switch (whence) {
+  case SEEK_SET:
+    new_pos = offset;
+    break;
+  case SEEK_CUR:
+    new_pos = file->f_pos + offset;
+    break;
+  case SEEK_END:
+    new_pos = (file->f_inode ? file->f_inode->i_size : 0) + offset;
+    break;
+  default:
+    return -EINVAL;
+  }
+  if (new_pos < 0)
+    return -EINVAL;
+  file->f_pos = new_pos;
+  return new_pos;
+}
+
+int nos_mkdir(const char *pathname, mode_t mode)
+{
+  struct dentry *parent = NULL;
+  char name[FS_NAME_LEN];
+  int rc = vfs_split_parent(vfs_get_root(), pathname, &parent, name, sizeof(name));
+  if (rc != 0)
+    return rc;
+  return vfs_make_dir(parent, name, (int)mode, NULL);
+}
+
+int nos_rmdir(const char *pathname)
+{
+  struct dentry *parent = NULL;
+  char name[FS_NAME_LEN];
+  int rc = vfs_split_parent(vfs_get_root(), pathname, &parent, name, sizeof(name));
+  if (rc != 0)
+    return rc;
+  return vfs_remove_entry(parent, name, true);
+}
+
+int nos_unlink(const char *pathname)
+{
+  struct dentry *parent = NULL;
+  char name[FS_NAME_LEN];
+  int rc = vfs_split_parent(vfs_get_root(), pathname, &parent, name, sizeof(name));
+  if (rc != 0)
+    return rc;
+  return vfs_remove_entry(parent, name, false);
+}
+
+int nos_rename(const char *oldpath, const char *newpath)
+{
+  struct dentry *old_parent = NULL, *new_parent = NULL;
+  char old_name[FS_NAME_LEN], new_name[FS_NAME_LEN];
+  int rc;
+
+  rc = vfs_split_parent(vfs_get_root(), oldpath, &old_parent, old_name, sizeof(old_name));
+  if (rc != 0)
+    return rc;
+  rc = vfs_split_parent(vfs_get_root(), newpath, &new_parent, new_name, sizeof(new_name));
+  if (rc != 0)
+    return rc;
+  return vfs_rename_entry(old_parent, old_name, new_parent, new_name);
+}
+
+int nos_truncate(const char *pathname, loff_t length)
+{
+  struct dentry *dentry = vfs_lookup_path(vfs_get_root(), pathname);
+  if (!dentry)
+    return -ENOENT;
+  return vfs_truncate_dentry(dentry, length);
 }
 
 int nos_close(int fd)
@@ -355,67 +880,244 @@ int nos_close(int fd)
   return ret;
 }
 
-/*
- * Simple Mount Point Table
- */
-struct mount_point {
-    struct inode *parent;
-    char *name;
-    struct dentry *root;
-};
-
-static struct mount_point mount_points[8];
-static int mount_count = 0;
-
 int vfs_bind_mount(struct dentry *target, struct dentry *mnt_root)
 {
     char *name;
+    char *mpath;
+    char *dev;
+    char path_buf[128];
+    const char *fs_name = "unknown";
+    const char *dev_str = "none";
+    int i;
 
     if (target == NULL || target->d_parent == NULL ||
         target->d_parent->d_inode == NULL || target->d_name.name == NULL ||
         mnt_root == NULL) {
         return -EINVAL;
     }
-    name = kstrdup(target->d_name.name, GFP_KERNEL);
-    if (name == NULL) return -ENOMEM;
+    if (mnt_root->d_sb != NULL) {
+        if (mnt_root->d_sb->s_type != NULL && mnt_root->d_sb->s_type->name != NULL) {
+            fs_name = mnt_root->d_sb->s_type->name;
+        }
+        if (mnt_root->d_sb->s_id[0] != '\0') {
+            dev_str = mnt_root->d_sb->s_id;
+        } else {
+            dev_str = fs_name;
+        }
+    }
+    vfs_build_dentry_path(target, path_buf, sizeof(path_buf));
+
     spin_lock(&vfs_mount_lock);
-    if (mount_count >= 8) {
+    for (i = 0; i < mount_count; i++) {
+        if (mount_points[i].parent == target->d_parent->d_inode &&
+            strcmp(mount_points[i].name, (const char *)target->d_name.name) == 0) {
+            mount_points[i].root = mnt_root;
+            mount_points[i].fs_name = fs_name;
+            target->d_inode = mnt_root->d_inode;
+            target->d_sb = mnt_root->d_sb;
+            vfs_free_dentry_Subtree(target);
+            spin_unlock(&vfs_mount_lock);
+            return 0;
+        }
+    }
+    spin_unlock(&vfs_mount_lock);
+
+    name = kstrdup((const char *)target->d_name.name, GFP_KERNEL);
+    mpath = kstrdup(path_buf, GFP_KERNEL);
+    dev = kstrdup(dev_str, GFP_KERNEL);
+    if (name == NULL || mpath == NULL || dev == NULL) {
+        if (name) kfree(name);
+        if (mpath) kfree(mpath);
+        if (dev) kfree(dev);
+        return -ENOMEM;
+    }
+    spin_lock(&vfs_mount_lock);
+    if (mount_count >= VFS_MAX_MOUNT_POINTS) {
         spin_unlock(&vfs_mount_lock);
         kfree(name);
+        kfree(mpath);
+        kfree(dev);
         return -ENOSPC;
     }
     mount_points[mount_count].parent = target->d_parent->d_inode;
     mount_points[mount_count].name = name;
+    mount_points[mount_count].mount_path = mpath;
+    mount_points[mount_count].dev_name = dev;
+    mount_points[mount_count].fs_name = fs_name;
+    mount_points[mount_count].target = target;
     mount_points[mount_count].root = mnt_root;
+    mount_points[mount_count].orig_inode = target->d_inode;
+    mount_points[mount_count].orig_sb = target->d_sb;
+    target->d_inode = mnt_root->d_inode;
+    target->d_sb = mnt_root->d_sb;
+    vfs_free_dentry_Subtree(target);
     mount_count++;
     spin_unlock(&vfs_mount_lock);
     return 0;
+}
+
+int vfs_unmount(struct dentry *target)
+{
+    int i, j;
+
+    if (target == NULL || target == root_dentry) {
+        return -EBUSY;
+    }
+    spin_lock(&vfs_mount_lock);
+    for (i = 0; i < mount_count; i++) {
+        if (mount_points[i].target == target ||
+            (target->d_parent &&
+             mount_points[i].parent == target->d_parent->d_inode &&
+             strcmp(mount_points[i].name, (const char *)target->d_name.name) == 0)) {
+            char *name = mount_points[i].name;
+            char *mpath = mount_points[i].mount_path;
+            char *dev = mount_points[i].dev_name;
+
+            if (mount_points[i].orig_inode != NULL) {
+                target->d_inode = mount_points[i].orig_inode;
+                target->d_sb = mount_points[i].orig_sb;
+            }
+            vfs_free_dentry_Subtree(target);
+            for (j = i; j + 1 < mount_count; j++) {
+                mount_points[j] = mount_points[j + 1];
+            }
+            mount_count--;
+            spin_unlock(&vfs_mount_lock);
+            if (name) kfree(name);
+            if (mpath) kfree(mpath);
+            if (dev) kfree(dev);
+            return 0;
+        }
+    }
+    spin_unlock(&vfs_mount_lock);
+    return -EINVAL;
+}
+
+int vfs_get_mount_count(void)
+{
+    int count;
+    spin_lock(&vfs_mount_lock);
+    count = (root_dentry != NULL ? 1 : 0) + mount_count;
+    spin_unlock(&vfs_mount_lock);
+    return count;
+}
+
+int vfs_get_mount_entry(int index, struct vfs_mount_entry *entry)
+{
+    if (entry == NULL || index < 0) {
+        return -EINVAL;
+    }
+    spin_lock(&vfs_mount_lock);
+    if (root_dentry == NULL) {
+        spin_unlock(&vfs_mount_lock);
+        return -ENOENT;
+    }
+    if (index == 0) {
+        entry->dev_name = root_dev_name;
+        entry->mount_path = "/";
+        entry->fs_name = root_fs_name;
+        entry->dentry = root_dentry;
+        spin_unlock(&vfs_mount_lock);
+        return 0;
+    }
+    index -= 1;
+    if (index >= mount_count) {
+        spin_unlock(&vfs_mount_lock);
+        return -ENOENT;
+    }
+    entry->dev_name = mount_points[index].dev_name;
+    entry->mount_path = mount_points[index].mount_path;
+    entry->fs_name = mount_points[index].fs_name;
+    entry->dentry = mount_points[index].target;
+    spin_unlock(&vfs_mount_lock);
+    return 0;
+}
+
+int vfs_list_filesystems(char *buf, size_t size)
+{
+    struct file_system_type *fs;
+    int pos = 0;
+
+    if (buf == NULL || size == 0U) {
+        return -EINVAL;
+    }
+    buf[0] = '\0';
+    spin_lock(&file_systems_lock);
+    for (fs = file_systems; fs != NULL; fs = fs->next) {
+        bool nodev = strcmp(fs->name, "fatfs") != 0;
+        int n = snprintf(buf + pos, size - (size_t)pos, "%s\t%s\n",
+                         nodev ? "nodev" : "     ", fs->name);
+        if (n < 0 || (size_t)(pos + n) >= size) {
+            pos = (int)size - 1;
+            break;
+        }
+        pos += n;
+    }
+    spin_unlock(&file_systems_lock);
+    return pos;
+}
+
+void vfs_setup_standard_mounts(void)
+{
+    struct dentry *root = vfs_get_root();
+    struct dentry *dir = NULL;
+    struct dentry *mnt_root;
+
+    if (root == NULL) {
+        return;
+    }
+    (void)vfs_make_dir(root, "proc", 0755, &dir);
+    if (dir == NULL) {
+        dir = vfs_lookup_path(root, "/proc");
+    }
+    if (dir != NULL) {
+        mnt_root = vfs_mount("procfs", 0, "proc", NULL);
+        if (mnt_root != NULL) {
+            (void)vfs_bind_mount(dir, mnt_root);
+        }
+    }
+
+    dir = NULL;
+    (void)vfs_make_dir(root, "sys", 0755, &dir);
+    if (dir == NULL) {
+        dir = vfs_lookup_path(root, "/sys");
+    }
+    if (dir != NULL) {
+        mnt_root = vfs_mount("sysfs", 0, "sysfs", NULL);
+        if (mnt_root != NULL) {
+            (void)vfs_bind_mount(dir, mnt_root);
+        }
+    }
+
+    (void)vfs_make_dir(root, "tmp", 0777, NULL);
 }
 
 /*
  * Simple path lookup stub
  */
 struct dentry *vfs_lookup(struct dentry *parent, struct qstr *name) {
-  struct inode *dir = parent->d_inode;
-  struct dentry *dentry;
+  struct inode *dir;
+  struct dentry *dentry, *cached;
   int i;
   
+  if (!parent || !name || !name->name)
+    return NULL;
+
+  spin_lock(&vfs_mount_lock);
+  cached = vfs_find_cached_child(parent, (const char *)name->name, name->len);
+  spin_unlock(&vfs_mount_lock);
+  if (cached != NULL) {
+    return cached;
+  }
+
+  dir = parent->d_inode;
   if (!dir || !dir->i_op || !dir->i_op->lookup)
     return NULL;
 
   // Allocate dentry
-  dentry = kzalloc(sizeof(struct dentry), GFP_KERNEL);
+  dentry = vfs_alloc_dentry(parent, (const char *)name->name, name->len);
   if (!dentry)
     return NULL;
-    
-  dentry->d_parent = parent;
-  dentry->d_sb = parent->d_sb;
-  dentry->d_name.name = name->name; // Shallow copy? Should strdup?
-  // Copy name logic roughly
-  strncpy(dentry->d_iname, name->name, FS_NAME_LEN);
-  dentry->d_iname[FS_NAME_LEN - 1] = 0;
-  dentry->d_name.name = dentry->d_iname;
-  dentry->d_name.len = name->len;
 
   // Call lookup
   if (dir->i_op->lookup(dir, dentry) == NULL) {
@@ -440,6 +1142,14 @@ struct dentry *vfs_lookup(struct dentry *parent, struct qstr *name) {
              }
         }
     }
+    cached = vfs_find_cached_child(parent, dentry->d_iname, dentry->d_name.len);
+    if (cached != NULL) {
+      spin_unlock(&vfs_mount_lock);
+      kfree(dentry);
+      return cached;
+    }
+    vfs_ensure_dentry_lists(parent);
+    list_add_tail(&dentry->d_child, &parent->d_subdirs);
     spin_unlock(&vfs_mount_lock);
 
     return dentry;
