@@ -32,6 +32,10 @@ config BOARD_ZJ_V3
 	help
 	  ZJ V3 板。
 
+config BOARD_NUTINY_NUC472
+	bool "NuTiny-SDK-NUC472"
+	depends on ARCH_ARM
+
 config BOARD_QEMU_VIRT
 	bool "QEMU Virt"
 	depends on ARCH_ARM || ARCH_ARM64 || ARCH_RISCV || ARCH_X86
@@ -46,6 +50,7 @@ config BOARD
 	default "qemu-stm32" if BOARD_QEMU_STM32
 	default "wl-001" if BOARD_WL_001
 	default "zj-v3" if BOARD_ZJ_V3
+	default "nutiny-nuc472" if BOARD_NUTINY_NUC472
 	default "qemu-virt" if BOARD_QEMU_VIRT
 
 config QEMU

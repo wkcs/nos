@@ -123,6 +123,18 @@ g_pfnVectors:
   .word  SysTick_Handler
 
   /* External Interrupts */
+#ifdef CONFIG_SOC_NUC472
+  /* NUC472 has 142 external interrupts; USB occupies IRQs 88-90. */
+  .rept 88
+  .word Default_Handler
+  .endr
+  .word USBD_IRQHandler
+  .word USBH_IRQHandler
+  .word USB_OTG_IRQHandler
+  .rept 51
+  .word Default_Handler
+  .endr
+#else
   .word     WWDG_IRQHandler                   /* Window WatchDog                             */
   .word     PVD_IRQHandler                    /* PVD through EXTI Line detection             */
   .word     TAMP_STAMP_IRQHandler             /* Tamper and TimeStamps through the EXTI line */
@@ -213,6 +225,8 @@ g_pfnVectors:
   .word     0                                 /* Reserved                     */
   .word     SPI4_IRQHandler                   /* SPI4                         */
 
+#endif /* CONFIG_SOC_NUC472 */
+
 /*******************************************************************************
 *
 * Provide weak aliases for each Exception handler to the Default_Handler.
@@ -220,6 +234,15 @@ g_pfnVectors:
 * this definition.
 *
 *******************************************************************************/
+#ifdef CONFIG_SOC_NUC472
+   .weak      USBD_IRQHandler
+   .thumb_set USBD_IRQHandler,Default_Handler
+   .weak      USBH_IRQHandler
+   .thumb_set USBH_IRQHandler,Default_Handler
+   .weak      USB_OTG_IRQHandler
+   .thumb_set USB_OTG_IRQHandler,Default_Handler
+#endif
+
    .weak      NMI_Handler
    .thumb_set NMI_Handler,Default_Handler
 

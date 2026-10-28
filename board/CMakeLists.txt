@@ -81,6 +81,8 @@ elseif("${CONFIG_BOARD}" STREQUAL "wl-001" OR "${CONFIG_BOARD}" STREQUAL "zj-v3"
             ${BOARD_DIR}/usb/stm32f1xx_ll_usb.c
         )
     endif()
+elseif("${CONFIG_BOARD}" STREQUAL "nutiny-nuc472")
+    list(APPEND BOARD_SRCS ${BOARD_DIR}/init.c ${BOARD_DIR}/led.c)
 elseif("${CONFIG_BOARD}" STREQUAL "qemu-virt" AND CONFIG_ARCH_ARM64)
     list(APPEND BOARD_SRCS ${BOARD_DIR}/init.c)
 endif()

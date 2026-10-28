@@ -11,6 +11,13 @@ config VFS
 	  启用虚拟文件系统层。
 	  提供统一的文件操作接口。
 
+config VFS_SMOKE_TEST
+	bool "VFS boot smoke test"
+	depends on VFS
+	default n
+	help
+	  Create and read back /smoke.txt during application initialization.
+
 config RAMFS
 	bool "RAM file system"
 	default y

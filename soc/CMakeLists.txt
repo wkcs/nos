@@ -58,6 +58,10 @@ if(CONFIG_SOC_STM32F4)
     )
 endif()
 
+if(CONFIG_SOC_NUC472)
+    list(APPEND SOC_SRCS nuc472/system.c)
+endif()
+
 if(SOC_SRCS)
     add_library(nos_soc OBJECT ${SOC_SRCS})
     target_include_directories(nos_soc PRIVATE ${SOC_PRIVATE_INCLUDES})

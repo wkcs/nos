@@ -193,9 +193,15 @@ endif()
 # Cross-Platform Utility Targets (Flash, Debug, QEMU, Menuconfig)
 # ------------------------------------------------------------------------------
 set(BOARD_OPENOCD_CFG "${CMAKE_CURRENT_SOURCE_DIR}/board/${CONFIG_BOARD}/openocd.cfg")
+set(NOS_OPENOCD "openocd" CACHE STRING "OpenOCD executable name or absolute path")
+set(NOS_OPENOCD_SCRIPTS "" CACHE PATH "OpenOCD script directory")
+set(_NOS_OPENOCD_ARGS "")
+if(NOS_OPENOCD_SCRIPTS)
+    list(APPEND _NOS_OPENOCD_ARGS -s "${NOS_OPENOCD_SCRIPTS}")
+endif()
 
 add_custom_target(flash
-    COMMAND openocd -f "${BOARD_OPENOCD_CFG}" -c "program ${CMAKE_CURRENT_BINARY_DIR}/nos.hex verify reset exit"
+    COMMAND "${NOS_OPENOCD}" ${_NOS_OPENOCD_ARGS} -f "${BOARD_OPENOCD_CFG}" -c "program ${CMAKE_CURRENT_BINARY_DIR}/nos.hex verify reset exit"
     DEPENDS nos_firmware
     WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
     COMMENT "Flashing nos.hex via OpenOCD"

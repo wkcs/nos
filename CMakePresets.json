@@ -49,6 +49,15 @@
       }
     },
     {
+      "name": "nutiny-nuc472",
+      "displayName": "NuTiny-SDK-NUC472 (NUC472HI8AE / Cortex-M4F)",
+      "inherits": "arm-base",
+      "binaryDir": "${sourceDir}/build/nutiny-nuc472",
+      "cacheVariables": {
+        "NOS_DEFCONFIG": "${sourceDir}/configs/nutiny-nuc472_defconfig"
+      }
+    },
+    {
       "name": "qemu-virt-arm64",
       "displayName": "QEMU Virt ARM64 (Cortex-A53 Microkernel)",
       "generator": "Ninja",
@@ -95,6 +104,10 @@
     {
       "name": "zj-v3",
       "configurePreset": "zj-v3"
+    },
+    {
+      "name": "nutiny-nuc472",
+      "configurePreset": "nutiny-nuc472"
     }
   ]
 }
