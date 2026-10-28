@@ -38,6 +38,18 @@ class VectorTests(unittest.TestCase):
                     ['arm-none-eabi-nm', '--undefined-only', str(elf)], text=True)
                 self.assertNotIn('Reset_Handler', undefined)
 
+    def test_stm32f4_part_specific_interrupts(self):
+        f405, symbols = vectors_and_symbols('qemu-stm32')
+        f401, _ = vectors_and_symbols('nk60-v2')
+        for irq, handler in ((19, 'CAN1_TX_IRQHandler'), (39, 'USART3_IRQHandler'),
+                             (74, 'OTG_HS_EP1_OUT_IRQHandler')):
+            with self.subTest(irq=irq):
+                self.assertIsNotNone(symbols.get(handler))
+                self.assertEqual(f405[16 + irq] & ~1, symbols[handler] & ~1)
+                self.assertEqual(f401[16 + irq], 0)
+        self.assertEqual(len(f405), 16 + 82)
+        self.assertEqual(len(f401), 16 + 85)
+
     def test_stm32f1_usb_handler_is_connected(self):
         for board in ('wl-001', 'zj-v3'):
             with self.subTest(board=board):
