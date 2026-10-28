@@ -21,6 +21,7 @@
 #include <kernel/timer.h>
 #include <uapi/nos/abi.h>
 #include <nos/ipc.h>
+#include "stack_layout.h"
 
 static LIST_HEAD(g_task_list);
 LIST_HEAD(g_close_task_list);
@@ -72,9 +73,9 @@ static void *alloc_task_stack(uint32_t stack_size, void **stack_base)
     }
 
 #ifdef CONFIG_STACK_GROWSUP
-    base = (char *)ALIGNED((addr_t)buf, (addr_t)16U);
+    base = (char *)task_stack_base((uintptr_t)buf, stack_size, true);
 #else
-    base = (char *)(ALIGNED_DONE((addr_t)buf + stack_size + 15U, (addr_t)16U) - stack_size);
+    base = (char *)task_stack_base((uintptr_t)buf, stack_size, false);
 #endif
     for (i = 0; i < stack_size; i++) base[i] = '#';
     *stack_base = base;
