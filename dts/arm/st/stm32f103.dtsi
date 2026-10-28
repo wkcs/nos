@@ -1,0 +1,25 @@
+/* Copyright (C) 2026 Nick Hu */
+/ {
+    #address-cells = <1>;
+    #size-cells = <1>;
+    soc {
+        compatible = "simple-bus";
+        #address-cells = <1>;
+        #size-cells = <1>;
+        ranges;
+        gpioa: gpio@40010800 {
+            compatible = "st,stm32f1-gpio";
+            reg = <0x40010800 0x400>;
+            gpio-controller;
+            #gpio-cells = <2>;
+        };
+        spi2: spi@40003800 {
+            compatible = "st,stm32f1-spi";
+            reg = <0x40003800 0x400>;
+            interrupts = <36>;
+            #address-cells = <1>;
+            #size-cells = <0>;
+            status = "disabled";
+        };
+    };
+};

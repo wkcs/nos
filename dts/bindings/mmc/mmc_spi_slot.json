@@ -1,0 +1,9 @@
+{
+  "compatible": "mmc-spi-slot",
+  "properties": {
+    "reg": {"type": "uint32-array", "required": true, "min-items": 1, "max-items": 1},
+    "spi-max-frequency": {"type": "uint32-array", "required": true, "min-items": 1, "max-items": 1, "minimum": 1},
+    "spi-cpol": {"type": "boolean"},
+    "spi-cpha": {"type": "boolean"}
+  }
+}

@@ -24,7 +24,7 @@
 
 `dts/bindings/` 中的 NOS JSON binding 校验已声明的属性。未找到 binding
 的节点目前不会被校验；格式不是 Linux dt-schema 或 Zephyr YAML 的替代品。
-QEMU STM32 的控制台和 NK60 闪存是目前接入设备树的两个实例，其余旧驱动
+QEMU STM32 控制台、NK60 闪存和可选的 ZJ-V3 SD 卡已接入设备树，其余旧驱动
 尚未全部迁移。运行时传入 DTB、自动识别硬件和完整 binding 覆盖尚未实现。
 
 ## SPI 与 I²C
@@ -44,7 +44,7 @@ W25Q 协议和扇区存储逻辑位于 `drivers/flash/`，NK60 板级装配位�
 
 通用 SD SPI 层提供卡初始化、容量读取和 512 字节扇区读写，块设备
 适配层支持多扇区请求。ZJ-V3 可选启用 `CONFIG_ZJ_V3_SD_BLOCK`，在调度器
-启动后初始化 SPI2 并注册 `sd0`；该选项与旧 SD 测试互斥。此路径尚未经过
+启动后根据设备树初始化 SPI2 并注册 `sd0`；该选项与旧 SD 测试互斥。此路径尚未经过
 实板验证，也不会自动改变 FatFs 的块设备或在启动时挂载 SD 卡。
 
 `include/drivers/i2c.h` 使用消息序列描述 7 位地址的 I²C 事务，支持
