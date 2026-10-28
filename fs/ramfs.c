@@ -100,18 +100,26 @@ static ssize_t ramfs_write(struct file *file, const char *buf, size_t count,
     mutex_lock(&inode->i_mutex);
     pos = *ppos;
     new_size = pos + count;
-    if (new_size < pos) {
+    if (new_size < pos || new_size > UINT32_MAX) {
         mutex_unlock(&inode->i_mutex);
         return -EFBIG;
     }
     if (new_size > node->size) {
-        void *new_data = krealloc(node->data, new_size, GFP_KERNEL);
+        void *new_data = kmalloc(new_size, GFP_KERNEL);
         if (!new_data) {
             mutex_unlock(&inode->i_mutex);
             return -ENOMEM;
         }
+        if (node->data != NULL) {
+            memcpy(new_data, node->data, node->size);
+            kfree(node->data);
+        }
+        memset((char *)new_data + node->size, 0, new_size - node->size);
         node->data = new_data;
         node->size = new_size;
+    }
+    if (pos > (size_t)inode->i_size) {
+        memset((char *)node->data + inode->i_size, 0, pos - (size_t)inode->i_size);
     }
     memcpy((char *)node->data + pos, buf, count);
     if (new_size > inode->i_size) inode->i_size = new_size;
@@ -424,6 +432,9 @@ static int ramfs_truncate(struct inode *inode, loff_t length)
         return -EIO;
     }
     target = (size_t)length;
+    if ((loff_t)target != length || target > UINT32_MAX) {
+        return -EFBIG;
+    }
     mutex_lock(&inode->i_mutex);
     if (target == 0) {
         if (node->data != NULL) {
@@ -433,10 +444,14 @@ static int ramfs_truncate(struct inode *inode, loff_t length)
         node->size = 0;
         inode->i_size = 0;
     } else if (target > node->size) {
-        void *new_data = krealloc(node->data, target, GFP_KERNEL);
+        void *new_data = kmalloc(target, GFP_KERNEL);
         if (new_data == NULL) {
             mutex_unlock(&inode->i_mutex);
             return -ENOMEM;
+        }
+        if (node->data != NULL) {
+            memcpy(new_data, node->data, (size_t)inode->i_size);
+            kfree(node->data);
         }
         if (target > (size_t)inode->i_size) {
             memset((char *)new_data + inode->i_size, 0, target - (size_t)inode->i_size);
