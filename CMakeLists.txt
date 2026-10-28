@@ -24,8 +24,6 @@ set(_NOS_INCLUDE_DIRS
     "${CMAKE_CURRENT_SOURCE_DIR}/user/include"
     "${CMAKE_CURRENT_SOURCE_DIR}/arch/${CONFIG_ARCH}/include"
     "${CMAKE_CURRENT_BINARY_DIR}/include"
-    "${CMAKE_CURRENT_SOURCE_DIR}/app/lua/lib"
-    "${CMAKE_CURRENT_SOURCE_DIR}/app/lvgl/lib"
 )
 
 if(CONFIG_SOC_STM32F1)
