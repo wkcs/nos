@@ -19,6 +19,7 @@ enum shell_condition {
     SHELL_ALWAYS,
     SHELL_ON_SUCCESS,
     SHELL_ON_FAILURE,
+    SHELL_PIPE,
 };
 
 struct shell_command {
