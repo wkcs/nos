@@ -4,11 +4,21 @@
 #include <string.h>
 
 static int active, high_capacity, v1, idle_bytes, tries, delays, invalid_echo, fail_end, stuck;
-static uint8_t reply[8];
+static uint8_t reply[20];
 static size_t reply_len, reply_pos;
 static uint8_t last_cmd;
 static uint32_t last_arg;
 static uint32_t highest_frequency;
+static uint16_t crc16(const uint8_t *data, size_t length)
+{
+    uint16_t crc = 0;
+    while (length--) {
+        int bit;
+        crc ^= (uint16_t)*data++ << 8;
+        for (bit = 0; bit < 8; bit++) crc = (uint16_t)((crc << 1) ^ ((crc & 0x8000) ? 0x1021 : 0));
+    }
+    return crc;
+}
 void msleep(uint32_t ms) { delays += (int)ms; }
 static int begin(const struct device *dev, const struct spi_config *cfg)
 {
@@ -43,6 +53,15 @@ static int transfer(const struct device *dev, const struct spi_buf *b, size_t co
         case 58: reply[0] = 0; reply[1] = 0x80 | (high_capacity ? 0x40 : 0);
             reply[2] = 0xff; reply_len = 5; break;
         case 16: if (last_arg != 512) return -EINVAL; reply[0] = 0; break;
+        case 9: {
+            uint16_t crc;
+            reply[0] = 0; reply[1] = 0xfe;
+            if (v1) reply[7] = 9;
+            else reply[2] = 0x40;
+            crc = crc16(reply + 2, 16);
+            reply[18] = (uint8_t)(crc >> 8); reply[19] = (uint8_t)crc;
+            reply_len = 20; break;
+        }
         default: return -EINVAL;
         }
     } else if (b->rx != NULL) {
@@ -75,10 +94,11 @@ int main(void)
     high_capacity = 1;
     if (sd_spi_card_init(&card, &sd) != 0 || !card.ready || !card.high_capacity ||
         card.spi.config.frequency != 12000000 || highest_frequency != 400000 ||
-        tries != 3 || delays != 2 || idle_bytes < 10 || active || last_cmd != 58) return 1;
+        tries != 3 || delays != 2 || idle_bytes < 10 || active || last_cmd != 9 ||
+        card.sector_count != 1024) return 1;
     v1 = 1; high_capacity = 0; tries = 0;
     if (sd_spi_card_init(&card, &sd) != 0 || !card.ready || card.high_capacity ||
-        last_cmd != 16 || active) return 1;
+        last_cmd != 9 || card.sector_count != 4 || active) return 1;
     v1 = 0; invalid_echo = 1; tries = 0;
     if (sd_spi_card_init(&card, &sd) != -EIO || card.ready || active) return 1;
     invalid_echo = 0; fail_end = 1;

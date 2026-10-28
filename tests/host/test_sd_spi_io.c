@@ -7,6 +7,7 @@ static int active, phase, writing, bad_token, bad_crc, failed, idle, sent_data;
 static int token_stuck, busy_stuck, rejected;
 static uint32_t argument;
 static uint8_t cmd;
+static const uint8_t test_csd[16] = { [0] = 0x40, [9] = 1 };
 static uint16_t crc16(const uint8_t *p, size_t n)
 {
     uint16_t crc = 0;
@@ -43,6 +44,9 @@ static int transfer(const struct device *dev, const struct spi_buf *b, size_t co
             if (!token_stuck) phase = 3;
             return 0;
         }
+        if (cmd == 9 && phase == 3 && b->len == sizeof(test_csd)) {
+            memcpy(p, test_csd, sizeof(test_csd)); phase = 4; return 0;
+        }
         if (!writing && phase == 3 && b->len == 512) {
             for (i = 0; i < b->len; i++) p[i] = (uint8_t)i;
             phase = 4; return 0;
@@ -50,7 +54,7 @@ static int transfer(const struct device *dev, const struct spi_buf *b, size_t co
         if (!writing && phase == 4 && b->len == 2) {
             uint8_t data[512]; uint16_t crc;
             for (i = 0; i < sizeof(data); i++) data[i] = (uint8_t)i;
-            crc = crc16(data, sizeof(data));
+            crc = cmd == 9 ? crc16(test_csd, sizeof(test_csd)) : crc16(data, sizeof(data));
             p[0] = (uint8_t)(crc >> 8); p[1] = (uint8_t)crc ^ (bad_crc ? 1 : 0);
             phase = 5; return 0;
         }
@@ -79,8 +83,10 @@ int main(void)
         .session_end = end, .clock_idle = clock_idle };
     const struct device bus = { .api = &api, .ready = true };
     struct sd_spi_card card = { .spi = { .bus = &bus, .config = { .frequency = 1000000,
-        .word_size = 8, .mode = 0 } }, .high_capacity = 1, .ready = 1 };
+        .word_size = 8, .mode = 0 } }, .sector_count = 100, .high_capacity = 1, .ready = 1 };
     uint8_t buffer[512] = {0};
+    uint32_t sectors;
+    if (sd_spi_read_capacity(&card, &sectors) != 0 || sectors != 2048 || active) return 1;
     if (sd_spi_read_block(&card, 7, buffer) != 0 || cmd != 17 || argument != 7 ||
         buffer[257] != 1 || active) return 1;
     memset(buffer, 0, sizeof(buffer));
@@ -100,8 +106,10 @@ int main(void)
     if (sd_spi_write_block(&card, 1, buffer) != -ETIMEDOUT || active) return 1;
     busy_stuck = 0; rejected = 1;
     if (sd_spi_write_block(&card, 1, buffer) != -EIO || active) return 1;
+    if (sd_spi_read_block(&card, 100, buffer) != -EINVAL || active) return 1;
+    card.sector_count = UINT32_MAX;
     if (sd_spi_read_block(&card, 0x800000, buffer) != -EINVAL || active) return 1;
-    if (idle != 8) return 1;
+    if (idle != 9) return 1;
     puts("SD SPI block I/O checks passed");
     return 0;
 }

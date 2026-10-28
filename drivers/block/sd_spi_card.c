@@ -37,6 +37,7 @@ int sd_spi_card_init(struct sd_spi_card *card, const struct sd_spi *spi)
     if (card == NULL || spi == NULL) return -EINVAL;
     card->ready = 0;
     card->high_capacity = 0;
+    card->sector_count = 0;
     if (spi->config.frequency == 0 || spi->config.word_size != 8 || spi->config.mode != 0) {
         return -EINVAL;
     }
@@ -82,7 +83,13 @@ int sd_spi_card_init(struct sd_spi_card *card, const struct sd_spi *spi)
         if (ret != 0) return ret;
         if (response != 0) return -EIO;
     }
-    card->spi = *spi;
+    card->spi = init_spi;
     card->ready = 1;
+    ret = sd_spi_read_capacity(card, &card->sector_count);
+    if (ret != 0) {
+        card->ready = 0;
+        return ret;
+    }
+    card->spi = *spi;
     return 0;
 }
