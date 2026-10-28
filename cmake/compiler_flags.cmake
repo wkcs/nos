@@ -52,17 +52,6 @@ elseif(CONFIG_ARCH_X86)
     list(APPEND NOS_ARCH_FLAGS -m64 -mno-red-zone -mcmodel=kernel -fno-pic -fno-pie)
 endif()
 
-# Board-specific chip family macros
-if("${CONFIG_BOARD}" STREQUAL "nk60-v2")
-    list(APPEND NOS_GLOBAL_DEFINES "STM32F401xx" "USE_STDPERIPH_DRIVER")
-elseif("${CONFIG_BOARD}" STREQUAL "qemu-stm32")
-    list(APPEND NOS_GLOBAL_DEFINES "STM32F40_41xxx" "USE_STDPERIPH_DRIVER")
-elseif("${CONFIG_BOARD}" STREQUAL "wl-001")
-    list(APPEND NOS_GLOBAL_DEFINES "STM32F10X_MD" "USE_STDPERIPH_DRIVER")
-elseif("${CONFIG_BOARD}" STREQUAL "zj-v3")
-    list(APPEND NOS_GLOBAL_DEFINES "STM32F10X_HD" "USE_STDPERIPH_DRIVER")
-endif()
-
 # Base C and ASM compilation flags
 set(NOS_COMMON_FLAGS
     ${NOS_ARCH_FLAGS}

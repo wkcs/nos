@@ -4,3 +4,5 @@ add_library(nos_libs OBJECT
     kfifo.c
 )
 nos_configure_kernel_target(nos_libs)
+
+add_subdirectory(libc)
