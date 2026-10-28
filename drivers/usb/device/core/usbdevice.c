@@ -9,8 +9,8 @@
 #define pr_fmt(fmt) "[USB_DEVICE]:%s[%d]:"fmt, __func__, __LINE__
 
 #include <kernel/printk.h>
-#include <usb/usb_common.h>
-#include <usb/usb_device.h>
+#include <drivers/usb/usb_common.h>
+#include <drivers/usb/usb_device.h>
 
 #ifdef CONFIG_USB_DEVICE_COMPOSITE
 static const char* ustring[] =

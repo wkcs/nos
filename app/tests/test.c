@@ -14,7 +14,7 @@
 #include <kernel/sem.h>
 #include <kernel/mutex.h>
 #include <kernel/msg_queue.h>
-#include <usb/usb_device.h>
+#include <drivers/usb/usb_device.h>
 
 sem_t g_sem;
 struct mutex g_lock;

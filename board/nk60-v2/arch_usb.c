@@ -9,7 +9,7 @@
 #include <kernel/kernel.h>
 #include <kernel/init.h>
 #include <kernel/sleep.h>
-#include <usb/usb_device.h>
+#include <drivers/usb/usb_device.h>
 #include <string.h>
 #include "arch_usb.h"
 #include "board.h"

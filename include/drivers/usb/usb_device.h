@@ -13,7 +13,7 @@
 #include <kernel/mm.h>
 #include <kernel/device.h>
 #include <string.h>
-#include <usb/usb_common.h>
+#include <drivers/usb/usb_common.h>
 
 /* Vendor ID */
 #ifdef CONFIG_USB_VENDOR_ID
