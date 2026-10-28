@@ -21,7 +21,7 @@
 #include <kernel/sem.h>
 
 #include "lvgl.h"
-#include "lib/demos/lv_demos.h"
+#include <demos/lv_demos.h>
 #include "../../drivers/display/zj-tft-lcd.h"
 
 
