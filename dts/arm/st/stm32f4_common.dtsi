@@ -1,0 +1,19 @@
+/* Copyright (C) 2026 Nick Hu <huqihan@live.com> */
+/ {
+    #address-cells = <1>;
+    #size-cells = <1>;
+
+    soc {
+        compatible = "simple-bus";
+        #address-cells = <1>;
+        #size-cells = <1>;
+        ranges;
+
+        uart1: serial@40011000 {
+            compatible = "st,stm32-uart";
+            reg = <0x40011000 0x400>;
+            interrupts = <37>;
+            status = "disabled";
+        };
+    };
+};

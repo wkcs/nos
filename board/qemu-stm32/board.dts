@@ -4,47 +4,17 @@
  * QEMU netduinoplus2: STM32F405, matching the board linker script.
  */
 /dts-v1/;
+#include <arm/st/stm32f405.dtsi>
 
 / {
     compatible = "qemu,netduinoplus2", "st,stm32f405";
     model = "QEMU Netduino Plus 2";
-    #address-cells = <1>;
-    #size-cells = <1>;
 
     chosen {
         nos,console = <&uart1>;
     };
+};
 
-    cpus {
-        #address-cells = <1>;
-        #size-cells = <0>;
-        cpu@0 {
-            compatible = "arm,cortex-m4";
-            device_type = "cpu";
-            reg = <0>;
-        };
-    };
-
-    memory@20000000 {
-        device_type = "memory";
-        reg = <0x20000000 0x20000>;
-    };
-
-    flash@8000000 {
-        reg = <0x08000000 0x100000>;
-    };
-
-    soc {
-        compatible = "simple-bus";
-        #address-cells = <1>;
-        #size-cells = <1>;
-        ranges;
-
-        uart1: serial@40011000 {
-            compatible = "st,stm32-uart";
-            reg = <0x40011000 0x400>;
-            interrupts = <37>;
-            status = "okay";
-        };
-    };
+&uart1 {
+    status = "okay";
 };
