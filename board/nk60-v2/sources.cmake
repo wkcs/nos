@@ -26,6 +26,12 @@ if(CONFIG_KEYBOARD)
         ${BOARD_DIR}/nk60_keyboard.c
     )
 endif()
+if(CONFIG_NK60_V2_KEY)
+    list(APPEND BOARD_SRCS ${BOARD_DIR}/key_matrix.c)
+endif()
+if(CONFIG_NK60_V2_LED)
+    list(APPEND BOARD_SRCS ${BOARD_DIR}/led.c)
+endif()
 if(CONFIG_NLK_SERVER OR CONFIG_NDK_SERVER)
     list(APPEND BOARD_SRCS
         ${BOARD_DIR}/nk60_nlk.c
