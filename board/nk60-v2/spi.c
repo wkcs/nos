@@ -22,8 +22,11 @@ static const struct stm32_spi_config nk60_spi1_config = {
     .apb2 = 1,
 };
 
+static struct stm32_spi_data nk60_spi1_data;
+
 struct device nk60_spi_bus = {
     .name = "nk60-spi1",
     .config = &nk60_spi1_config,
+    .data = &nk60_spi1_data,
     .api = &stm32_spi_driver_api,
 };

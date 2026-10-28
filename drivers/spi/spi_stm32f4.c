@@ -71,53 +71,83 @@ static int stm32_spi_prescaler(uint32_t clock, uint32_t maximum, uint16_t *setti
     return -EINVAL;
 }
 
-static int stm32_spi_transceive(const struct device *dev,
-                                const struct spi_config *config,
-                                const struct spi_buf *buffers, size_t count)
+static int stm32_spi_session_begin(const struct device *dev,
+                                   const struct spi_config *config)
 {
     const struct stm32_spi_config *hw = dev->config;
+    struct stm32_spi_data *data = dev->data;
     struct device *controller = (struct device *)dev;
-    const struct stm32_spi_cs *cs;
     uint16_t prescaler;
+
+    if (data == NULL || config->chip_select >= hw->chip_select_count || config->word_size != 8 ||
+        stm32_spi_prescaler(hw->peripheral_clock, config->frequency, &prescaler) != 0) {
+        return -EINVAL;
+    }
+    mutex_lock(&controller->mutex);
+    stm32_spi_configure(hw, config->mode, prescaler);
+    data->selected = config->chip_select;
+    stm32_spi_cs_set(&hw->chip_selects[data->selected], 1);
+    return 0;
+}
+
+static int stm32_spi_session_transfer(const struct device *dev,
+                                      const struct spi_buf *buffers, size_t count)
+{
+    struct device *controller = (struct device *)dev;
     size_t i;
     size_t j;
     int ret;
 
-    if (config->chip_select >= hw->chip_select_count || config->word_size != 8 ||
-        stm32_spi_prescaler(hw->peripheral_clock, config->frequency, &prescaler) != 0) {
-        return -EINVAL;
-    }
-    cs = &hw->chip_selects[config->chip_select];
-    mutex_lock(&controller->mutex);
-    stm32_spi_configure(hw, config->mode, prescaler);
-    stm32_spi_cs_set(cs, 1);
-    ret = 0;
-    for (i = 0; i < count && ret == 0; i++) {
+    for (i = 0; i < count; i++) {
         const uint8_t *tx = buffers[i].tx;
         uint8_t *rx = buffers[i].rx;
         for (j = 0; j < buffers[i].len; j++) {
             uint8_t value;
             ret = stm32_spi_exchange(controller, tx != NULL ? tx[j] : 0xffU, &value);
-            if (ret != 0) break;
+            if (ret != 0) return ret;
             if (rx != NULL) rx[j] = value;
         }
     }
-    if (ret == 0) {
-        uint32_t remaining = CONFIG_STM32_SPI_POLL_TIMEOUT;
-        while (SPI_I2S_GetFlagStatus(hw->regs, SPI_I2S_FLAG_BSY) != RESET) {
-            if (remaining-- == 0) {
-                ret = -ETIMEDOUT;
-                break;
-            }
+    return 0;
+}
+
+static int stm32_spi_session_end(const struct device *dev)
+{
+    const struct stm32_spi_config *hw = dev->config;
+    struct stm32_spi_data *data = dev->data;
+    struct device *controller = (struct device *)dev;
+    uint32_t remaining = CONFIG_STM32_SPI_POLL_TIMEOUT;
+    int ret = 0;
+
+    while (SPI_I2S_GetFlagStatus(hw->regs, SPI_I2S_FLAG_BSY) != RESET) {
+        if (remaining-- == 0) {
+            ret = -ETIMEDOUT;
+            break;
         }
     }
-    stm32_spi_cs_set(cs, 0);
+    stm32_spi_cs_set(&hw->chip_selects[data->selected], 0);
     mutex_unlock(&controller->mutex);
     return ret;
 }
 
+static int stm32_spi_transceive(const struct device *dev,
+                                const struct spi_config *config,
+                                const struct spi_buf *buffers, size_t count)
+{
+    int ret = stm32_spi_session_begin(dev, config);
+    int end_ret;
+
+    if (ret != 0) return ret;
+    ret = stm32_spi_session_transfer(dev, buffers, count);
+    end_ret = stm32_spi_session_end(dev);
+    return ret != 0 ? ret : end_ret;
+}
+
 const struct spi_driver_api stm32_spi_driver_api = {
     .transceive = stm32_spi_transceive,
+    .session_begin = stm32_spi_session_begin,
+    .session_transfer = stm32_spi_session_transfer,
+    .session_end = stm32_spi_session_end,
 };
 
 int stm32_spi_init(struct device *dev)
@@ -129,7 +159,7 @@ int stm32_spi_init(struct device *dev)
     size_t i;
     int ret;
 
-    if (dev == NULL || dev->config == NULL) return -EINVAL;
+    if (dev == NULL || dev->config == NULL || dev->data == NULL) return -EINVAL;
     hw = dev->config;
     if (hw->regs == NULL || hw->gpio == NULL || hw->chip_selects == NULL ||
         hw->chip_select_count == 0 || hw->peripheral_clock == 0) return -EINVAL;
