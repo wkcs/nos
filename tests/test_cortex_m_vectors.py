@@ -24,6 +24,14 @@ def vectors_and_symbols(board):
 
 
 class VectorTests(unittest.TestCase):
+    def test_firmware_has_no_unresolved_reset_symbol(self):
+        for board in ('nk60-v2', 'qemu-stm32', 'wl-001', 'zj-v3'):
+            with self.subTest(board=board):
+                elf = ROOT / 'build' / board / 'nos.elf'
+                undefined = subprocess.check_output(
+                    ['arm-none-eabi-nm', '--undefined-only', str(elf)], text=True)
+                self.assertNotIn('Reset_Handler', undefined)
+
     def test_stm32f1_usb_handler_is_connected(self):
         for board in ('wl-001', 'zj-v3'):
             with self.subTest(board=board):

@@ -8,7 +8,7 @@
 
 #include <asm/init.h>
 
-/* M1 portable hook; early work still in Reset_Handler/board as needed. */
+/* M1 portable hook; early work still in the reset handler/board as needed. */
 __init void arch_early_init(void)
 {
 }
