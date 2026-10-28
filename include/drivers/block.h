@@ -9,6 +9,7 @@
 
 #include <kernel/device.h>
 #include <kernel/errno.h>
+#include <stdint.h>
 
 struct block_driver_api {
     int (*read)(const struct device *dev, uint32_t lba, void *buf,
