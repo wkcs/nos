@@ -26,21 +26,7 @@ set(_NOS_INCLUDE_DIRS
     "${CMAKE_CURRENT_BINARY_DIR}/include"
 )
 
-if(CONFIG_SOC_STM32F1)
-    list(APPEND _NOS_INCLUDE_DIRS
-        "${CMAKE_CURRENT_SOURCE_DIR}/soc/stm32f1/include"
-        "${CMAKE_CURRENT_SOURCE_DIR}/soc/stm32f1/inside-include"
-        "${CMAKE_CURRENT_SOURCE_DIR}/soc/stm32f1/drivers/inc"
-    )
-endif()
-
-if(CONFIG_SOC_STM32F4)
-    list(APPEND _NOS_INCLUDE_DIRS
-        "${CMAKE_CURRENT_SOURCE_DIR}/soc/stm32f4/include"
-        "${CMAKE_CURRENT_SOURCE_DIR}/soc/stm32f4/inside-include"
-        "${CMAKE_CURRENT_SOURCE_DIR}/soc/stm32f4/drivers/inc"
-    )
-endif()
+include("${CMAKE_CURRENT_SOURCE_DIR}/soc/headers.cmake")
 
 if(DEFINED CONFIG_BOARD AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/board/${CONFIG_BOARD}")
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/board/${CONFIG_BOARD}/include")

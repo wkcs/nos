@@ -37,7 +37,7 @@
 *   **Kconfig 配置:** `cmake --build --preset <board> --target menuconfig`
 
 ### 2.3 测试与验证
-*   **主机回归:** `python3 tests/run_host_regressions.py`、`python3 -m unittest discover -s tests -p 'test_*.py'` 和 `cmake -P tests/test_arch_flags.cmake`。
+*   **主机回归:** `python3 tests/run_host_regressions.py`、`python3 -m unittest discover -s tests -p 'test_*.py'`、`cmake -P tests/test_arch_flags.cmake` 和 `cmake -P tests/test_soc_headers.cmake`。
 *   **架构边界:** `python3 scripts/check_layer_deps.py`。
 *   **板级验证:** 四个预设（`nk60-v2`、`qemu-stm32`、`zj-v3`、`wl-001`）均执行 `cmake --preset <board> && cmake --build --preset <board>`，再运行 `python3 tests/qemu_stm32_smoke.py build/qemu-stm32/nos.elf`。
 *   **CI:** `.gitlab-ci.yml` 执行上述主机回归、板级构建和 QEMU 冒烟测试。
