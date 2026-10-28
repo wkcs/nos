@@ -702,6 +702,8 @@ int nos_open(const char *path, int flags, ...)
   int fd;
   int ret;
 
+  if ((flags & O_TRUNC) && (flags & O_ACCMODE) == O_RDONLY)
+    return -EINVAL;
   dentry = vfs_resolve_path(path, flags & O_CREAT);
   if (!dentry)
     return -ENOENT;
@@ -710,9 +712,11 @@ int nos_open(const char *path, int flags, ...)
     return -EACCES;
 
   if ((flags & O_TRUNC) && !S_ISDIR(dentry->d_inode->i_mode)) {
-    if (dentry->d_inode->i_op && dentry->d_inode->i_op->truncate) {
-      (void)dentry->d_inode->i_op->truncate(dentry->d_inode, 0);
-    }
+    ret = vfs_truncate_dentry(dentry, 0);
+    if (ret != 0 && !(ret == -ENOTSUP && dentry->d_sb &&
+                      dentry->d_sb->s_type &&
+                      strcmp(dentry->d_sb->s_type->name, "fatfs") == 0))
+      return ret;
   }
 
   file = kzalloc(sizeof(*file), GFP_KERNEL);
@@ -757,7 +761,8 @@ ssize_t nos_read(int fd, void *buf, size_t count)
     return -EBADF;
 
   file = open_files[fd];
-  if (!file || !file->f_op || !file->f_op->read)
+  if (!file || (file->f_flags & O_ACCMODE) == O_WRONLY ||
+      !file->f_op || !file->f_op->read)
     return -EBADF;
 
   return file->f_op->read(file, buf, count, &file->f_pos);
@@ -771,7 +776,8 @@ ssize_t nos_write(int fd, const void *buf, size_t count)
     return -EBADF;
 
   file = open_files[fd];
-  if (!file || !file->f_op || !file->f_op->write)
+  if (!file || (file->f_flags & O_ACCMODE) == O_RDONLY ||
+      !file->f_op || !file->f_op->write)
     return -EBADF;
 
   if (file->f_flags & O_APPEND) {

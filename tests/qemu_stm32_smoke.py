@@ -53,6 +53,7 @@ def main():
 
     try:
         wait_for(b"Welcome to NOS:")
+        wait_for(b"vfs_smoke OK")
         wait_for(b"nos# ")
         pos = len(output)
         proc.stdin.write(b"help\r")

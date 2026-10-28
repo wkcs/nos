@@ -48,6 +48,23 @@ static int vfs_smoke(void)
         return -EIO;
     }
 
+    fd = nos_open("/smoke.txt", O_RDONLY);
+    if (fd < 0) return fd;
+    count = nos_write(fd, "x", 1);
+    nos_close(fd);
+    if (count != -EBADF) {
+        pr_err("vfs_smoke: readonly descriptor allowed write: %d\r\n", (int)count);
+        return -EIO;
+    }
+    fd = nos_open("/smoke.txt", O_WRONLY);
+    if (fd < 0) return fd;
+    count = nos_read(fd, actual, 1);
+    nos_close(fd);
+    if (count != -EBADF || nos_open("/smoke.txt", O_RDONLY | O_TRUNC) != -EINVAL) {
+        pr_err("vfs_smoke: invalid descriptor access\r\n");
+        return -EIO;
+    }
+
     pr_info("vfs_smoke OK\r\n");
     return 0;
 }
