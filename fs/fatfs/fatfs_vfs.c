@@ -416,7 +416,7 @@ static int fatfs_file_open(struct inode *inode, struct file *file) {
     FIL *fp;
     char path[260] __attribute__((aligned(4)));
     FRESULT res;
-    BYTE mode = FA_READ | FA_WRITE;
+    BYTE mode;
 
     // Resolve path using dentry
     if (!file->f_path.dentry) {
@@ -429,19 +429,24 @@ static int fatfs_file_open(struct inode *inode, struct file *file) {
     fp = kzalloc(sizeof(FIL), GFP_KERNEL);
     if (!fp) return -ENOMEM;
 
-    if (file->f_flags & O_TRUNC) {
-        mode = FA_CREATE_ALWAYS | FA_READ | FA_WRITE;
+    switch (file->f_flags & O_ACCMODE) {
+    case O_RDONLY: mode = FA_READ; break;
+    case O_WRONLY: mode = FA_WRITE; break;
+    case O_RDWR: mode = FA_READ | FA_WRITE; break;
+    default: kfree(fp); return -EINVAL;
+    }
+    if ((file->f_flags & O_TRUNC) && (mode & FA_WRITE)) {
+        mode |= FA_CREATE_ALWAYS;
     } else if (file->f_flags & O_CREAT) {
-        mode = FA_OPEN_ALWAYS | FA_READ | FA_WRITE;
+        mode |= FA_OPEN_ALWAYS;
     }
     res = f_open(fp, path, mode);
     if (res != FR_OK) {
-        // Try read only
-        res = f_open(fp, path, FA_READ);
-        if (res != FR_OK) {
-            kfree(fp);
-            return -ENOENT;
-        }
+        kfree(fp);
+        if (res == FR_WRITE_PROTECTED) return -EROFS;
+        if (res == FR_DENIED) return -EACCES;
+        if (res == FR_NO_FILE || res == FR_NO_PATH) return -ENOENT;
+        return -EIO;
     }
     if (file->f_flags & O_TRUNC) {
         inode->i_size = 0;
