@@ -5,7 +5,7 @@ include("${CMAKE_CURRENT_SOURCE_DIR}/server/sources.cmake")
 include("${CMAKE_CURRENT_SOURCE_DIR}/shell/sources.cmake")
 include("${CMAKE_CURRENT_SOURCE_DIR}/lua/sources.cmake")
 include("${CMAKE_CURRENT_SOURCE_DIR}/lvgl/sources.cmake")
-include("${CMAKE_CURRENT_SOURCE_DIR}/sources_tests.cmake")
+include("${CMAKE_CURRENT_SOURCE_DIR}/tests/sources.cmake")
 
 if(APP_SRCS)
     add_library(nos_app OBJECT ${APP_SRCS})

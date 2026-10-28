@@ -21,7 +21,7 @@
 #include <kernel/sem.h>
 #include <kernel/list.h>
 
-#include "../fs/fatfs/ff.h"
+#include "../../fs/fatfs/ff.h"
 
 FATFS fs;					   /* FatFs文件系统对象 */
 FIL fnew;					   /* 文件对象 */
