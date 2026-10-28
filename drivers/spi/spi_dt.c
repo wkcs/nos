@@ -1,9 +1,9 @@
 /** Copyright (C) 2026 Nick Hu */
-#include <drivers/w25q_dt.h>
+#include <drivers/spi_dt.h>
 
-int w25q_dt_resolve(const struct nos_dt_node *node, struct w25q_dt_resources *out)
+int spi_dt_resolve(const struct nos_dt_node *node, struct spi_dt_resources *out)
 {
-    struct w25q_dt_resources result = { 0 };
+    struct spi_dt_resources result = { 0 };
     uint32_t chip_select;
     uint32_t phandle;
     uint32_t cells;
@@ -11,7 +11,7 @@ int w25q_dt_resolve(const struct nos_dt_node *node, struct w25q_dt_resources *ou
     size_t offset = 0;
 
     if (node == NULL || out == NULL || !nos_dt_is_available(node) ||
-        !nos_dt_is_compatible(node, "jedec,spi-nor") || node->parent < 0 ||
+        node->parent < 0 ||
         (size_t)node->parent >= nos_dt_node_count) {
         return -EINVAL;
     }

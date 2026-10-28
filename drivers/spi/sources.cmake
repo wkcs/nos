@@ -1,4 +1,7 @@
 # Sources selected for this driver class.
+if(CONFIG_SPI AND CONFIG_DEVICE_TREE)
+    list(APPEND DRIVERS_SRCS spi/spi_dt.c)
+endif()
 if(CONFIG_SPI_595)
     list(APPEND DRIVERS_SRCS spi/spi-74hc595.c)
 endif()
