@@ -37,7 +37,6 @@ CONFIG_SYSFS=y
 CONFIG_RAMDISK=y
 CONFIG_FATFS=y
 CONFIG_SPI=y
-CONFIG_QEMU_SD=y
 CONFIG_NLK_SERVER=n
 
 # Generate and validate the hardware description for QEMU.

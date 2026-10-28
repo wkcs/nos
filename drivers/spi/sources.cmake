@@ -8,7 +8,4 @@ endif()
 if(CONFIG_STM32F4_SPI OR CONFIG_STM32F1_SPI)
     list(APPEND DRIVERS_SRCS spi/spi_stm32.c)
 endif()
-if(CONFIG_QEMU_SD)
-    list(APPEND DRIVERS_SRCS spi/qemu_sd.c)
-endif()
 
