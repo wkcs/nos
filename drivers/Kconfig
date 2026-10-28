@@ -102,8 +102,10 @@ endmenu
 menu "I2C and PWM Drivers"
 
 config I2C_CORE
-	bool "I2C core support"
+	bool "I2C controller support"
 	default n
+	help
+	  Enable I2C controller drivers. The shared transaction API is header-only.
 
 config STM32PWM
 	bool "STM32 PWM driver"
