@@ -21,6 +21,7 @@ TESTS = [
     ("run_sd_spi_test.py",),
     ("run_sd_spi_init_test.py",),
     ("run_sd_spi_io_test.py",),
+    ("run_sd_csd_test.py",),
     ("run_i2c_api_test.py",),
     ("run_i2c_gpio_test.py",),
     ("run_devicetree_api_test.py",),
