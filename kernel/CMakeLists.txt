@@ -36,3 +36,10 @@ endif()
 
 add_library(nos_kernel OBJECT ${KERNEL_SRCS})
 nos_configure_kernel_target(nos_kernel)
+
+if(CONFIG_LVGL)
+    target_include_directories(nos_kernel PRIVATE
+        "${CMAKE_SOURCE_DIR}/app/lvgl/lib"
+        "${CMAKE_SOURCE_DIR}/app/lvgl"
+    )
+endif()

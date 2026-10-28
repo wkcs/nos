@@ -55,6 +55,7 @@ if(CONFIG_LUA)
         "${CMAKE_CURRENT_SOURCE_DIR}/lua/lib/luac.c"
     )
     list(APPEND APP_SRCS ${LUA_LIB_SRCS} lua/lua_test.c)
+    list(APPEND APP_PRIVATE_INCLUDES "${CMAKE_CURRENT_SOURCE_DIR}/lua/lib")
 endif()
 
 if(CONFIG_LVGL)
@@ -85,7 +86,10 @@ if(CONFIG_LVGL)
     )
     file(GLOB LVGL_MUSIC_ASSETS "${CMAKE_CURRENT_SOURCE_DIR}/lvgl/lib/demos/music/assets/*.c")
     list(APPEND APP_SRCS ${LVGL_MUSIC_ASSETS})
-    list(APPEND APP_PRIVATE_INCLUDES "${CMAKE_CURRENT_SOURCE_DIR}/lvgl")
+    list(APPEND APP_PRIVATE_INCLUDES
+        "${CMAKE_CURRENT_SOURCE_DIR}/lvgl"
+        "${CMAKE_CURRENT_SOURCE_DIR}/lvgl/lib"
+    )
 endif()
 
 if(CONFIG_TEST_APP)
