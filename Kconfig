@@ -405,10 +405,6 @@ config OLED_TEST
 	bool "Enable OLED test"
 	default n
 
-config SDCARD_TEST
-	bool "Enable SD card test"
-	default n
-
 config FATFS_TEST
 	bool "Enable FatFS test"
 	default n
