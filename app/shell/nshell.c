@@ -375,6 +375,27 @@ static int cmd_false(int argc, char *argv[])
     return 1;
 }
 
+static int cmd_history(int argc, char *argv[])
+{
+    struct nshell *shell = nshell_current();
+    unsigned int i;
+
+    if (shell == NULL) return -EINVAL;
+    if (argc == 2 && strcmp(argv[1], "-c") == 0) {
+        shell_session_history_clear(&shell->session);
+        return 0;
+    }
+    if (argc != 1) {
+        shell_printf("history: usage: history [-c]\r\n");
+        return -EINVAL;
+    }
+    for (i = 0; i < shell_session_history_count(&shell->session); i++) {
+        const char *entry = shell_session_history_get(&shell->session, i);
+        if (entry != NULL) shell_printf("%4u  %s\r\n", i + 1, entry);
+    }
+    return 0;
+}
+
 
 struct ls_context {
     struct dentry *directory;
@@ -920,6 +941,7 @@ static int nshell_init(void)
     shell_register_cmd("echo", "Print arguments", cmd_echo);
     shell_register_cmd("true", "Return success", cmd_true);
     shell_register_cmd("false", "Return failure", cmd_false);
+    shell_register_cmd("history", "Show or clear command history", cmd_history);
     shell_register_cmd("log", "Toggle kernel log (on/off)", cmd_log);
     shell_register_cmd("ls", "List directory", cmd_ls);
     shell_register_cmd("cd", "Change directory", cmd_cd);
