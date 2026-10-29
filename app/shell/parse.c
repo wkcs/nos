@@ -236,30 +236,36 @@ int shell_parse_redirect_quoted(char *line, char **argv, int capacity,
         while (*read == ' ' || *read == '\t') read++;
         if (*read == '\0') break;
         if (read[0] == '2' && read[1] == '>') {
-            if (expect_path || redir->error_path != NULL || redir->error_to_output) return -1;
+            if (expect_path) return -1;
             if (redir->count >= sizeof(redir->order)) return -1;
-            redir->order[redir->count++] = SHELL_REDIRECT_ERROR;
+            redir->order[redir->count] = SHELL_REDIRECT_ERROR;
+            redir->ops[redir->count] = (struct shell_redirection_op){ .kind = SHELL_REDIRECT_ERROR };
+            redir->count++;
             read += 2;
             if (read[0] == '&') {
                 if (read[1] != '1' || (read[2] != '\0' && read[2] != ' ' &&
                     read[2] != '\t' && read[2] != '<' && read[2] != '>')) return -1;
                 read += 2;
                 redir->error_to_output = true;
+                redir->ops[redir->count - 1].to_output = true;
                 continue;
             }
             redir->error_append = *read == '>';
+            redir->ops[redir->count - 1].append = redir->error_append;
             if (redir->error_append) read++;
             expect_path = 3;
             continue;
         }
         if (*read == '>' || *read == '<') {
             char op = *read++;
-            if (expect_path || (op == '>' && redir->path != NULL) ||
-                (op == '<' && redir->input_path != NULL)) return -1;
+            if (expect_path) return -1;
             if (redir->count >= sizeof(redir->order)) return -1;
-            redir->order[redir->count++] = op == '>' ? SHELL_REDIRECT_OUTPUT : SHELL_REDIRECT_INPUT;
+            redir->order[redir->count] = op == '>' ? SHELL_REDIRECT_OUTPUT : SHELL_REDIRECT_INPUT;
+            redir->ops[redir->count] = (struct shell_redirection_op){ .kind = redir->order[redir->count] };
+            redir->count++;
             if (op == '>') {
                 redir->append = *read == '>';
+                redir->ops[redir->count - 1].append = redir->append;
                 if (redir->append) read++;
                 expect_path = 1;
             } else {
@@ -298,12 +304,15 @@ int shell_parse_redirect_quoted(char *line, char **argv, int capacity,
         *write++ = '\0';
         if (expect_path == 1) {
             redir->path = word;
+            redir->ops[redir->count - 1].path = word;
             expect_path = 0;
         } else if (expect_path == 2) {
             redir->input_path = word;
+            redir->ops[redir->count - 1].path = word;
             expect_path = 0;
         } else if (expect_path == 3) {
             redir->error_path = word;
+            redir->ops[redir->count - 1].path = word;
             expect_path = 0;
         } else {
             if (argc >= capacity - 1) return -1;
