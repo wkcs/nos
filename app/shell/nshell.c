@@ -27,6 +27,7 @@
 #include <stdarg.h>
 #include "parse.h"
 #include "glob_vfs.h"
+#include "path.h"
 #include "test_expr.h"
 #include "printf_cmd.h"
 #include "pipe.h"
@@ -1255,6 +1256,36 @@ static int cmd_cat(int argc, char *argv[])
         }
     }
     return status;
+}
+
+static int cmd_path_part(int argc, char *argv[], bool basename)
+{
+    int first = 1;
+    const char *part;
+    size_t length;
+    if (first < argc && strcmp(argv[first], "--") == 0) first++;
+    else if (first < argc && argv[first][0] == '-' && argv[first][1] != '\0') {
+        shell_error("%s: invalid option: %s\r\n", argv[0], argv[first]);
+        return 1;
+    }
+    if (argc - first < 1 || argc - first > (basename ? 2 : 1)) {
+        shell_error("%s: invalid operands\r\n", argv[0]);
+        return 1;
+    }
+    part = basename ? shell_path_basename(argv[first], argc - first == 2 ? argv[first + 1] : NULL, &length) :
+                      shell_path_dirname(argv[first], &length);
+    if (nshell_write(part, (int)length) != (int)length) return 1;
+    return shell_printf("\r\n") < 0 ? 1 : 0;
+}
+
+static int cmd_basename(int argc, char *argv[])
+{
+    return cmd_path_part(argc, argv, true);
+}
+
+static int cmd_dirname(int argc, char *argv[])
+{
+    return cmd_path_part(argc, argv, false);
 }
 
 struct wc_counts {
@@ -2512,6 +2543,8 @@ static int nshell_init(void)
     shell_register_cmd("pwd", "Print working directory", cmd_pwd);
     shell_register_cmd("mkdir", "Make directory", cmd_mkdir);
     shell_register_cmd("cat", "Concatenate file", cmd_cat);
+    shell_register_cmd("basename", "Strip directory and suffix", cmd_basename);
+    shell_register_cmd("dirname", "Strip final path component", cmd_dirname);
     shell_register_cmd("cp", "Copy files", cmd_cp);
     shell_register_cmd("wc", "Count lines, words and bytes", cmd_wc);
     shell_register_cmd("head", "Print the start of files", cmd_head);
