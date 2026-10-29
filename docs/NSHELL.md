@@ -26,7 +26,8 @@ redirection paths; a backslash can protect the dollar sign. All stages of a
 pipeline see the status from before that pipeline.
 
 Session variables can be assigned with commands such as `NAME='hello world'`
-and expanded as `$NAME` or `${NAME}`. Unquoted expansions
+and expanded as `$NAME` or `${NAME}`. `${#NAME}` expands to the byte length
+of a value (zero for an unset variable). Unquoted expansions
 are split on spaces and tabs; double quotes preserve the value as one argument,
 and single quotes suppress expansion. `export NAME[=value]` marks variables for
 export, and `unset [-v] NAME...` removes them. Sessions do not share variables;
