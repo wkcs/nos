@@ -607,15 +607,20 @@ int vfs_rename_entry(struct dentry *old_dir, const char *old_name,
     if (old_dir->d_sb != new_dir->d_sb) {
         return -EXDEV;
     }
-    if (old_dir->d_inode->i_op == NULL ||
-        old_dir->d_inode->i_op->rename == NULL) {
-        return -EROFS;
-    }
     old_len = (unsigned int)strlen(old_name);
     new_len = (unsigned int)strlen(new_name);
     if (old_len == 0U || old_len >= FS_NAME_LEN ||
         new_len == 0U || new_len >= FS_NAME_LEN) {
         return -ENAMETOOLONG;
+    }
+    if (old_dir == new_dir && strcmp(old_name, new_name) == 0) {
+        struct qstr name = { .name = (const unsigned char *)old_name,
+                             .len = old_len, .hash = 0 };
+        return vfs_lookup(old_dir, &name) != NULL ? 0 : -ENOENT;
+    }
+    if (old_dir->d_inode->i_op == NULL ||
+        old_dir->d_inode->i_op->rename == NULL) {
+        return -EROFS;
     }
 
     memset(&old_temp, 0, sizeof(old_temp));

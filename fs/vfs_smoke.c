@@ -47,6 +47,11 @@ static int vfs_smoke(void)
         pr_err("vfs_smoke: readback mismatch\r\n");
         return -EIO;
     }
+    if (nos_rename("/smoke.txt", "/smoke.txt") != 0 ||
+        nos_rename("/vfs-no-such-file", "/vfs-no-such-file") != -ENOENT) {
+        pr_err("vfs_smoke: same-path rename failed\r\n");
+        return -EIO;
+    }
 
     fd = nos_open("/smoke.txt", O_RDONLY);
     if (fd < 0) return fd;
