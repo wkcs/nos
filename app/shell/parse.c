@@ -40,6 +40,7 @@ const char *shell_assignment_at(const char *source, int index, size_t *length)
     while (*source != '\0') {
         const char *start;
         while (*source == ' ' || *source == '\t') source++;
+        if (source[0] == '2' && source[1] == '>') source++;
         if (*source == '<' || *source == '>') {
             char op = *source++;
             if (op == '>' && *source == '>') source++;
@@ -93,6 +94,11 @@ int shell_expand_parameters(const char *source, char *output, size_t size, int s
     number[digits] = '\0';
     while (*source != '\0') {
         char c = *source++;
+        if (word_start && quote == 0 && c == '2' && *source == '>') {
+            if (append_char(output, size, &used, c)) return -1;
+            word_start = 0;
+            continue;
+        }
         if (word_start && quote == 0 && c != ' ' && c != '\t' && c != '<' && c != '>') {
             redir_word = redir_pending;
             redir_pending = 0;
@@ -204,11 +210,23 @@ int shell_parse_redirect(char *line, char **argv, int capacity,
     redir->input_path = NULL;
     redir->path = NULL;
     redir->append = false;
+    redir->error_path = NULL;
+    redir->error_append = false;
+    redir->error_first = false;
     while (*read != '\0') {
         char quote = 0;
         char *word;
         while (*read == ' ' || *read == '\t') read++;
         if (*read == '\0') break;
+        if (read[0] == '2' && read[1] == '>') {
+            if (expect_path || redir->error_path != NULL) return -1;
+            read += 2;
+            redir->error_first = redir->path == NULL;
+            redir->error_append = *read == '>';
+            if (redir->error_append) read++;
+            expect_path = 3;
+            continue;
+        }
         if (*read == '>' || *read == '<') {
             char op = *read++;
             if (expect_path || (op == '>' && redir->path != NULL) ||
@@ -250,6 +268,9 @@ int shell_parse_redirect(char *line, char **argv, int capacity,
             expect_path = 0;
         } else if (expect_path == 2) {
             redir->input_path = word;
+            expect_path = 0;
+        } else if (expect_path == 3) {
+            redir->error_path = word;
             expect_path = 0;
         } else {
             if (argc >= capacity - 1) return -1;

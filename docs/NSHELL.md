@@ -5,7 +5,9 @@ session has its own current directory, command history, status, and I/O state.
 The `help` command lists the built-in commands.
 
 The parser supports single and double quotes, backslash escapes, command lists
-(`;`, `&&`, `||`), pipelines (`|`), and file redirections (`<`, `>`, `>>`).
+(`;`, `&&`, `||`), pipelines (`|`), and file redirections (`<`, `>`, `>>`,
+`2>`, `2>>`). Standard error redirection covers shell and built-in diagnostics;
+descriptor duplication such as `2>&1` is not yet supported.
 Input redirection is consumed by `cat`, `wc`, and `grep`; these also read standard input
 when passed `-`. Output redirection and pipelines apply to built-in command
 output.
