@@ -62,3 +62,9 @@ larger than available heap memory fail with an error rather than being truncated
 64-bit integer comparisons, `-e`, `-f`, `-d`, `-s`, negation, parentheses, and
 the `-a` / `-o` operators. Other Unix file predicates are not implemented.
 Malformed expressions and out-of-range integers return status 2.
+
+`printf` supports `%s`, `%c`, `%b`, `%d`, `%i`, `%u`, `%o`, `%x`, `%X`,
+`%%`, format reuse, and common backslash escapes. Numeric and string field
+widths and precisions are limited to 256; `%b` field widths and precisions,
+floating-point conversions, and dynamic `*` widths are not implemented. Invalid
+formats, numbers, and output failures return a nonzero status.
