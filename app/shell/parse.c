@@ -40,6 +40,12 @@ const char *shell_assignment_at(const char *source, int index, size_t *length)
     while (*source != '\0') {
         const char *start;
         while (*source == ' ' || *source == '\t') source++;
+        if (strncmp(source, "2>&1", 4) == 0 &&
+            (source[4] == '\0' || source[4] == ' ' || source[4] == '\t' ||
+             source[4] == '<' || source[4] == '>')) {
+            source += 4;
+            continue;
+        }
         if (source[0] == '2' && source[1] == '>') source++;
         if (*source == '<' || *source == '>') {
             char op = *source++;
@@ -94,6 +100,16 @@ int shell_expand_parameters(const char *source, char *output, size_t size, int s
     number[digits] = '\0';
     while (*source != '\0') {
         char c = *source++;
+        if (word_start && quote == 0 && c == '2' && strncmp(source, ">&1", 3) == 0 &&
+            (source[3] == '\0' || source[3] == ' ' || source[3] == '\t' ||
+             source[3] == '<' || source[3] == '>')) {
+            if (append_char(output, size, &used, '2') ||
+                append_char(output, size, &used, '>') ||
+                append_char(output, size, &used, '&') ||
+                append_char(output, size, &used, '1')) return -1;
+            source += 3;
+            continue;
+        }
         if (word_start && quote == 0 && c == '2' && *source == '>') {
             if (append_char(output, size, &used, c)) return -1;
             word_start = 0;
@@ -213,15 +229,23 @@ int shell_parse_redirect(char *line, char **argv, int capacity,
     redir->error_path = NULL;
     redir->error_append = false;
     redir->error_first = false;
+    redir->error_to_output = false;
     while (*read != '\0') {
         char quote = 0;
         char *word;
         while (*read == ' ' || *read == '\t') read++;
         if (*read == '\0') break;
         if (read[0] == '2' && read[1] == '>') {
-            if (expect_path || redir->error_path != NULL) return -1;
+            if (expect_path || redir->error_path != NULL || redir->error_to_output) return -1;
             read += 2;
             redir->error_first = redir->path == NULL;
+            if (read[0] == '&') {
+                if (read[1] != '1' || (read[2] != '\0' && read[2] != ' ' &&
+                    read[2] != '\t' && read[2] != '<' && read[2] != '>')) return -1;
+                read += 2;
+                redir->error_to_output = true;
+                continue;
+            }
             redir->error_append = *read == '>';
             if (redir->error_append) read++;
             expect_path = 3;
@@ -308,6 +332,11 @@ int shell_split_commands(char *line, struct shell_command *commands, int capacit
         } else if (c == '"' && quote != '\'') {
             quote = quote == '"' ? 0 : '"';
             word = 1;
+        } else if (quote == 0 && c == '&' && p > line && p[-1] == '>' && p[1] == '1' &&
+                   (p[2] == '\0' || p[2] == ' ' || p[2] == '\t' || p[2] == '<' ||
+                    p[2] == '>' || p[2] == ';' || p[2] == '|' || p[2] == '&')) {
+            p += 2;
+            continue;
         } else if (quote == 0 && (c == ';' || c == '&' || c == '|')) {
             enum shell_condition next;
             int length = 1;

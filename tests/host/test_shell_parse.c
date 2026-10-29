@@ -38,6 +38,9 @@ int main(void)
     char missing_input[] = "cat <";
     char stderr_redirect[] = "cat 2>>errors >output";
     char separate_two[] = "echo 2 >output";
+    char dup_after[] = "ls >output 2>&1";
+    char dup_before[] = "ls 2>&1 >output";
+    char dup_list[] = "ls 2>&1 | cat";
     int argc;
 
     argc = shell_parse_redirect(stderr_redirect, argv, 8, &redir);
@@ -46,6 +49,11 @@ int main(void)
     assert(strcmp(redir.path, "output") == 0 && redir.error_first);
     argc = shell_parse_redirect(separate_two, argv, 8, &redir);
     assert(argc == 2 && strcmp(argv[1], "2") == 0 && redir.error_path == NULL);
+    argc = shell_parse_redirect(dup_after, argv, 8, &redir);
+    assert(argc == 1 && redir.error_to_output && !redir.error_first);
+    argc = shell_parse_redirect(dup_before, argv, 8, &redir);
+    assert(argc == 1 && redir.error_to_output && redir.error_first);
+    assert(shell_split_commands(dup_list, commands, 8) == 2);
 
     {
         char *positive[] = { "-f", "file" };
@@ -78,6 +86,7 @@ int main(void)
     assert(shell_count_assignments("'A=1'") == 0);
     assert(shell_count_assignments("$V") == 0);
     assert(shell_count_assignments("> 'my file' A=1 < input B=$V echo ok") == 2);
+    assert(shell_count_assignments("2>&1 A=1 echo ok") == 1);
     {
         size_t length;
         const char *word = shell_assignment_at("A='one two' B=$V", 1, &length);
@@ -126,6 +135,10 @@ int main(void)
         expanded_argc = shell_parse_redirect(expanded, argv, 8, &redir);
         assert(expanded_argc == 1 && strcmp(argv[0], "A=one two;\"$") == 0);
         assert(strcmp(redir.error_path, "one two;\"$") == 0);
+        assert(shell_expand_parameters("2>&1 A=$V", expanded, sizeof(expanded), 0, lookup, NULL) == 0);
+        expanded_argc = shell_parse_redirect(expanded, argv, 8, &redir);
+        assert(expanded_argc == 1 && redir.error_to_output &&
+               strcmp(argv[0], "A=one two;\"$") == 0);
         assert(shell_expand_parameters("echo > $MISSING suffix", expanded, sizeof(expanded),
                                        0, lookup, NULL) == 0);
         expanded_argc = shell_parse_redirect(expanded, argv, 8, &redir);
