@@ -613,6 +613,8 @@ static void task_free(struct task_struct *task)
     nos_cap_table_destroy(&task->cap_table);
     pid_free(task->pid);
     free_task_stack(task->stack_alloc);
+    task->stack_alloc = NULL;
+    if (task->cleanup != NULL) task->cleanup(task);
     kfree(task);
 }
 

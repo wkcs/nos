@@ -40,6 +40,7 @@ struct task_struct {
     uint32_t  init_tick;
     uint32_t  remaining_tick;
 
+    /* Invoked by the reaper after the task's stack and PID are released. */
     void (*cleanup)(struct task_struct *task);
 
     uint8_t init_priority;

@@ -36,6 +36,11 @@ static void pipe_test_file_stack(void *context)
     }
     if (task_stack_max_used(task_current()) == 0)
         __atomic_store_n(&test_failed, 1U, __ATOMIC_RELAXED);
+}
+
+static void pipe_test_file_cleanup(struct task_struct *task)
+{
+    if (task->stack_alloc != NULL) __atomic_store_n(&test_failed, 1U, __ATOMIC_RELAXED);
     pipe_test_complete();
 }
 
@@ -94,7 +99,7 @@ static int pipe_test_start(void)
     if (shell_stream_pipe_init(&test_pipe) != 0 || shell_stream_pipe_init(&closed_pipe) != 0) return -EINVAL;
     writer = task_create("pipe_test_writer", pipe_test_writer, NULL, 5, 1024, 10, NULL);
     reader = task_create("pipe_test_reader", pipe_test_reader, NULL, 5, 1024, 10, NULL);
-    file = task_create("pipe_test_file", pipe_test_file_stack, NULL, 5, 2048, 10, NULL);
+    file = task_create("pipe_test_file", pipe_test_file_stack, NULL, 5, 2048, 10, pipe_test_file_cleanup);
     if (writer == NULL || reader == NULL || file == NULL) {
         if (writer != NULL) task_del(writer);
         if (reader != NULL) task_del(reader);
