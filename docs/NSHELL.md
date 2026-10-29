@@ -13,6 +13,7 @@ Repeated redirections are applied left to right, with a limit of 16 per command.
 Input redirection is consumed by `cat`, `wc`, and `grep`; these also read standard input
 when passed `-`. Output redirection and pipelines apply to built-in command
 output.
+`cat` accepts `-u` and `--`; its output is already written without stdio buffering.
 Redirections can appear without a command or between leading assignments;
 their expanded paths are treated as single operands, including spaces.
 

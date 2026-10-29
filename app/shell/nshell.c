@@ -1229,11 +1229,26 @@ static int cat_file(const char *path)
 
 static int cmd_cat(int argc, char *argv[])
 {
+    int first = 1;
     int i;
     int status = 0;
 
-    if (argc < 2) return cat_stdin();
-    for (i = 1; i < argc; i++) {
+    while (first < argc && argv[first][0] == '-' && argv[first][1] != '\0') {
+        const char *option = argv[first] + 1;
+        if (strcmp(option, "-") == 0) {
+            first++;
+            break;
+        }
+        while (*option != '\0') {
+            if (*option++ != 'u') {
+                shell_error("cat: invalid option: %s\r\n", argv[first]);
+                return 1;
+            }
+        }
+        first++;
+    }
+    if (first == argc) return cat_stdin();
+    for (i = first; i < argc; i++) {
         int rc = strcmp(argv[i], "-") == 0 ? cat_stdin() : cat_file(argv[i]);
         if (rc < 0) {
             status = rc;
