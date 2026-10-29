@@ -24,6 +24,18 @@ int main(void)
     char missing_input[] = "cat <";
     int argc = shell_parse_line(line, argv, 8);
 
+    {
+        char expanded[64];
+        assert(shell_expand_status("$? '${?}' \"$?\" \\$? ${?}", expanded,
+                                   sizeof(expanded), 127) == 0);
+        assert(strcmp(expanded, "127 '${?}' \"127\" \\$? 127") == 0);
+        assert(shell_expand_status("$?", expanded, 4, -1) == 0);
+        assert(strcmp(expanded, "255") == 0);
+        assert(shell_expand_status("$?", expanded, 3, -1) < 0);
+        assert(shell_expand_status("${?", expanded, sizeof(expanded), 1) == 0);
+        assert(strcmp(expanded, "${?") == 0);
+    }
+
     assert(argc == 5);
     assert(strcmp(argv[1], "hello world") == 0);
     assert(strcmp(argv[2], "") == 0);

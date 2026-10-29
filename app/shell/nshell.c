@@ -1395,12 +1395,14 @@ static void nshell_exec_cmd(struct nshell *shell)
     char *argv[MAX_ARGS + 1];
     struct shell_parse_workspace {
         char check[SHELL_SESSION_INPUT_MAX + 1];
+        char expanded[SHELL_SESSION_INPUT_MAX + 1];
         struct shell_command commands[16];
     } *workspace;
     struct shell_redirection redir;
     int count;
     int i;
     bool skip_pipeline = false;
+    int pipeline_status = shell->last_status;
 
     if (shell->session.input_len == 0 && strlen(shell->session.input) == 0)
         return;
@@ -1431,13 +1433,21 @@ static void nshell_exec_cmd(struct nshell *shell)
         struct shell_cmd *curr = cmd_list;
         int argc;
         if (workspace->commands[i].condition != SHELL_PIPE) {
+            pipeline_status = shell->last_status;
             skip_pipeline = (workspace->commands[i].condition == SHELL_ON_SUCCESS && shell->last_status != 0) ||
                             (workspace->commands[i].condition == SHELL_ON_FAILURE && shell->last_status == 0);
         }
         if (skip_pipeline) {
             continue;
         }
-        argc = shell_parse_redirect(workspace->commands[i].text, argv, MAX_ARGS + 1, &redir);
+        if (shell_expand_status(workspace->commands[i].text, workspace->expanded,
+                                sizeof(workspace->expanded), pipeline_status) != 0) {
+            shell_error("shell: expanded command too long\r\n");
+            shell->last_status = 1;
+            skip_pipeline = true;
+            goto next_command;
+        }
+        argc = shell_parse_redirect(workspace->expanded, argv, MAX_ARGS + 1, &redir);
         if (argc <= 0) continue;
         shell->output_error = 0;
         if (i + 1 < count && workspace->commands[i + 1].condition == SHELL_PIPE) {

@@ -17,7 +17,12 @@ is not a POSIX streaming pipe: commands that require concurrent producer and
 consumer execution, or more than 4096 bytes of intermediate data, are not yet
 supported. Pipeline buffers use heap memory and allocation can fail.
 
-The shell is not yet POSIX conformant. Variable and pathname expansion,
+The status of the preceding command or pipeline is available as `$?` or
+`${?}`. It expands outside single quotes, including in double quotes and
+redirection paths; a backslash can protect the dollar sign. All stages of a
+pipeline see the status from before that pipeline.
+
+The shell is not yet POSIX conformant. General variable and pathname expansion,
 subshells, external processes, job control, and a complete standard error
 stream remain to be implemented. Some NOS-specific commands and VFS behavior
 also differ from Unix. Avoid using destructive operations until VFS object
