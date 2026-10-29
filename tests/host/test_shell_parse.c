@@ -35,6 +35,11 @@ int main(void)
     assert(shell_count_assignments("A=1 echo hi") == 1);
     assert(shell_count_assignments("'A=1'") == 0);
     assert(shell_count_assignments("$V") == 0);
+    {
+        size_t length;
+        const char *word = shell_assignment_at("A='one two' B=$V", 1, &length);
+        assert(word != NULL && length == 4 && memcmp(word, "B=$V", length) == 0);
+    }
 
     {
         char expanded[64];

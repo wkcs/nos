@@ -67,6 +67,12 @@ struct shell_variable {
     char name[];
 };
 
+struct shell_saved_variable {
+    const char *name;
+    size_t length;
+    struct shell_variable *old;
+};
+
 struct nshell {
     struct task_struct *task;
     struct shell_session session;
@@ -135,6 +141,45 @@ static int variable_set(struct nshell *shell, const char *name, size_t length,
     *slot = var;
     if (old != NULL) kfree(old);
     return 0;
+}
+
+static int variable_push(struct nshell *shell, const char *name, size_t length,
+                         const char *value, struct shell_saved_variable *saved)
+{
+    struct shell_variable **slot = variable_slot(shell, name, length);
+    struct shell_variable *old = *slot;
+    size_t value_len = strlen(value);
+    struct shell_variable *var = kmalloc(sizeof(*var) + length + value_len + 2, GFP_KERNEL);
+
+    if (var == NULL) return -ENOMEM;
+    saved->name = name;
+    saved->length = length;
+    saved->old = old;
+    var->next = old != NULL ? old->next : NULL;
+    var->exported = true;
+    memcpy(var->name, name, length);
+    var->name[length] = '\0';
+    var->value = var->name + length + 1;
+    memcpy(var->value, value, value_len + 1);
+    *slot = var;
+    return 0;
+}
+
+static void variable_restore(struct nshell *shell, struct shell_saved_variable *saved, int count)
+{
+    while (count-- > 0) {
+        struct shell_saved_variable *entry = &saved[count];
+        struct shell_variable **slot = variable_slot(shell, entry->name, entry->length);
+        struct shell_variable *active = *slot;
+        struct shell_variable *next = active != NULL ? active->next : NULL;
+        if (entry->old != NULL) {
+            entry->old->next = next;
+            *slot = entry->old;
+        } else {
+            *slot = next;
+        }
+        if (active != NULL) kfree(active);
+    }
 }
 
 #ifdef CONFIG_NLK_SERVER
@@ -1526,7 +1571,9 @@ static void nshell_exec_cmd(struct nshell *shell)
     struct shell_parse_workspace {
         char check[SHELL_SESSION_INPUT_MAX + 1];
         char expanded[SHELL_SESSION_INPUT_MAX + 1];
+        char assignment_expanded[SHELL_SESSION_INPUT_MAX + 1];
         struct shell_command commands[16];
+        struct shell_saved_variable saved[MAX_ARGS];
     } *workspace;
     struct shell_redirection redir;
     int count;
@@ -1561,7 +1608,10 @@ static void nshell_exec_cmd(struct nshell *shell)
     }
     for (i = 0; i < count; i++) {
         struct shell_cmd *curr = cmd_list;
+        int saved_count = 0;
         bool assignment_only = false;
+        bool assignment_error = false;
+        int assignments;
         int argc;
         if (workspace->commands[i].condition != SHELL_PIPE) {
             pipeline_status = shell->last_status;
@@ -1616,40 +1666,67 @@ static void nshell_exec_cmd(struct nshell *shell)
                 goto next_command;
             }
         }
+        assignments = shell_count_assignments(workspace->commands[i].text);
+        if (assignments > argc) assignments = argc;
+        assignment_only = assignments == argc;
         {
-            int assignments = 0;
-            while (assignments < argc) {
-                char *equals = strchr(argv[assignments], '=');
-                if (equals == NULL || !variable_name_valid(argv[assignments],
-                        (size_t)(equals - argv[assignments]))) break;
-                assignments++;
-            }
-            if (assignments == argc &&
-                shell_count_assignments(workspace->commands[i].text) == argc) {
-                int j;
-                shell->last_status = 0;
-                for (j = 0; j < argc; j++) {
-                    char *equals = strchr(argv[j], '=');
-                    if (variable_set(shell, argv[j], (size_t)(equals - argv[j]), equals + 1, false) != 0) {
-                        shell_error("shell: assignment failed\r\n");
-                        shell->last_status = 1;
-                        break;
+            bool persistent = assignment_only ||
+                strcmp(argv[assignments], "export") == 0 ||
+                strcmp(argv[assignments], "unset") == 0;
+            int j;
+            for (j = 0; j < assignments; j++) {
+                char *equals = strchr(argv[j], '=');
+                const char *word;
+                char *assignment_argv[2];
+                struct shell_redirection assignment_redir;
+                size_t word_len;
+                int rc;
+                word = shell_assignment_at(workspace->commands[i].text, j, &word_len);
+                if (word == NULL || word_len > SHELL_SESSION_INPUT_MAX || equals == NULL ||
+                    !variable_name_valid(argv[j], (size_t)(equals - argv[j]))) {
+                    rc = -EINVAL;
+                } else {
+                    char *value;
+                    memcpy(workspace->check, word, word_len);
+                    workspace->check[word_len] = '\0';
+                    rc = shell_expand_parameters(workspace->check, workspace->assignment_expanded,
+                                                sizeof(workspace->assignment_expanded), pipeline_status,
+                                                variable_lookup, shell);
+                    if (rc == 0 && shell_parse_redirect(workspace->assignment_expanded,
+                            assignment_argv, 2, &assignment_redir) == 1 &&
+                        (value = strchr(assignment_argv[0], '=')) != NULL) {
+                        if (persistent) {
+                            rc = variable_set(shell, argv[j], (size_t)(equals - argv[j]), value + 1, false);
+                        } else {
+                            rc = variable_push(shell, argv[j], (size_t)(equals - argv[j]), value + 1,
+                                               &workspace->saved[saved_count]);
+                            if (rc == 0) saved_count++;
+                        }
+                    } else {
+                        rc = -EINVAL;
                     }
                 }
-                assignment_only = true;
+                if (rc != 0) {
+                    shell_error("shell: assignment failed\r\n");
+                    shell->last_status = 1;
+                    assignment_error = true;
+                    break;
+                }
             }
         }
-        while (!assignment_only && curr != NULL) {
-            if (strcmp(curr->name, argv[0]) == 0) {
-                shell->last_status = curr->func(argc, argv);
+        if (assignment_only && !assignment_error) shell->last_status = 0;
+        while (!assignment_only && !assignment_error && curr != NULL) {
+            if (strcmp(curr->name, argv[assignments]) == 0) {
+                shell->last_status = curr->func(argc - assignments, argv + assignments);
                 break;
             }
             curr = curr->next;
         }
-        if (!assignment_only && curr == NULL) {
-            shell_error("%s: command not found\r\n", argv[0]);
+        if (!assignment_only && !assignment_error && curr == NULL) {
+            shell_error("%s: command not found\r\n", argv[assignments]);
             shell->last_status = 127;
         }
+        variable_restore(shell, workspace->saved, saved_count);
         nshell_close_input(shell);
         if (shell->output_file != NULL) {
             struct file *file = shell->output_file;
