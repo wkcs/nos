@@ -111,12 +111,14 @@ void shell_session_reset(struct shell_session *session, struct dentry *cwd)
 }
 
 void shell_session_init(struct shell_session *session, struct nos_tty *tty,
-                        struct dentry *cwd)
+                        struct dentry *cwd,
+                        char history[SHELL_SESSION_HISTORY_MAX][SHELL_SESSION_INPUT_MAX + 1])
 {
     if (session == NULL) {
         return;
     }
     memset(session, 0, sizeof(*session));
+    session->history = history;
     session->tty = tty;
     session->writer = NULL;
     session->writer_context = NULL;
@@ -139,7 +141,8 @@ void shell_session_history_clear(struct shell_session *session)
     if (session == NULL) {
         return;
     }
-    memset(session->history, 0, sizeof(session->history));
+    if (session->history != NULL)
+        memset(session->history, 0, SHELL_SESSION_HISTORY_MAX * sizeof(*session->history));
     session->history_count = 0U;
     session->history_head = 0U;
     session->history_index = -1;
@@ -155,7 +158,7 @@ const char *shell_session_history_get(const struct shell_session *session,
 {
     unsigned int slot;
 
-    if (session == NULL || index >= session->history_count) {
+    if (session == NULL || session->history == NULL || index >= session->history_count) {
         return NULL;
     }
     if (session->history_count < SHELL_SESSION_HISTORY_MAX) {
@@ -172,7 +175,7 @@ void shell_session_history_add(struct shell_session *session, const char *line)
     const char *last;
     unsigned int slot;
 
-    if (session == NULL || line == NULL) {
+    if (session == NULL || session->history == NULL || line == NULL) {
         return;
     }
     while (*p == ' ' || *p == '\t') {

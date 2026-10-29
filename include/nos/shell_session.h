@@ -31,7 +31,7 @@ struct shell_session {
     bool after_cr;
     bool overflow;
     char prompt[SHELL_SESSION_PROMPT_MAX];
-    char history[SHELL_SESSION_HISTORY_MAX][SHELL_SESSION_INPUT_MAX + 1];
+    char (*history)[SHELL_SESSION_INPUT_MAX + 1];
     char saved_input[SHELL_SESSION_INPUT_MAX + 1];
     unsigned int history_count;
     unsigned int history_head;
@@ -42,8 +42,10 @@ struct shell_session {
     void *completer_context;
 };
 
+/* History storage is caller-owned and must outlive the session; NULL disables it. */
 void shell_session_init(struct shell_session *session, struct nos_tty *tty,
-                        struct dentry *cwd);
+                        struct dentry *cwd,
+                        char history[SHELL_SESSION_HISTORY_MAX][SHELL_SESSION_INPUT_MAX + 1]);
 void shell_session_reset(struct shell_session *session, struct dentry *cwd);
 void shell_session_set_prompt(struct shell_session *session, const char *prompt);
 const char *shell_session_get_prompt(const struct shell_session *session);

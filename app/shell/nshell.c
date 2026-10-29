@@ -28,6 +28,7 @@
 #include "parse.h"
 #include "test_expr.h"
 #include "printf_cmd.h"
+#include "pipe.h"
 #ifdef CONFIG_NLK_SERVER
 #include <nos/nlk_core.h>
 #include <nos/nlk_caps.h>
@@ -39,7 +40,6 @@
 #define SHELL_PROMPT "nos# "
 #define CMD_MAX_LEN 256
 #define MAX_ARGS 16
-#define SHELL_PIPE_CAPACITY 4096U
 
 /* Define command function type */
 typedef int (*cmd_func_t)(int argc, char *argv[]);
@@ -55,12 +55,6 @@ struct shell_cmd {
 static struct shell_cmd *cmd_list = NULL;
 
 #define SHELL_CMD_STR_MAX SHELL_SESSION_INPUT_MAX
-
-struct shell_pipe_buffer {
-    size_t len;
-    size_t pos;
-    char data[SHELL_PIPE_CAPACITY];
-};
 
 struct shell_variable {
     struct shell_variable *next;
@@ -80,18 +74,38 @@ struct nshell {
     struct shell_session session;
     struct nshell *next;
     bool remote;
+    bool pipeline_worker;
     bool ls_long_format;
     int last_status;
     struct file *input_file;
     struct file *output_file;
-    struct shell_pipe_buffer *pipe_input;
-    struct shell_pipe_buffer *pipe_output;
+    struct shell_stream_pipe *pipe_input;
+    struct shell_stream_pipe *pipe_output;
     int output_error;
     struct shell_variable *variables;
     uint32_t generation;
 };
 
 static struct nshell *shell_sessions;
+static SPINLOCK(shell_sessions_lock);
+
+static void shell_session_register(struct nshell *shell)
+{
+    spin_lock(&shell_sessions_lock);
+    shell->next = shell_sessions;
+    shell_sessions = shell;
+    spin_unlock(&shell_sessions_lock);
+}
+
+static void shell_session_unregister(struct nshell *shell)
+{
+    struct nshell **slot;
+    spin_lock(&shell_sessions_lock);
+    slot = &shell_sessions;
+    while (*slot != NULL && *slot != shell) slot = &(*slot)->next;
+    if (*slot != NULL) *slot = shell->next;
+    spin_unlock(&shell_sessions_lock);
+}
 
 static bool variable_name_valid(const char *name, size_t length)
 {
@@ -213,10 +227,12 @@ static int variable_init(struct nshell *shell)
 static struct nshell *nshell_current(void)
 {
     struct nshell *shell;
+    spin_lock(&shell_sessions_lock);
     for (shell = shell_sessions; shell != NULL; shell = shell->next) {
-        if (shell->task == task_current()) return shell;
+        if (shell->task == task_current()) break;
     }
-    return NULL;
+    spin_unlock(&shell_sessions_lock);
+    return shell;
 }
 
 /* --- Helper Functions from kernel/shell.c --- */
@@ -282,14 +298,9 @@ static int nshell_write(const char *buf, int len)
         return total;
     }
     if (shell->pipe_output != NULL) {
-        struct shell_pipe_buffer *pipe = shell->pipe_output;
-        if ((size_t)len > sizeof(pipe->data) - pipe->len) {
-            shell->output_error = -ENOSPC;
-            return -ENOSPC;
-        }
-        memcpy(pipe->data + pipe->len, buf, (size_t)len);
-        pipe->len += (size_t)len;
-        return len;
+        int rc = shell_stream_pipe_write(shell->pipe_output, buf, (size_t)len);
+        if (rc < 0) shell->output_error = rc;
+        return rc;
     }
     return shell_session_write(&shell->session, buf, (unsigned int)len);
 }
@@ -704,7 +715,13 @@ static int cmd_history(int argc, char *argv[])
 
     if (shell == NULL) return -EINVAL;
     if (argc == 2 && strcmp(argv[1], "-c") == 0) {
-        shell_session_history_clear(&shell->session);
+        if (shell->pipeline_worker) {
+            shell->session.history_count = 0;
+            shell->session.history_head = 0;
+            shell->session.history_index = -1;
+        } else {
+            shell_session_history_clear(&shell->session);
+        }
         return 0;
     }
     if (argc != 1) {
@@ -1099,13 +1116,17 @@ static int cat_stdin(void)
     if (shell == NULL) return -EINVAL;
     if (shell->input_file != NULL) return cat_stream(shell->input_file);
     if (shell->pipe_input != NULL) {
-        struct shell_pipe_buffer *pipe = shell->pipe_input;
-        while (pipe->pos < pipe->len) {
-            int rc = nshell_write(pipe->data + pipe->pos, (int)(pipe->len - pipe->pos));
-            if (rc <= 0) return rc < 0 ? rc : -EIO;
-            pipe->pos += (size_t)rc;
+        char buf[64];
+        int n;
+        while ((n = shell_stream_pipe_read(shell->pipe_input, buf, sizeof(buf))) > 0) {
+            int pos = 0;
+            while (pos < n) {
+                int rc = nshell_write(buf + pos, n - pos);
+                if (rc <= 0) return rc < 0 ? rc : -EIO;
+                pos += rc;
+            }
         }
-        return 0;
+        return n;
     }
     for (;;) {
         int value = nshell_getc();
@@ -1199,12 +1220,7 @@ static int wc_read(struct file *file, char *buf, size_t size)
         return file->f_op->read(file, buf, size, &file->f_pos);
     }
     if (shell->pipe_input != NULL) {
-        struct shell_pipe_buffer *pipe = shell->pipe_input;
-        size_t count = pipe->len - pipe->pos;
-        if (count > size) count = size;
-        memcpy(buf, pipe->data + pipe->pos, count);
-        pipe->pos += count;
-        return (int)count;
+        return shell_stream_pipe_read(shell->pipe_input, buf, size);
     }
     ch = nshell_getc();
     if (ch < 0) return ch;
@@ -1714,6 +1730,123 @@ static int nshell_open_output(struct nshell *shell, const char *path, bool appen
     return 0;
 }
 
+struct shell_pipeline_group {
+    sem_t done;
+    int last_status;
+};
+
+struct shell_pipeline_stage {
+    struct shell_pipeline_group *group;
+    struct nshell *shell;
+    struct task_struct *task;
+    bool last;
+};
+
+static void nshell_exec_cmd(struct nshell *shell);
+
+static void shell_pipeline_worker(void *context)
+{
+    struct shell_pipeline_stage *stage = context;
+    struct nshell *shell = stage->shell;
+
+    nshell_exec_cmd(shell);
+    if (shell->pipe_input != NULL) shell_stream_pipe_close_reader(shell->pipe_input);
+    if (shell->pipe_output != NULL) shell_stream_pipe_close_writer(shell->pipe_output);
+    if (stage->last) stage->group->last_status = shell->last_status;
+    shell_session_unregister(shell);
+    variable_clear(shell);
+    kfree(shell);
+}
+
+static void shell_pipeline_cleanup(struct task_struct *task)
+{
+    struct shell_pipeline_stage *stage = (void *)task->parameter;
+    sem_send_one(&stage->group->done);
+}
+
+static noinline int shell_run_pipeline(struct nshell *parent, struct shell_command *commands, int count)
+{
+    struct shell_pipeline_group *group = NULL;
+    struct shell_pipeline_stage *stages = NULL;
+    struct shell_stream_pipe *pipes = NULL;
+    int i, created = 0, started = 0, rc = 1;
+
+    group = kzalloc(sizeof(*group), GFP_KERNEL);
+    stages = kzalloc(sizeof(*stages) * (size_t)count, GFP_KERNEL);
+    pipes = kzalloc(sizeof(*pipes) * (size_t)(count - 1), GFP_KERNEL);
+    if (group == NULL || stages == NULL || pipes == NULL) goto cleanup;
+    sem_init(&group->done, 0);
+    for (i = 0; i < count - 1; i++) {
+        if (shell_stream_pipe_init(&pipes[i]) != 0) goto cleanup;
+    }
+    for (i = 0; i < count; i++) {
+        struct shell_variable *var;
+        struct nshell *child = kzalloc(sizeof(*child), GFP_KERNEL);
+        if (child == NULL) goto cleanup;
+        stages[i].shell = child;
+        created++;
+        memcpy(child, parent, sizeof(*child));
+        child->next = NULL;
+        child->pipeline_worker = true;
+        child->variables = NULL;
+        child->input_file = NULL;
+        child->output_file = NULL;
+        child->pipe_input = i > 0 ? &pipes[i - 1] : NULL;
+        child->pipe_output = i + 1 < count ? &pipes[i] : NULL;
+        child->output_error = 0;
+        child->session.writer_context = child;
+        strcpy(child->session.input, commands[i].text);
+        child->session.input_len = strlen(child->session.input);
+        for (var = parent->variables; var != NULL; var = var->next) {
+            if (variable_set(child, var->name, strlen(var->name), var->value, var->exported) != 0)
+                goto cleanup;
+        }
+        stages[i].group = group;
+        stages[i].last = i == count - 1;
+        stages[i].task = task_create("shell_pipe", shell_pipeline_worker, &stages[i],
+                                     5, CONFIG_SHELL_STACK_SIZE, 10, shell_pipeline_cleanup);
+        if (stages[i].task == NULL) goto cleanup;
+        child->task = stages[i].task;
+    }
+    for (i = 0; i < count; i++) shell_session_register(stages[i].shell);
+    for (i = 0; i < count; i++) {
+        if (task_ready(stages[i].task) != 0) {
+            int j;
+            for (j = 0; j < count - 1; j++) {
+                shell_stream_pipe_close_reader(&pipes[j]);
+                shell_stream_pipe_close_writer(&pipes[j]);
+            }
+            for (j = i; j < count; j++) shell_session_unregister(stages[j].shell);
+            goto cleanup;
+        }
+        started++;
+    }
+    for (i = 0; i < started; i++) sem_get(&group->done);
+    rc = group->last_status;
+    created = 0;
+    started = 0;
+    goto out;
+
+cleanup:
+    if (started != 0) {
+        for (i = 0; i < started; i++) sem_get(&group->done);
+    }
+    for (i = started; i < created; i++) {
+        if (stages[i].task != NULL) {
+            stages[i].task->cleanup = NULL;
+            task_del(stages[i].task);
+        }
+        variable_clear(stages[i].shell);
+        kfree(stages[i].shell);
+    }
+    shell_error("shell: cannot start pipeline\r\n");
+out:
+    if (pipes != NULL) kfree(pipes);
+    if (stages != NULL) kfree(stages);
+    if (group != NULL) kfree(group);
+    return rc;
+}
+
 static void nshell_exec_cmd(struct nshell *shell)
 {
     char *argv[MAX_ARGS + 1];
@@ -1770,6 +1903,13 @@ static void nshell_exec_cmd(struct nshell *shell)
         if (skip_pipeline) {
             continue;
         }
+        if (i + 1 < count && workspace->commands[i + 1].condition == SHELL_PIPE) {
+            int end = i + 1;
+            while (end < count && workspace->commands[end].condition == SHELL_PIPE) end++;
+            shell->last_status = shell_run_pipeline(shell, &workspace->commands[i], end - i);
+            i = end - 1;
+            continue;
+        }
         if (shell_expand_parameters(workspace->commands[i].text, workspace->expanded,
                                     sizeof(workspace->expanded), pipeline_status,
                                     variable_lookup, shell) != 0) {
@@ -1784,15 +1924,6 @@ static void nshell_exec_cmd(struct nshell *shell)
             shell_error("shell: invalid expanded command\r\n");
             shell->last_status = 1;
             goto next_command;
-        }
-        if (i + 1 < count && workspace->commands[i + 1].condition == SHELL_PIPE) {
-            shell->pipe_output = kzalloc(sizeof(*shell->pipe_output), GFP_KERNEL);
-            if (shell->pipe_output == NULL) {
-                shell_printf("shell: pipe: out of memory\r\n");
-                shell->last_status = 1;
-                skip_pipeline = true;
-                goto next_command;
-            }
         }
         if (redir.input_path != NULL) {
             int rc = nshell_open_input(shell, redir.input_path);
@@ -1884,25 +2015,12 @@ static void nshell_exec_cmd(struct nshell *shell)
             kfree(file);
         }
 next_command:
-        if (shell->pipe_input != NULL) {
-            kfree(shell->pipe_input);
-            shell->pipe_input = NULL;
-        }
         if (shell->output_error != 0) {
             int error = shell->output_error;
-            if (shell->pipe_output != NULL) kfree(shell->pipe_output);
-            shell->pipe_output = NULL;
             shell_error("shell: output error %d\r\n", error);
             shell->last_status = 1;
             skip_pipeline = true;
-        } else {
-            shell->pipe_input = shell->pipe_output;
         }
-        shell->pipe_output = NULL;
-    }
-    if (shell->pipe_input != NULL) {
-        kfree(shell->pipe_input);
-        shell->pipe_input = NULL;
     }
     kfree(workspace);
 }
@@ -1955,25 +2073,32 @@ static void nshell_task_entry(void* parameter)
 
 static int nshell_start(bool remote)
 {
+    char (*history)[SHELL_SESSION_INPUT_MAX + 1];
     struct nshell *shell = kzalloc(sizeof(*shell), GFP_KERNEL);
     if (shell == NULL) return -ENOMEM;
     if (variable_init(shell) != 0) {
         kfree(shell);
         return -ENOMEM;
     }
-    shell_session_init(&shell->session, NULL, NULL);
+    history = kzalloc(SHELL_SESSION_HISTORY_MAX * sizeof(*history), GFP_KERNEL);
+    if (history == NULL) {
+        variable_clear(shell);
+        kfree(shell);
+        return -ENOMEM;
+    }
+    shell_session_init(&shell->session, NULL, NULL, history);
     shell->session.writer = nshell_transport_write;
     shell->session.writer_context = shell;
     shell->remote = remote;
     shell->task = task_create(remote ? "nshell_nlk" : "nshell",
         nshell_task_entry, shell, 5, CONFIG_SHELL_STACK_SIZE, 10, NULL);
     if (shell->task == NULL) {
+        kfree(history);
         variable_clear(shell);
         kfree(shell);
         return -ENOMEM;
     }
-    shell->next = shell_sessions;
-    shell_sessions = shell;
+    shell_session_register(shell);
     task_ready(shell->task);
     return 0;
 }
