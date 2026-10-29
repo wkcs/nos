@@ -60,7 +60,7 @@ __init int mm_buddy_init(struct mm_buddy *buddy)
     return 0;
 }
 
-static void insert_page_to_buddy(struct mm_buddy_info *info, struct list_head *list)
+static void insert_page_to_buddy(struct mm_buddy_info *info, struct list_head *list, u32 blocks)
 {
     struct list_head *tmp;
     struct page *old, *new;
@@ -75,11 +75,12 @@ static void insert_page_to_buddy(struct mm_buddy_info *info, struct list_head *l
         list_for_each_entry (new, &info->list, list) {
             if (new->pfn > old->pfn) {
                 tmp = new->list.prev;
+                break;
             }
         }
     }
     list_splice(list, tmp);
-    info->free_num += 2;
+    info->free_num += blocks;
     spin_unlock_irq(&info->lock);
 }
 
@@ -114,7 +115,7 @@ static int __mm_buddy_split(struct mm_buddy *buddy, u32 order)
     list_cut_position(&tmp_list, &info->list, &page->list);
     spin_unlock_irq(&info->lock);
 
-    insert_page_to_buddy(last_info, &tmp_list);
+    insert_page_to_buddy(last_info, &tmp_list, 2);
 
     return 0;
 }
@@ -222,7 +223,7 @@ int __free_pages(addr_t addr, u32 order)
         list_add_tail(&page->list, &tmp_list);
         page++;
     }
-    insert_page_to_buddy(&node->buddy.info[order], &tmp_list);
+    insert_page_to_buddy(&node->buddy.info[order], &tmp_list, 1);
 
     return 0;
 }
