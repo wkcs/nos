@@ -1933,6 +1933,106 @@ static int nshell_close_outputs(struct nshell *shell)
     return rc;
 }
 
+static int cp_one(struct nshell *shell, const char *source, const char *destination,
+                  bool directory, char *target, char *buffer, size_t buffer_size)
+{
+    struct file *input = NULL, *output = NULL;
+    struct dentry *existing;
+    int rc, n;
+
+    if (directory) {
+        const char *name = strrchr(source, '/');
+        size_t length = strlen(destination), name_length;
+        name = name != NULL ? name + 1 : source;
+        name_length = strlen(name);
+        if (name_length == 0 || length + name_length + 2 > SHELL_SESSION_INPUT_MAX + 1U) return -ENAMETOOLONG;
+        memcpy(target, destination, length);
+        if (length != 0 && target[length - 1] != '/') target[length++] = '/';
+        memcpy(target + length, name, name_length + 1);
+    } else {
+        if (strlen(destination) > SHELL_SESSION_INPUT_MAX) return -ENAMETOOLONG;
+        strcpy(target, destination);
+    }
+    rc = nshell_open_input(shell, source, &input);
+    if (rc != 0) return rc;
+    existing = resolve_path(target);
+    if (existing != NULL && existing->d_inode == input->f_inode) {
+        rc = -EINVAL;
+        goto out;
+    }
+    if (existing != NULL && existing->d_inode != NULL &&
+        existing->d_inode->i_fop == input->f_op && input->f_op->same_file != NULL) {
+        struct file *probe = NULL;
+        rc = nshell_open_input(shell, target, &probe);
+        if (rc != 0) goto out;
+        rc = input->f_op->same_file(input, probe);
+        if (nshell_close_output(&probe) != 0 && rc == 0) rc = -EIO;
+        if (rc != 0) {
+            if (rc > 0) rc = -EINVAL;
+            goto out;
+        }
+    }
+    rc = nshell_open_output(shell, target, false, &output);
+    if (rc != 0) goto out;
+    while ((n = input->f_op->read(input, buffer, buffer_size, &input->f_pos)) > 0) {
+        int written = 0;
+        while (written < n) {
+            int count = output->f_op->write(output, buffer + written, (size_t)(n - written), &output->f_pos);
+            if (count <= 0) {
+                rc = count < 0 ? count : -EIO;
+                goto out;
+            }
+            written += count;
+        }
+    }
+    rc = n < 0 ? n : 0;
+out:
+    if (nshell_close_output(&output) != 0 && rc == 0) rc = -EIO;
+    if (nshell_close_output(&input) != 0 && rc == 0) rc = -EIO;
+    return rc;
+}
+
+static int cmd_cp(int argc, char *argv[])
+{
+    struct cp_workspace {
+        char target[SHELL_SESSION_INPUT_MAX + 1];
+        char buffer[128];
+    } *workspace;
+    struct nshell *shell = nshell_current();
+    struct dentry *destination;
+    bool directory;
+    int first = 1, status = 0, i;
+
+    while (first < argc && argv[first][0] == '-' && argv[first][1] != '\0') {
+        const char *option = argv[first] + 1;
+        if (strcmp(option, "-") == 0) { first++; break; }
+        shell_error("cp: invalid option: %s\r\n", argv[first]);
+        return 1;
+    }
+    if (argc - first < 2) {
+        shell_error("cp: missing operand\r\n");
+        return 1;
+    }
+    destination = resolve_path(argv[argc - 1]);
+    directory = destination != NULL && destination->d_inode != NULL && S_ISDIR(destination->d_inode->i_mode);
+    if (argc - first > 2 && !directory) {
+        shell_error("cp: destination is not a directory\r\n");
+        return 1;
+    }
+    workspace = kmalloc(sizeof(*workspace), GFP_KERNEL);
+    if (workspace == NULL) return 1;
+    for (i = first; i < argc - 1; i++) {
+        int rc = cp_one(shell, argv[i], argv[argc - 1], directory,
+                        workspace->target, workspace->buffer, sizeof(workspace->buffer));
+        if (rc != 0) {
+            shell_error("cp: %s: cannot copy (error %d)\r\n", argv[i], rc);
+            status = 1;
+        }
+    }
+    kfree(workspace);
+    return status;
+}
+
 struct shell_pipeline_group {
     sem_t done;
     int last_status;
@@ -2412,6 +2512,7 @@ static int nshell_init(void)
     shell_register_cmd("pwd", "Print working directory", cmd_pwd);
     shell_register_cmd("mkdir", "Make directory", cmd_mkdir);
     shell_register_cmd("cat", "Concatenate file", cmd_cat);
+    shell_register_cmd("cp", "Copy files", cmd_cp);
     shell_register_cmd("wc", "Count lines, words and bytes", cmd_wc);
     shell_register_cmd("head", "Print the start of files", cmd_head);
     shell_register_cmd("grep", "Search lines for a fixed string", cmd_grep);
