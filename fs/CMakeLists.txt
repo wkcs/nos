@@ -19,6 +19,7 @@ if(CONFIG_FATFS)
     list(APPEND FS_SRCS
         fatfs/diskio.c
         fatfs/ff.c
+        fatfs/sync.c
         fatfs/option/cc936.c
         fatfs/fatfs_vfs.c
     )

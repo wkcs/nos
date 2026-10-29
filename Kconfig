@@ -337,7 +337,7 @@ config SHELL_OUTPUT_SIZE
 
 config SHELL_PIPE_TEST
 	bool "Shell stream pipe concurrency test"
-	depends on SHELL && QEMU && BOARD_QEMU_STM32
+	depends on QEMU && BOARD_QEMU_STM32
 	default n
 	help
 	  Exercise shell pipe backpressure and EOF using scheduled QEMU tasks.

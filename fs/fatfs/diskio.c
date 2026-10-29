@@ -5,6 +5,10 @@
 /*-----------------------------------------------------------------------*/
 #include <drivers/block.h>
 #include "diskio.h"
+#ifdef CONFIG_SHELL_PIPE_TEST
+#include <kernel/sleep.h>
+#include <kernel/task.h>
+#endif
 
 #define FATFS_DRIVE             0
 #define FATFS_DEFAULT_DEVICE    "ramdisk0"
@@ -64,6 +68,9 @@ DRESULT disk_read(
         return RES_NOTRDY;
     }
 
+#ifdef CONFIG_SHELL_PIPE_TEST
+    if (task_current() != NULL) msleep(1);
+#endif
     return block_read(dev, sector, buff, count) == 0 ? RES_OK : RES_ERROR;
 }
 
@@ -86,6 +93,9 @@ DRESULT disk_write(
         return RES_NOTRDY;
     }
 
+#ifdef CONFIG_SHELL_PIPE_TEST
+    if (task_current() != NULL) msleep(1);
+#endif
     return block_write(dev, sector, buff, count) == 0 ? RES_OK : RES_ERROR;
 }
 #endif

@@ -23,9 +23,9 @@ try:
     deadline = time.monotonic() + 12
     while b"shell stream pipe OK" not in output:
         if b"shell stream pipe FAILED" in output:
-            raise RuntimeError("kernel stream pipe test failed")
+            raise RuntimeError("kernel stream pipe test failed:\n" + output[-2000:].decode(errors="replace"))
         if time.monotonic() >= deadline:
-            raise RuntimeError("timed out waiting for kernel stream pipe test")
+            raise RuntimeError("timed out waiting for kernel stream pipe test:\n" + output[-2000:].decode(errors="replace"))
         for key, _ in selector.select(0.1):
             data = os.read(key.fd, 8192)
             if data:
