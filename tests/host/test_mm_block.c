@@ -63,6 +63,19 @@ int main(void)
     assert(__kalloc(0, 0, 1) == NULL);
     assert(__kalloc(U32_MAX, 0, 1) == NULL);
     {
+        char *original = __kalloc(64, 0, 0);
+        assert(original != NULL);
+        memset(original, 0x5a, 64);
+        assert(krealloc(original, U32_MAX, 0) == NULL);
+        assert(find_block(original) != NULL);
+        for (int i = 0; i < 64; i++) assert((unsigned char)original[i] == 0x5a);
+        original = krealloc(original, 128, 0);
+        assert(original != NULL);
+        for (int i = 0; i < 64; i++) assert((unsigned char)original[i] == 0x5a);
+        assert(krealloc(original, 0, 0) == NULL);
+        assert(__atomic_load_n(&pages_live, __ATOMIC_RELAXED) == 0);
+    }
+    {
         char *first = __kalloc(64, 0, 11);
         char *other = __kalloc(64, 0, 12);
         char *last = __kalloc(64, 0, 11);

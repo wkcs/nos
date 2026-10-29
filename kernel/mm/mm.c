@@ -46,31 +46,32 @@ void *krealloc(void *ptr, u32 size, gfp_t flag)
     struct memblock *block;
     struct mem_base *base;
 
-    if (size == 0)
-        goto out;
+    if (size == 0) {
+        if (ptr != NULL) __kfree(ptr);
+        return NULL;
+    }
     if (ptr == NULL)
         goto alloc;
 
     block = find_block(ptr);
     if (block == NULL) {
         pr_err("no memblock found for 0x%lx\r\n", (addr_t)ptr);
-        goto out;
+        return NULL;
     }
     base = find_base(block, ptr);
     if (base == NULL) {
         pr_err("no mem_base found for 0x%lx in memblock\r\n", (addr_t)ptr);
-        goto out;
+        return NULL;
     }
 
 alloc:
     buf = __kalloc(size, flag, 0);
     if (buf == NULL) {
-        goto out;
+        return NULL;
     }
     if (ptr != NULL)
         memcpy(buf, ptr, min(size, base->size));
 
-out:
     if (ptr != NULL)
         __kfree(ptr);
     return buf;
