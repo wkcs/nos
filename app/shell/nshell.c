@@ -1400,6 +1400,118 @@ static int cmd_wc(int argc, char *argv[])
     return status;
 }
 
+static int head_stream(struct file *file, u64 limit, bool bytes)
+{
+    char buf[64];
+    int n;
+
+    while (limit != 0 && (n = wc_read(file, buf, file == NULL ? 1 : sizeof(buf))) > 0) {
+        int used = 0;
+        while (used < n && limit != 0) {
+            char ch = buf[used++];
+            if (bytes || ch == '\n') limit--;
+        }
+        if (nshell_write(buf, used) != used) return -EIO;
+    }
+    return limit == 0 ? 0 : n;
+}
+
+static void head_header(const char *name, bool *printed)
+{
+    if (*printed) shell_printf("\r\n");
+    shell_printf("==> %s <==\r\n", name);
+    *printed = true;
+}
+
+static int head_file(const char *path, u64 limit, bool bytes, bool headers, bool *printed)
+{
+    struct dentry *entry = resolve_path(path);
+    struct file file;
+    int rc;
+
+    if (entry == NULL || entry->d_inode == NULL) return -ENOENT;
+    if (S_ISDIR(entry->d_inode->i_mode)) return -EISDIR;
+    if (entry->d_inode->i_fop == NULL || entry->d_inode->i_fop->read == NULL) return -EACCES;
+    memset(&file, 0, sizeof(file));
+    file.f_inode = entry->d_inode;
+    file.f_op = entry->d_inode->i_fop;
+    file.f_path.dentry = entry;
+    file.f_flags = O_RDONLY;
+    if (file.f_op->open != NULL) {
+        rc = file.f_op->open(file.f_inode, &file);
+        if (rc != 0) return rc;
+    }
+    if (headers) head_header(path, printed);
+    rc = head_stream(&file, limit, bytes);
+    if (file.f_op->release != NULL) {
+        int close_rc = file.f_op->release(file.f_inode, &file);
+        if (rc == 0 && close_rc != 0) rc = close_rc;
+    }
+    return rc;
+}
+
+static int head_number(const char *text, u64 *number)
+{
+    u64 value = 0;
+    if (*text == '\0') return -EINVAL;
+    for (; *text != '\0'; text++) {
+        unsigned digit;
+        if (*text < '0' || *text > '9') return -EINVAL;
+        digit = (unsigned)(*text - '0');
+        if (value > (UINT64_MAX - digit) / 10U) return -EINVAL;
+        value = value * 10U + digit;
+    }
+    *number = value;
+    return 0;
+}
+
+static int cmd_head(int argc, char *argv[])
+{
+    u64 limit = 10;
+    bool bytes = false, printed = false;
+    int first = 1, status = 0, i;
+
+    while (first < argc && argv[first][0] == '-' && argv[first][1] != '\0') {
+        const char *option = argv[first] + 1;
+        const char *number;
+        if (strcmp(option, "-") == 0) {
+            first++;
+            break;
+        }
+        if (*option == 'n' || *option == 'c') {
+            bytes = *option == 'c';
+            number = option + 1;
+            if (*number == '\0' && ++first < argc) number = argv[first];
+        } else if (*option >= '0' && *option <= '9') {
+            bytes = false;
+            number = option;
+        } else {
+            shell_error("head: invalid option: %s\r\n", argv[first]);
+            return 1;
+        }
+        if (*number == '\0' || head_number(number, &limit) != 0) {
+            shell_error("head: invalid count\r\n");
+            return 1;
+        }
+        first++;
+    }
+    if (first == argc) return head_stream(NULL, limit, bytes);
+    for (i = first; i < argc; i++) {
+        int rc;
+        if (strcmp(argv[i], "-") == 0) {
+            if (argc - first > 1) head_header("standard input", &printed);
+            rc = head_stream(NULL, limit, bytes);
+        } else {
+            rc = head_file(argv[i], limit, bytes, argc - first > 1, &printed);
+        }
+        if (rc < 0) {
+            shell_error("head: %s: error %d\r\n", argv[i], rc);
+            status = 1;
+        }
+    }
+    return status;
+}
+
 struct grep_options {
     const char *pattern;
     bool ignore_case;
@@ -2301,6 +2413,7 @@ static int nshell_init(void)
     shell_register_cmd("mkdir", "Make directory", cmd_mkdir);
     shell_register_cmd("cat", "Concatenate file", cmd_cat);
     shell_register_cmd("wc", "Count lines, words and bytes", cmd_wc);
+    shell_register_cmd("head", "Print the start of files", cmd_head);
     shell_register_cmd("grep", "Search lines for a fixed string", cmd_grep);
     shell_register_cmd("mount", "Mount filesystem", cmd_mount);
     shell_register_cmd("ps", "Dump task status", cmd_ps);
