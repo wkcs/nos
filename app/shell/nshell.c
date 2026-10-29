@@ -75,7 +75,6 @@ struct nshell {
     struct nshell *next;
     bool remote;
     bool pipeline_worker;
-    bool ls_long_format;
     int last_status;
     struct file *input_file;
     struct file *output_file;
@@ -790,88 +789,102 @@ static int shell_filldir(void *dirent, const char *name, int namelen,
     return 0;
 }
 
-static int cmd_ls(int argc, char *argv[]) {
-  shell_init_cwd();
-  struct file *file;
-  struct inode *inode;
-  struct dentry *target = shell_cwd;
-  char *path_arg = NULL;
-  struct ls_context ctx = {0};
-  bool opened = false;
-  
-  nshell_current()->ls_long_format = false;
+static int ls_directory(const char *path, struct dentry *target,
+                        struct ls_context *ctx)
+{
+    struct inode *inode = target->d_inode;
+    struct file *file;
+    int res;
 
-  int i;
-  for (i = 1; i < argc; i++) {
-      if (strcmp(argv[i], "-l") == 0) {
-          nshell_current()->ls_long_format = true;
-      } else if (strcmp(argv[i], "-a") == 0) {
-          ctx.show_all = true;
-      } else if (strcmp(argv[i], "-la") == 0 || strcmp(argv[i], "-al") == 0) {
-          nshell_current()->ls_long_format = true;
-          ctx.show_all = true;
-      } else if (argv[i][0] == '-') {
-          shell_error("ls: unsupported option '%s'\r\n", argv[i]);
-          return -EINVAL;
-      } else if (!path_arg) {
-          path_arg = argv[i];
-      } else {
-          shell_error("ls: multiple operands are not supported\r\n");
-          return -EINVAL;
-      }
-  }
-
-  if (path_arg) {
-    target = resolve_path(path_arg);
-    if (!target) {
-      shell_error("ls: cannot access '%s'\r\n", path_arg);
-      return -1;
+    if (inode->i_fop == NULL || inode->i_fop->readdir == NULL) {
+        shell_error("ls: cannot read directory '%s'\r\n", path);
+        return -ENOTDIR;
     }
-  }
+    file = kzalloc(sizeof(*file), GFP_KERNEL);
+    if (file == NULL) {
+        return -ENOMEM;
+    }
+    file->f_inode = inode;
+    file->f_op = inode->i_fop;
+    file->f_path.dentry = target;
+    res = file->f_op->open ? file->f_op->open(inode, file) : 0;
+    if (res == 0) {
+        ctx->directory = target;
+        res = file->f_op->readdir(file, ctx, shell_filldir);
+        if (file->f_op->release != NULL) {
+            file->f_op->release(inode, file);
+        }
+    } else {
+        shell_error("ls: cannot open '%s'\r\n", path);
+    }
+    kfree(file);
+    return res;
+}
 
-  inode = target->d_inode;
+static int cmd_ls(int argc, char *argv[])
+{
+    const char *paths[MAX_ARGS];
+    struct dentry *targets[MAX_ARGS];
+    struct ls_context ctx = {0};
+    bool options = true;
+    bool printed = false;
+    int count = 0;
+    int status = 0;
+    int i;
 
-  if (inode == NULL) {
-    return -ENOENT;
-  }
-  if (!S_ISDIR(inode->i_mode)) {
-    ls_print_entry(path_arg ? path_arg : ".", inode, nshell_current()->ls_long_format);
-    return 0;
-  }
-  if (inode->i_fop == NULL || inode->i_fop->readdir == NULL) {
-    return -ENOTDIR;
-  }
+    shell_init_cwd();
+    for (i = 1; i < argc; i++) {
+        const char *option = argv[i];
 
-  file = kzalloc(sizeof(struct file), GFP_KERNEL);
-  if (!file)
-    return -ENOMEM;
+        if (options && strcmp(option, "--") == 0) {
+            options = false;
+        } else if (options && option[0] == '-' && option[1] != '\0') {
+            for (option++; *option != '\0'; option++) {
+                if (*option == 'a') {
+                    ctx.show_all = true;
+                } else if (*option == 'l') {
+                    ctx.long_format = true;
+                } else {
+                    shell_error("ls: unsupported option '%s'\r\n", argv[i]);
+                    return 1;
+                }
+            }
+        } else {
+            paths[count++] = argv[i];
+        }
+    }
+    if (count == 0) {
+        paths[count++] = ".";
+    }
 
-  file->f_inode = inode;
-  file->f_op = inode->i_fop;
-  file->f_path.dentry = target;
-  file->f_path.mnt = NULL; // Assuming single mount or ignored for now
-  file->f_pos = 0;
-
-  int res = 0;
-  if (file->f_op->open) {
-      res = file->f_op->open(inode, file);
-  }
-  opened = res == 0;
-
-  if (res == 0 && file->f_op->readdir) {
-    ctx.directory = target;
-    ctx.long_format = nshell_current()->ls_long_format;
-    res = file->f_op->readdir(file, &ctx, shell_filldir);
-  } else if (res != 0) {
-      shell_error("ls: open failed %d\r\n", res);
-  }
-
-  if (opened && file->f_op->release) {
-      file->f_op->release(inode, file);
-  }
-
-  kfree(file);
-  return res;
+    /* Print file operands before directory contents, as Unix ls does. */
+    for (i = 0; i < count; i++) {
+        targets[i] = resolve_path(paths[i]);
+        if (targets[i] == NULL || targets[i]->d_inode == NULL) {
+            shell_error("ls: cannot access '%s'\r\n", paths[i]);
+            targets[i] = NULL;
+            status = 1;
+        } else if (!S_ISDIR(targets[i]->d_inode->i_mode)) {
+            ls_print_entry(paths[i], targets[i]->d_inode, ctx.long_format);
+            printed = true;
+        }
+    }
+    for (i = 0; i < count; i++) {
+        if (targets[i] == NULL || !S_ISDIR(targets[i]->d_inode->i_mode)) {
+            continue;
+        }
+        if (printed) {
+            shell_printf("\r\n");
+        }
+        if (count > 1) {
+            shell_printf("%s:\r\n", paths[i]);
+        }
+        if (ls_directory(paths[i], targets[i], &ctx) < 0) {
+            status = 1;
+        }
+        printed = true;
+    }
+    return status;
 }
 
 static int cmd_pwd(int argc, char *argv[])

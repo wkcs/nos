@@ -59,6 +59,11 @@ filename prefixes (`-h`). Regular expressions are not implemented; patterns
 containing regex metacharacters require `-F`. Lines longer than 65536 bytes or
 larger than available heap memory fail with an error rather than being truncated.
 
+`ls` accepts multiple file and directory operands, combined `-a` and `-l`
+options, and `--` before names beginning with `-`. It reports inaccessible
+operands while continuing with the remaining paths. Directory entries retain
+the order returned by the filesystem.
+
 `test` and `[` support nonempty and empty strings, string equality, signed
 64-bit integer comparisons, `-e`, `-f`, `-d`, `-s`, negation, parentheses, and
 the `-a` / `-o` operators. Other Unix file predicates are not implemented.
