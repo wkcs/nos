@@ -49,9 +49,9 @@ bracket expressions across multiple directory components. Matches are sorted
 bytewise, hidden entries require a leading dot, and unmatched patterns remain
 literal. Quoting and backslash escaping protect pattern characters. Expansion
 is subject to the shell's argument and path length limits.
-The current kernel block allocator retains pages after freeing allocations;
-on memory-constrained boards, prior expansion or filesystem operations can
-reduce the memory available for later pipelines.
+The kernel returns completely unused allocation blocks to the page allocator.
+Partially occupied blocks still retain their pages, so fragmented memory can
+limit later pipelines on memory-constrained boards.
 FatFs uses a shared sector buffer to reduce per-file memory use. The volume
 lock protects the buffer, so concurrent file operations may serialize.
 

@@ -10,6 +10,7 @@
 struct live { char *ptr; size_t size; };
 static struct live live[THREADS];
 static pthread_mutex_t live_lock = PTHREAD_MUTEX_INITIALIZER;
+static unsigned pages_live;
 extern void *__kalloc(u32, gfp_t, pid_t);
 extern int __kfree(void *);
 extern int __kfree_by_pid(pid_t);
@@ -19,9 +20,15 @@ addr_t alloc_pages(gfp_t flag, u32 order)
     void *ptr = NULL;
     (void)flag;
     if (posix_memalign(&ptr, CONFIG_PAGE_SIZE, (size_t)CONFIG_PAGE_SIZE << order) != 0) return 0;
+    __atomic_add_fetch(&pages_live, 1U << order, __ATOMIC_RELAXED);
     return (addr_t)ptr;
 }
-int free_pages(addr_t addr, u32 order) { (void)order; free((void *)addr); return 0; }
+int free_pages(addr_t addr, u32 order)
+{
+    __atomic_sub_fetch(&pages_live, 1U << order, __ATOMIC_RELAXED);
+    free((void *)addr);
+    return 0;
+}
 
 static void *worker(void *arg)
 {
@@ -66,9 +73,18 @@ int main(void)
         assert(__kfree(first) == -EINVAL);
         assert(__kfree(last) == -EINVAL);
         assert(__kfree(other) == 0);
+        assert(__atomic_load_n(&pages_live, __ATOMIC_RELAXED) == 0);
+    }
+    {
+        void *large = __kalloc(7000, 0, 42);
+        assert(large != NULL);
+        assert(__atomic_load_n(&pages_live, __ATOMIC_RELAXED) >= 2);
+        assert(__kfree_by_pid(42) == 0);
+        assert(__atomic_load_n(&pages_live, __ATOMIC_RELAXED) == 0);
     }
     for (uintptr_t i = 0; i < THREADS; i++) assert(pthread_create(&threads[i], NULL, worker, (void *)i) == 0);
     for (int i = 0; i < THREADS; i++) pthread_join(threads[i], NULL);
+    assert(__atomic_load_n(&pages_live, __ATOMIC_RELAXED) == 0);
     puts("concurrent memory block allocation checks passed");
     return 0;
 }
