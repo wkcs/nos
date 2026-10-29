@@ -181,6 +181,13 @@ def main():
         proc.stdin.flush()
         wait_for(b"nos# ", pos)
         pos = len(output)
+        proc.stdin.write(b"echo a#b '#c' \\#d # ignored | missing-command\r")
+        proc.stdin.flush()
+        wait_for(b"\r\na#b #c #d\r\n", pos)
+        wait_for(b"nos# ", pos)
+        if b"missing-command: command not found" in output[pos:]:
+            raise RuntimeError("shell executed text after a comment")
+        pos = len(output)
         proc.stdin.write(b"mkdir /tmp/one /tmp/two\r")
         proc.stdin.flush()
         wait_for(b"nos# ", pos)

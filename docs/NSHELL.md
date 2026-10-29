@@ -9,6 +9,7 @@ The parser supports single and double quotes, backslash escapes, command lists
 `2>`, `2>>`, `2>&1`). Standard error redirection covers shell and built-in
 diagnostics. `2>&1` uses the standard output destination at that point in the
 redirection sequence, including when it is a pipeline.
+An unquoted `#` at the start of a word begins a comment through end of line.
 Repeated redirections are applied left to right, with a limit of 16 per command.
 Input redirection is consumed by `cat`, `wc`, and `grep`; these also read standard input
 when passed `-`. Output redirection and pipelines apply to built-in command
@@ -68,6 +69,9 @@ subshells, external processes, job control, and a complete standard error
 stream remain to be implemented. Some NOS-specific commands and VFS behavior
 also differ from Unix. Avoid using destructive operations until VFS object
 lifetime and concurrent access are fully addressed.
+In particular, removing a FatFs file through a differently cased alias can
+leave another cached name pointing at the deleted entry. Cached dentries and
+session working directories do not yet have a complete reference lifecycle.
 
 VFS descriptor operations retain an in-flight file reference across `close`
 and serialize operations on the same open file's position. RAMFS appends choose
