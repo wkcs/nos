@@ -192,15 +192,6 @@ static void __kfree_base_locked(struct memblock *block, struct mem_base *base)
     }
 }
 
-static int __kfree_base(struct memblock *block, struct mem_base *base)
-{
-    spin_lock_irq(&block->lock);
-    __kfree_base_locked(block, base);
-    spin_unlock_irq(&block->lock);
-
-    return 0;
-}
-
 struct memblock *find_block(void *addr)
 {
     struct memblock *block;
@@ -233,54 +224,71 @@ struct mem_base *find_base(struct memblock *block, void *addr)
     return NULL;
 }
 
-static int kfree_base(struct mem_base *base)
+static bool memblock_empty(struct memblock *block)
 {
-    struct memblock *block;
+    struct mem_base *base;
+    if (list_empty(&block->base)) return false;
+    base = list_entry(block->base.next, struct mem_base, list);
+    return !base->used && base->list.next == &block->base;
+}
 
-    block = find_block(base);
-    if (block == NULL) {
-        pr_err("no memblock found for 0x%lx\r\n", (addr_t)base);
-        return -EINVAL;
-    }
-
-    return __kfree_base(block, base);
+static int memblock_release(struct memblock *block)
+{
+    int order = size_to_order((u32)(block->size + sizeof(*block)));
+    if (order < 0) return order;
+    return free_pages((addr_t)block, (u32)order);
 }
 
 int __kfree(void *addr)
 {
-    struct memblock *block;
+    struct memblock *block, *retired = NULL;
     struct mem_base *base;
+    bool found = false;
 
-    if (addr == NULL)
-    {
-        return 0;
+    if (addr == NULL) return 0;
+    spin_lock_irq(&g_memblock_lock);
+    list_for_each_entry (block, &g_memblock_list, list) {
+        if ((addr_t)addr <= block->start || (addr_t)addr >= block->start + block->size) continue;
+        spin_lock_irq(&block->lock);
+        list_for_each_entry (base, &block->base, list) {
+            addr_t start = (addr_t)base + sizeof(*base);
+            if (base->used && (addr_t)addr >= start && (addr_t)addr < start + base->size) {
+                __kfree_base_locked(block, base);
+                found = true;
+                break;
+            }
+        }
+        if (found && memblock_empty(block)) {
+            /* Remove it while protected, then return pages outside these locks. */
+            list_del(&block->list);
+            retired = block;
+        }
+        spin_unlock_irq(&block->lock);
+        break;
     }
-
-    block = find_block(addr);
-    if (block == NULL) {
-        pr_err("no memblock found for 0x%lx\r\n", (addr_t)addr);
-        return -EINVAL;
-    }
-    base = find_base(block, addr);
-    if (base == NULL) {
-        pr_err("no mem_base found for 0x%lx in memblock\r\n", (addr_t)addr);
-        return -EINVAL;
-    }
-
-    return __kfree_base(block, base);
+    spin_unlock_irq(&g_memblock_lock);
+    if (!found) return -EINVAL;
+    return retired != NULL ? memblock_release(retired) : 0;
 }
 
 int __kfree_by_pid(pid_t pid)
 {
+    struct list_head *cursor;
     struct memblock *block;
     struct mem_base *base;
+    LIST_HEAD(retired);
+    int rc = 0;
+
     spin_lock_irq(&g_memblock_lock);
     if (list_empty(&g_memblock_list)) {
         spin_unlock_irq(&g_memblock_lock);
         return -ENODEV;
     }
-    list_for_each_entry (block, &g_memblock_list, list) {
+    cursor = g_memblock_list.next;
+    while (cursor != &g_memblock_list) {
         bool found;
+        block = list_entry(cursor, struct memblock, list);
+        cursor = cursor->next;
         spin_lock_irq(&block->lock);
         do {
             found = false;
@@ -292,10 +300,22 @@ int __kfree_by_pid(pid_t pid)
                 }
             }
         } while (found);
+        if (memblock_empty(block)) {
+            list_del(&block->list);
+            list_add(&block->list, &retired);
+        }
         spin_unlock_irq(&block->lock);
     }
     spin_unlock_irq(&g_memblock_lock);
-    return 0;
+    /* Retired blocks are unreachable by allocators before their pages are freed. */
+    while (!list_empty(&retired)) {
+        int release_rc;
+        block = list_entry(retired.next, struct memblock, list);
+        list_del(&block->list);
+        release_rc = memblock_release(block);
+        if (release_rc != 0) rc = release_rc;
+    }
+    return rc;
 }
 
 void __mm_block_dump(struct memblock *block)
