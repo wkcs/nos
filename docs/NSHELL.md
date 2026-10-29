@@ -22,7 +22,18 @@ The status of the preceding command or pipeline is available as `$?` or
 redirection paths; a backslash can protect the dollar sign. All stages of a
 pipeline see the status from before that pipeline.
 
-The shell is not yet POSIX conformant. General variable and pathname expansion,
+Session variables can be assigned with standalone commands such as
+`NAME='hello world'` and expanded as `$NAME` or `${NAME}`. Unquoted expansions
+are split on spaces and tabs; double quotes preserve the value as one argument,
+and single quotes suppress expansion. `export NAME[=value]` marks variables for
+export, and `unset [-v] NAME...` removes them. Sessions do not share variables;
+remote session reset clears them. Expansion and the resulting command remain
+limited to 256 bytes. Assignment prefixes before a command, arbitrary `IFS`,
+advanced parameter operators, automatic environment variables, and passing an
+environment to external processes are not implemented. Pipeline stages still
+run in the current session, so assignment or `unset` in a pipeline persists.
+
+The shell is not yet POSIX conformant. Full parameter and pathname expansion,
 subshells, external processes, job control, and a complete standard error
 stream remain to be implemented. Some NOS-specific commands and VFS behavior
 also differ from Unix. Avoid using destructive operations until VFS object

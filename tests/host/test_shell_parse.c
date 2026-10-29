@@ -3,6 +3,13 @@
 #include <string.h>
 #include "../../app/shell/parse.h"
 
+static const char *lookup(void *context, const char *name, size_t len)
+{
+    (void)context;
+    if (len == 1 && name[0] == 'V') return "one two;\"$";
+    return NULL;
+}
+
 int main(void)
 {
     char line[] = "echo 'hello world' \"\" a\\ b \"c\\\"d\"";
@@ -22,7 +29,12 @@ int main(void)
     char input[] = "cat <'input file' >output";
     char duplicate_input[] = "cat <a <b";
     char missing_input[] = "cat <";
-    int argc = shell_parse_line(line, argv, 8);
+    int argc;
+
+    assert(shell_count_assignments("A='one two' B=$V") == 2);
+    assert(shell_count_assignments("A=1 echo hi") == 1);
+    assert(shell_count_assignments("'A=1'") == 0);
+    assert(shell_count_assignments("$V") == 0);
 
     {
         char expanded[64];
@@ -35,6 +47,25 @@ int main(void)
         assert(shell_expand_status("${?", expanded, sizeof(expanded), 1) == 0);
         assert(strcmp(expanded, "${?") == 0);
     }
+    {
+        char expanded[128];
+        int expanded_argc;
+        assert(shell_expand_parameters("echo $V \"$V\" '$V' $MISSING", expanded,
+                                       sizeof(expanded), 0, lookup, NULL) == 0);
+        expanded_argc = shell_parse_redirect(expanded, argv, 8, &redir);
+        assert(expanded_argc == 5);
+        assert(strcmp(argv[1], "one") == 0);
+        assert(strcmp(argv[2], "two;\"$") == 0);
+        assert(strcmp(argv[3], "one two;\"$") == 0);
+        assert(strcmp(argv[4], "$V") == 0);
+        assert(shell_expand_parameters("A=$V", expanded, sizeof(expanded), 0, lookup, NULL) == 0);
+        expanded_argc = shell_parse_redirect(expanded, argv, 8, &redir);
+        assert(expanded_argc == 1 && strcmp(argv[0], "A=one two;\"$") == 0);
+        assert(shell_expand_parameters("export A=$V", expanded, sizeof(expanded), 0, lookup, NULL) == 0);
+        expanded_argc = shell_parse_redirect(expanded, argv, 8, &redir);
+        assert(expanded_argc == 2 && strcmp(argv[1], "A=one two;\"$") == 0);
+    }
+    argc = shell_parse_line(line, argv, 8);
 
     assert(argc == 5);
     assert(strcmp(argv[1], "hello world") == 0);

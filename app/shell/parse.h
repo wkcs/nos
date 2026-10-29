@@ -5,6 +5,10 @@
 #include <stddef.h>
 
 int shell_expand_status(const char *source, char *output, size_t size, int status);
+typedef const char *(*shell_variable_lookup)(void *context, const char *name, size_t length);
+int shell_expand_parameters(const char *source, char *output, size_t size, int status,
+                            shell_variable_lookup lookup, void *context);
+int shell_count_assignments(const char *source);
 
 /* argv_capacity includes the trailing NULL pointer. */
 int shell_parse_line(char *line, char **argv, int argv_capacity);

@@ -3,41 +3,134 @@
 #include <stddef.h>
 #include <string.h>
 
-int shell_expand_status(const char *source, char *output, size_t size, int status)
+static int name_start(char c)
+{
+    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_';
+}
+
+static int name_char(char c)
+{
+    return name_start(c) || (c >= '0' && c <= '9');
+}
+
+static int append_char(char *output, size_t size, size_t *used, char c)
+{
+    if (*used + 1 >= size) return -1;
+    output[(*used)++] = c;
+    return 0;
+}
+
+int shell_count_assignments(const char *source)
+{
+    int count = 0;
+    while (*source != '\0') {
+        char quote = 0;
+        while (*source == ' ' || *source == '\t') source++;
+        if (!name_start(*source)) break;
+        source++;
+        while (name_char(*source)) source++;
+        if (*source++ != '=') break;
+        count++;
+        while (*source != '\0') {
+            char c = *source++;
+            if (quote == 0 && (c == ' ' || c == '\t' || c == '<' || c == '>')) {
+                if (c == '<' || c == '>') return count;
+                break;
+            }
+            if (c == '\\' && quote != '\'' && *source != '\0') source++;
+            else if (c == '\'' && quote != '"') quote = quote == '\'' ? 0 : '\'';
+            else if (c == '"' && quote != '\'') quote = quote == '"' ? 0 : '"';
+        }
+    }
+    return count;
+}
+
+int shell_expand_parameters(const char *source, char *output, size_t size, int status,
+                            shell_variable_lookup lookup, void *context)
 {
     char quote = 0;
     char number[4];
     unsigned int value = (unsigned int)status & 255U;
     size_t used = 0, digits = 0;
+    int assignment = 0, word_start = 1, seen_command = 0, export_command = 0;
 
     if (source == NULL || output == NULL || size == 0) return -1;
     do {
         number[digits++] = (char)('0' + value % 10U);
         value /= 10U;
     } while (value != 0);
+    for (size_t i = 0; i < digits / 2; i++) {
+        char tmp = number[i];
+        number[i] = number[digits - i - 1];
+        number[digits - i - 1] = tmp;
+    }
+    number[digits] = '\0';
     while (*source != '\0') {
         char c = *source++;
+        if (word_start && quote == 0 && name_start(c)) {
+            const char *end = source;
+            while (name_char(*end)) end++;
+            assignment = (!seen_command || export_command) && *end == '=';
+            if (!assignment && !seen_command) {
+                export_command = (size_t)(end - (source - 1)) == 6 &&
+                                 memcmp(source - 1, "export", 6) == 0;
+                seen_command = 1;
+            }
+        } else if (word_start && quote == 0 && c != ' ' && c != '\t' &&
+                   c != '<' && c != '>') {
+            seen_command = 1;
+        }
+        if (quote == 0 && (c == ' ' || c == '\t' || c == '<' || c == '>')) {
+            word_start = 1;
+            assignment = 0;
+        } else {
+            word_start = 0;
+        }
         if (c == '\\' && quote != '\'' && *source != '\0') {
-            if (used + 2 >= size) return -1;
-            output[used++] = c;
-            output[used++] = *source++;
+            if (append_char(output, size, &used, c) ||
+                append_char(output, size, &used, *source++)) return -1;
             continue;
         }
         if (c == '\'' && quote != '"') quote = quote == '\'' ? 0 : '\'';
         else if (c == '"' && quote != '\'') quote = quote == '"' ? 0 : '"';
-        if (c == '$' && quote != '\'' &&
-            (source[0] == '?' || (source[0] == '{' && source[1] == '?' && source[2] == '}'))) {
-            size_t i;
-            if (used + digits >= size) return -1;
-            source += source[0] == '?' ? 1 : 3;
-            for (i = digits; i > 0; i--) output[used++] = number[i - 1];
-        } else {
-            if (used + 1 >= size) return -1;
-            output[used++] = c;
+        if (c == '$' && quote != '\'') {
+            const char *replacement = NULL;
+            const char *name = source;
+            size_t len = 0;
+            int braces = *name == '{';
+            if (braces) name++;
+            if (*name == '?') {
+                len = 1;
+                replacement = number;
+            } else if (name_start(*name)) {
+                len = 1;
+                while (name_char(name[len])) len++;
+                replacement = lookup != NULL ? lookup(context, name, len) : NULL;
+                if (replacement == NULL) replacement = "";
+            }
+            if (len != 0 && (!braces || name[len] == '}')) {
+                source = name + len + (braces ? 1 : 0);
+                while (*replacement != '\0') {
+                    char v = *replacement++;
+                    int protect = quote == '"' ? (v == '"' || v == '\\' || v == '$' || v == '`') :
+                        (v == '\\' || v == '\'' || v == '"' || v == '$' || v == '`' ||
+                         v == '|' || v == '&' || v == ';' || v == '<' || v == '>' ||
+                         (assignment && (v == ' ' || v == '\t')));
+                    if (protect && append_char(output, size, &used, '\\')) return -1;
+                    if (append_char(output, size, &used, v)) return -1;
+                }
+                continue;
+            }
         }
+        if (append_char(output, size, &used, c)) return -1;
     }
     output[used] = '\0';
     return 0;
+}
+
+int shell_expand_status(const char *source, char *output, size_t size, int status)
+{
+    return shell_expand_parameters(source, output, size, status, NULL, NULL);
 }
 
 int shell_parse_redirect(char *line, char **argv, int capacity,
