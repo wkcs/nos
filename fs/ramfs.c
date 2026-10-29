@@ -98,7 +98,11 @@ static ssize_t ramfs_write(struct file *file, const char *buf, size_t count,
     if (!node) return -EIO;
     if (count == 0) return 0;
     mutex_lock(&inode->i_mutex);
-    pos = *ppos;
+    if (!(file->f_flags & O_APPEND) && *ppos < 0) {
+        mutex_unlock(&inode->i_mutex);
+        return -EINVAL;
+    }
+    pos = (file->f_flags & O_APPEND) ? (size_t)inode->i_size : (size_t)*ppos;
     new_size = pos + count;
     if (new_size < pos || new_size > UINT32_MAX) {
         mutex_unlock(&inode->i_mutex);
@@ -123,7 +127,7 @@ static ssize_t ramfs_write(struct file *file, const char *buf, size_t count,
     }
     memcpy((char *)node->data + pos, buf, count);
     if (new_size > inode->i_size) inode->i_size = new_size;
-    *ppos += count;
+    *ppos = (loff_t)new_size;
     mutex_unlock(&inode->i_mutex);
     return count;
 }

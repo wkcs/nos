@@ -24,8 +24,9 @@ also differ from Unix. Avoid using destructive operations until VFS object
 lifetime and concurrent access are fully addressed.
 
 VFS descriptor operations retain an in-flight file reference across `close`
-and serialize operations on the same open file's position. Appends through
-different open descriptors are not yet atomic. If an operation remains in
+and serialize operations on the same open file's position. RAMFS appends choose
+the end offset under its inode lock; atomic append across different FatFs
+descriptors is not yet supported. If an operation remains in
 flight, `close` returns before the final file
 release; a later release error cannot be reported by that `close` call.
 
