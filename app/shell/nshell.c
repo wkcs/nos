@@ -165,13 +165,20 @@ static int variable_push(struct nshell *shell, const char *name, size_t length,
     return 0;
 }
 
-static void variable_restore(struct nshell *shell, struct shell_saved_variable *saved, int count)
+static void variable_restore(struct nshell *shell, struct shell_saved_variable *saved, int count,
+                             bool preserve_directory)
 {
     while (count-- > 0) {
         struct shell_saved_variable *entry = &saved[count];
         struct shell_variable **slot = variable_slot(shell, entry->name, entry->length);
         struct shell_variable *active = *slot;
         struct shell_variable *next = active != NULL ? active->next : NULL;
+        if (preserve_directory &&
+            ((entry->length == 3 && memcmp(entry->name, "PWD", 3) == 0) ||
+             (entry->length == 6 && memcmp(entry->name, "OLDPWD", 6) == 0))) {
+            if (entry->old != NULL) kfree(entry->old);
+            continue;
+        }
         if (entry->old != NULL) {
             entry->old->next = next;
             *slot = entry->old;
@@ -182,7 +189,6 @@ static void variable_restore(struct nshell *shell, struct shell_saved_variable *
     }
 }
 
-#ifdef CONFIG_NLK_SERVER
 static void variable_clear(struct nshell *shell)
 {
     while (shell->variables != NULL) {
@@ -191,7 +197,16 @@ static void variable_clear(struct nshell *shell)
         kfree(var);
     }
 }
-#endif
+
+static int variable_init(struct nshell *shell)
+{
+    if (variable_set(shell, "HOME", 4, "/", true) != 0 ||
+        variable_set(shell, "PWD", 3, "/", true) != 0) {
+        variable_clear(shell);
+        return -ENOMEM;
+    }
+    return 0;
+}
 
 static struct nshell *nshell_current(void)
 {
@@ -431,8 +446,7 @@ static struct dentry *resolve_path(const char *path) {
   return curr;
 }
 
-static void shell_getcwd(char *buf, size_t size) {
-  struct dentry *dentry = shell_cwd;
+static void shell_dentry_path(struct dentry *dentry, char *buf, size_t size) {
   struct dentry *root = vfs_get_root();
   char *p = buf + size - 1;
   *p = '\0';
@@ -456,6 +470,11 @@ static void shell_getcwd(char *buf, size_t size) {
   }
   
   memmove(buf, p, buf + size - p);
+}
+
+static void shell_getcwd(char *buf, size_t size)
+{
+    shell_dentry_path(shell_cwd, buf, size);
 }
 
 /* --- Command Implementations --- */
@@ -778,28 +797,98 @@ static int cmd_ls(int argc, char *argv[]) {
   return res;
 }
 
-static int cmd_pwd(int argc, char *argv[]) {
-  char buf[256];
-  shell_getcwd(buf, sizeof(buf));
-  shell_printf("%s\r\n", buf);
-  return 0;
+static int cmd_pwd(int argc, char *argv[])
+{
+    char buf[256];
+    int i;
+    for (i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--") == 0 && i + 1 == argc) break;
+        if (strcmp(argv[i], "-L") != 0 && strcmp(argv[i], "-P") != 0) {
+            shell_error("pwd: invalid option: %s\r\n", argv[i]);
+            return 1;
+        }
+    }
+    shell_getcwd(buf, sizeof(buf));
+    if (buf[0] == '\0') {
+        shell_error("pwd: path too long\r\n");
+        return 1;
+    }
+    shell_printf("%s\r\n", buf);
+    return 0;
 }
 
-static int cmd_cd(int argc, char *argv[]) {
-  struct dentry *dentry;
-  if (argc < 2) {
-    shell_cwd = vfs_get_root();
-    return 0;
-  }
+static int cmd_cd(int argc, char *argv[])
+{
+    struct nshell *shell = nshell_current();
+    struct shell_saved_variable saved[2];
+    struct dentry *dentry;
+    const char *path;
+    char *paths;
+    char *old_path;
+    char *new_path;
+    int first = 1;
+    int rc;
+    bool print_path = false;
 
-  dentry = resolve_path(argv[1]);
-  if (dentry && dentry->d_inode && S_ISDIR(dentry->d_inode->i_mode)) {
+    while (first < argc) {
+        if (strcmp(argv[first], "--") == 0) {
+            first++;
+            break;
+        }
+        if (strcmp(argv[first], "-L") == 0 || strcmp(argv[first], "-P") == 0) {
+            first++;
+        } else if (argv[first][0] == '-' && argv[first][1] != '\0') {
+            shell_error("cd: invalid option: %s\r\n", argv[first]);
+            return 1;
+        } else {
+            break;
+        }
+    }
+    if (argc - first > 1) {
+        shell_error("cd: too many arguments\r\n");
+        return 1;
+    }
+    path = first == argc ? variable_lookup(shell, "HOME", 4) : argv[first];
+    if (path != NULL && strcmp(path, "-") == 0) {
+        path = variable_lookup(shell, "OLDPWD", 6);
+        print_path = true;
+    }
+    if (path == NULL) {
+        shell_error("cd: %s not set\r\n", print_path ? "OLDPWD" : "HOME");
+        return 1;
+    }
+    dentry = resolve_path(path);
+    if (dentry == NULL || dentry->d_inode == NULL || !S_ISDIR(dentry->d_inode->i_mode)) {
+        shell_error("cd: %s: No such directory\r\n", path);
+        return 1;
+    }
+    paths = kmalloc(2 * (SHELL_SESSION_INPUT_MAX + 1), GFP_KERNEL);
+    if (paths == NULL) return 1;
+    old_path = paths;
+    new_path = paths + SHELL_SESSION_INPUT_MAX + 1;
+    shell_getcwd(old_path, SHELL_SESSION_INPUT_MAX + 1);
+    shell_dentry_path(dentry, new_path, SHELL_SESSION_INPUT_MAX + 1);
+    if (old_path[0] == '\0' || new_path[0] == '\0') {
+        shell_error("cd: path too long\r\n");
+        kfree(paths);
+        return 1;
+    }
+    rc = variable_push(shell, "OLDPWD", 6, old_path, &saved[0]);
+    if (rc == 0) {
+        rc = variable_push(shell, "PWD", 3, new_path, &saved[1]);
+        if (rc != 0) variable_restore(shell, saved, 1, false);
+    }
+    if (rc != 0) {
+        shell_error("cd: out of memory\r\n");
+        kfree(paths);
+        return 1;
+    }
+    if (saved[0].old != NULL) kfree(saved[0].old);
+    if (saved[1].old != NULL) kfree(saved[1].old);
     shell_cwd = dentry;
-  } else {
-    shell_error("cd: %s: No such directory\r\n", argv[1]);
-    return -ENOENT;
-  }
-  return 0;
+    if (print_path) shell_printf("%s\r\n", new_path);
+    kfree(paths);
+    return 0;
 }
 
 static int shell_mkdir_parents(const char *path)
@@ -1726,7 +1815,9 @@ static void nshell_exec_cmd(struct nshell *shell)
             shell_error("%s: command not found\r\n", argv[assignments]);
             shell->last_status = 127;
         }
-        variable_restore(shell, workspace->saved, saved_count);
+        variable_restore(shell, workspace->saved, saved_count,
+                         !assignment_only && !assignment_error && curr != NULL &&
+                         curr->func == cmd_cd && shell->last_status == 0);
         nshell_close_input(shell);
         if (shell->output_file != NULL) {
             struct file *file = shell->output_file;
@@ -1795,7 +1886,7 @@ static void nshell_task_entry(void* parameter)
                 shell->session.tty = nlk_cap_shell_tty(ctx);
                 shell_session_reset(&shell->session, vfs_get_root());
                 variable_clear(shell);
-                shell->last_status = 0;
+                shell->last_status = variable_init(shell) == 0 ? 0 : 1;
                 if (ctx->session_open) shell_printf("\r\n" SHELL_PROMPT);
             }
 #endif
@@ -1810,6 +1901,10 @@ static int nshell_start(bool remote)
 {
     struct nshell *shell = kzalloc(sizeof(*shell), GFP_KERNEL);
     if (shell == NULL) return -ENOMEM;
+    if (variable_init(shell) != 0) {
+        kfree(shell);
+        return -ENOMEM;
+    }
     shell_session_init(&shell->session, NULL, NULL);
     shell->session.writer = nshell_transport_write;
     shell->session.writer_context = shell;
@@ -1817,6 +1912,7 @@ static int nshell_start(bool remote)
     shell->task = task_create(remote ? "nshell_nlk" : "nshell",
         nshell_task_entry, shell, 5, CONFIG_SHELL_STACK_SIZE, 10, NULL);
     if (shell->task == NULL) {
+        variable_clear(shell);
         kfree(shell);
         return -ENOMEM;
     }

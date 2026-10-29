@@ -32,8 +32,10 @@ limited to 256 bytes. Leading `NAME=value` assignments temporarily apply to
 ordinary built-ins, and persist for assignment-only commands, `export`, and
 `unset`. Command arguments are expanded before the assignments are applied;
 assignment values are expanded in order, so later assignments see earlier ones.
-Assignments after a redirection, arbitrary `IFS`,
-advanced parameter operators, automatic environment variables, and passing an
+The shell initializes `HOME` and `PWD` to `/`; `cd` uses `HOME`, updates `PWD`
+and `OLDPWD`, and supports `cd -`. Paths are physical because the VFS does not
+currently support symbolic links. Assignments after a redirection, arbitrary
+`IFS`, advanced parameter operators, and passing an
 environment to external processes are not implemented. Pipeline stages still
 run in the current session, so assignment or `unset` in a pipeline persists.
 
