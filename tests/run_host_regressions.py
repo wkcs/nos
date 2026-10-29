@@ -41,6 +41,7 @@ TESTS = [
     ("run_nlk_test.py",),
     ("run_shell_session_test.py",),
     ("run_shell_parse_test.py",),
+    ("run_shell_glob_test.py",),
     ("run_shell_printf_test.py",),
     ("run_shell_pipe_test.py",),
     ("run_pid_test.py",),
