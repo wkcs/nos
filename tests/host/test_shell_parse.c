@@ -68,6 +68,7 @@ int main(void)
     assert(shell_count_assignments("A=1 echo hi") == 1);
     assert(shell_count_assignments("'A=1'") == 0);
     assert(shell_count_assignments("$V") == 0);
+    assert(shell_count_assignments("> 'my file' A=1 < input B=$V echo ok") == 2);
     {
         size_t length;
         const char *word = shell_assignment_at("A='one two' B=$V", 1, &length);
@@ -102,6 +103,14 @@ int main(void)
         assert(shell_expand_parameters("export A=$V", expanded, sizeof(expanded), 0, lookup, NULL) == 0);
         expanded_argc = shell_parse_redirect(expanded, argv, 8, &redir);
         assert(expanded_argc == 2 && strcmp(argv[1], "A=one two;\"$") == 0);
+        assert(shell_expand_parameters("> $V A=$V", expanded, sizeof(expanded), 0, lookup, NULL) == 0);
+        expanded_argc = shell_parse_redirect(expanded, argv, 8, &redir);
+        assert(expanded_argc == 1 && strcmp(argv[0], "A=one two;\"$") == 0);
+        assert(strcmp(redir.path, "one two;\"$") == 0);
+        assert(shell_expand_parameters("echo > $MISSING suffix", expanded, sizeof(expanded),
+                                       0, lookup, NULL) == 0);
+        expanded_argc = shell_parse_redirect(expanded, argv, 8, &redir);
+        assert(expanded_argc == 2 && strcmp(redir.path, "") == 0 && strcmp(argv[1], "suffix") == 0);
     }
     argc = shell_parse_line(line, argv, 8);
 

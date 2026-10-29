@@ -1748,7 +1748,7 @@ static void nshell_exec_cmd(struct nshell *shell)
     }
     for (i = 0; i < count; i++) {
         strcpy(workspace->check, workspace->commands[i].text);
-        if (shell_parse_redirect(workspace->check, argv, MAX_ARGS + 1, &redir) <= 0) {
+        if (shell_parse_redirect(workspace->check, argv, MAX_ARGS + 1, &redir) < 0) {
             shell_printf("shell: syntax error or too many arguments\r\n");
             shell->last_status = 2;
             kfree(workspace);
@@ -1780,13 +1780,9 @@ static void nshell_exec_cmd(struct nshell *shell)
         }
         argc = shell_parse_redirect(workspace->expanded, argv, MAX_ARGS + 1, &redir);
         shell->output_error = 0;
-        if (argc <= 0) {
-            if (argc < 0 || redir.path != NULL || redir.input_path != NULL) {
-                shell_error("shell: invalid expanded command\r\n");
-                shell->last_status = 1;
-            } else {
-                shell->last_status = 0;
-            }
+        if (argc < 0) {
+            shell_error("shell: invalid expanded command\r\n");
+            shell->last_status = 1;
             goto next_command;
         }
         if (i + 1 < count && workspace->commands[i + 1].condition == SHELL_PIPE) {
