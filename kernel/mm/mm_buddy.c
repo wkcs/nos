@@ -64,8 +64,13 @@ static void insert_page_to_buddy(struct mm_buddy_info *info, struct list_head *l
 {
     struct list_head *tmp;
     struct page *old, *new;
+    u32 index = 0;
 
     old = list_first_entry(list, struct page, list);
+    list_for_each_entry (new, list, list) {
+        new->private = (index % (1U << info->order) == 0) ? (int)info->order : -1;
+        index++;
+    }
     spin_lock_irq(&info->lock);
     if (info->free_num == 0) {
         tmp = &info->list;
@@ -200,29 +205,53 @@ addr_t __alloc_page(struct mm_buddy *buddy, gfp_t flag)
 int __free_pages(addr_t addr, u32 order)
 {
     struct mm_node *node = find_mm_node(addr);
-    u32 order_num = (1 << order);
+    u32 order_num;
     u32 num;
-    struct page *page;
+    struct page *page, *pages;
+    addr_t pfn;
 
     if (order >= CONFIG_MAX_ORDER) {
         pr_err("order(=%u) is too big\r\n", order);
         return -EINVAL;
     }
+    order_num = 1U << order;
     if (node == NULL) {
         pr_err("addr(=0x%lx) is not in memory node\r\n", addr);
         return -EINVAL;
     }
-    page = (struct page *)node->start;
-    page = &page[GET_PFN(addr) - node->start_pfn];
+    pages = (struct page *)node->start;
+    pfn = GET_PFN(addr);
+    page = &pages[pfn - node->start_pfn];
 
-    LIST_HEAD(tmp_list);
-    page->private = order;
     for (num = 0; num < order_num; num++) {
-        page->use_cnt = 0;
-        page->node->free_num++;
-        list_add_tail(&page->list, &tmp_list);
-        page++;
+        page[num].use_cnt = 0;
+        page[num].private = -1;
     }
+    node->free_num += order_num;
+    while (order + 1 < CONFIG_MAX_ORDER) {
+        addr_t buddy_pfn = pfn ^ ((addr_t)1U << order);
+        struct mm_buddy_info *info = &node->buddy.info[order];
+        struct page *buddy;
+        if (buddy_pfn < node->start_pfn + node->buddy_page_index ||
+            buddy_pfn + (1U << order) > node->start_pfn + node->page_num) break;
+        buddy = &pages[buddy_pfn - node->start_pfn];
+        spin_lock_irq(&info->lock);
+        if (buddy->private != (int)order || info->free_num == 0) {
+            spin_unlock_irq(&info->lock);
+            break;
+        }
+        for (num = 0; num < (1U << order); num++) {
+            list_del_init(&buddy[num].list);
+            buddy[num].private = -1;
+        }
+        info->free_num--;
+        spin_unlock_irq(&info->lock);
+        if (buddy_pfn < pfn) pfn = buddy_pfn;
+        order++;
+    }
+    page = &pages[pfn - node->start_pfn];
+    LIST_HEAD(tmp_list);
+    for (num = 0; num < (1U << order); num++) list_add_tail(&page[num].list, &tmp_list);
     insert_page_to_buddy(&node->buddy.info[order], &tmp_list, 1);
 
     return 0;
