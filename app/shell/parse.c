@@ -211,8 +211,8 @@ int shell_expand_status(const char *source, char *output, size_t size, int statu
     return shell_expand_parameters(source, output, size, status, NULL, NULL);
 }
 
-int shell_parse_redirect(char *line, char **argv, int capacity,
-                         struct shell_redirection *redir)
+int shell_parse_redirect_quoted(char *line, char **argv, int capacity,
+                                struct shell_redirection *redir, unsigned char *quoted)
 {
     char source[257];
     char *read = source;
@@ -279,13 +279,19 @@ int shell_parse_redirect(char *line, char **argv, int capacity,
             } else if (c == '\\' && quote != '\'') {
                 if (*read == '\0') return -1;
                 if (quote == '"' && *read != '"' && *read != '\\' &&
-                    *read != '$' && *read != '`') *write++ = c;
+                    *read != '$' && *read != '`') {
+                    if (quoted != NULL) quoted[write - line] = 1;
+                    *write++ = c;
+                }
+                if (quoted != NULL) quoted[write - line] = 1;
                 *write++ = *read++;
             } else {
+                if (quoted != NULL) quoted[write - line] = quote != 0;
                 *write++ = c;
             }
         }
         if (quote != 0) return -1;
+        if (quoted != NULL) quoted[write - line] = 0;
         *write++ = '\0';
         if (expect_path == 1) {
             redir->path = word;
@@ -304,6 +310,12 @@ int shell_parse_redirect(char *line, char **argv, int capacity,
     if (expect_path) return -1;
     argv[argc] = NULL;
     return argc;
+}
+
+int shell_parse_redirect(char *line, char **argv, int capacity,
+                         struct shell_redirection *redir)
+{
+    return shell_parse_redirect_quoted(line, argv, capacity, redir, NULL);
 }
 
 int shell_split_commands(char *line, struct shell_command *commands, int capacity)

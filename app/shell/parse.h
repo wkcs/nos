@@ -26,6 +26,9 @@ struct shell_redirection {
 
 int shell_parse_redirect(char *line, char **argv, int argv_capacity,
                          struct shell_redirection *redir);
+/* quoted has room for strlen(line) + 1 bytes and parallels the parsed line. */
+int shell_parse_redirect_quoted(char *line, char **argv, int argv_capacity,
+                                struct shell_redirection *redir, unsigned char *quoted);
 
 enum shell_condition {
     SHELL_ALWAYS,

@@ -41,7 +41,19 @@ int main(void)
     char dup_after[] = "ls >output 2>&1";
     char dup_before[] = "ls 2>&1 >output";
     char dup_list[] = "ls 2>&1 | cat";
+    char patterns[] = "echo a*'?'\\*\"[x]\"$V";
+    unsigned char quoted[sizeof(patterns)] = {0};
     int argc;
+
+    argc = shell_parse_redirect_quoted(patterns, argv, 8, &redir, quoted);
+    assert(argc == 2 && strcmp(argv[1], "a*?*[x]$V") == 0);
+    {
+        size_t offset = (size_t)(argv[1] - patterns);
+        assert(!quoted[offset] && !quoted[offset + 1]);
+        assert(quoted[offset + 2] && quoted[offset + 3]);
+        assert(quoted[offset + 4] && quoted[offset + 5] && quoted[offset + 6]);
+        assert(!quoted[offset + 7] && !quoted[offset + 8]);
+    }
 
     argc = shell_parse_redirect(stderr_redirect, argv, 8, &redir);
     assert(argc == 1 && strcmp(argv[0], "cat") == 0);
