@@ -12,6 +12,7 @@ static struct live live[THREADS];
 static pthread_mutex_t live_lock = PTHREAD_MUTEX_INITIALIZER;
 extern void *__kalloc(u32, gfp_t, pid_t);
 extern int __kfree(void *);
+extern int __kfree_by_pid(pid_t);
 
 addr_t alloc_pages(gfp_t flag, u32 order)
 {
@@ -54,6 +55,18 @@ int main(void)
     pthread_t threads[THREADS];
     assert(__kalloc(0, 0, 1) == NULL);
     assert(__kalloc(U32_MAX, 0, 1) == NULL);
+    {
+        char *first = __kalloc(64, 0, 11);
+        char *other = __kalloc(64, 0, 12);
+        char *last = __kalloc(64, 0, 11);
+        assert(first && other && last);
+        memset(other, 0x5a, 64);
+        assert(__kfree_by_pid(11) == 0);
+        for (int i = 0; i < 64; i++) assert((unsigned char)other[i] == 0x5a);
+        assert(__kfree(first) == -EINVAL);
+        assert(__kfree(last) == -EINVAL);
+        assert(__kfree(other) == 0);
+    }
     for (uintptr_t i = 0; i < THREADS; i++) assert(pthread_create(&threads[i], NULL, worker, (void *)i) == 0);
     for (int i = 0; i < THREADS; i++) pthread_join(threads[i], NULL);
     puts("concurrent memory block allocation checks passed");

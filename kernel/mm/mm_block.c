@@ -161,11 +161,10 @@ void *__kalloc(u32 size, gfp_t flag, pid_t pid)
     }
 }
 
-static int __kfree_base(struct memblock *block, struct mem_base *base)
+static void __kfree_base_locked(struct memblock *block, struct mem_base *base)
 {
     struct mem_base *new;
 
-    spin_lock_irq(&block->lock);
     if (base->list.prev != &block->base) {
         new = list_prev_entry(base, list);
         if (!new->used) {
@@ -191,6 +190,12 @@ static int __kfree_base(struct memblock *block, struct mem_base *base)
     if (block->max_alloc_cap < base->size) {
         block->max_alloc_cap = base->size;
     }
+}
+
+static int __kfree_base(struct memblock *block, struct mem_base *base)
+{
+    spin_lock_irq(&block->lock);
+    __kfree_base_locked(block, base);
     spin_unlock_irq(&block->lock);
 
     return 0;
@@ -269,41 +274,28 @@ int __kfree_by_pid(pid_t pid)
 {
     struct memblock *block;
     struct mem_base *base;
-    struct list_head *block_next, *base_next;
-    int rc;
-
+    spin_lock_irq(&g_memblock_lock);
     if (list_empty(&g_memblock_list)) {
+        spin_unlock_irq(&g_memblock_lock);
         return -ENODEV;
     }
-
-    block_next = &g_memblock_list;
-check_block:
-    spin_lock_irq(&g_memblock_lock);
-    block_next = block_next->next;
-    if (block_next == &g_memblock_list) {
-        spin_unlock_irq(&g_memblock_lock);
-        return 0;
-    }
-    block = list_entry(block_next, struct memblock, list);
-    spin_unlock_irq(&g_memblock_lock);
-
-    base_next = &block->base;
-check_base:
-    spin_lock_irq(&block->lock);
-    base_next = base_next->next;
-    if (base_next == &block->base) {
+    list_for_each_entry (block, &g_memblock_list, list) {
+        bool found;
+        spin_lock_irq(&block->lock);
+        do {
+            found = false;
+            list_for_each_entry (base, &block->base, list) {
+                if (base->used && base->pid == pid) {
+                    __kfree_base_locked(block, base);
+                    found = true;
+                    break;
+                }
+            }
+        } while (found);
         spin_unlock_irq(&block->lock);
-        goto check_block;
     }
-    base = list_entry(base_next, struct mem_base, list);
-    spin_unlock_irq(&block->lock);
-
-    rc = __kfree_base(block, base);
-    if (rc < 0) {
-        pr_err("pid(=%u) free error, rc=%d\r\n", pid, rc);
-        return rc;
-    }
-    goto check_base;
+    spin_unlock_irq(&g_memblock_lock);
+    return 0;
 }
 
 void __mm_block_dump(struct memblock *block)
