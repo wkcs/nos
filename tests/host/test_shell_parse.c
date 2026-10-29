@@ -36,7 +36,16 @@ int main(void)
     char input[] = "cat <'input file' >output";
     char duplicate_input[] = "cat <a <b";
     char missing_input[] = "cat <";
+    char stderr_redirect[] = "cat 2>>errors >output";
+    char separate_two[] = "echo 2 >output";
     int argc;
+
+    argc = shell_parse_redirect(stderr_redirect, argv, 8, &redir);
+    assert(argc == 1 && strcmp(argv[0], "cat") == 0);
+    assert(strcmp(redir.error_path, "errors") == 0 && redir.error_append);
+    assert(strcmp(redir.path, "output") == 0 && redir.error_first);
+    argc = shell_parse_redirect(separate_two, argv, 8, &redir);
+    assert(argc == 2 && strcmp(argv[1], "2") == 0 && redir.error_path == NULL);
 
     {
         char *positive[] = { "-f", "file" };
@@ -113,6 +122,10 @@ int main(void)
         expanded_argc = shell_parse_redirect(expanded, argv, 8, &redir);
         assert(expanded_argc == 1 && strcmp(argv[0], "A=one two;\"$") == 0);
         assert(strcmp(redir.path, "one two;\"$") == 0);
+        assert(shell_expand_parameters("2>$V A=$V", expanded, sizeof(expanded), 0, lookup, NULL) == 0);
+        expanded_argc = shell_parse_redirect(expanded, argv, 8, &redir);
+        assert(expanded_argc == 1 && strcmp(argv[0], "A=one two;\"$") == 0);
+        assert(strcmp(redir.error_path, "one two;\"$") == 0);
         assert(shell_expand_parameters("echo > $MISSING suffix", expanded, sizeof(expanded),
                                        0, lookup, NULL) == 0);
         expanded_argc = shell_parse_redirect(expanded, argv, 8, &redir);

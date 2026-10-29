@@ -18,6 +18,9 @@ struct shell_redirection {
     char *input_path;
     char *path;
     bool append;
+    char *error_path;
+    bool error_append;
+    bool error_first;
 };
 
 int shell_parse_redirect(char *line, char **argv, int argv_capacity,

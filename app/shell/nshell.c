@@ -78,6 +78,7 @@ struct nshell {
     int last_status;
     struct file *input_file;
     struct file *output_file;
+    struct file *error_file;
     struct shell_stream_pipe *pipe_input;
     struct shell_stream_pipe *pipe_output;
     int output_error;
@@ -348,6 +349,25 @@ static int shell_error(const char *fmt, ...)
     va_end(args);
     if (len < 0) return len;
     if ((size_t)len >= sizeof(buf)) len = sizeof(buf) - 1;
+    if (shell->error_file != NULL) {
+        struct file *file = shell->error_file;
+        int read_pos, write_pos = 0, total = 0;
+        for (read_pos = 0; read_pos < len; read_pos++) {
+            if (buf[read_pos] == '\r' && read_pos + 1 < len && buf[read_pos + 1] == '\n') {
+                continue;
+            }
+            buf[write_pos++] = buf[read_pos];
+        }
+        while (total < write_pos) {
+            int rc = file->f_op->write(file, buf + total, (size_t)(write_pos - total), &file->f_pos);
+            if (rc <= 0) {
+                shell->output_error = rc < 0 ? rc : -EIO;
+                return total != 0 ? total : shell->output_error;
+            }
+            total += rc;
+        }
+        return total;
+    }
     return shell_session_write(&shell->session, buf, (unsigned int)len);
 }
 
@@ -1675,7 +1695,8 @@ static void nshell_close_input(struct nshell *shell)
     kfree(file);
 }
 
-static int nshell_open_output(struct nshell *shell, const char *path, bool append)
+static int nshell_open_output(struct nshell *shell, const char *path, bool append,
+                              struct file **destination)
 {
     char *copy;
     char *p;
@@ -1739,8 +1760,20 @@ static int nshell_open_output(struct nshell *shell, const char *path, bool appen
     }
     if (append) file->f_pos = file->f_inode->i_size;
     shell->output_error = 0;
-    shell->output_file = file;
+    *destination = file;
     return 0;
+}
+
+static int nshell_close_output(struct file **destination)
+{
+    struct file *file = *destination;
+    int rc = 0;
+
+    if (file == NULL) return 0;
+    *destination = NULL;
+    if (file->f_op->release != NULL) rc = file->f_op->release(file->f_inode, file);
+    kfree(file);
+    return rc;
 }
 
 struct shell_pipeline_group {
@@ -1804,6 +1837,7 @@ static noinline int shell_run_pipeline(struct nshell *parent, struct shell_comma
         child->variables = NULL;
         child->input_file = NULL;
         child->output_file = NULL;
+        child->error_file = NULL;
         child->pipe_input = i > 0 ? &pipes[i - 1] : NULL;
         child->pipe_output = i + 1 < count ? &pipes[i] : NULL;
         child->output_error = 0;
@@ -1948,13 +1982,24 @@ static void nshell_exec_cmd(struct nshell *shell)
                 goto next_command;
             }
         }
-        if (redir.path != NULL) {
-            int rc = nshell_open_output(shell, redir.path, redir.append);
-            if (rc < 0) {
-                shell_error("shell: %s: cannot redirect (error %d)\r\n", redir.path, rc);
-                shell->last_status = 1;
-                nshell_close_input(shell);
-                goto next_command;
+        {
+            int j;
+            for (j = 0; j < 2; j++) {
+                bool error_stream = redir.error_first ? j == 0 : j == 1;
+                const char *path = error_stream ? redir.error_path : redir.path;
+                bool append = error_stream ? redir.error_append : redir.append;
+                struct file **destination = error_stream ? &shell->error_file : &shell->output_file;
+                int rc;
+                if (path == NULL) continue;
+                rc = nshell_open_output(shell, path, append, destination);
+                if (rc < 0) {
+                    shell_error("shell: %s: cannot redirect (error %d)\r\n", path, rc);
+                    shell->last_status = 1;
+                    nshell_close_input(shell);
+                    (void)nshell_close_output(&shell->output_file);
+                    (void)nshell_close_output(&shell->error_file);
+                    goto next_command;
+                }
             }
         }
         assignments = shell_count_assignments(workspace->commands[i].text);
@@ -2021,14 +2066,8 @@ static void nshell_exec_cmd(struct nshell *shell)
                          !assignment_only && !assignment_error && curr != NULL &&
                          curr->func == cmd_cd && shell->last_status == 0);
         nshell_close_input(shell);
-        if (shell->output_file != NULL) {
-            struct file *file = shell->output_file;
-            shell->output_file = NULL;
-            if (file->f_op->release != NULL && file->f_op->release(file->f_inode, file) != 0) {
-                shell->last_status = 1;
-            }
-            kfree(file);
-        }
+        if (nshell_close_output(&shell->output_file) != 0) shell->last_status = 1;
+        if (nshell_close_output(&shell->error_file) != 0) shell->last_status = 1;
 next_command:
         if (shell->output_error != 0) {
             int error = shell->output_error;
