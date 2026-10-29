@@ -10,3 +10,4 @@ addr_t alloc_pages(gfp_t flag, u32 order);
 int free_pages(addr_t addr, u32 order);
 struct memblock *find_block(void *addr);
 struct mem_base *find_base(struct memblock *block, void *addr);
+void *krealloc(void *ptr, u32 size, gfp_t flag);
