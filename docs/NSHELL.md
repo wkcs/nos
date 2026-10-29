@@ -9,6 +9,8 @@ The parser supports single and double quotes, backslash escapes, command lists
 Input redirection is consumed by `cat`, `wc`, and `grep`; these also read standard input
 when passed `-`. Output redirection and pipelines apply to built-in command
 output.
+Redirections can appear without a command or between leading assignments;
+their expanded paths are treated as single operands, including spaces.
 
 Pipeline stages currently execute sequentially, using a 4096-byte buffer per
 stage. A producer that exceeds this limit fails with an output error and the
@@ -34,8 +36,7 @@ ordinary built-ins, and persist for assignment-only commands, `export`, and
 assignment values are expanded in order, so later assignments see earlier ones.
 The shell initializes `HOME` and `PWD` to `/`; `cd` uses `HOME`, updates `PWD`
 and `OLDPWD`, and supports `cd -`. Paths are physical because the VFS does not
-currently support symbolic links. Assignments after a redirection, arbitrary
-`IFS`, advanced parameter operators, and passing an
+currently support symbolic links. Arbitrary `IFS`, advanced parameter operators, and passing an
 environment to external processes are not implemented. Pipeline stages still
 run in the current session, so assignment or `unset` in a pipeline persists.
 

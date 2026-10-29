@@ -20,33 +20,44 @@ static int append_char(char *output, size_t size, size_t *used, char c)
     return 0;
 }
 
+static const char *shell_word_end(const char *source)
+{
+    char quote = 0;
+    while (*source != '\0') {
+        char c = *source;
+        if (quote == 0 && (c == ' ' || c == '\t' || c == '<' || c == '>')) break;
+        source++;
+        if (c == '\\' && quote != '\'' && *source != '\0') source++;
+        else if (c == '\'' && quote != '"') quote = quote == '\'' ? 0 : '\'';
+        else if (c == '"' && quote != '\'') quote = quote == '"' ? 0 : '"';
+    }
+    return source;
+}
+
 const char *shell_assignment_at(const char *source, int index, size_t *length)
 {
     int count = 0;
     while (*source != '\0') {
-        char quote = 0;
         const char *start;
         while (*source == ' ' || *source == '\t') source++;
+        if (*source == '<' || *source == '>') {
+            char op = *source++;
+            if (op == '>' && *source == '>') source++;
+            while (*source == ' ' || *source == '\t') source++;
+            if (*source == '\0' || *source == '<' || *source == '>') return NULL;
+            source = shell_word_end(source);
+            continue;
+        }
         start = source;
         if (!name_start(*source)) return NULL;
         source++;
         while (name_char(*source)) source++;
         if (*source++ != '=') return NULL;
-        while (*source != '\0') {
-            char c = *source;
-            if (quote == 0 && (c == ' ' || c == '\t' || c == '<' || c == '>')) {
-                break;
-            }
-            source++;
-            if (c == '\\' && quote != '\'' && *source != '\0') source++;
-            else if (c == '\'' && quote != '"') quote = quote == '\'' ? 0 : '\'';
-            else if (c == '"' && quote != '\'') quote = quote == '"' ? 0 : '"';
-        }
+        source = shell_word_end(source);
         if (count++ == index) {
             *length = (size_t)(source - start);
             return start;
         }
-        if (*source == '<' || *source == '>') return NULL;
     }
     return NULL;
 }
@@ -67,6 +78,7 @@ int shell_expand_parameters(const char *source, char *output, size_t size, int s
     unsigned int value = (unsigned int)status & 255U;
     size_t used = 0, digits = 0;
     int assignment = 0, word_start = 1, seen_command = 0, export_command = 0;
+    int redir_pending = 0, redir_word = 0;
 
     if (source == NULL || output == NULL || size == 0) return -1;
     do {
@@ -81,7 +93,11 @@ int shell_expand_parameters(const char *source, char *output, size_t size, int s
     number[digits] = '\0';
     while (*source != '\0') {
         char c = *source++;
-        if (word_start && quote == 0 && name_start(c)) {
+        if (word_start && quote == 0 && c != ' ' && c != '\t' && c != '<' && c != '>') {
+            redir_word = redir_pending;
+            redir_pending = 0;
+        }
+        if (word_start && quote == 0 && !redir_word && name_start(c)) {
             const char *end = source;
             while (name_char(*end)) end++;
             assignment = (!seen_command || export_command) && *end == '=';
@@ -90,11 +106,13 @@ int shell_expand_parameters(const char *source, char *output, size_t size, int s
                                  memcmp(source - 1, "export", 6) == 0;
                 seen_command = 1;
             }
-        } else if (word_start && quote == 0 && c != ' ' && c != '\t' &&
+        } else if (word_start && quote == 0 && !redir_word && c != ' ' && c != '\t' &&
                    c != '<' && c != '>') {
             seen_command = 1;
         }
         if (quote == 0 && (c == ' ' || c == '\t' || c == '<' || c == '>')) {
+            if (c == '<' || c == '>') redir_pending = 1;
+            redir_word = 0;
             word_start = 1;
             assignment = 0;
         } else {
@@ -124,12 +142,15 @@ int shell_expand_parameters(const char *source, char *output, size_t size, int s
             }
             if (len != 0 && (!braces || name[len] == '}')) {
                 source = name + len + (braces ? 1 : 0);
+                if (*replacement == '\0' && redir_word && quote == 0 &&
+                    (append_char(output, size, &used, '\'') ||
+                     append_char(output, size, &used, '\''))) return -1;
                 while (*replacement != '\0') {
                     char v = *replacement++;
                     int protect = quote == '"' ? (v == '"' || v == '\\' || v == '$' || v == '`') :
                         (v == '\\' || v == '\'' || v == '"' || v == '$' || v == '`' ||
                          v == '|' || v == '&' || v == ';' || v == '<' || v == '>' ||
-                         (assignment && (v == ' ' || v == '\t')));
+                         ((assignment || redir_word) && (v == ' ' || v == '\t')));
                     if (protect && append_char(output, size, &used, '\\')) return -1;
                     if (append_char(output, size, &used, v)) return -1;
                 }
