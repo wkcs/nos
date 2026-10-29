@@ -26,6 +26,7 @@
 #include <nos/shell_session.h>
 #include <stdarg.h>
 #include "parse.h"
+#include "glob_vfs.h"
 #include "test_expr.h"
 #include "printf_cmd.h"
 #include "pipe.h"
@@ -1957,6 +1958,10 @@ static void nshell_exec_cmd(struct nshell *shell)
     }
     for (i = 0; i < count; i++) {
         struct shell_cmd *curr = cmd_list;
+        struct glob_state {
+            struct shell_glob_result *results[MAX_ARGS];
+            char *argv[MAX_ARGS + 1];
+        } *glob = NULL;
         int saved_count = 0;
         bool assignment_only = false;
         bool assignment_error = false;
@@ -1985,12 +1990,70 @@ static void nshell_exec_cmd(struct nshell *shell)
             skip_pipeline = true;
             goto next_command;
         }
-        argc = shell_parse_redirect(workspace->expanded, argv, MAX_ARGS + 1, &redir);
+        argc = shell_parse_redirect_quoted(workspace->expanded, argv, MAX_ARGS + 1,
+                                           &redir, (unsigned char *)workspace->check);
         shell->output_error = 0;
         if (argc < 0) {
             shell_error("shell: invalid expanded command\r\n");
             shell->last_status = 1;
             goto next_command;
+        }
+        assignments = shell_count_assignments(workspace->commands[i].text);
+        if (assignments > argc) assignments = argc;
+        {
+            int j, expanded_count = 0;
+            for (j = 0; j < argc; j++) {
+                const unsigned char *quoted = (unsigned char *)workspace->check + (argv[j] - workspace->expanded);
+                struct shell_glob_result *match;
+                bool magic = false;
+                bool export_assignment = false;
+                size_t k;
+                if (j > assignments && strcmp(argv[assignments], "export") == 0) {
+                    const char *equals = strchr(argv[j], '=');
+                    export_assignment = equals != NULL &&
+                        variable_name_valid(argv[j], (size_t)(equals - argv[j]));
+                }
+                for (k = 0; argv[j][k] != '\0'; k++) {
+                    if (!quoted[k] && (argv[j][k] == '*' || argv[j][k] == '?' || argv[j][k] == '[')) {
+                        magic = true;
+                        break;
+                    }
+                }
+                if (magic && j >= assignments && !export_assignment) {
+                    struct dentry *cwd = shell->session.cwd != NULL ? shell->session.cwd : vfs_get_root();
+                    int rc;
+                    if (glob == NULL) {
+                        int n;
+                        glob = kzalloc(sizeof(*glob), GFP_KERNEL);
+                        if (glob == NULL) {
+                            shell_error("shell: pathname expansion out of memory\r\n");
+                            shell->last_status = 1;
+                            goto next_command;
+                        }
+                        for (n = 0; n < expanded_count; n++) glob->argv[n] = argv[n];
+                    }
+                    rc = shell_glob_expand(cwd, argv[j], quoted, &glob->results[j]);
+                    if (rc != 0) {
+                        shell_error("shell: pathname expansion failed (%d)\r\n", rc);
+                        shell->last_status = 1;
+                        goto next_command;
+                    }
+                }
+                match = glob != NULL ? glob->results[j] : NULL;
+                if (match == NULL) {
+                    if (expanded_count >= MAX_ARGS) goto glob_overflow;
+                    if (glob != NULL) glob->argv[expanded_count] = argv[j];
+                    expanded_count++;
+                } else {
+                    for (; match != NULL; match = match->next) {
+                        if (expanded_count >= MAX_ARGS) goto glob_overflow;
+                        glob->argv[expanded_count++] = match->path;
+                    }
+                }
+            }
+            argc = expanded_count;
+            if (glob != NULL) for (j = 0; j < argc; j++) argv[j] = glob->argv[j];
+            argv[argc] = NULL;
         }
         if (redir.input_path != NULL) {
             int rc = nshell_open_input(shell, redir.input_path);
@@ -2024,8 +2087,6 @@ static void nshell_exec_cmd(struct nshell *shell)
                 }
             }
         }
-        assignments = shell_count_assignments(workspace->commands[i].text);
-        if (assignments > argc) assignments = argc;
         assignment_only = assignments == argc;
         {
             bool persistent = assignment_only ||
@@ -2090,12 +2151,21 @@ static void nshell_exec_cmd(struct nshell *shell)
         nshell_close_input(shell);
         if (nshell_close_outputs(shell) != 0) shell->last_status = 1;
 next_command:
+        if (glob != NULL) {
+            for (int j = 0; j < MAX_ARGS; j++) shell_glob_free(glob->results[j]);
+            kfree(glob);
+        }
         if (shell->output_error != 0) {
             int error = shell->output_error;
             shell_error("shell: output error %d\r\n", error);
             shell->last_status = 1;
             skip_pipeline = true;
         }
+        continue;
+glob_overflow:
+        shell_error("shell: too many expanded arguments\r\n");
+        shell->last_status = 1;
+        goto next_command;
     }
     kfree(workspace);
 }

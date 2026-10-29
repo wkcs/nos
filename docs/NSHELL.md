@@ -44,6 +44,15 @@ and `OLDPWD`, and supports `cd -`. Paths are physical because the VFS does not
 currently support symbolic links. Arbitrary `IFS`, advanced parameter operators, and passing an
 environment to external processes are not implemented.
 
+Unquoted command arguments support pathname expansion with `*`, `?`, and
+bracket expressions across multiple directory components. Matches are sorted
+bytewise, hidden entries require a leading dot, and unmatched patterns remain
+literal. Quoting and backslash escaping protect pattern characters. Expansion
+is subject to the shell's argument and path length limits.
+The current kernel block allocator retains pages after freeing allocations;
+on memory-constrained boards, prior expansion or filesystem operations can
+reduce the memory available for later pipelines.
+
 The shell is not yet POSIX conformant. Full parameter and pathname expansion,
 subshells, external processes, job control, and a complete standard error
 stream remain to be implemented. Some NOS-specific commands and VFS behavior
