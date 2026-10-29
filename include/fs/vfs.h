@@ -76,6 +76,8 @@ struct file_operations {
   int (*readdir)(struct file *, void *dirent, filldir_t filldir);
   int (*open)(struct inode *, struct file *);
   int (*release)(struct inode *, struct file *);
+  /* Compare open files: 1 if identical, 0 if distinct, negative on error. */
+  int (*same_file)(struct file *, struct file *);
   loff_t (*llseek)(struct file *, loff_t, int);
 };
 

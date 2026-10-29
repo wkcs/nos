@@ -15,6 +15,9 @@ when passed `-`. Output redirection and pipelines apply to built-in command
 output.
 `cat` accepts `-u` and `--`; its output is already written without stdio buffering.
 `head` reads standard input or files and supports `-n`, `-c`, `-NUM`, and `--`.
+`cp` copies files, including multiple sources into a directory, and accepts
+`--`. Recursive copying, metadata preservation, and other options are not yet
+implemented.
 Redirections can appear without a command or between leading assignments;
 their expanded paths are treated as single operands, including spaces.
 

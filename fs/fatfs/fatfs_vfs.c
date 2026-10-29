@@ -467,11 +467,20 @@ static int fatfs_file_open(struct inode *inode, struct file *file) {
     return 0;
 }
 
+static int fatfs_same_file(struct file *left, struct file *right)
+{
+    FIL *a = left->private_data;
+    FIL *b = right->private_data;
+    if (a == NULL || b == NULL) return -EBADF;
+    return a->fs == b->fs && a->dir_sect == b->dir_sect && a->dir_ptr == b->dir_ptr;
+}
+
 static struct file_operations fatfs_file_ops = {
     .read = fatfs_read,
     .write = fatfs_write,
     .release = fatfs_release,
     .open = fatfs_file_open,
+    .same_file = fatfs_same_file,
 };
 
 static struct file_operations fatfs_dir_ops = {
