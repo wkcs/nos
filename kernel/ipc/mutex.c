@@ -32,10 +32,9 @@ int mutex_init(struct mutex *lock)
     return 0;
 }
 
-static void __mutex_lock(struct task_struct *task, struct mutex *lock)
+static void __mutex_lock_locked(struct task_struct *task, struct mutex *lock)
 {
     struct task_struct *task_temp;
-    int rc;
 
     if (!list_empty(&task->list)) {
         BUG_ON(true);
@@ -43,7 +42,6 @@ static void __mutex_lock(struct task_struct *task, struct mutex *lock)
         return;
     }
 
-    spin_lock(&lock->lock);
     list_for_each_entry (task_temp, &lock->wait_list, list) {
         if (task->current_priority < task_temp->current_priority) {
             break;
@@ -51,52 +49,59 @@ static void __mutex_lock(struct task_struct *task, struct mutex *lock)
     }
     list_add_tail(&task->list, &task_temp->list);
     task->list_lock = &lock->lock;
-    spin_unlock(&lock->lock);
-
-    if (task->current_priority < lock->owner->current_priority) {
-        rc = task_set_prio(lock->owner, task->current_priority);
-        if (rc < 0) {
-            pr_err("%s task set priority to %u error, rc=%d\r\n",
-                   lock->owner->name, task->current_priority, rc);
-        }
-    }
 }
 
 /*给互斥体加锁*/
 void mutex_lock(struct mutex *lock)
 {
     struct task_struct *task;
+    struct task_struct *owner;
     int rc;
 
     task = current;
-    spin_lock(&lock->lock);
+    spin_lock_irq(&task->lock);
+    spin_lock_irq(&lock->lock);
     if (!lock->locked) {
         lock->locked = true;
         lock->owner = task;
-        spin_unlock(&lock->lock);
+        spin_unlock_irq(&lock->lock);
+        spin_unlock_irq(&task->lock);
         return;
     }
-    spin_unlock(&lock->lock);
-
-    rc = task_hang(task);
+    rc = task_hang_lock(task);
     if (rc < 0) {
+        spin_unlock_irq(&lock->lock);
+        spin_unlock_irq(&task->lock);
         pr_err("%s task hang error, rc=%d\r\n", task->name, rc);
         return;
     }
-    __mutex_lock(task, lock);
+    __mutex_lock_locked(task, lock);
+    owner = lock->owner;
+    /* Keep the owner stable until its inherited priority is applied. */
+    sch_lock();
+    spin_unlock_irq(&lock->lock);
+    spin_unlock_irq(&task->lock);
+    if (task->current_priority < owner->current_priority) {
+        rc = task_set_prio(owner, task->current_priority);
+        if (rc < 0) {
+            pr_err("%s task set priority to %u error, rc=%d\r\n",
+                   owner->name, task->current_priority, rc);
+        }
+    }
+    sch_unlock();
     switch_task();
 }
 
 int mutex_try_lock(struct mutex *lock)
 {
-    spin_lock(&lock->lock);
+    spin_lock_irq(&lock->lock);
     if (!lock->locked) {
         lock->locked = true;
         lock->owner = current;
-        spin_unlock(&lock->lock);
+        spin_unlock_irq(&lock->lock);
         return 0;
     }
-    spin_unlock(&lock->lock);
+    spin_unlock_irq(&lock->lock);
 
     return -EBUSY;
 }
@@ -106,25 +111,29 @@ void mutex_unlock(struct mutex *lock)
     struct task_struct *owner;
     int rc;
 
+    spin_lock_irq(&lock->lock);
     if (!lock->locked) {
+        spin_unlock_irq(&lock->lock);
         return;
     }
     if (lock->owner != current) {
+        spin_unlock_irq(&lock->lock);
         pr_err("%s task is not mutex owner\r\n", current->name);
         return;
     }
     owner = lock->owner;
 
-    spin_lock(&lock->lock);
+    sch_lock();
     if (list_empty(&lock->wait_list)) {
         lock->locked = false;
         lock->owner = NULL;
-        spin_unlock(&lock->lock);
+        spin_unlock_irq(&lock->lock);
         rc = task_set_prio(owner, owner->init_priority);
         if (rc < 0) {
             pr_err("%s task set priority to %u error, rc=%d\r\n",
                    owner->name, owner->init_priority, rc);
         }
+        sch_unlock();
         return;
     }
 
@@ -133,12 +142,13 @@ void mutex_unlock(struct mutex *lock)
     list_del(&task_temp->list);
     task_temp->list_lock = NULL;
     lock->owner = task_temp;
-    spin_unlock(&lock->lock);
+    spin_unlock_irq(&lock->lock);
     rc = task_set_prio(owner, owner->init_priority);
     if (rc < 0) {
         pr_err("%s task set priority to %u error, rc=%d\r\n",
                owner->name, owner->init_priority, rc);
     }
     task_resume(task_temp);
+    sch_unlock();
     switch_task();
 }
