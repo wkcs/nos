@@ -52,6 +52,18 @@ static int vfs_smoke(void)
         pr_err("vfs_smoke: same-path rename failed\r\n");
         return -EIO;
     }
+    if (nos_mkdir("/unlink-dir", 0755) != 0 ||
+        nos_unlink("/unlink-dir") != -EISDIR ||
+        nos_rmdir("/unlink-dir") != 0) {
+        pr_err("vfs_smoke: unlink accepted a directory\r\n");
+        return -EIO;
+    }
+    fd = nos_open("/typecheck.tmp", O_CREAT | O_RDWR);
+    if (fd < 0 || nos_close(fd) != 0 || nos_rmdir("/typecheck.tmp") != -ENOTDIR ||
+        nos_unlink("/typecheck.tmp") != 0) {
+        pr_err("vfs_smoke: rmdir accepted a file\r\n");
+        return -EIO;
+    }
 
     if (nos_mkdir("/cycle", 0755) != 0 ||
         nos_mkdir("/cycle/sub", 0755) != 0 ||
