@@ -27,6 +27,7 @@
 #include <stdarg.h>
 #include "parse.h"
 #include "test_expr.h"
+#include "printf_cmd.h"
 #ifdef CONFIG_NLK_SERVER
 #include <nos/nlk_core.h>
 #include <nos/nlk_caps.h>
@@ -622,6 +623,33 @@ static int cmd_echo(int argc, char *argv[])
         }
     }
     return 0;
+}
+
+static int printf_write(void *context, const char *data, size_t length)
+{
+    (void)context;
+    return nshell_write(data, (int)length);
+}
+
+static int cmd_printf(int argc, char *argv[])
+{
+    char *buffer;
+    int rc;
+    int first = argc > 1 && strcmp(argv[1], "--") == 0 ? 2 : 1;
+    if (argc <= first) {
+        shell_error("printf: missing format\r\n");
+        return 1;
+    }
+    buffer = kmalloc(512, GFP_KERNEL);
+    if (buffer == NULL) {
+        shell_error("printf: out of memory\r\n");
+        return 1;
+    }
+    rc = shell_printf_execute(argv[first], argc - first - 1, argv + first + 1,
+                              printf_write, NULL, buffer, 512);
+    kfree(buffer);
+    if (rc != 0) shell_error("printf: invalid format, argument or output error\r\n");
+    return rc;
 }
 
 static int cmd_true(int argc, char *argv[])
@@ -1962,6 +1990,7 @@ static int nshell_init(void)
     shell_register_cmd("ver", "Show NOS kernel version & uptime", cmd_ver);
     shell_register_cmd("clear", "Clear screen", cmd_clear);
     shell_register_cmd("echo", "Print arguments", cmd_echo);
+    shell_register_cmd("printf", "Format and print arguments", cmd_printf);
     shell_register_cmd("true", "Return success", cmd_true);
     shell_register_cmd("false", "Return failure", cmd_false);
     shell_register_cmd("test", "Evaluate a conditional expression", cmd_test);
