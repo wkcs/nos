@@ -3,6 +3,43 @@
 #include <stddef.h>
 #include <string.h>
 
+int shell_expand_status(const char *source, char *output, size_t size, int status)
+{
+    char quote = 0;
+    char number[4];
+    unsigned int value = (unsigned int)status & 255U;
+    size_t used = 0, digits = 0;
+
+    if (source == NULL || output == NULL || size == 0) return -1;
+    do {
+        number[digits++] = (char)('0' + value % 10U);
+        value /= 10U;
+    } while (value != 0);
+    while (*source != '\0') {
+        char c = *source++;
+        if (c == '\\' && quote != '\'' && *source != '\0') {
+            if (used + 2 >= size) return -1;
+            output[used++] = c;
+            output[used++] = *source++;
+            continue;
+        }
+        if (c == '\'' && quote != '"') quote = quote == '\'' ? 0 : '\'';
+        else if (c == '"' && quote != '\'') quote = quote == '"' ? 0 : '"';
+        if (c == '$' && quote != '\'' &&
+            (source[0] == '?' || (source[0] == '{' && source[1] == '?' && source[2] == '}'))) {
+            size_t i;
+            if (used + digits >= size) return -1;
+            source += source[0] == '?' ? 1 : 3;
+            for (i = digits; i > 0; i--) output[used++] = number[i - 1];
+        } else {
+            if (used + 1 >= size) return -1;
+            output[used++] = c;
+        }
+    }
+    output[used] = '\0';
+    return 0;
+}
+
 int shell_parse_redirect(char *line, char **argv, int capacity,
                          struct shell_redirection *redir)
 {

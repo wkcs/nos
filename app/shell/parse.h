@@ -2,6 +2,9 @@
 #ifndef NOS_SHELL_PARSE_H
 #define NOS_SHELL_PARSE_H
 #include <stdbool.h>
+#include <stddef.h>
+
+int shell_expand_status(const char *source, char *output, size_t size, int status);
 
 /* argv_capacity includes the trailing NULL pointer. */
 int shell_parse_line(char *line, char **argv, int argv_capacity);
