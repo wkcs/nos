@@ -27,6 +27,20 @@ static struct inode *directory;
 static struct inode *regular;
 static atomic_int duplicate_success, duplicate_exists;
 static atomic_int rename_start;
+static atomic_int append_start;
+struct append_args { struct inode *inode; char value; };
+
+static void *append_repeatedly(void *p)
+{
+    struct append_args *args = p;
+    struct file file = { .f_inode = args->inode, .f_flags = O_APPEND };
+    off_t pos = 0;
+    while (!atomic_load(&append_start)) usleep(100);
+    for (int i = 0; i < 100; i++) {
+        assert(ramfs_write(&file, &args->value, 1, &pos) == 1);
+    }
+    return NULL;
+}
 struct rename_args { struct inode *from, *to; const char *name; };
 
 static void *rename_back_and_forth(void *p)
@@ -169,8 +183,41 @@ int main(void)
         verify_file_lock(file_writer);
         verify_file_lock(file_reader);
         {
+            struct file a = { .f_inode = regular, .f_flags = O_APPEND };
+            struct file b = { .f_inode = regular, .f_flags = O_APPEND };
+            off_t apos = 0, bpos = 0, pos = 0;
+            char actual[5];
+            assert(ramfs_write(&a, "X", 1, &apos) == 1);
+            assert(ramfs_write(&b, "Y", 1, &bpos) == 1);
+            assert(ramfs_read(&a, actual, sizeof(actual), &pos) == 5);
+            assert(memcmp(actual, "abcXY", 5) == 0);
+            assert(apos == 4 && bpos == 5);
+            assert(ramfs_truncate(regular, 3) == 0);
+            {
+                struct append_args aa = { regular, 'X' };
+                struct append_args bb = { regular, 'Y' };
+                char appended[203];
+                int xs = 0, ys = 0;
+                assert(pthread_create(&r, NULL, append_repeatedly, &aa) == 0);
+                assert(pthread_create(&w, NULL, append_repeatedly, &bb) == 0);
+                atomic_store(&append_start, 1);
+                pthread_join(r, NULL);
+                pthread_join(w, NULL);
+                pos = 0;
+                assert(ramfs_read(&a, appended, sizeof(appended), &pos) == sizeof(appended));
+                assert(memcmp(appended, "abc", 3) == 0);
+                for (size_t i = 3; i < sizeof(appended); i++) {
+                    if (appended[i] == 'X') xs++;
+                    else if (appended[i] == 'Y') ys++;
+                    else assert(!"unexpected append data");
+                }
+                assert(xs == 100 && ys == 100);
+                assert(ramfs_truncate(regular, 3) == 0);
+            }
+        }
+        {
             struct file f = { .f_inode = regular };
-            off_t pos = 3;
+            off_t pos = ((struct ramfs_node *)regular->i_private)->size;
             char data[3];
             ramfs_fail_alloc = 1;
             assert(ramfs_write(&f, "x", 1, &pos) == -ENOMEM);

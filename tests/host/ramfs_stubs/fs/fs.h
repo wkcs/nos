@@ -4,6 +4,7 @@
 #include <sys/stat.h>
 #include <time.h>
 #include <stdint.h>
+#include <fcntl.h>
 typedef off_t loff_t;
 typedef uint64_t u64;
 #ifndef DT_DIR

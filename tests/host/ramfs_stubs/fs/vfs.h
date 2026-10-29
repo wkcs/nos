@@ -37,7 +37,7 @@ struct dentry {
     struct list_head d_subdirs;
     struct { const char *name; unsigned int len; } d_name;
 };
-struct file { struct inode *f_inode; off_t f_pos; };
+struct file { struct inode *f_inode; off_t f_pos; unsigned int f_flags; };
 struct super_operations { int (*statfs)(void *, void *); };
 struct super_block { unsigned long s_blocksize; unsigned char s_blocksize_bits; const struct super_operations *s_op; struct dentry *s_root; };
 struct file_system_type { const char *name; struct dentry *(*mount)(struct file_system_type *, int, const char *, void *); void (*kill_sb)(void *); };
