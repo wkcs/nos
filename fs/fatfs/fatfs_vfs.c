@@ -237,13 +237,18 @@ static int fatfs_create(struct inode *dir, struct dentry *dentry, int mode) {
    // shell 'touch' or open(O_CREAT).
    char path[256];
    FRESULT res;
-   FIL fp;
+   FIL *fp;
    
    if (get_fatfs_path(dentry, path, sizeof(path)) != 0) return -ENAMETOOLONG;
    
-   res = f_open(&fp, path, FA_CREATE_NEW | FA_WRITE | FA_READ);
+   fp = kzalloc(sizeof(*fp), GFP_KERNEL);
+   if (fp == NULL) return -ENOMEM;
+   res = f_open(fp, path, FA_CREATE_NEW | FA_WRITE | FA_READ);
    if (res == FR_OK) {
-       f_close(&fp);
+       f_close(fp);
+   }
+   kfree(fp);
+   if (res == FR_OK) {
        struct inode *inode = fatfs_make_inode(dir->i_sb, mode);
        if (inode) {
            dentry->d_inode = inode;

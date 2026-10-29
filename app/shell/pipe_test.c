@@ -1,5 +1,6 @@
 /** Copyright (C) 2026 Nick Hu <huqihan@live.com> */
 #include "pipe.h"
+#include <fs/fs.h>
 #include <kernel/errno.h>
 #include <kernel/init.h>
 #include <kernel/printk.h>
@@ -15,12 +16,27 @@ static unsigned int test_failed;
 
 static void pipe_test_complete(void)
 {
-    if (__atomic_add_fetch(&test_done, 1U, __ATOMIC_ACQ_REL) == 2U) {
+    if (__atomic_add_fetch(&test_done, 1U, __ATOMIC_ACQ_REL) == 3U) {
         if (__atomic_load_n(&test_failed, __ATOMIC_RELAXED))
             pr_err("shell stream pipe FAILED\r\n");
         else
             pr_info("shell stream pipe OK\r\n");
     }
+}
+
+static void pipe_test_file_stack(void *context)
+{
+    int fd;
+    (void)context;
+    fd = nos_open("/tmp/pipe-stack", O_CREAT | O_WRONLY);
+    if (fd < 0) {
+        __atomic_store_n(&test_failed, 1U, __ATOMIC_RELAXED);
+    } else {
+        nos_close(fd);
+    }
+    if (task_stack_max_used(task_current()) == 0)
+        __atomic_store_n(&test_failed, 1U, __ATOMIC_RELAXED);
+    pipe_test_complete();
 }
 
 static void pipe_test_writer(void *context)
@@ -74,18 +90,21 @@ static void pipe_test_reader(void *context)
 
 static int pipe_test_start(void)
 {
-    struct task_struct *writer, *reader;
+    struct task_struct *writer, *reader, *file;
     if (shell_stream_pipe_init(&test_pipe) != 0 || shell_stream_pipe_init(&closed_pipe) != 0) return -EINVAL;
     writer = task_create("pipe_test_writer", pipe_test_writer, NULL, 5, 1024, 10, NULL);
     reader = task_create("pipe_test_reader", pipe_test_reader, NULL, 5, 1024, 10, NULL);
-    if (writer == NULL || reader == NULL) {
+    file = task_create("pipe_test_file", pipe_test_file_stack, NULL, 5, 2048, 10, NULL);
+    if (writer == NULL || reader == NULL || file == NULL) {
         if (writer != NULL) task_del(writer);
         if (reader != NULL) task_del(reader);
+        if (file != NULL) task_del(file);
         pr_err("shell stream pipe FAILED\r\n");
         return -ENOMEM;
     }
     task_ready(writer);
     task_ready(reader);
+    task_ready(file);
     return 0;
 }
 task_init(pipe_test_start);
