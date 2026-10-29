@@ -8,6 +8,7 @@
 #include "../../fs/ramfs.c"
 
 int ramfs_fail_alloc;
+static atomic_int destroyed_inodes;
 
 struct inode *nos_vfs_alloc_inode(struct super_block *sb)
 {
@@ -16,7 +17,7 @@ struct inode *nos_vfs_alloc_inode(struct super_block *sb)
     mutex_init(&inode->i_mutex);
     return inode;
 }
-void nos_vfs_destroy_inode(struct inode *inode) { free(inode); }
+void nos_vfs_destroy_inode(struct inode *inode) { atomic_fetch_add(&destroyed_inodes, 1); free(inode); }
 int register_filesystem(struct file_system_type *fs) { (void)fs; return 0; }
 static pthread_mutex_t gate = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t ready = PTHREAD_COND_INITIALIZER;
@@ -130,6 +131,52 @@ int main(void)
     struct super_block sb = {0};
     struct dentry entry = { .d_name.name = "first" };
     pthread_t r, w;
+    {
+        struct inode *dir = ramfs_get_inode(&sb, S_IFDIR | 0755, 0);
+        struct dentry unlinked = { .d_name.name = "unlinked" };
+        struct dentry source = { .d_name.name = "source" };
+        struct dentry target = { .d_name.name = "target" };
+        struct file file = {0};
+        struct file second = {0};
+        off_t pos = 0;
+        char buf[3];
+        int before;
+
+        assert(ramfs_create(dir, &unlinked, 0644) == 0);
+        file.f_inode = unlinked.d_inode;
+        assert(ramfs_file_ops.open != NULL && ramfs_file_ops.release != NULL);
+        assert(ramfs_file_ops.open(file.f_inode, &file) == 0);
+        second.f_inode = file.f_inode;
+        assert(ramfs_file_ops.open(second.f_inode, &second) == 0);
+        assert(ramfs_write(&file, "old", 3, &pos) == 3);
+        before = atomic_load(&destroyed_inodes);
+        assert(ramfs_unlink(dir, &unlinked) == 0);
+        assert(atomic_load(&destroyed_inodes) == before);
+        pos = 0;
+        assert(ramfs_read(&file, buf, sizeof(buf), &pos) == 3);
+        assert(memcmp(buf, "old", 3) == 0);
+        assert(ramfs_file_ops.release(file.f_inode, &file) == 0);
+        assert(atomic_load(&destroyed_inodes) == before);
+        pos = 0;
+        assert(ramfs_read(&second, buf, sizeof(buf), &pos) == 3);
+        assert(ramfs_file_ops.release(second.f_inode, &second) == 0);
+        assert(atomic_load(&destroyed_inodes) == before + 1);
+
+        assert(ramfs_create(dir, &source, 0644) == 0);
+        assert(ramfs_create(dir, &target, 0644) == 0);
+        file.f_inode = target.d_inode;
+        assert(ramfs_file_ops.open(file.f_inode, &file) == 0);
+        pos = 0;
+        assert(ramfs_write(&file, "dst", 3, &pos) == 3);
+        before = atomic_load(&destroyed_inodes);
+        assert(ramfs_rename(dir, &source, dir, &target) == 0);
+        assert(atomic_load(&destroyed_inodes) == before);
+        pos = 0;
+        assert(ramfs_read(&file, buf, sizeof(buf), &pos) == 3);
+        assert(memcmp(buf, "dst", 3) == 0);
+        assert(ramfs_file_ops.release(file.f_inode, &file) == 0);
+        assert(atomic_load(&destroyed_inodes) == before + 1);
+    }
     directory = ramfs_get_inode(&sb, S_IFDIR | 0755, 0);
     assert(ramfs_mkdir(directory, &entry, 0) == 0);
     pthread_create(&r, NULL, reader, directory);

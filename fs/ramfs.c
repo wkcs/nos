@@ -19,6 +19,8 @@ struct ramfs_node {
     struct list_head dirents; /* For dir: list of ramfs_dirent */
   };
   size_t size;
+  unsigned int open_count;
+  int unlinked;
 };
 
 struct ramfs_dirent {
@@ -31,6 +33,7 @@ static const struct file_operations ramfs_file_ops;
 static const struct file_operations ramfs_dir_ops;
 static const struct inode_operations ramfs_dir_inode_ops;
 static const struct inode_operations ramfs_file_inode_ops;
+static void ramfs_free_inode(struct inode *inode);
 
 static unsigned long g_ramfs_next_ino = 1;
 
@@ -67,6 +70,37 @@ static struct inode *ramfs_get_inode(struct super_block *sb, int mode,
 /*
  * File Operations
  */
+static int ramfs_open(struct inode *inode, struct file *file)
+{
+    struct ramfs_node *node = inode->i_private;
+
+    (void)file;
+    mutex_lock(&inode->i_mutex);
+    if (node->unlinked) {
+        mutex_unlock(&inode->i_mutex);
+        return -ENOENT;
+    }
+    node->open_count++;
+    mutex_unlock(&inode->i_mutex);
+    return 0;
+}
+
+static int ramfs_release(struct inode *inode, struct file *file)
+{
+    struct ramfs_node *node = inode->i_private;
+    int destroy;
+
+    (void)file;
+    mutex_lock(&inode->i_mutex);
+    node->open_count--;
+    destroy = node->unlinked && node->open_count == 0;
+    mutex_unlock(&inode->i_mutex);
+    if (destroy) {
+        ramfs_free_inode(inode);
+    }
+    return 0;
+}
+
 static ssize_t ramfs_read(struct file *file, char *buf, size_t count,
                           loff_t *ppos)
 {
@@ -174,6 +208,8 @@ static int ramfs_readdir(struct file *file, void *dirent, filldir_t filldir)
 }
 
 static const struct file_operations ramfs_file_ops = {
+    .open = ramfs_open,
+    .release = ramfs_release,
     .read = ramfs_read,
     .write = ramfs_write,
 };
@@ -197,6 +233,22 @@ static void ramfs_free_inode(struct inode *inode)
         kfree(node);
     }
     nos_vfs_destroy_inode(inode);
+}
+
+/* A removed regular file stays alive until its last open file is released. */
+static void ramfs_drop_file_link(struct inode *inode)
+{
+    struct ramfs_node *node = inode->i_private;
+    int destroy;
+
+    mutex_lock(&inode->i_mutex);
+    node->unlinked = 1;
+    inode->i_nlink = 0;
+    destroy = node->open_count == 0;
+    mutex_unlock(&inode->i_mutex);
+    if (destroy) {
+        ramfs_free_inode(inode);
+    }
 }
 
 /*
@@ -288,7 +340,7 @@ static int ramfs_unlink(struct inode *dir, struct dentry *dentry)
             list_del(&de->list);
             mutex_unlock(&dir->i_mutex);
             kfree(de->name);
-            ramfs_free_inode(de->inode);
+            ramfs_drop_file_link(de->inode);
             kfree(de);
             return 0;
         }
@@ -391,7 +443,11 @@ static int ramfs_rename(struct inode *old_dir, struct dentry *old_dentry,
         }
         list_del(&dst_de->list);
         kfree(dst_de->name);
-        ramfs_free_inode(dst_de->inode);
+        if (dst_de->inode->i_mode & S_IFDIR) {
+            ramfs_free_inode(dst_de->inode);
+        } else {
+            ramfs_drop_file_link(dst_de->inode);
+        }
         kfree(dst_de);
     }
 
