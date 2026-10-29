@@ -15,6 +15,8 @@ when passed `-`. Output redirection and pipelines apply to built-in command
 output.
 `cat` accepts `-u` and `--`; its output is already written without stdio buffering.
 `head` reads standard input or files and supports `-n`, `-c`, `-NUM`, and `--`.
+`basename` and `dirname` process path strings without accessing the filesystem;
+`basename` also accepts an optional suffix to remove.
 `cp` copies files, including multiple sources into a directory, and accepts
 `--`. Recursive copying, metadata preservation, and other options are not yet
 implemented.
