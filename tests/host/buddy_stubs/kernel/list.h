@@ -5,6 +5,7 @@ struct list_head { struct list_head *next, *prev; };
 #define LIST_HEAD(n) struct list_head n = { &(n), &(n) }
 #define INIT_LIST_HEAD(h) ((h)->next = (h)->prev = (h))
 static inline void list_add_tail(struct list_head *e, struct list_head *h) { e->next = h; e->prev = h->prev; h->prev->next = e; h->prev = e; }
+static inline void list_del_init(struct list_head *e) { e->prev->next = e->next; e->next->prev = e->prev; INIT_LIST_HEAD(e); }
 #define list_entry(p,t,m) ((t *)((char *)(p) - offsetof(t,m)))
 #define list_first_entry(h,t,m) list_entry((h)->next,t,m)
 #define list_for_each_entry(p,h,m) for (struct list_head *_p=(h)->next; _p!=(h) && ((p)=list_entry(_p,__typeof__(*(p)),m),1); _p=_p->next)

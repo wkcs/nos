@@ -12,7 +12,7 @@ int main(void)
     void *memory;
     struct page *pages;
     addr_t first, second;
-    assert(posix_memalign(&memory, CONFIG_PAGE_SIZE, 8 * CONFIG_PAGE_SIZE) == 0);
+    assert(posix_memalign(&memory, 8 * CONFIG_PAGE_SIZE, 8 * CONFIG_PAGE_SIZE) == 0);
     memset(memory, 0, 8 * CONFIG_PAGE_SIZE);
     node.name = "test";
     node.start = (addr_t)memory;
@@ -31,6 +31,45 @@ int main(void)
     assert(second == first);
     assert(node.buddy.info[0].free_num == 0);
     assert(__free_pages(second, 0) == 0);
+    for (u32 i = 0; i < CONFIG_MAX_ORDER; i++) pthread_mutex_destroy(&node.buddy.info[i].lock);
+    node.page_num = 4;
+    node.buddy_page_index = 2;
+    node.free_num = 2;
+    for (u32 i = 0; i < node.page_num; i++) pages[i].private = -1;
+    assert(mm_buddy_init(&node.buddy) == 0);
+    first = __alloc_pages(&node.buddy, 0, 0);
+    second = __alloc_pages(&node.buddy, 0, 0);
+    assert(first != 0 && second == first + CONFIG_PAGE_SIZE);
+    assert(__free_pages(first, 0) == 0);
+    assert(__free_pages(second, 0) == 0);
+    assert(__alloc_pages(&node.buddy, 0, 1) == first);
+    assert(node.free_num == 0);
+    for (u32 i = 0; i < CONFIG_MAX_ORDER; i++) pthread_mutex_destroy(&node.buddy.info[i].lock);
+    node.page_num = 8;
+    node.buddy_page_index = 4;
+    node.free_num = 4;
+    for (u32 i = 0; i < node.page_num; i++) pages[i].private = -1;
+    assert(mm_buddy_init(&node.buddy) == 0);
+    {
+        addr_t allocated[4];
+        for (u32 i = 0; i < 4; i++) {
+            allocated[i] = __alloc_pages(&node.buddy, 0, 0);
+            assert(allocated[i] != 0);
+        }
+        assert(__free_pages(allocated[1], 0) == 0);
+        assert(__free_pages(allocated[3], 0) == 0);
+        assert(__free_pages(allocated[0], 0) == 0);
+        assert(__free_pages(allocated[2], 0) == 0);
+        assert(node.free_num == 4);
+        assert(__alloc_pages(&node.buddy, 0, 2) == allocated[0]);
+        assert(__free_pages(allocated[0], 2) == 0);
+        first = __alloc_pages(&node.buddy, 0, 1);
+        second = __alloc_pages(&node.buddy, 0, 1);
+        assert(first == allocated[0] && second == first + 2 * CONFIG_PAGE_SIZE);
+        assert(__free_pages(second, 1) == 0);
+        assert(__free_pages(first, 1) == 0);
+        assert(__alloc_pages(&node.buddy, 0, 2) == first);
+    }
     free(memory);
     return 0;
 }
