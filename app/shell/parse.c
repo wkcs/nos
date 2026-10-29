@@ -20,28 +20,42 @@ static int append_char(char *output, size_t size, size_t *used, char c)
     return 0;
 }
 
-int shell_count_assignments(const char *source)
+const char *shell_assignment_at(const char *source, int index, size_t *length)
 {
     int count = 0;
     while (*source != '\0') {
         char quote = 0;
+        const char *start;
         while (*source == ' ' || *source == '\t') source++;
-        if (!name_start(*source)) break;
+        start = source;
+        if (!name_start(*source)) return NULL;
         source++;
         while (name_char(*source)) source++;
-        if (*source++ != '=') break;
-        count++;
+        if (*source++ != '=') return NULL;
         while (*source != '\0') {
-            char c = *source++;
+            char c = *source;
             if (quote == 0 && (c == ' ' || c == '\t' || c == '<' || c == '>')) {
-                if (c == '<' || c == '>') return count;
                 break;
             }
+            source++;
             if (c == '\\' && quote != '\'' && *source != '\0') source++;
             else if (c == '\'' && quote != '"') quote = quote == '\'' ? 0 : '\'';
             else if (c == '"' && quote != '\'') quote = quote == '"' ? 0 : '"';
         }
+        if (count++ == index) {
+            *length = (size_t)(source - start);
+            return start;
+        }
+        if (*source == '<' || *source == '>') return NULL;
     }
+    return NULL;
+}
+
+int shell_count_assignments(const char *source)
+{
+    int count = 0;
+    size_t length;
+    while (shell_assignment_at(source, count, &length) != NULL) count++;
     return count;
 }
 

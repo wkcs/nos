@@ -22,13 +22,17 @@ The status of the preceding command or pipeline is available as `$?` or
 redirection paths; a backslash can protect the dollar sign. All stages of a
 pipeline see the status from before that pipeline.
 
-Session variables can be assigned with standalone commands such as
-`NAME='hello world'` and expanded as `$NAME` or `${NAME}`. Unquoted expansions
+Session variables can be assigned with commands such as `NAME='hello world'`
+and expanded as `$NAME` or `${NAME}`. Unquoted expansions
 are split on spaces and tabs; double quotes preserve the value as one argument,
 and single quotes suppress expansion. `export NAME[=value]` marks variables for
 export, and `unset [-v] NAME...` removes them. Sessions do not share variables;
 remote session reset clears them. Expansion and the resulting command remain
-limited to 256 bytes. Assignment prefixes before a command, arbitrary `IFS`,
+limited to 256 bytes. Leading `NAME=value` assignments temporarily apply to
+ordinary built-ins, and persist for assignment-only commands, `export`, and
+`unset`. Command arguments are expanded before the assignments are applied;
+assignment values are expanded in order, so later assignments see earlier ones.
+Assignments after a redirection, arbitrary `IFS`,
 advanced parameter operators, automatic environment variables, and passing an
 environment to external processes are not implemented. Pipeline stages still
 run in the current session, so assignment or `unset` in a pipeline persists.
