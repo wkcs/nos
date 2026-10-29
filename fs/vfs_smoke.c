@@ -53,6 +53,17 @@ static int vfs_smoke(void)
         return -EIO;
     }
 
+    if (nos_mkdir("/cycle", 0755) != 0 ||
+        nos_mkdir("/cycle/sub", 0755) != 0 ||
+        nos_rename("/cycle", "/cycle/moved") != -EINVAL ||
+        nos_rename("/cycle", "/cycle/sub/moved") != -EINVAL ||
+        nos_rename("/cycle/sub", "/moved") != 0 ||
+        nos_rename("/moved", "/cycle/sub") != 0 ||
+        nos_rmdir("/cycle/sub") != 0 || nos_rmdir("/cycle") != 0) {
+        pr_err("vfs_smoke: rename into descendant failed\r\n");
+        return -EIO;
+    }
+
     fd = nos_open("/smoke.txt", O_RDONLY);
     if (fd < 0) return fd;
     count = nos_write(fd, "x", 1);
