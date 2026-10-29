@@ -41,6 +41,7 @@ int main(void)
     char dup_after[] = "ls >output 2>&1";
     char dup_before[] = "ls 2>&1 >output";
     char dup_list[] = "ls 2>&1 | cat";
+    char many_redirs[] = "echo >a >b >c >d >e >f >g >h >i >j >k >l >m >n >o >p >q";
     char patterns[] = "echo a*'?'\\*\"[x]\"$V";
     unsigned char quoted[sizeof(patterns)] = {0};
     int argc;
@@ -70,6 +71,7 @@ int main(void)
     assert(argc == 1 && redir.error_to_output && redir.count == 2 &&
            redir.order[0] == SHELL_REDIRECT_ERROR && redir.order[1] == SHELL_REDIRECT_OUTPUT);
     assert(shell_split_commands(dup_list, commands, 8) == 2);
+    assert(shell_parse_redirect(many_redirs, argv, 8, &redir) < 0);
 
     {
         char *positive[] = { "-f", "file" };
@@ -185,12 +187,16 @@ int main(void)
     assert(argc == 2 && strcmp(argv[1], "a>b") == 0);
     assert(redir.append && strcmp(redir.path, "my file") == 0);
     assert(shell_parse_redirect(missing, argv, 8, &redir) < 0);
-    assert(shell_parse_redirect(duplicate, argv, 8, &redir) < 0);
+    assert(shell_parse_redirect(duplicate, argv, 8, &redir) == 2);
+    assert(redir.count == 2 && strcmp(redir.ops[0].path, "one") == 0 &&
+           strcmp(redir.ops[1].path, "two") == 0);
     argc = shell_parse_redirect(input, argv, 8, &redir);
     assert(argc == 1 && strcmp(argv[0], "cat") == 0);
     assert(strcmp(redir.input_path, "input file") == 0);
     assert(strcmp(redir.path, "output") == 0);
-    assert(shell_parse_redirect(duplicate_input, argv, 8, &redir) < 0);
+    assert(shell_parse_redirect(duplicate_input, argv, 8, &redir) == 1);
+    assert(redir.count == 2 && strcmp(redir.ops[0].path, "a") == 0 &&
+           strcmp(redir.ops[1].path, "b") == 0);
     assert(shell_parse_redirect(missing_input, argv, 8, &redir) < 0);
     return 0;
 }

@@ -9,6 +9,7 @@ The parser supports single and double quotes, backslash escapes, command lists
 `2>`, `2>>`, `2>&1`). Standard error redirection covers shell and built-in
 diagnostics. `2>&1` uses the standard output destination at that point in the
 redirection sequence, including when it is a pipeline.
+Repeated redirections are applied left to right, with a limit of 16 per command.
 Input redirection is consumed by `cat`, `wc`, and `grep`; these also read standard input
 when passed `-`. Output redirection and pipelines apply to built-in command
 output.

@@ -1667,7 +1667,7 @@ static int cmd_nlk(int argc, char *argv[])
 }
 #endif
 
-static int nshell_open_input(struct nshell *shell, const char *path)
+static int nshell_open_input(struct nshell *shell, const char *path, struct file **destination)
 {
     struct dentry *entry = resolve_path(path);
     struct file *file;
@@ -1689,7 +1689,7 @@ static int nshell_open_input(struct nshell *shell, const char *path)
             return rc;
         }
     }
-    shell->input_file = file;
+    *destination = file;
     return 0;
 }
 
@@ -1781,6 +1781,18 @@ static int nshell_close_output(struct file **destination)
     if (file->f_op->release != NULL) rc = file->f_op->release(file->f_inode, file);
     kfree(file);
     return rc;
+}
+
+static int nshell_drop_output(struct nshell *shell, bool error_stream)
+{
+    struct file **destination = error_stream ? &shell->error_file : &shell->output_file;
+    struct file *other = error_stream ? shell->output_file : shell->error_file;
+    if (error_stream) shell->error_pipe = NULL;
+    if (*destination != NULL && *destination == other) {
+        *destination = NULL;
+        return 0;
+    }
+    return nshell_close_output(destination);
 }
 
 static int nshell_close_outputs(struct nshell *shell)
@@ -1924,8 +1936,9 @@ static void nshell_exec_cmd(struct nshell *shell)
         char assignment_expanded[SHELL_SESSION_INPUT_MAX + 1];
         struct shell_command commands[16];
         struct shell_saved_variable saved[MAX_ARGS];
+        struct shell_redirection redir;
     } *workspace;
-    struct shell_redirection redir;
+    struct shell_redirection *redir;
     int count;
     int i;
     bool skip_pipeline = false;
@@ -1940,6 +1953,7 @@ static void nshell_exec_cmd(struct nshell *shell)
         shell->last_status = 1;
         return;
     }
+    redir = &workspace->redir;
     count = shell_split_commands(shell->session.input, workspace->commands, 16);
     if (count < 0) {
         shell_printf("shell: syntax error or too many arguments\r\n");
@@ -1949,7 +1963,7 @@ static void nshell_exec_cmd(struct nshell *shell)
     }
     for (i = 0; i < count; i++) {
         strcpy(workspace->check, workspace->commands[i].text);
-        if (shell_parse_redirect(workspace->check, argv, MAX_ARGS + 1, &redir) < 0) {
+        if (shell_parse_redirect(workspace->check, argv, MAX_ARGS + 1, redir) < 0) {
             shell_printf("shell: syntax error or too many arguments\r\n");
             shell->last_status = 2;
             kfree(workspace);
@@ -1991,7 +2005,7 @@ static void nshell_exec_cmd(struct nshell *shell)
             goto next_command;
         }
         argc = shell_parse_redirect_quoted(workspace->expanded, argv, MAX_ARGS + 1,
-                                           &redir, (unsigned char *)workspace->check);
+                                           redir, (unsigned char *)workspace->check);
         shell->output_error = 0;
         if (argc < 0) {
             shell_error("shell: invalid expanded command\r\n");
@@ -2057,27 +2071,35 @@ static void nshell_exec_cmd(struct nshell *shell)
         }
         {
             int j;
-            for (j = 0; j < redir.count; j++) {
-                bool input_stream = redir.order[j] == SHELL_REDIRECT_INPUT;
-                bool error_stream = redir.order[j] == SHELL_REDIRECT_ERROR;
-                const char *path = input_stream ? redir.input_path :
-                                   (error_stream ? redir.error_path : redir.path);
-                bool append = error_stream ? redir.error_append : redir.append;
+            for (j = 0; j < redir->count; j++) {
+                const struct shell_redirection_op *op = &redir->ops[j];
+                bool input_stream = op->kind == SHELL_REDIRECT_INPUT;
+                bool error_stream = op->kind == SHELL_REDIRECT_ERROR;
+                const char *path = op->path;
                 struct file **destination = error_stream ? &shell->error_file : &shell->output_file;
+                struct file *new_file = NULL;
                 int rc;
-                if (error_stream && redir.error_to_output) {
+                if (error_stream && op->to_output) {
+                    (void)nshell_drop_output(shell, true);
                     shell->error_file = shell->output_file;
                     if (shell->error_file == NULL) shell->error_pipe = shell->pipe_output;
                     continue;
                 }
-                rc = input_stream ? nshell_open_input(shell, path) :
-                                    nshell_open_output(shell, path, append, destination);
+                rc = input_stream ? nshell_open_input(shell, path, &new_file) :
+                                    nshell_open_output(shell, path, op->append, &new_file);
                 if (rc < 0) {
                     shell_error("shell: %s: cannot redirect (error %d)\r\n", path, rc);
                     shell->last_status = 1;
                     nshell_close_input(shell);
                     (void)nshell_close_outputs(shell);
                     goto next_command;
+                }
+                if (input_stream) {
+                    nshell_close_input(shell);
+                    shell->input_file = new_file;
+                } else {
+                    (void)nshell_drop_output(shell, error_stream);
+                    *destination = new_file;
                 }
             }
         }
@@ -2091,7 +2113,6 @@ static void nshell_exec_cmd(struct nshell *shell)
                 char *equals = strchr(argv[j], '=');
                 const char *word;
                 char *assignment_argv[2];
-                struct shell_redirection assignment_redir;
                 size_t word_len;
                 int rc;
                 word = shell_assignment_at(workspace->commands[i].text, j, &word_len);
@@ -2106,7 +2127,7 @@ static void nshell_exec_cmd(struct nshell *shell)
                                                 sizeof(workspace->assignment_expanded), pipeline_status,
                                                 variable_lookup, shell);
                     if (rc == 0 && shell_parse_redirect(workspace->assignment_expanded,
-                            assignment_argv, 2, &assignment_redir) == 1 &&
+                            assignment_argv, 2, redir) == 1 &&
                         (value = strchr(assignment_argv[0], '=')) != NULL) {
                         if (persistent) {
                             rc = variable_set(shell, argv[j], (size_t)(equals - argv[j]), value + 1, false);

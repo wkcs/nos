@@ -20,6 +20,14 @@ enum shell_redirection_kind {
     SHELL_REDIRECT_ERROR,
 };
 
+#define SHELL_MAX_REDIRECTIONS 16
+struct shell_redirection_op {
+    char *path;
+    unsigned char kind;
+    bool append;
+    bool to_output;
+};
+
 struct shell_redirection {
     char *input_path;
     char *path;
@@ -27,7 +35,8 @@ struct shell_redirection {
     char *error_path;
     bool error_append;
     bool error_to_output;
-    unsigned char order[3];
+    unsigned char order[SHELL_MAX_REDIRECTIONS];
+    struct shell_redirection_op ops[SHELL_MAX_REDIRECTIONS];
     unsigned char count;
 };
 
