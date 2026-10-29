@@ -47,6 +47,7 @@ TESTS = [
     ("run_pid_test.py",),
     ("run_mm_block_test.py",),
     ("run_mm_buddy_test.py",),
+    ("run_fatfs_config_test.py",),
     ("run_mutex_test.py",),
     ("run_task_stack_layout_test.py",),
     ("run_vfs_fd_lifetime_test.py",),

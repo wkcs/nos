@@ -52,6 +52,8 @@ is subject to the shell's argument and path length limits.
 The current kernel block allocator retains pages after freeing allocations;
 on memory-constrained boards, prior expansion or filesystem operations can
 reduce the memory available for later pipelines.
+FatFs uses a shared sector buffer to reduce per-file memory use. The volume
+lock protects the buffer, so concurrent file operations may serialize.
 
 The shell is not yet POSIX conformant. Full parameter and pathname expansion,
 subshells, external processes, job control, and a complete standard error
