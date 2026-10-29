@@ -338,28 +338,37 @@ int shell_split_commands(char *line, struct shell_command *commands, int capacit
     enum shell_condition condition = SHELL_ALWAYS;
     int count = 0;
     int word = 0;
+    int token_start = 1;
 
     if (line == NULL || commands == NULL || capacity < 1) {
         return -1;
     }
     while (*p != '\0') {
         char c = *p;
+        if (quote == 0 && token_start && c == '#') {
+            *p = '\0';
+            break;
+        }
         if (c == '\\' && quote != '\'') {
             if (p[1] == '\0') return -1;
             word = 1;
+            token_start = 0;
             p += 2;
             continue;
         }
         if (c == '\'' && quote != '"') {
             quote = quote == '\'' ? 0 : '\'';
             word = 1;
+            token_start = 0;
         } else if (c == '"' && quote != '\'') {
             quote = quote == '"' ? 0 : '"';
             word = 1;
+            token_start = 0;
         } else if (quote == 0 && c == '&' && p > line && p[-1] == '>' && p[1] == '1' &&
                    (p[2] == '\0' || p[2] == ' ' || p[2] == '\t' || p[2] == '<' ||
                     p[2] == '>' || p[2] == ';' || p[2] == '|' || p[2] == '&')) {
             p += 2;
+            token_start = 0;
             continue;
         } else if (quote == 0 && (c == ';' || c == '&' || c == '|')) {
             enum shell_condition next;
@@ -382,12 +391,17 @@ int shell_split_commands(char *line, struct shell_command *commands, int capacit
             start = p;
             condition = next;
             word = 0;
+            token_start = 1;
             continue;
         } else if (quote == 0 && (c == '>' || c == '<')) {
+            token_start = 1;
             p++;
             continue;
         } else if (c != ' ' && c != '\t') {
             word = 1;
+            token_start = 0;
+        } else if (quote == 0) {
+            token_start = 1;
         }
         p++;
     }
