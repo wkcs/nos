@@ -26,6 +26,21 @@ static atomic_int file_started, file_finished;
 static struct inode *directory;
 static struct inode *regular;
 static atomic_int duplicate_success, duplicate_exists;
+static atomic_int rename_start;
+struct rename_args { struct inode *from, *to; const char *name; };
+
+static void *rename_back_and_forth(void *p)
+{
+    struct rename_args *args = p;
+    struct dentry old_entry = { .d_name.name = args->name };
+    struct dentry new_entry = { .d_name.name = args->name };
+    while (!atomic_load(&rename_start)) usleep(100);
+    for (int i = 0; i < 1000; i++) {
+        assert(ramfs_rename(args->from, &old_entry, args->to, &new_entry) == 0);
+        assert(ramfs_rename(args->to, &new_entry, args->from, &old_entry) == 0);
+    }
+    return NULL;
+}
 static int wait_fill(void *ctx, const char *name, int len, off_t off, uint64_t ino, unsigned type)
 {
     (void)ctx; (void)name; (void)len; (void)off; (void)ino; (void)type;
@@ -118,11 +133,32 @@ int main(void)
     pthread_mutex_lock(&gate); release_callback = 1; pthread_cond_broadcast(&ready); pthread_mutex_unlock(&gate);
     pthread_join(r, NULL); pthread_join(w, NULL);
     {
+        struct inode *left = ramfs_get_inode(&sb, S_IFDIR | 0755, 0);
+        struct inode *right = ramfs_get_inode(&sb, S_IFDIR | 0755, 0);
+        struct dentry a = { .d_name.name = "a" };
+        struct dentry b = { .d_name.name = "b" };
+        struct rename_args args_a = { left, right, "a" };
+        struct rename_args args_b = { right, left, "b" };
+        assert(left != NULL && right != NULL);
+        assert(ramfs_create(left, &a, 0644) == 0);
+        assert(ramfs_create(right, &b, 0644) == 0);
+        assert(pthread_create(&r, NULL, rename_back_and_forth, &args_a) == 0);
+        assert(pthread_create(&w, NULL, rename_back_and_forth, &args_b) == 0);
+        atomic_store(&rename_start, 1);
+        pthread_join(r, NULL);
+        pthread_join(w, NULL);
+    }
+    {
         struct dentry duplicate = { .d_name.name = "first" };
         struct dentry file_entry = { .d_name.name = "file" };
         assert(ramfs_mkdir(directory, &duplicate, 0) == -EEXIST);
         assert(duplicate.d_inode == NULL);
         assert(ramfs_create(directory, &file_entry, 0) == 0);
+        {
+            struct dentry missing = { .d_name.name = "absent" };
+            assert(ramfs_rename(directory, &missing, directory, &missing) == -ENOENT);
+            assert(ramfs_rename(directory, &file_entry, directory, &file_entry) == 0);
+        }
         regular = file_entry.d_inode;
         pthread_create(&r, NULL, same_name_creator, NULL);
         pthread_create(&w, NULL, same_name_creator, NULL);

@@ -333,28 +333,26 @@ static int ramfs_rename(struct inode *old_dir, struct dentry *old_dentry,
     struct ramfs_node *old_node = old_dir ? old_dir->i_private : NULL;
     struct ramfs_node *new_node = new_dir ? new_dir->i_private : NULL;
     struct ramfs_dirent *de, *src_de = NULL, *dst_de = NULL;
+    struct inode *first, *second;
     char *new_name;
+    int rc = 0;
 
     if (old_node == NULL || new_node == NULL ||
         old_dentry == NULL || new_dentry == NULL ||
         old_dentry->d_name.name == NULL || new_dentry->d_name.name == NULL) {
         return -EINVAL;
     }
-    if (old_dir == new_dir &&
-        strcmp(old_dentry->d_name.name, new_dentry->d_name.name) == 0) {
-        return 0;
-    }
-
     new_name = kzalloc(strlen(new_dentry->d_name.name) + 1, GFP_KERNEL);
     if (new_name == NULL) {
         return -ENOMEM;
     }
     strcpy(new_name, new_dentry->d_name.name);
 
-    mutex_lock(&old_dir->i_mutex);
-    if (new_dir != old_dir) {
-        mutex_lock(&new_dir->i_mutex);
-    }
+    /* Opposite-direction renames must acquire directory locks in the same order. */
+    first = (uintptr_t)old_dir <= (uintptr_t)new_dir ? old_dir : new_dir;
+    second = first == old_dir ? new_dir : old_dir;
+    mutex_lock(&first->i_mutex);
+    if (second != first) mutex_lock(&second->i_mutex);
 
     list_for_each_entry(de, &old_node->dirents, list) {
         if (strcmp(de->name, old_dentry->d_name.name) == 0) {
@@ -363,13 +361,11 @@ static int ramfs_rename(struct inode *old_dir, struct dentry *old_dentry,
         }
     }
     if (src_de == NULL) {
-        if (new_dir != old_dir) {
-            mutex_unlock(&new_dir->i_mutex);
-        }
-        mutex_unlock(&old_dir->i_mutex);
-        kfree(new_name);
-        return -ENOENT;
+        rc = -ENOENT;
+        goto out;
     }
+    if (old_dir == new_dir && strcmp(old_dentry->d_name.name, new_name) == 0)
+        goto out;
 
     list_for_each_entry(de, &new_node->dirents, list) {
         if (strcmp(de->name, new_name) == 0) {
@@ -379,22 +375,14 @@ static int ramfs_rename(struct inode *old_dir, struct dentry *old_dentry,
     }
     if (dst_de != NULL) {
         if ((dst_de->inode->i_mode & S_IFDIR) != (src_de->inode->i_mode & S_IFDIR)) {
-            if (new_dir != old_dir) {
-                mutex_unlock(&new_dir->i_mutex);
-            }
-            mutex_unlock(&old_dir->i_mutex);
-            kfree(new_name);
-            return (dst_de->inode->i_mode & S_IFDIR) ? -EISDIR : -ENOTDIR;
+            rc = (dst_de->inode->i_mode & S_IFDIR) ? -EISDIR : -ENOTDIR;
+            goto out;
         }
         if (dst_de->inode->i_mode & S_IFDIR) {
             struct ramfs_node *sub = dst_de->inode->i_private;
             if (sub != NULL && !list_empty(&sub->dirents)) {
-                if (new_dir != old_dir) {
-                    mutex_unlock(&new_dir->i_mutex);
-                }
-                mutex_unlock(&old_dir->i_mutex);
-                kfree(new_name);
-                return -ENOTEMPTY;
+                rc = -ENOTEMPTY;
+                goto out;
             }
         }
         list_del(&dst_de->list);
@@ -406,14 +394,15 @@ static int ramfs_rename(struct inode *old_dir, struct dentry *old_dentry,
     list_del(&src_de->list);
     kfree(src_de->name);
     src_de->name = new_name;
+    new_name = NULL;
     list_add_tail(&src_de->list, &new_node->dirents);
     new_dentry->d_inode = src_de->inode;
 
-    if (new_dir != old_dir) {
-        mutex_unlock(&new_dir->i_mutex);
-    }
-    mutex_unlock(&old_dir->i_mutex);
-    return 0;
+out:
+    if (second != first) mutex_unlock(&second->i_mutex);
+    mutex_unlock(&first->i_mutex);
+    if (new_name != NULL) kfree(new_name);
+    return rc;
 }
 
 static int ramfs_truncate(struct inode *inode, loff_t length)
