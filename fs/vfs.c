@@ -595,7 +595,7 @@ int vfs_rename_entry(struct dentry *old_dir, const char *old_name,
                      struct dentry *new_dir, const char *new_name)
 {
     struct dentry old_temp, new_temp;
-    struct dentry *cached_old, *cached_new;
+    struct dentry *cached_old, *cached_new, *ancestor;
     unsigned int old_len, new_len;
     int rc;
 
@@ -622,6 +622,18 @@ int vfs_rename_entry(struct dentry *old_dir, const char *old_name,
         old_dir->d_inode->i_op->rename == NULL) {
         return -EROFS;
     }
+
+    /* Moving a directory beneath itself would detach and cycle its tree. */
+    spin_lock(&vfs_mount_lock);
+    for (ancestor = new_dir; ancestor != NULL && ancestor->d_parent != NULL &&
+         ancestor->d_parent != ancestor; ancestor = ancestor->d_parent) {
+        if (ancestor->d_parent == old_dir && ancestor->d_name.len == old_len &&
+            memcmp(ancestor->d_name.name, old_name, old_len) == 0) {
+            spin_unlock(&vfs_mount_lock);
+            return -EINVAL;
+        }
+    }
+    spin_unlock(&vfs_mount_lock);
 
     memset(&old_temp, 0, sizeof(old_temp));
     old_temp.d_parent = old_dir;
