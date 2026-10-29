@@ -57,76 +57,44 @@ pid_t pid_alloc(void)
 
 int pid_free(pid_t pid)
 {
-    struct pid_range *range, *tmp;
-    struct pid_range *prev_range = NULL;
-    struct pid_range *next_range = NULL;
+    struct pid_range *range, *item;
+    struct pid_range *prev = NULL, *next = NULL, *released = NULL;
 
-    if (pid == 0) {
-        return 0 ;
-    }
-
-    range = kmalloc(sizeof(struct pid_range), GFP_KERNEL);
-    if (range == NULL) {
-        pr_err("alloc pid range buf error\r\n");
-        return -ENOMEM;
-    }
+    if (pid == 0) return 0;
+    range = kmalloc(sizeof(*range), GFP_KERNEL);
+    if (range == NULL) return -ENOMEM;
     range->min = pid;
     range->max = pid;
 
     spin_lock(&g_map.lock);
-    if (list_empty(&g_map.list)) {
-        list_add(&range->list, &g_map.list);
-        spin_unlock(&g_map.lock);
-        return 0;
-    }
-
-    list_for_each_entry (tmp, &g_map.list, list) {
-        if (tmp->max < range->min) {
-            prev_range = tmp;
-        } else if ((tmp->min > 1) && ((tmp->min - 1) == range->max)) {
-            next_range = tmp;
+    list_for_each_entry(item, &g_map.list, list) {
+        if (pid >= item->min && pid <= item->max) {
+            spin_unlock(&g_map.lock);
+            kfree(range);
+            return -EINVAL;
         }
-    }
-
-    if (prev_range) {
-        list_add(&range->list, &prev_range->list);
-        if ((prev_range->max < U32_MAX) && ((prev_range->max + 1) == range->min)) {
-            prev_range->max = range->max;
-        } else {
-            prev_range = NULL;
+        if (item->min > pid) {
+            next = item;
+            break;
         }
-    } else {
-        list_add_tail(&range->list, g_map.list.next);
+        prev = item;
     }
-
-    if (prev_range && next_range) {
-        prev_range->max = next_range->max;
-        prev_range = NULL;
-    } else if (prev_range) {
-        prev_range->max = range->max;
-        prev_range = NULL;
-        next_range = NULL;
-    } else if (next_range) {
-        next_range->min = range->min;
-        prev_range = NULL;
-        next_range = NULL;
+    if (prev != NULL && prev->max != U32_MAX && prev->max + 1 == pid) {
+        prev->max = pid;
+        if (next != NULL && pid != U32_MAX && pid + 1 == next->min) {
+            prev->max = next->max;
+            list_del(&next->list);
+            released = next;
+        }
+    } else if (next != NULL && pid != U32_MAX && pid + 1 == next->min) {
+        next->min = pid;
     } else {
-        prev_range = NULL;
+        list_add_tail(&range->list, next != NULL ? &next->list : &g_map.list);
         range = NULL;
-        next_range = NULL;
     }
     spin_unlock(&g_map.lock);
-
-    if (prev_range) {
-        kfree(prev_range);
-    }
-    if (range) {
-        kfree(range);
-    }
-    if (next_range) {
-        kfree(next_range);
-    }
-
+    if (released != NULL) kfree(released);
+    if (range != NULL) kfree(range);
     return 0;
 }
 
