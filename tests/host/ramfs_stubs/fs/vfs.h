@@ -10,6 +10,8 @@ static inline void mutex_unlock(struct mutex *m) { pthread_mutex_unlock(&m->nati
 struct inode; struct dentry; struct file; struct super_block; struct file_system_type;
 typedef int (*filldir_t)(void *, const char *, int, off_t, uint64_t, unsigned);
 struct file_operations {
+    int (*open)(struct inode *, struct file *);
+    int (*release)(struct inode *, struct file *);
     ssize_t (*read)(struct file *, char *, size_t, off_t *);
     ssize_t (*write)(struct file *, const char *, size_t, off_t *);
     int (*readdir)(struct file *, void *, filldir_t);
