@@ -14,14 +14,21 @@ const char *shell_assignment_at(const char *source, int index, size_t *length);
 /* argv_capacity includes the trailing NULL pointer. */
 int shell_parse_line(char *line, char **argv, int argv_capacity);
 
+enum shell_redirection_kind {
+    SHELL_REDIRECT_INPUT,
+    SHELL_REDIRECT_OUTPUT,
+    SHELL_REDIRECT_ERROR,
+};
+
 struct shell_redirection {
     char *input_path;
     char *path;
     bool append;
     char *error_path;
     bool error_append;
-    bool error_first;
     bool error_to_output;
+    unsigned char order[3];
+    unsigned char count;
 };
 
 int shell_parse_redirect(char *line, char **argv, int argv_capacity,

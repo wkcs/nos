@@ -58,13 +58,17 @@ int main(void)
     argc = shell_parse_redirect(stderr_redirect, argv, 8, &redir);
     assert(argc == 1 && strcmp(argv[0], "cat") == 0);
     assert(strcmp(redir.error_path, "errors") == 0 && redir.error_append);
-    assert(strcmp(redir.path, "output") == 0 && redir.error_first);
+    assert(strcmp(redir.path, "output") == 0);
+    assert(redir.count == 2 && redir.order[0] == SHELL_REDIRECT_ERROR &&
+           redir.order[1] == SHELL_REDIRECT_OUTPUT);
     argc = shell_parse_redirect(separate_two, argv, 8, &redir);
     assert(argc == 2 && strcmp(argv[1], "2") == 0 && redir.error_path == NULL);
     argc = shell_parse_redirect(dup_after, argv, 8, &redir);
-    assert(argc == 1 && redir.error_to_output && !redir.error_first);
+    assert(argc == 1 && redir.error_to_output && redir.count == 2 &&
+           redir.order[0] == SHELL_REDIRECT_OUTPUT && redir.order[1] == SHELL_REDIRECT_ERROR);
     argc = shell_parse_redirect(dup_before, argv, 8, &redir);
-    assert(argc == 1 && redir.error_to_output && redir.error_first);
+    assert(argc == 1 && redir.error_to_output && redir.count == 2 &&
+           redir.order[0] == SHELL_REDIRECT_ERROR && redir.order[1] == SHELL_REDIRECT_OUTPUT);
     assert(shell_split_commands(dup_list, commands, 8) == 2);
 
     {
