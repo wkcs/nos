@@ -128,9 +128,15 @@ int shell_expand_parameters(const char *source, char *output, size_t size, int s
         if (c == '$' && quote != '\'') {
             const char *replacement = NULL;
             const char *name = source;
+            char length_number[3 * sizeof(size_t) + 1];
             size_t len = 0;
             int braces = *name == '{';
+            int length_expansion = 0;
             if (braces) name++;
+            if (braces && *name == '#') {
+                length_expansion = 1;
+                name++;
+            }
             if (*name == '?') {
                 len = 1;
                 replacement = number;
@@ -142,6 +148,21 @@ int shell_expand_parameters(const char *source, char *output, size_t size, int s
             }
             if (len != 0 && (!braces || name[len] == '}')) {
                 source = name + len + (braces ? 1 : 0);
+                if (length_expansion) {
+                    size_t length = strlen(replacement);
+                    size_t n = 0;
+                    do {
+                        length_number[n++] = (char)('0' + length % 10U);
+                        length /= 10U;
+                    } while (length != 0);
+                    for (size_t j = 0; j < n / 2; j++) {
+                        char tmp = length_number[j];
+                        length_number[j] = length_number[n - j - 1];
+                        length_number[n - j - 1] = tmp;
+                    }
+                    length_number[n] = '\0';
+                    replacement = length_number;
+                }
                 if (*replacement == '\0' && redir_word && quote == 0 &&
                     (append_char(output, size, &used, '\'') ||
                      append_char(output, size, &used, '\''))) return -1;
