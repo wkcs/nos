@@ -335,6 +335,13 @@ config SHELL_OUTPUT_SIZE
 	default 256
 	range 64 4096
 
+config SHELL_PIPE_TEST
+	bool "Shell stream pipe concurrency test"
+	depends on SHELL && QEMU && BOARD_QEMU_STM32
+	default n
+	help
+	  Exercise shell pipe backpressure and EOF using scheduled QEMU tasks.
+
 endmenu
 
 # 测试配置
