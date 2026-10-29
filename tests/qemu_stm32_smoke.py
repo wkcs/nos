@@ -348,6 +348,12 @@ def main():
         proc.stdin.write(b"true | true | true | true | true | true | true | true | true | true; echo recovered\r")
         proc.stdin.flush()
         wait_for(b"\r\nrecovered\r\n", pos)
+        recovery = output[pos:output.index(b"\r\nrecovered\r\n", pos)]
+        if b"shell: cannot start pipeline" in recovery:
+            deleted = recovery.count(b"del shell_pipe task")
+            freed = recovery.count(b"free shell_pipe task")
+            if deleted == 0 or freed < deleted:
+                raise RuntimeError("failed pipeline returned before its tasks were reaped")
         wait_for(b"nos# ", pos)
         pos = len(output)
         proc.stdin.write(b"echo hello > file; echo world >> file; cat file\r")

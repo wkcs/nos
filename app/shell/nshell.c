@@ -1782,7 +1782,7 @@ static noinline int shell_run_pipeline(struct nshell *parent, struct shell_comma
     struct shell_pipeline_group *group = NULL;
     struct shell_pipeline_stage *stages = NULL;
     struct shell_stream_pipe *pipes = NULL;
-    int i, created = 0, started = 0, rc = 1;
+    int i, created = 0, started = 0, pending = 0, rc = 1;
 
     group = kzalloc(sizeof(*group), GFP_KERNEL);
     stages = kzalloc(sizeof(*stages) * (size_t)count, GFP_KERNEL);
@@ -1846,12 +1846,14 @@ cleanup:
     }
     for (i = started; i < created; i++) {
         if (stages[i].task != NULL) {
-            stages[i].task->cleanup = NULL;
             task_del(stages[i].task);
+            pending++;
         }
         variable_clear(stages[i].shell);
         kfree(stages[i].shell);
     }
+    /* The cleanup callback signals only after the task stack has been freed. */
+    for (i = 0; i < pending; i++) sem_get(&group->done);
     shell_error("shell: cannot start pipeline\r\n");
 out:
     if (pipes != NULL) kfree(pipes);
