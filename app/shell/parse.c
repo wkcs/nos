@@ -228,8 +228,8 @@ int shell_parse_redirect_quoted(char *line, char **argv, int capacity,
     redir->append = false;
     redir->error_path = NULL;
     redir->error_append = false;
-    redir->error_first = false;
     redir->error_to_output = false;
+    redir->count = 0;
     while (*read != '\0') {
         char quote = 0;
         char *word;
@@ -237,8 +237,9 @@ int shell_parse_redirect_quoted(char *line, char **argv, int capacity,
         if (*read == '\0') break;
         if (read[0] == '2' && read[1] == '>') {
             if (expect_path || redir->error_path != NULL || redir->error_to_output) return -1;
+            if (redir->count >= sizeof(redir->order)) return -1;
+            redir->order[redir->count++] = SHELL_REDIRECT_ERROR;
             read += 2;
-            redir->error_first = redir->path == NULL;
             if (read[0] == '&') {
                 if (read[1] != '1' || (read[2] != '\0' && read[2] != ' ' &&
                     read[2] != '\t' && read[2] != '<' && read[2] != '>')) return -1;
@@ -255,6 +256,8 @@ int shell_parse_redirect_quoted(char *line, char **argv, int capacity,
             char op = *read++;
             if (expect_path || (op == '>' && redir->path != NULL) ||
                 (op == '<' && redir->input_path != NULL)) return -1;
+            if (redir->count >= sizeof(redir->order)) return -1;
+            redir->order[redir->count++] = op == '>' ? SHELL_REDIRECT_OUTPUT : SHELL_REDIRECT_INPUT;
             if (op == '>') {
                 redir->append = *read == '>';
                 if (redir->append) read++;

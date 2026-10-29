@@ -2055,19 +2055,13 @@ static void nshell_exec_cmd(struct nshell *shell)
             if (glob != NULL) for (j = 0; j < argc; j++) argv[j] = glob->argv[j];
             argv[argc] = NULL;
         }
-        if (redir.input_path != NULL) {
-            int rc = nshell_open_input(shell, redir.input_path);
-            if (rc < 0) {
-                shell_error("shell: %s: cannot redirect (error %d)\r\n", redir.input_path, rc);
-                shell->last_status = 1;
-                goto next_command;
-            }
-        }
         {
             int j;
-            for (j = 0; j < 2; j++) {
-                bool error_stream = redir.error_first ? j == 0 : j == 1;
-                const char *path = error_stream ? redir.error_path : redir.path;
+            for (j = 0; j < redir.count; j++) {
+                bool input_stream = redir.order[j] == SHELL_REDIRECT_INPUT;
+                bool error_stream = redir.order[j] == SHELL_REDIRECT_ERROR;
+                const char *path = input_stream ? redir.input_path :
+                                   (error_stream ? redir.error_path : redir.path);
                 bool append = error_stream ? redir.error_append : redir.append;
                 struct file **destination = error_stream ? &shell->error_file : &shell->output_file;
                 int rc;
@@ -2076,8 +2070,8 @@ static void nshell_exec_cmd(struct nshell *shell)
                     if (shell->error_file == NULL) shell->error_pipe = shell->pipe_output;
                     continue;
                 }
-                if (path == NULL) continue;
-                rc = nshell_open_output(shell, path, append, destination);
+                rc = input_stream ? nshell_open_input(shell, path) :
+                                    nshell_open_output(shell, path, append, destination);
                 if (rc < 0) {
                     shell_error("shell: %s: cannot redirect (error %d)\r\n", path, rc);
                     shell->last_status = 1;
