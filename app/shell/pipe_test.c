@@ -13,15 +13,74 @@ static struct shell_stream_pipe test_pipe;
 static struct shell_stream_pipe closed_pipe;
 static unsigned int test_done;
 static unsigned int test_failed;
+static void pipe_test_fatfs(void *context);
 
 static void pipe_test_complete(void)
 {
-    if (__atomic_add_fetch(&test_done, 1U, __ATOMIC_ACQ_REL) == 3U) {
+    unsigned int done = __atomic_add_fetch(&test_done, 1U, __ATOMIC_ACQ_REL);
+    if (done == 3U) {
+        struct task_struct *fat_a = task_create("fat_test_a", pipe_test_fatfs, (void *)"/tmp/fat-a", 5, 2048, 10, NULL);
+        struct task_struct *fat_b = task_create("fat_test_b", pipe_test_fatfs, (void *)"/tmp/fat-b", 5, 2048, 10, NULL);
+        if (fat_a == NULL || fat_b == NULL) {
+            if (fat_a != NULL) task_del(fat_a);
+            if (fat_b != NULL) task_del(fat_b);
+            pr_err("shell stream pipe FAILED\r\n");
+            return;
+        }
+        task_ready(fat_a);
+        task_ready(fat_b);
+    } else if (done == 5U) {
         if (__atomic_load_n(&test_failed, __ATOMIC_RELAXED))
             pr_err("shell stream pipe FAILED\r\n");
         else
             pr_info("shell stream pipe OK\r\n");
     }
+}
+
+static void pipe_test_fatfs(void *context)
+{
+    const char *path = context;
+    const char value = path[sizeof("/tmp/fat-") - 1];
+    char block[64];
+    int fd, i;
+    const char *step = "open-write";
+
+    for (i = 0; i < (int)sizeof(block); i++) block[i] = value;
+    fd = nos_open(path, O_CREAT | O_RDWR | O_TRUNC);
+    if (fd < 0) goto failed;
+    step = "write";
+    for (i = 0; i < 32; i++) {
+        if (nos_write(fd, block, sizeof(block)) != sizeof(block)) {
+            nos_close(fd);
+            goto failed;
+        }
+    }
+    step = "seek";
+    if (nos_lseek(fd, 0, SEEK_SET) != 0) {
+        nos_close(fd);
+        goto failed;
+    }
+    step = "read-or-compare";
+    for (i = 0; i < 32; i++) {
+        int j;
+        if (nos_read(fd, block, sizeof(block)) != sizeof(block)) {
+            nos_close(fd);
+            goto failed;
+        }
+        for (j = 0; j < (int)sizeof(block); j++) {
+            if (block[j] != value) {
+                nos_close(fd);
+                goto failed;
+            }
+        }
+    }
+    if (nos_close(fd) != 0) goto failed;
+    pipe_test_complete();
+    return;
+failed:
+    pr_err("fatfs concurrency %s failed at %s index %d fd %d\r\n", path, step, i, fd);
+    __atomic_store_n(&test_failed, 1U, __ATOMIC_RELAXED);
+    pipe_test_complete();
 }
 
 static void pipe_test_file_stack(void *context)
@@ -30,12 +89,15 @@ static void pipe_test_file_stack(void *context)
     (void)context;
     fd = nos_open("/tmp/pipe-stack", O_CREAT | O_WRONLY);
     if (fd < 0) {
+        pr_err("pipe stack file open failed: %d\r\n", fd);
         __atomic_store_n(&test_failed, 1U, __ATOMIC_RELAXED);
     } else {
         nos_close(fd);
     }
-    if (task_stack_max_used(task_current()) == 0)
+    if (task_stack_max_used(task_current()) == 0) {
+        pr_err("pipe stack file task overflow\r\n");
         __atomic_store_n(&test_failed, 1U, __ATOMIC_RELAXED);
+    }
 }
 
 static void pipe_test_file_cleanup(struct task_struct *task)
