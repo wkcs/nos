@@ -43,6 +43,7 @@ TESTS = [
     ("run_shell_parse_test.py",),
     ("run_shell_printf_test.py",),
     ("run_shell_pipe_test.py",),
+    ("run_pid_test.py",),
     ("run_task_stack_layout_test.py",),
     ("run_vfs_fd_lifetime_test.py",),
     ("run_vfs_fd_position_test.py",),
