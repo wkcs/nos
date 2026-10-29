@@ -533,7 +533,9 @@ int vfs_make_dir(struct dentry *dir, const char *name, int mode,
 int vfs_remove_entry(struct dentry *dir, const char *name, bool is_dir)
 {
     struct dentry *cached;
+    struct dentry *target;
     struct dentry temp;
+    struct qstr q;
     unsigned int len;
     int i;
     int rc;
@@ -543,6 +545,9 @@ int vfs_remove_entry(struct dentry *dir, const char *name, bool is_dir)
     }
     len = (unsigned int)strlen(name);
     if (len == 0U || len >= FS_NAME_LEN) {
+        return -EINVAL;
+    }
+    if (strcmp(name, ".") == 0 || strcmp(name, "..") == 0) {
         return -EINVAL;
     }
 
@@ -555,6 +560,14 @@ int vfs_remove_entry(struct dentry *dir, const char *name, bool is_dir)
         }
     }
     spin_unlock(&vfs_mount_lock);
+
+    q.name = (const unsigned char *)name;
+    q.len = len;
+    q.hash = 0;
+    target = vfs_lookup(dir, &q);
+    if (target == NULL || target->d_inode == NULL) return -ENOENT;
+    if (is_dir && !S_ISDIR(target->d_inode->i_mode)) return -ENOTDIR;
+    if (!is_dir && S_ISDIR(target->d_inode->i_mode)) return -EISDIR;
 
     memset(&temp, 0, sizeof(temp));
     temp.d_parent = dir;
