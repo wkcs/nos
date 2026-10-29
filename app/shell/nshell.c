@@ -26,6 +26,7 @@
 #include <nos/shell_session.h>
 #include <stdarg.h>
 #include "parse.h"
+#include "test_expr.h"
 #ifdef CONFIG_NLK_SERVER
 #include <nos/nlk_core.h>
 #include <nos/nlk_caps.h>
@@ -635,6 +636,37 @@ static int cmd_false(int argc, char *argv[])
     (void)argc;
     (void)argv;
     return 1;
+}
+
+static unsigned int test_file_flags(void *context, const char *path)
+{
+    struct dentry *entry;
+    struct inode *inode;
+    unsigned int flags = 0;
+    (void)context;
+    entry = resolve_path(path);
+    if (entry == NULL || entry->d_inode == NULL) return 0;
+    inode = entry->d_inode;
+    flags |= SHELL_TEST_EXISTS;
+    if (S_ISREG(inode->i_mode)) flags |= SHELL_TEST_REGULAR;
+    if (S_ISDIR(inode->i_mode)) flags |= SHELL_TEST_DIRECTORY;
+    if (inode->i_size > 0) flags |= SHELL_TEST_NONEMPTY;
+    return flags;
+}
+
+static int cmd_test(int argc, char *argv[])
+{
+    int result;
+    if (strcmp(argv[0], "[") == 0) {
+        if (argc < 2 || strcmp(argv[argc - 1], "]") != 0) {
+            shell_error("[: missing ]\r\n");
+            return 2;
+        }
+        argc--;
+    }
+    result = shell_test_expression(argc - 1, argv + 1, test_file_flags, NULL);
+    if (result == 2) shell_error("%s: invalid expression\r\n", argv[0]);
+    return result;
 }
 
 static int cmd_history(int argc, char *argv[])
@@ -1932,6 +1964,8 @@ static int nshell_init(void)
     shell_register_cmd("echo", "Print arguments", cmd_echo);
     shell_register_cmd("true", "Return success", cmd_true);
     shell_register_cmd("false", "Return failure", cmd_false);
+    shell_register_cmd("test", "Evaluate a conditional expression", cmd_test);
+    shell_register_cmd("[", "Evaluate a conditional expression", cmd_test);
     shell_register_cmd("export", "Mark shell variables for export", cmd_export);
     shell_register_cmd("unset", "Remove shell variables", cmd_unset);
     shell_register_cmd("history", "Show or clear command history", cmd_history);

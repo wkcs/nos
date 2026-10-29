@@ -2,12 +2,19 @@
 #include <assert.h>
 #include <string.h>
 #include "../../app/shell/parse.h"
+#include "../../app/shell/test_expr.h"
 
 static const char *lookup(void *context, const char *name, size_t len)
 {
     (void)context;
     if (len == 1 && name[0] == 'V') return "one two;\"$";
     return NULL;
+}
+
+static unsigned int test_file(void *context, const char *path)
+{
+    (void)context;
+    return strcmp(path, "file") == 0 ? SHELL_TEST_EXISTS | SHELL_TEST_REGULAR | SHELL_TEST_NONEMPTY : 0;
 }
 
 int main(void)
@@ -30,6 +37,32 @@ int main(void)
     char duplicate_input[] = "cat <a <b";
     char missing_input[] = "cat <";
     int argc;
+
+    {
+        char *positive[] = { "-f", "file" };
+        char *missing[] = { "-e", "" };
+        char *negated[] = { "!", "-d", "file" };
+        char *ambiguous[] = { "!", "=", "!" };
+        char *minimum[] = { "-9223372036854775808", "-lt", "0" };
+        char *overflow[] = { "9223372036854775808", "-eq", "0" };
+        char *invalid[] = { "2", "-eq", "abc" };
+        char *compound[] = { "-f", "file", "-a", "2", "-gt", "1", "-o", "" };
+        char *grouped[] = { "!", "(", "-f", "file", "-a", "-d", "file", ")" };
+        char *bad_group[] = { "(", "-f", "file", "-a", "-d", "file" };
+        char *literal_paren[] = { "!", "x", "=", "(" };
+        assert(shell_test_expression(0, NULL, test_file, NULL) == 1);
+        assert(shell_test_expression(2, positive, test_file, NULL) == 0);
+        assert(shell_test_expression(2, missing, test_file, NULL) == 1);
+        assert(shell_test_expression(3, negated, test_file, NULL) == 0);
+        assert(shell_test_expression(3, ambiguous, test_file, NULL) == 0);
+        assert(shell_test_expression(3, minimum, test_file, NULL) == 0);
+        assert(shell_test_expression(3, overflow, test_file, NULL) == 2);
+        assert(shell_test_expression(3, invalid, test_file, NULL) == 2);
+        assert(shell_test_expression(8, compound, test_file, NULL) == 0);
+        assert(shell_test_expression(8, grouped, test_file, NULL) == 0);
+        assert(shell_test_expression(6, bad_group, test_file, NULL) == 2);
+        assert(shell_test_expression(4, literal_paren, test_file, NULL) == 0);
+    }
 
     assert(shell_count_assignments("A='one two' B=$V") == 2);
     assert(shell_count_assignments("A=1 echo hi") == 1);
