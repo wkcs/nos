@@ -10,6 +10,7 @@ with tempfile.TemporaryDirectory(prefix="nos-shell-parse-") as tmp:
     exe = Path(tmp) / "test"
     subprocess.run([os.environ.get("CC", "cc"), "-std=c99", "-Wall", "-Wextra",
                     "-Werror", str(root / "app/shell/parse.c"),
+                    str(root / "app/shell/test_expr.c"),
                     str(root / "tests/host/test_shell_parse.c"), "-o", str(exe)],
                    check=True)
     subprocess.run([str(exe)], check=True)

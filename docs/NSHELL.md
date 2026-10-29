@@ -57,3 +57,8 @@ inverted selection (`-v`), line numbers (`-n`), counts (`-c`) and suppression of
 filename prefixes (`-h`). Regular expressions are not implemented; patterns
 containing regex metacharacters require `-F`. Lines longer than 65536 bytes or
 larger than available heap memory fail with an error rather than being truncated.
+
+`test` and `[` support nonempty and empty strings, string equality, signed
+64-bit integer comparisons, `-e`, `-f`, `-d`, `-s`, negation, parentheses, and
+the `-a` / `-o` operators. Other Unix file predicates are not implemented.
+Malformed expressions and out-of-range integers return status 2.
