@@ -18,6 +18,13 @@ config VFS_SMOKE_TEST
 	help
 	  Create and read back /smoke.txt during application initialization.
 
+config VFS_FD_CONCURRENCY_TEST
+	bool "VFS descriptor concurrency test"
+	depends on VFS && QEMU && BOARD_QEMU_STM32
+	default n
+	help
+	  Exercise shared file offsets using scheduled tasks in QEMU.
+
 config RAMFS
 	bool "RAM file system"
 	default y

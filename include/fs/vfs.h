@@ -12,6 +12,7 @@
 #include <kernel/list.h>
 #include <kernel/mutex.h>
 #include <kernel/spinlock.h>
+#include <kernel/sem.h>
 
 /* Types are defined in fs/fs.h */
 #include <fs/fs.h>
@@ -186,6 +187,7 @@ struct file {
   const struct file_operations *f_op;
   unsigned int f_flags;
   unsigned int f_refs;
+  sem_t f_pos_sem;
   fmode_t f_mode;
   loff_t f_pos;
   void *private_data;

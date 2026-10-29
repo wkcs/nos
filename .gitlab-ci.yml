@@ -19,6 +19,9 @@ board-builds:
     - cmake --preset qemu-stm32
     - cmake --build --preset qemu-stm32
     - python3 tests/qemu_stm32_smoke.py build/qemu-stm32/nos.elf
+    - cmake --preset qemu-stm32 -B build/qemu-vfs-concurrency -DNOS_CONFIG_FRAGMENTS=configs/fragments/vfs-fd-concurrency.conf
+    - cmake --build build/qemu-vfs-concurrency
+    - python3 tests/qemu_vfs_concurrency.py build/qemu-vfs-concurrency/nos.elf
     - cmake --preset nk60-v2
     - cmake --build --preset nk60-v2
     - cmake --preset zj-v3
