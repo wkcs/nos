@@ -1,6 +1,7 @@
 set(FS_SRCS
     vfs.c
     vfs_fd.c
+    vfs_io.c
     ramfs.c
     procfs.c
     sysfs.c
@@ -8,6 +9,10 @@ set(FS_SRCS
 
 if(CONFIG_FATFS OR CONFIG_VFS_SMOKE_TEST)
     list(APPEND FS_SRCS vfs_smoke.c)
+endif()
+
+if(CONFIG_VFS_FD_CONCURRENCY_TEST)
+    list(APPEND FS_SRCS vfs_fd_test.c)
 endif()
 
 if(CONFIG_FATFS)
