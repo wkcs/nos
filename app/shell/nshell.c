@@ -81,6 +81,7 @@ struct nshell {
     struct file *error_file;
     struct shell_stream_pipe *pipe_input;
     struct shell_stream_pipe *pipe_output;
+    struct shell_stream_pipe *error_pipe;
     int output_error;
     struct shell_variable *variables;
     uint32_t generation;
@@ -349,7 +350,7 @@ static int shell_error(const char *fmt, ...)
     va_end(args);
     if (len < 0) return len;
     if ((size_t)len >= sizeof(buf)) len = sizeof(buf) - 1;
-    if (shell->error_file != NULL) {
+    if (shell->error_file != NULL || shell->error_pipe != NULL) {
         struct file *file = shell->error_file;
         int read_pos, write_pos = 0, total = 0;
         for (read_pos = 0; read_pos < len; read_pos++) {
@@ -357,6 +358,11 @@ static int shell_error(const char *fmt, ...)
                 continue;
             }
             buf[write_pos++] = buf[read_pos];
+        }
+        if (file == NULL) {
+            int rc = shell_stream_pipe_write(shell->error_pipe, buf, (size_t)write_pos);
+            if (rc < 0) shell->output_error = rc;
+            return rc;
         }
         while (total < write_pos) {
             int rc = file->f_op->write(file, buf + total, (size_t)(write_pos - total), &file->f_pos);
@@ -1776,6 +1782,17 @@ static int nshell_close_output(struct file **destination)
     return rc;
 }
 
+static int nshell_close_outputs(struct nshell *shell)
+{
+    int rc;
+
+    if (shell->error_file == shell->output_file) shell->error_file = NULL;
+    shell->error_pipe = NULL;
+    rc = nshell_close_output(&shell->output_file);
+    if (nshell_close_output(&shell->error_file) != 0) rc = -EIO;
+    return rc;
+}
+
 struct shell_pipeline_group {
     sem_t done;
     int last_status;
@@ -1838,6 +1855,7 @@ static noinline int shell_run_pipeline(struct nshell *parent, struct shell_comma
         child->input_file = NULL;
         child->output_file = NULL;
         child->error_file = NULL;
+        child->error_pipe = NULL;
         child->pipe_input = i > 0 ? &pipes[i - 1] : NULL;
         child->pipe_output = i + 1 < count ? &pipes[i] : NULL;
         child->output_error = 0;
@@ -1990,14 +2008,18 @@ static void nshell_exec_cmd(struct nshell *shell)
                 bool append = error_stream ? redir.error_append : redir.append;
                 struct file **destination = error_stream ? &shell->error_file : &shell->output_file;
                 int rc;
+                if (error_stream && redir.error_to_output) {
+                    shell->error_file = shell->output_file;
+                    if (shell->error_file == NULL) shell->error_pipe = shell->pipe_output;
+                    continue;
+                }
                 if (path == NULL) continue;
                 rc = nshell_open_output(shell, path, append, destination);
                 if (rc < 0) {
                     shell_error("shell: %s: cannot redirect (error %d)\r\n", path, rc);
                     shell->last_status = 1;
                     nshell_close_input(shell);
-                    (void)nshell_close_output(&shell->output_file);
-                    (void)nshell_close_output(&shell->error_file);
+                    (void)nshell_close_outputs(shell);
                     goto next_command;
                 }
             }
@@ -2066,8 +2088,7 @@ static void nshell_exec_cmd(struct nshell *shell)
                          !assignment_only && !assignment_error && curr != NULL &&
                          curr->func == cmd_cd && shell->last_status == 0);
         nshell_close_input(shell);
-        if (nshell_close_output(&shell->output_file) != 0) shell->last_status = 1;
-        if (nshell_close_output(&shell->error_file) != 0) shell->last_status = 1;
+        if (nshell_close_outputs(shell) != 0) shell->last_status = 1;
 next_command:
         if (shell->output_error != 0) {
             int error = shell->output_error;

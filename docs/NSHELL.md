@@ -6,8 +6,9 @@ The `help` command lists the built-in commands.
 
 The parser supports single and double quotes, backslash escapes, command lists
 (`;`, `&&`, `||`), pipelines (`|`), and file redirections (`<`, `>`, `>>`,
-`2>`, `2>>`). Standard error redirection covers shell and built-in diagnostics;
-descriptor duplication such as `2>&1` is not yet supported.
+`2>`, `2>>`, `2>&1`). Standard error redirection covers shell and built-in
+diagnostics. `2>&1` uses the standard output destination at that point in the
+redirection sequence, including when it is a pipeline.
 Input redirection is consumed by `cat`, `wc`, and `grep`; these also read standard input
 when passed `-`. Output redirection and pipelines apply to built-in command
 output.
