@@ -60,6 +60,13 @@ struct shell_pipe_buffer {
     char data[SHELL_PIPE_CAPACITY];
 };
 
+struct shell_variable {
+    struct shell_variable *next;
+    char *value;
+    bool exported;
+    char name[];
+};
+
 struct nshell {
     struct task_struct *task;
     struct shell_session session;
@@ -72,10 +79,74 @@ struct nshell {
     struct shell_pipe_buffer *pipe_input;
     struct shell_pipe_buffer *pipe_output;
     int output_error;
+    struct shell_variable *variables;
     uint32_t generation;
 };
 
 static struct nshell *shell_sessions;
+
+static bool variable_name_valid(const char *name, size_t length)
+{
+    size_t i;
+    if (length == 0) return false;
+    for (i = 0; i < length; i++) {
+        char c = name[i];
+        if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_' ||
+              (i != 0 && c >= '0' && c <= '9'))) return false;
+    }
+    return true;
+}
+
+static struct shell_variable **variable_slot(struct nshell *shell, const char *name, size_t length)
+{
+    struct shell_variable **slot = &shell->variables;
+    while (*slot != NULL) {
+        if (strlen((*slot)->name) == length && memcmp((*slot)->name, name, length) == 0) break;
+        slot = &(*slot)->next;
+    }
+    return slot;
+}
+
+static const char *variable_lookup(void *context, const char *name, size_t length)
+{
+    struct shell_variable *var = *variable_slot(context, name, length);
+    return var != NULL ? var->value : NULL;
+}
+
+static int variable_set(struct nshell *shell, const char *name, size_t length,
+                        const char *value, bool exported)
+{
+    struct shell_variable **slot;
+    struct shell_variable *old, *var;
+    size_t value_len;
+
+    if (!variable_name_valid(name, length)) return -EINVAL;
+    value_len = strlen(value);
+    var = kmalloc(sizeof(*var) + length + 1 + value_len + 1, GFP_KERNEL);
+    if (var == NULL) return -ENOMEM;
+    slot = variable_slot(shell, name, length);
+    old = *slot;
+    var->next = old != NULL ? old->next : NULL;
+    var->exported = exported || (old != NULL && old->exported);
+    memcpy(var->name, name, length);
+    var->name[length] = '\0';
+    var->value = var->name + length + 1;
+    memcpy(var->value, value, value_len + 1);
+    *slot = var;
+    if (old != NULL) kfree(old);
+    return 0;
+}
+
+#ifdef CONFIG_NLK_SERVER
+static void variable_clear(struct nshell *shell)
+{
+    while (shell->variables != NULL) {
+        struct shell_variable *var = shell->variables;
+        shell->variables = var->next;
+        kfree(var);
+    }
+}
+#endif
 
 static struct nshell *nshell_current(void)
 {
@@ -343,6 +414,65 @@ static void shell_getcwd(char *buf, size_t size) {
 }
 
 /* --- Command Implementations --- */
+
+static int cmd_export(int argc, char *argv[])
+{
+    struct nshell *shell = nshell_current();
+    int status = 0;
+    int i;
+
+    if (argc == 1 || (argc == 2 && strcmp(argv[1], "-p") == 0)) {
+        struct shell_variable *var;
+        for (var = shell->variables; var != NULL; var = var->next) {
+            const char *p;
+            if (!var->exported) continue;
+            shell_printf("export %s='", var->name);
+            for (p = var->value; *p != '\0'; p++) {
+                if (*p == '\'') nshell_write("'\\''", 4);
+                else nshell_write(p, 1);
+            }
+            nshell_write("'\r\n", 3);
+        }
+        return 0;
+    }
+    for (i = 1; i < argc; i++) {
+        char *equals = strchr(argv[i], '=');
+        size_t len = equals != NULL ? (size_t)(equals - argv[i]) : strlen(argv[i]);
+        const char *value = equals != NULL ? equals + 1 : variable_lookup(shell, argv[i], len);
+        int rc = variable_set(shell, argv[i], len, value != NULL ? value : "", true);
+        if (rc != 0) {
+            shell_error("export: %s: invalid name or out of memory\r\n", argv[i]);
+            status = 1;
+        }
+    }
+    return status;
+}
+
+static int cmd_unset(int argc, char *argv[])
+{
+    struct nshell *shell = nshell_current();
+    int status = 0;
+    int i = 1;
+
+    if (i < argc && strcmp(argv[i], "-v") == 0) i++;
+    if (i < argc && strcmp(argv[i], "--") == 0) i++;
+    for (; i < argc; i++) {
+        size_t len = strlen(argv[i]);
+        struct shell_variable **slot;
+        if (!variable_name_valid(argv[i], len)) {
+            shell_error("unset: %s: invalid name\r\n", argv[i]);
+            status = 1;
+            continue;
+        }
+        slot = variable_slot(shell, argv[i], len);
+        if (*slot != NULL) {
+            struct shell_variable *var = *slot;
+            *slot = var->next;
+            kfree(var);
+        }
+    }
+    return status;
+}
 
 static int cmd_help(int argc, char *argv[]) {
   struct shell_cmd *curr = cmd_list;
@@ -1431,6 +1561,7 @@ static void nshell_exec_cmd(struct nshell *shell)
     }
     for (i = 0; i < count; i++) {
         struct shell_cmd *curr = cmd_list;
+        bool assignment_only = false;
         int argc;
         if (workspace->commands[i].condition != SHELL_PIPE) {
             pipeline_status = shell->last_status;
@@ -1440,16 +1571,25 @@ static void nshell_exec_cmd(struct nshell *shell)
         if (skip_pipeline) {
             continue;
         }
-        if (shell_expand_status(workspace->commands[i].text, workspace->expanded,
-                                sizeof(workspace->expanded), pipeline_status) != 0) {
+        if (shell_expand_parameters(workspace->commands[i].text, workspace->expanded,
+                                    sizeof(workspace->expanded), pipeline_status,
+                                    variable_lookup, shell) != 0) {
             shell_error("shell: expanded command too long\r\n");
             shell->last_status = 1;
             skip_pipeline = true;
             goto next_command;
         }
         argc = shell_parse_redirect(workspace->expanded, argv, MAX_ARGS + 1, &redir);
-        if (argc <= 0) continue;
         shell->output_error = 0;
+        if (argc <= 0) {
+            if (argc < 0 || redir.path != NULL || redir.input_path != NULL) {
+                shell_error("shell: invalid expanded command\r\n");
+                shell->last_status = 1;
+            } else {
+                shell->last_status = 0;
+            }
+            goto next_command;
+        }
         if (i + 1 < count && workspace->commands[i + 1].condition == SHELL_PIPE) {
             shell->pipe_output = kzalloc(sizeof(*shell->pipe_output), GFP_KERNEL);
             if (shell->pipe_output == NULL) {
@@ -1476,14 +1616,37 @@ static void nshell_exec_cmd(struct nshell *shell)
                 goto next_command;
             }
         }
-        while (curr) {
+        {
+            int assignments = 0;
+            while (assignments < argc) {
+                char *equals = strchr(argv[assignments], '=');
+                if (equals == NULL || !variable_name_valid(argv[assignments],
+                        (size_t)(equals - argv[assignments]))) break;
+                assignments++;
+            }
+            if (assignments == argc &&
+                shell_count_assignments(workspace->commands[i].text) == argc) {
+                int j;
+                shell->last_status = 0;
+                for (j = 0; j < argc; j++) {
+                    char *equals = strchr(argv[j], '=');
+                    if (variable_set(shell, argv[j], (size_t)(equals - argv[j]), equals + 1, false) != 0) {
+                        shell_error("shell: assignment failed\r\n");
+                        shell->last_status = 1;
+                        break;
+                    }
+                }
+                assignment_only = true;
+            }
+        }
+        while (!assignment_only && curr != NULL) {
             if (strcmp(curr->name, argv[0]) == 0) {
                 shell->last_status = curr->func(argc, argv);
                 break;
             }
             curr = curr->next;
         }
-        if (curr == NULL) {
+        if (!assignment_only && curr == NULL) {
             shell_error("%s: command not found\r\n", argv[0]);
             shell->last_status = 127;
         }
@@ -1554,6 +1717,7 @@ static void nshell_task_entry(void* parameter)
                 shell->generation = __atomic_load_n(&ctx->generation, __ATOMIC_ACQUIRE);
                 shell->session.tty = nlk_cap_shell_tty(ctx);
                 shell_session_reset(&shell->session, vfs_get_root());
+                variable_clear(shell);
                 shell->last_status = 0;
                 if (ctx->session_open) shell_printf("\r\n" SHELL_PROMPT);
             }
@@ -1595,6 +1759,8 @@ static int nshell_init(void)
     shell_register_cmd("echo", "Print arguments", cmd_echo);
     shell_register_cmd("true", "Return success", cmd_true);
     shell_register_cmd("false", "Return failure", cmd_false);
+    shell_register_cmd("export", "Mark shell variables for export", cmd_export);
+    shell_register_cmd("unset", "Remove shell variables", cmd_unset);
     shell_register_cmd("history", "Show or clear command history", cmd_history);
     shell_register_cmd("log", "Toggle kernel log (on/off)", cmd_log);
     shell_register_cmd("ls", "List directory", cmd_ls);
