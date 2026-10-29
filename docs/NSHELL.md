@@ -12,12 +12,13 @@ output.
 Redirections can appear without a command or between leading assignments;
 their expanded paths are treated as single operands, including spaces.
 
-Pipeline stages currently execute sequentially, using a 4096-byte buffer per
-stage. A producer that exceeds this limit fails with an output error and the
-remaining pipeline stages are skipped; output is not silently truncated. This
-is not a POSIX streaming pipe: commands that require concurrent producer and
-consumer execution, or more than 4096 bytes of intermediate data, are not yet
-supported. Pipeline buffers use heap memory and allocation can fail.
+Pipeline stages execute concurrently as kernel tasks connected by bounded
+256-byte streaming buffers. Writers wait for space, readers observe EOF after
+the writer closes, and an early reader exit causes a broken-pipe error. The
+pipeline status is the last stage's status. Each stage has a copy of the
+session's variables and working directory, so changes in a stage do not alter
+the parent session. Pipeline creation uses heap memory and task stacks and can
+fail when resources are exhausted; the command-list limit is 16 stages.
 
 The status of the preceding command or pipeline is available as `$?` or
 `${?}`. It expands outside single quotes, including in double quotes and
@@ -37,8 +38,7 @@ assignment values are expanded in order, so later assignments see earlier ones.
 The shell initializes `HOME` and `PWD` to `/`; `cd` uses `HOME`, updates `PWD`
 and `OLDPWD`, and supports `cd -`. Paths are physical because the VFS does not
 currently support symbolic links. Arbitrary `IFS`, advanced parameter operators, and passing an
-environment to external processes are not implemented. Pipeline stages still
-run in the current session, so assignment or `unset` in a pipeline persists.
+environment to external processes are not implemented.
 
 The shell is not yet POSIX conformant. Full parameter and pathname expansion,
 subshells, external processes, job control, and a complete standard error
