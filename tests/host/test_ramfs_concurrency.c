@@ -29,6 +29,42 @@ static struct inode *regular;
 static atomic_int duplicate_success, duplicate_exists;
 static atomic_int rename_start;
 static atomic_int append_start;
+static struct mutex *race_lock;
+static pthread_t remover_thread;
+static atomic_int remover_waiting, allow_remove, creator_done;
+
+void ramfs_test_before_lock(struct mutex *m)
+{
+    if (m == race_lock && pthread_equal(pthread_self(), remover_thread)) {
+        atomic_store(&remover_waiting, 1);
+        while (!atomic_load(&allow_remove)) usleep(100);
+    }
+}
+
+struct removal_race {
+    struct inode *parent;
+    struct inode *child;
+    int remove_result;
+    int create_result;
+};
+
+static void *remove_directory(void *p)
+{
+    struct removal_race *race = p;
+    struct dentry entry = { .d_name.name = "race-dir" };
+    remover_thread = pthread_self();
+    race->remove_result = ramfs_rmdir(race->parent, &entry);
+    return NULL;
+}
+
+static void *create_in_directory(void *p)
+{
+    struct removal_race *race = p;
+    struct dentry entry = { .d_name.name = "child" };
+    race->create_result = ramfs_create(race->child, &entry, 0644);
+    atomic_store(&creator_done, 1);
+    return NULL;
+}
 struct append_args { struct inode *inode; char value; };
 
 static void *append_repeatedly(void *p)
@@ -131,6 +167,28 @@ int main(void)
     struct super_block sb = {0};
     struct dentry entry = { .d_name.name = "first" };
     pthread_t r, w;
+    assert(init_ramfs() == 0);
+    {
+        struct inode *parent = ramfs_get_inode(&sb, S_IFDIR | 0755, 0);
+        struct dentry entry = { .d_name.name = "race-dir" };
+        struct removal_race race = { .parent = parent };
+        struct file opened = {0};
+        assert(ramfs_mkdir(parent, &entry, 0755) == 0);
+        race.child = entry.d_inode;
+        opened.f_inode = race.child;
+        assert(ramfs_open(race.child, &opened) == 0);
+        race_lock = &race.child->i_mutex;
+        pthread_create(&r, NULL, remove_directory, &race);
+        while (!atomic_load(&remover_waiting)) usleep(100);
+        pthread_create(&w, NULL, create_in_directory, &race);
+        for (int i = 0; i < 200 && !atomic_load(&creator_done); i++) usleep(1000);
+        atomic_store(&allow_remove, 1);
+        pthread_join(r, NULL);
+        pthread_join(w, NULL);
+        race_lock = NULL;
+        assert(race.remove_result == 0 && race.create_result == -ENOENT);
+        assert(ramfs_release(opened.f_inode, &opened) == 0);
+    }
     {
         struct inode *dir = ramfs_get_inode(&sb, S_IFDIR | 0755, 0);
         struct dentry unlinked = { .d_name.name = "unlinked" };
