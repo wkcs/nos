@@ -2456,6 +2456,71 @@ static int nshell_close_outputs(struct nshell *shell)
     return rc;
 }
 
+static int cmd_tee(int argc, char *argv[])
+{
+    struct nshell *shell = nshell_current();
+    struct file **files = NULL;
+    char buf[64];
+    bool append = false;
+    int first = 1, count, status = 0, i, n;
+
+    while (first < argc && argv[first][0] == '-' && argv[first][1] != '\0') {
+        const char *option = argv[first] + 1;
+        if (strcmp(option, "-") == 0) { first++; break; }
+        for (; *option != '\0'; option++) {
+            if (*option == 'a') append = true;
+            else if (*option != 'i') {
+                shell_error("tee: invalid option: %s\r\n", argv[first]);
+                return 1;
+            }
+        }
+        first++;
+    }
+    shell_init_cwd();
+    count = argc - first;
+    if (count > 0) {
+        files = kzalloc(sizeof(*files) * (size_t)count, GFP_KERNEL);
+        if (files == NULL) return 1;
+        for (i = 0; i < count; i++) {
+            int rc = nshell_open_output(shell, argv[first + i], append, &files[i]);
+            if (rc != 0) {
+                shell_error("tee: %s: error %d\r\n", argv[first + i], rc);
+                status = 1;
+            }
+        }
+    }
+    while ((n = wc_read(NULL, buf, sizeof(buf))) > 0) {
+        int pos = 0;
+        while (pos < n) {
+            int written = nshell_write(buf + pos, n - pos);
+            if (written <= 0) { status = 1; goto out; }
+            pos += written;
+        }
+        for (i = 0; i < count; i++) {
+            int written = 0;
+            if (files[i] == NULL) continue;
+            while (written < n) {
+                int rc = files[i]->f_op->write(files[i], buf + written,
+                                               (size_t)(n - written), &files[i]->f_pos);
+                if (rc <= 0) {
+                    shell_error("tee: %s: write error\r\n", argv[first + i]);
+                    (void)nshell_close_output(&files[i]);
+                    status = 1;
+                    break;
+                }
+                written += rc;
+            }
+        }
+    }
+    if (n < 0) status = 1;
+out:
+    for (i = 0; i < count; i++) {
+        if (nshell_close_output(&files[i]) != 0) status = 1;
+    }
+    kfree(files);
+    return status;
+}
+
 static int cp_one(struct nshell *shell, const char *source, const char *destination,
                   bool directory, bool no_clobber, bool verbose,
                   char *target, char *buffer, size_t buffer_size)
@@ -3352,6 +3417,7 @@ static int nshell_init(void)
     shell_register_cmd("wc", "Count lines, words and bytes", cmd_wc);
     shell_register_cmd("head", "Print the start of files", cmd_head);
     shell_register_cmd("tail", "Print the end of files", cmd_tail);
+    shell_register_cmd("tee", "Duplicate standard input to files", cmd_tee);
     shell_register_cmd("grep", "Search lines for a fixed string", cmd_grep);
     shell_register_cmd("mount", "Mount filesystem", cmd_mount);
     shell_register_cmd("ps", "Dump task status", cmd_ps);
