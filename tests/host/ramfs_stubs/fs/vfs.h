@@ -4,8 +4,9 @@
 #include <kernel/list.h>
 #include <pthread.h>
 struct mutex { pthread_mutex_t native; };
+extern void ramfs_test_before_lock(struct mutex *m);
 static inline void mutex_init(struct mutex *m) { pthread_mutex_init(&m->native, NULL); }
-static inline void mutex_lock(struct mutex *m) { pthread_mutex_lock(&m->native); }
+static inline void mutex_lock(struct mutex *m) { ramfs_test_before_lock(m); pthread_mutex_lock(&m->native); }
 static inline void mutex_unlock(struct mutex *m) { pthread_mutex_unlock(&m->native); }
 struct inode; struct dentry; struct file; struct super_block; struct file_system_type;
 typedef int (*filldir_t)(void *, const char *, int, off_t, uint64_t, unsigned);

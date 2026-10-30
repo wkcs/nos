@@ -36,6 +36,8 @@ static const struct inode_operations ramfs_file_inode_ops;
 static void ramfs_free_inode(struct inode *inode);
 
 static unsigned long g_ramfs_next_ino = 1;
+/* Directory mutations must not race with removal of their parent. */
+static struct mutex ramfs_namespace_lock;
 
 static struct inode *ramfs_get_inode(struct super_block *sb, int mode,
                                      dev_t dev) {
@@ -308,12 +310,20 @@ no_memory:
 
 static int ramfs_create(struct inode *dir, struct dentry *dentry, int mode)
 {
-    return ramfs_add_entry(dir, dentry, mode | S_IFREG);
+    int rc;
+    mutex_lock(&ramfs_namespace_lock);
+    rc = ramfs_add_entry(dir, dentry, mode | S_IFREG);
+    mutex_unlock(&ramfs_namespace_lock);
+    return rc;
 }
 
 static int ramfs_mkdir(struct inode *dir, struct dentry *dentry, int mode)
 {
-    return ramfs_add_entry(dir, dentry, mode | S_IFDIR);
+    int rc;
+    mutex_lock(&ramfs_namespace_lock);
+    rc = ramfs_add_entry(dir, dentry, mode | S_IFDIR);
+    mutex_unlock(&ramfs_namespace_lock);
+    return rc;
 }
 
 static struct dentry *ramfs_lookup(struct inode *dir, struct dentry *dentry)
@@ -333,7 +343,7 @@ static struct dentry *ramfs_lookup(struct inode *dir, struct dentry *dentry)
     return NULL;
 }
 
-static int ramfs_unlink(struct inode *dir, struct dentry *dentry)
+static int ramfs_unlink_locked(struct inode *dir, struct dentry *dentry)
 {
     struct ramfs_node *node = dir ? dir->i_private : NULL;
     struct ramfs_dirent *de;
@@ -360,7 +370,7 @@ static int ramfs_unlink(struct inode *dir, struct dentry *dentry)
     return -ENOENT;
 }
 
-static int ramfs_rmdir(struct inode *dir, struct dentry *dentry)
+static int ramfs_rmdir_locked(struct inode *dir, struct dentry *dentry)
 {
     struct ramfs_node *node = dir ? dir->i_private : NULL;
     struct ramfs_dirent *de;
@@ -394,7 +404,7 @@ static int ramfs_rmdir(struct inode *dir, struct dentry *dentry)
     return -ENOENT;
 }
 
-static int ramfs_rename(struct inode *old_dir, struct dentry *old_dentry,
+static int ramfs_rename_locked(struct inode *old_dir, struct dentry *old_dentry,
                         struct inode *new_dir, struct dentry *new_dentry)
 {
     struct ramfs_node *old_node = old_dir ? old_dir->i_private : NULL;
@@ -473,6 +483,34 @@ out:
     if (second != first) mutex_unlock(&second->i_mutex);
     mutex_unlock(&first->i_mutex);
     if (new_name != NULL) kfree(new_name);
+    return rc;
+}
+
+static int ramfs_unlink(struct inode *dir, struct dentry *dentry)
+{
+    int rc;
+    mutex_lock(&ramfs_namespace_lock);
+    rc = ramfs_unlink_locked(dir, dentry);
+    mutex_unlock(&ramfs_namespace_lock);
+    return rc;
+}
+
+static int ramfs_rmdir(struct inode *dir, struct dentry *dentry)
+{
+    int rc;
+    mutex_lock(&ramfs_namespace_lock);
+    rc = ramfs_rmdir_locked(dir, dentry);
+    mutex_unlock(&ramfs_namespace_lock);
+    return rc;
+}
+
+static int ramfs_rename(struct inode *old_dir, struct dentry *old_dentry,
+                        struct inode *new_dir, struct dentry *new_dentry)
+{
+    int rc;
+    mutex_lock(&ramfs_namespace_lock);
+    rc = ramfs_rename_locked(old_dir, old_dentry, new_dir, new_dentry);
+    mutex_unlock(&ramfs_namespace_lock);
     return rc;
 }
 
@@ -594,4 +632,12 @@ static struct file_system_type ramfs_fs_type = {
     .kill_sb = NULL,
 };
 
-int init_ramfs(void) { return register_filesystem(&ramfs_fs_type); }
+int init_ramfs(void)
+{
+    static bool initialized;
+
+    if (initialized) return -EBUSY;
+    mutex_init(&ramfs_namespace_lock);
+    initialized = true;
+    return register_filesystem(&ramfs_fs_type);
+}
