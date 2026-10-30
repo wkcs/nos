@@ -261,6 +261,7 @@ static int ramfs_add_entry(struct inode *dir, struct dentry *dentry, int mode)
     struct ramfs_node *node = dir->i_private;
     struct ramfs_dirent *de, *existing;
     struct inode *inode;
+    int rc;
 
     if (node == NULL || dentry == NULL || dentry->d_name.name == NULL) return -EINVAL;
     inode = ramfs_get_inode(dir->i_sb, mode, 0);
@@ -276,20 +277,28 @@ static int ramfs_add_entry(struct inode *dir, struct dentry *dentry, int mode)
     de->inode = inode;
 
     mutex_lock(&dir->i_mutex);
+    if (node->unlinked) {
+        rc = -ENOENT;
+        goto reject_entry;
+    }
     list_for_each_entry(existing, &node->dirents, list) {
         if (strcmp(existing->name, de->name) == 0) {
-            mutex_unlock(&dir->i_mutex);
-            kfree(de->name);
-            kfree(de);
-            kfree(inode->i_private);
-            nos_vfs_destroy_inode(inode);
-            return -EEXIST;
+            rc = -EEXIST;
+            goto reject_entry;
         }
     }
     list_add_tail(&de->list, &node->dirents);
     dentry->d_inode = inode;
     mutex_unlock(&dir->i_mutex);
     return 0;
+
+reject_entry:
+    mutex_unlock(&dir->i_mutex);
+    kfree(de->name);
+    kfree(de);
+    kfree(inode->i_private);
+    nos_vfs_destroy_inode(inode);
+    return rc;
 
 no_memory:
     kfree(inode->i_private);
@@ -412,6 +421,10 @@ static int ramfs_rename(struct inode *old_dir, struct dentry *old_dentry,
     mutex_lock(&first->i_mutex);
     if (second != first) mutex_lock(&second->i_mutex);
 
+    if (old_node->unlinked || new_node->unlinked) {
+        rc = -ENOENT;
+        goto out;
+    }
     list_for_each_entry(de, &old_node->dirents, list) {
         if (strcmp(de->name, old_dentry->d_name.name) == 0) {
             src_de = de;

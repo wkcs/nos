@@ -164,6 +164,8 @@ int main(void)
 
         {
             struct dentry subdir = { .d_name.name = "open-dir" };
+            struct dentry child = { .d_name.name = "child" };
+            struct dentry destination = { .d_name.name = "moved" };
             struct file opened = {0};
             assert(ramfs_mkdir(dir, &subdir, 0755) == 0);
             opened.f_inode = subdir.d_inode;
@@ -172,6 +174,12 @@ int main(void)
             before = atomic_load(&destroyed_inodes);
             assert(ramfs_rmdir(dir, &subdir) == 0);
             assert(atomic_load(&destroyed_inodes) == before);
+            assert(ramfs_create(opened.f_inode, &child, 0644) == -ENOENT);
+            assert(ramfs_mkdir(opened.f_inode, &child, 0755) == -ENOENT);
+            assert(ramfs_create(dir, &source, 0644) == 0);
+            assert(ramfs_rename(dir, &source, opened.f_inode, &destination) == -ENOENT);
+            assert(ramfs_unlink(dir, &source) == 0);
+            before = atomic_load(&destroyed_inodes);
             assert(ramfs_dir_ops.release(opened.f_inode, &opened) == 0);
             assert(atomic_load(&destroyed_inodes) == before + 1);
         }
