@@ -5286,6 +5286,267 @@ static int cmd_xargs(int argc, char *argv[])
     return status;
 }
 
+static int chmod_apply_mode(const char *spec, unsigned int current_mode, unsigned int *out_mode)
+{
+    const char *p = spec;
+    unsigned int mode = current_mode & 07777U;
+
+    if (*p >= '0' && *p <= '7') {
+        unsigned int oct = 0;
+        while (*p >= '0' && *p <= '7')
+            oct = (oct << 3) | (unsigned int)(*p++ - '0');
+        if (*p != '\0' || oct > 07777U) return -EINVAL;
+        *out_mode = oct;
+        return 0;
+    }
+    if (*p == '\0') return -EINVAL;
+    while (*p != '\0') {
+        unsigned int who = 0;
+        while (*p == 'u' || *p == 'g' || *p == 'o' || *p == 'a') {
+            if (*p == 'u') who |= 0700U;
+            else if (*p == 'g') who |= 0070U;
+            else if (*p == 'o') who |= 0007U;
+            else who |= 0777U;
+            p++;
+        }
+        if (who == 0U) who = 0777U;
+        if (*p != '+' && *p != '-' && *p != '=') return -EINVAL;
+        while (*p == '+' || *p == '-' || *p == '=') {
+            char op = *p++;
+            unsigned int perm = 0;
+            while (*p == 'r' || *p == 'w' || *p == 'x') {
+                if (*p == 'r') perm |= 0444U;
+                else if (*p == 'w') perm |= 0222U;
+                else perm |= 0111U;
+                p++;
+            }
+            perm &= who;
+            if (op == '+') mode |= perm;
+            else if (op == '-') mode &= ~perm;
+            else mode = (mode & ~who) | perm;
+        }
+        if (*p == ',') {
+            p++;
+            if (*p == '\0') return -EINVAL;
+        } else if (*p != '\0') {
+            return -EINVAL;
+        }
+    }
+    *out_mode = mode;
+    return 0;
+}
+
+static int cmd_chmod(int argc, char *argv[])
+{
+    int first = 1, status = 0, i;
+    const char *mode_str;
+    unsigned int dummy;
+
+    if (first < argc && strcmp(argv[first], "--") == 0) first++;
+    if (argc - first < 2) {
+        shell_error("chmod: missing operand\r\n");
+        return 1;
+    }
+    mode_str = argv[first++];
+    if (chmod_apply_mode(mode_str, 0644U, &dummy) != 0) {
+        shell_error("chmod: invalid mode: '%s'\r\n", mode_str);
+        return 1;
+    }
+    shell_init_cwd();
+    for (i = first; i < argc; i++) {
+        struct dentry *entry = resolve_path(argv[i]);
+        unsigned int new_mode = 0;
+        if (entry == NULL || entry->d_inode == NULL) {
+            shell_error("chmod: %s: No such file or directory\r\n", argv[i]);
+            status = 1;
+            continue;
+        }
+        if (entry->d_sb != NULL && entry->d_sb->s_type != NULL &&
+            (strcmp(entry->d_sb->s_type->name, "procfs") == 0 ||
+             strcmp(entry->d_sb->s_type->name, "sysfs") == 0)) {
+            shell_error("chmod: %s: Read-only file system\r\n", argv[i]);
+            status = 1;
+            continue;
+        }
+        (void)chmod_apply_mode(mode_str, entry->d_inode->i_mode, &new_mode);
+        entry->d_inode->i_mode = (entry->d_inode->i_mode & ~07777U) | (new_mode & 07777U);
+    }
+    return status;
+}
+
+static int cmp_read_byte(struct nshell *shell, struct file *f, unsigned char *out)
+{
+    char ch;
+    int rc;
+    if (f != NULL) {
+        if (f->f_op == NULL || f->f_op->read == NULL) return -EINVAL;
+        return (int)f->f_op->read(f, (char *)out, 1U, &f->f_pos);
+    }
+    rc = nshell_read_char(shell, &ch);
+    if (rc == 1) *out = (unsigned char)ch;
+    return rc;
+}
+
+static int cmd_cmp(int argc, char *argv[])
+{
+    struct nshell *shell = nshell_current();
+    const char *p1, *p2;
+    struct file *f1 = NULL, *f2 = NULL;
+    bool silent = false, verbose = false;
+    u64 byte_no = 0, line_no = 1;
+    int first = 1, status = 0;
+
+    while (first < argc && argv[first][0] == '-' && argv[first][1] != '\0') {
+        const char *opt = argv[first] + 1;
+        if (strcmp(opt, "-") == 0) { first++; break; }
+        for (; *opt != '\0'; opt++) {
+            if (*opt == 's') { silent = true; verbose = false; }
+            else if (*opt == 'l') { verbose = true; silent = false; }
+            else {
+                shell_error("cmp: invalid option -- '%c'\r\n", *opt);
+                return 2;
+            }
+        }
+        first++;
+    }
+    if (argc - first < 1 || argc - first > 2) {
+        shell_error("cmp: missing or extra operand\r\n");
+        return 2;
+    }
+    p1 = argv[first];
+    p2 = (argc - first == 2) ? argv[first + 1] : "-";
+    shell_init_cwd();
+    if (strcmp(p1, "-") != 0 && nshell_open_input(shell, p1, &f1) != 0) {
+        if (!silent) shell_error("cmp: %s: No such file or directory\r\n", p1);
+        return 2;
+    }
+    if (strcmp(p2, "-") != 0 && nshell_open_input(shell, p2, &f2) != 0) {
+        (void)nshell_close_output(&f1);
+        if (!silent) shell_error("cmp: %s: No such file or directory\r\n", p2);
+        return 2;
+    }
+    for (;;) {
+        unsigned char b1 = 0, b2 = 0;
+        int r1 = cmp_read_byte(shell, f1, &b1);
+        int r2 = cmp_read_byte(shell, f2, &b2);
+        if (r1 < 0 || r2 < 0) { status = 2; break; }
+        if (r1 == 0 && r2 == 0) break;
+        if (r1 == 0 || r2 == 0) {
+            if (!silent) shell_error("cmp: EOF on %s\r\n", r1 == 0 ? p1 : p2);
+            status = 1;
+            break;
+        }
+        byte_no++;
+        if (b1 != b2) {
+            status = 1;
+            if (silent) break;
+            if (verbose) {
+                shell_printf("%llu %03o %03o\r\n",
+                             (unsigned long long)byte_no, (unsigned int)b1, (unsigned int)b2);
+            } else {
+                shell_printf("%s %s differ: byte %llu, line %llu\r\n",
+                             p1, p2, (unsigned long long)byte_no, (unsigned long long)line_no);
+                break;
+            }
+        }
+        if (b1 == '\n') line_no++;
+    }
+    (void)nshell_close_output(&f1);
+    (void)nshell_close_output(&f2);
+    return status;
+}
+
+static void hexdump_emit_line(u64 offset, const unsigned char *row, size_t count)
+{
+    size_t i;
+    shell_printf("%08llx  ", (unsigned long long)offset);
+    for (i = 0; i < 16U; i++) {
+        if (i < count) shell_printf("%02x ", (unsigned int)row[i]);
+        else shell_printf("   ");
+        if (i == 7U) shell_printf(" ");
+    }
+    shell_printf(" |");
+    for (i = 0; i < count; i++) {
+        unsigned char c = row[i];
+        shell_printf("%c", (c >= 0x20U && c <= 0x7eU) ? (char)c : '.');
+    }
+    shell_printf("|\r\n");
+}
+
+static int cmd_hexdump(int argc, char *argv[])
+{
+    static const char *const default_in[] = { "-" };
+    struct nshell *shell = nshell_current();
+    u64 skip = 0, limit = UINT64_MAX, total = 0, skipped = 0;
+    unsigned char row[16];
+    size_t row_used = 0;
+    int first = 1, file_count, status = 0, i;
+    const char *const *files;
+
+    while (first < argc && argv[first][0] == '-' && argv[first][1] != '\0') {
+        const char *opt = argv[first] + 1;
+        if (strcmp(opt, "-") == 0) { first++; break; }
+        while (*opt != '\0') {
+            if (*opt == 'C' || *opt == 'c' || *opt == 'x') {
+                opt++;
+            } else if (*opt == 'n' || *opt == 's') {
+                char flag = *opt;
+                const char *arg = opt[1] != '\0' ? opt + 1 :
+                                  (++first < argc ? argv[first] : NULL);
+                u64 val = 0;
+                if (arg == NULL || head_number(arg, &val) != 0) {
+                    shell_error("%s: invalid argument for -%c\r\n", argv[0], flag);
+                    return 1;
+                }
+                if (flag == 'n') limit = val;
+                else skip = val;
+                break;
+            } else {
+                shell_error("%s: invalid option -- '%c'\r\n", argv[0], *opt);
+                return 1;
+            }
+        }
+        first++;
+    }
+    shell_init_cwd();
+    if (first == argc) {
+        files = default_in;
+        file_count = 1;
+    } else {
+        files = (const char *const *)(argv + first);
+        file_count = argc - first;
+    }
+    for (i = 0; i < file_count && total < limit; i++) {
+        struct file *f = NULL;
+        unsigned char b;
+        int rc;
+        if (strcmp(files[i], "-") != 0 && nshell_open_input(shell, files[i], &f) != 0) {
+            shell_error("%s: %s: No such file or directory\r\n", argv[0], files[i]);
+            status = 1;
+            continue;
+        }
+        while (total < limit && (rc = cmp_read_byte(shell, f, &b)) == 1) {
+            if (skipped < skip) {
+                skipped++;
+                continue;
+            }
+            row[row_used++] = b;
+            total++;
+            if (row_used == 16U) {
+                hexdump_emit_line(skip + total - 16U, row, 16U);
+                row_used = 0;
+            }
+        }
+        if (rc < 0) status = 1;
+        (void)nshell_close_output(&f);
+    }
+    if (row_used > 0U)
+        hexdump_emit_line(skip + total - row_used, row, row_used);
+    if (total > 0U)
+        shell_printf("%08llx\r\n", (unsigned long long)(skip + total));
+    return status;
+}
+
 struct shell_script_frame {
     char saved_input[SHELL_SESSION_INPUT_MAX + 1];
     char line[SHELL_SESSION_INPUT_MAX + 1];
@@ -6296,8 +6557,12 @@ static int nshell_init(void)
     shell_register_cmd("mkdir", "Make directory", cmd_mkdir);
     shell_register_cmd("rmdir", "Remove empty directories", cmd_rmdir);
     shell_register_cmd("touch", "Create empty files or update timestamps", cmd_touch);
+    shell_register_cmd("chmod", "Change file mode bits", cmd_chmod);
     shell_register_cmd("rm", "Remove files and directories", cmd_rm);
     shell_register_cmd("cat", "Concatenate file", cmd_cat);
+    shell_register_cmd("cmp", "Compare two files byte by byte", cmd_cmp);
+    shell_register_cmd("hexdump", "Display file contents in hexadecimal and ASCII", cmd_hexdump);
+    shell_register_cmd("hd", "Display file contents in hexadecimal and ASCII", cmd_hexdump);
     shell_register_cmd("basename", "Strip directory and suffix", cmd_basename);
     shell_register_cmd("dirname", "Strip final path component", cmd_dirname);
     shell_register_cmd("cp", "Copy files", cmd_cp);
