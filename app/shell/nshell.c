@@ -4748,6 +4748,298 @@ struct shell_pipeline_stage {
 
 static void nshell_exec_cmd(struct nshell *shell);
 
+static struct shell_cmd *nshell_find_builtin(const char *name)
+{
+    struct shell_cmd *curr = cmd_list;
+    while (curr != NULL && strcmp(curr->name, name) != 0)
+        curr = curr->next;
+    return curr;
+}
+
+static int cmd_type(int argc, char *argv[])
+{
+    struct nshell *shell = nshell_current();
+    bool type_only = false;
+    int first = 1, status = 0, i;
+
+    while (first < argc && argv[first][0] == '-' && argv[first][1] != '\0') {
+        const char *opt = argv[first] + 1;
+        if (strcmp(opt, "-") == 0) { first++; break; }
+        for (; *opt != '\0'; opt++) {
+            if (*opt == 't') type_only = true;
+            else {
+                shell_error("type: invalid option -- '%c'\r\n", *opt);
+                return 1;
+            }
+        }
+        first++;
+    }
+    if (first == argc) return 0;
+    for (i = first; i < argc; i++) {
+        struct shell_variable *alias =
+            *variable_list_slot(&shell->aliases, argv[i], strlen(argv[i]));
+        struct shell_cmd *cmd = nshell_find_builtin(argv[i]);
+        if (alias != NULL) {
+            if (type_only) shell_printf("alias\r\n");
+            else shell_printf("%s is aliased to '%s'\r\n", argv[i], alias->value);
+        } else if (cmd != NULL) {
+            if (type_only) shell_printf("builtin\r\n");
+            else shell_printf("%s is a shell builtin\r\n", argv[i]);
+        } else {
+            if (!type_only) shell_error("type: %s: not found\r\n", argv[i]);
+            status = 1;
+        }
+    }
+    return status;
+}
+
+static int cmd_which(int argc, char *argv[])
+{
+    struct nshell *shell = nshell_current();
+    bool all = false;
+    int first = 1, status = 0, i;
+
+    while (first < argc && argv[first][0] == '-' && argv[first][1] != '\0') {
+        const char *opt = argv[first] + 1;
+        if (strcmp(opt, "-") == 0) { first++; break; }
+        for (; *opt != '\0'; opt++) {
+            if (*opt == 'a') all = true;
+            else {
+                shell_error("which: invalid option -- '%c'\r\n", *opt);
+                return 1;
+            }
+        }
+        first++;
+    }
+    if (first == argc) return 1;
+    for (i = first; i < argc; i++) {
+        struct shell_variable *alias =
+            *variable_list_slot(&shell->aliases, argv[i], strlen(argv[i]));
+        struct shell_cmd *cmd = nshell_find_builtin(argv[i]);
+        if (alias == NULL && cmd == NULL) {
+            shell_error("which: no %s\r\n", argv[i]);
+            status = 1;
+            continue;
+        }
+        if (alias != NULL) alias_print(alias);
+        if (cmd != NULL && (alias == NULL || all))
+            shell_printf("%s\r\n", cmd->name);
+    }
+    return status;
+}
+
+static int cmd_command(int argc, char *argv[])
+{
+    struct nshell *shell = nshell_current();
+    bool mode_v = false, mode_V = false;
+    int first = 1, status = 0, i;
+
+    while (first < argc && argv[first][0] == '-' && argv[first][1] != '\0') {
+        const char *opt = argv[first] + 1;
+        if (strcmp(opt, "-") == 0) { first++; break; }
+        for (; *opt != '\0'; opt++) {
+            if (*opt == 'v') { mode_v = true; mode_V = false; }
+            else if (*opt == 'V') { mode_V = true; mode_v = false; }
+            else if (*opt != 'p') {
+                shell_error("command: invalid option -- '%c'\r\n", *opt);
+                return 2;
+            }
+        }
+        first++;
+    }
+    if (first == argc) return 0;
+    if (mode_v || mode_V) {
+        for (i = first; i < argc; i++) {
+            struct shell_variable *alias =
+                *variable_list_slot(&shell->aliases, argv[i], strlen(argv[i]));
+            struct shell_cmd *cmd = nshell_find_builtin(argv[i]);
+            if (alias != NULL) {
+                if (mode_v) alias_print(alias);
+                else shell_printf("%s is aliased to '%s'\r\n", argv[i], alias->value);
+            } else if (cmd != NULL) {
+                if (mode_v) shell_printf("%s\r\n", cmd->name);
+                else shell_printf("%s is a shell builtin\r\n", argv[i]);
+            } else {
+                if (mode_V) shell_error("command: %s: not found\r\n", argv[i]);
+                status = 1;
+            }
+        }
+        return status;
+    }
+    {
+        struct shell_cmd *cmd = nshell_find_builtin(argv[first]);
+        if (cmd == NULL) {
+            shell_error("command: %s: not found\r\n", argv[first]);
+            return 127;
+        }
+        return cmd->func(argc - first, argv + first);
+    }
+}
+
+static int cmd_eval(int argc, char *argv[])
+{
+    struct nshell *shell = nshell_current();
+    struct eval_frame {
+        char saved_input[SHELL_SESSION_INPUT_MAX + 1];
+        char line[SHELL_SESSION_INPUT_MAX + 1];
+        size_t saved_len;
+    } *frame;
+    size_t used = 0;
+    int first = 1, i;
+
+    if (first < argc && strcmp(argv[first], "--") == 0) first++;
+    if (first == argc) return 0;
+    frame = kmalloc(sizeof(*frame), GFP_KERNEL);
+    if (frame == NULL) return 1;
+    for (i = first; i < argc; i++) {
+        size_t len = strlen(argv[i]);
+        if (used + (i > first ? 1U : 0U) + len > SHELL_SESSION_INPUT_MAX) {
+            shell_error("eval: command too long\r\n");
+            kfree(frame);
+            return 1;
+        }
+        if (i > first) frame->line[used++] = ' ';
+        memcpy(frame->line + used, argv[i], len);
+        used += len;
+    }
+    frame->line[used] = '\0';
+    memcpy(frame->saved_input, shell->session.input, sizeof(frame->saved_input));
+    frame->saved_len = shell->session.input_len;
+    memcpy(shell->session.input, frame->line, used + 1U);
+    shell->session.input_len = used;
+    shell->last_status = 0;
+    nshell_exec_cmd(shell);
+    memcpy(shell->session.input, frame->saved_input, sizeof(shell->session.input));
+    shell->session.input_len = frame->saved_len;
+    kfree(frame);
+    return shell->last_status;
+}
+
+static int nshell_read_char(struct nshell *shell, char *ch)
+{
+    if (shell == NULL) return -EINVAL;
+    if (shell->input_file != NULL) {
+        if (shell->input_file->f_op == NULL || shell->input_file->f_op->read == NULL)
+            return -EINVAL;
+        return (int)shell->input_file->f_op->read(shell->input_file, ch, 1U,
+                                                  &shell->input_file->f_pos);
+    }
+    if (shell->pipe_input != NULL)
+        return shell_stream_pipe_read(shell->pipe_input, ch, 1U);
+    {
+        int value = nshell_getc();
+        if (value < 0) return value;
+        if (value == 4 || value == 3) return value == 3 ? -EINTR : 0;
+        *ch = (char)value;
+        return 1;
+    }
+}
+
+static int cmd_read(int argc, char *argv[])
+{
+    struct nshell *shell = nshell_current();
+    const char *prompt = NULL, *ifs;
+    char *line;
+    bool raw = false, got_any = false;
+    size_t used = 0;
+    int first = 1, i;
+    char ch;
+
+    while (first < argc && argv[first][0] == '-' && argv[first][1] != '\0') {
+        const char *opt = argv[first] + 1;
+        if (strcmp(opt, "-") == 0) { first++; break; }
+        while (*opt != '\0') {
+            if (*opt == 'r') {
+                raw = true;
+                opt++;
+            } else if (*opt == 'p') {
+                if (opt[1] != '\0') {
+                    prompt = opt + 1;
+                } else {
+                    if (++first >= argc) {
+                        shell_error("read: -p: option requires an argument\r\n");
+                        return 2;
+                    }
+                    prompt = argv[first];
+                }
+                break;
+            } else {
+                shell_error("read: invalid option -- '%c'\r\n", *opt);
+                return 2;
+            }
+        }
+        first++;
+    }
+    for (i = first; i < argc; i++) {
+        if (!variable_name_valid(argv[i], strlen(argv[i]))) {
+            shell_error("read: '%s': not a valid identifier\r\n", argv[i]);
+            return 1;
+        }
+    }
+    if (prompt != NULL) shell_printf("%s", prompt);
+    line = kmalloc(SHELL_SESSION_INPUT_MAX + 1U, GFP_KERNEL);
+    if (line == NULL) return 1;
+    while (nshell_read_char(shell, &ch) == 1) {
+        got_any = true;
+        if (ch == '\r') continue;
+        if (!raw && ch == '\\') {
+            if (nshell_read_char(shell, &ch) != 1) break;
+            if (ch == '\r') {
+                if (nshell_read_char(shell, &ch) != 1) break;
+            }
+            if (ch == '\n') continue;
+        } else if (ch == '\n') {
+            break;
+        }
+        if (used < SHELL_SESSION_INPUT_MAX) line[used++] = ch;
+    }
+    line[used] = '\0';
+    if (first == argc) {
+        (void)variable_set(shell, "REPLY", 5U, line, false);
+        kfree(line);
+        return got_any ? 0 : 1;
+    }
+    ifs = variable_lookup(shell, "IFS", 3U);
+    if (ifs == NULL) ifs = " \t\n";
+    {
+        char *p = line;
+        for (i = first; i < argc; i++) {
+            char *start, *end;
+            while (*p != '\0' && strchr(ifs, (int)(unsigned char)*p) != NULL &&
+                   (*p == ' ' || *p == '\t' || *p == '\n'))
+                p++;
+            if (i == argc - 1) {
+                start = p;
+                end = start + strlen(start);
+                while (end > start &&
+                       strchr(ifs, (int)(unsigned char)end[-1]) != NULL &&
+                       (end[-1] == ' ' || end[-1] == '\t' || end[-1] == '\n'))
+                    end--;
+                *end = '\0';
+                (void)variable_set(shell, argv[i], strlen(argv[i]), start, false);
+            } else {
+                start = p;
+                while (*p != '\0' && strchr(ifs, (int)(unsigned char)*p) == NULL)
+                    p++;
+                if (*p != '\0') {
+                    char sep = *p;
+                    *p++ = '\0';
+                    if (sep == ' ' || sep == '\t' || sep == '\n') {
+                        while (*p != '\0' && (*p == ' ' || *p == '\t' || *p == '\n') &&
+                               strchr(ifs, (int)(unsigned char)*p) != NULL)
+                            p++;
+                        if (*p != '\0' && strchr(ifs, (int)(unsigned char)*p) != NULL)
+                            p++;
+                    }
+                }
+                (void)variable_set(shell, argv[i], strlen(argv[i]), start, false);
+            }
+        }
+    }
+    kfree(line);
+    return got_any ? 0 : 1;
+}
+
 struct shell_script_frame {
     char saved_input[SHELL_SESSION_INPUT_MAX + 1];
     char line[SHELL_SESSION_INPUT_MAX + 1];
@@ -5729,6 +6021,11 @@ static int nshell_init(void)
     shell_register_cmd(".", "Execute commands from a file in current shell", cmd_source);
     shell_register_cmd("source", "Execute commands from a file in current shell", cmd_source);
     shell_register_cmd("sh", "Execute shell script or command string", cmd_sh);
+    shell_register_cmd("eval", "Construct command by concatenating arguments", cmd_eval);
+    shell_register_cmd("read", "Read a line from standard input", cmd_read);
+    shell_register_cmd("type", "Describe how command names are interpreted", cmd_type);
+    shell_register_cmd("which", "Locate a command", cmd_which);
+    shell_register_cmd("command", "Execute a simple command or display information", cmd_command);
     shell_register_cmd("test", "Evaluate a conditional expression", cmd_test);
     shell_register_cmd("[", "Evaluate a conditional expression", cmd_test);
     shell_register_cmd("alias", "Define or display aliases", cmd_alias);
