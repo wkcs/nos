@@ -1885,6 +1885,156 @@ static int cmd_head(int argc, char *argv[])
     return status;
 }
 
+static int tail_from_start(struct file *file, u64 start, bool bytes)
+{
+    u64 skip = start > 1U ? start - 1U : 0U;
+    char buf[64];
+    int n;
+
+    while ((n = wc_read(file, buf, file == NULL ? 1 : sizeof(buf))) > 0) {
+        int pos = 0;
+        while (pos < n && skip != 0U) {
+            char ch = buf[pos++];
+            if (bytes || ch == '\n') skip--;
+        }
+        if (pos < n && nshell_write(buf + pos, n - pos) != n - pos) return -EIO;
+    }
+    return n < 0 ? n : 0;
+}
+
+static void tail_drop_first_line(char *buf, size_t *used, u64 *newlines)
+{
+    char *nl = memchr(buf, '\n', *used);
+    size_t drop;
+    if (nl == NULL) return;
+    drop = (size_t)(nl - buf) + 1U;
+    memmove(buf, buf + drop, *used - drop);
+    *used -= drop;
+    (*newlines)--;
+}
+
+static int tail_stream(struct file *file, u64 limit, bool bytes, bool from_start)
+{
+    char input[64];
+    char *buf = NULL;
+    size_t used = 0, capacity = 0;
+    u64 newlines = 0;
+    int n, rc = 0;
+
+    if (from_start) return tail_from_start(file, limit, bytes);
+    while ((n = wc_read(file, input, file == NULL ? 1 : sizeof(input))) > 0) {
+        int i;
+        if (limit == 0U) continue;
+        for (i = 0; i < n; i++) {
+            if (bytes && used == limit) {
+                if (limit > 1U) memmove(buf, buf + 1, (size_t)(limit - 1U));
+                used--;
+            }
+            if (used == capacity) {
+                size_t next_cap = capacity == 0U ? 128U : capacity * 2U;
+                char *expanded;
+                if (bytes && next_cap > limit && limit <= 8192U) next_cap = (size_t)limit;
+                if (next_cap > 8192U) { rc = -EFBIG; goto out; }
+                expanded = kmalloc(next_cap, GFP_KERNEL);
+                if (expanded == NULL) { rc = -ENOMEM; goto out; }
+                if (used != 0U) memcpy(expanded, buf, used);
+                kfree(buf);
+                buf = expanded;
+                capacity = next_cap;
+            }
+            buf[used++] = input[i];
+            if (!bytes && input[i] == '\n') {
+                newlines++;
+                while (newlines > limit) tail_drop_first_line(buf, &used, &newlines);
+            }
+        }
+    }
+    if (n < 0) { rc = n; goto out; }
+    if (!bytes && used != 0U && buf[used - 1U] != '\n' && newlines == limit)
+        tail_drop_first_line(buf, &used, &newlines);
+    if (used != 0U && nshell_write(buf, (int)used) != (int)used) rc = -EIO;
+out:
+    kfree(buf);
+    return rc;
+}
+
+static int tail_file(const char *path, u64 limit, bool bytes, bool from_start,
+                     bool headers, bool *printed)
+{
+    struct dentry *entry = resolve_path(path);
+    struct file file;
+    int rc;
+
+    if (entry == NULL || entry->d_inode == NULL) return -ENOENT;
+    if (S_ISDIR(entry->d_inode->i_mode)) return -EISDIR;
+    if (entry->d_inode->i_fop == NULL || entry->d_inode->i_fop->read == NULL) return -EACCES;
+    memset(&file, 0, sizeof(file));
+    file.f_inode = entry->d_inode;
+    file.f_op = entry->d_inode->i_fop;
+    file.f_path.dentry = entry;
+    file.f_flags = O_RDONLY;
+    if (file.f_op->open != NULL) {
+        rc = file.f_op->open(file.f_inode, &file);
+        if (rc != 0) return rc;
+    }
+    if (headers) head_header(path, printed);
+    rc = tail_stream(&file, limit, bytes, from_start);
+    if (file.f_op->release != NULL) {
+        int close_rc = file.f_op->release(file.f_inode, &file);
+        if (rc == 0 && close_rc != 0) rc = close_rc;
+    }
+    return rc;
+}
+
+static int cmd_tail(int argc, char *argv[])
+{
+    u64 limit = 10;
+    bool bytes = false, from_start = false, printed = false;
+    int first = 1, status = 0, i;
+
+    while (first < argc && argv[first][0] == '-' && argv[first][1] != '\0') {
+        const char *option = argv[first] + 1;
+        const char *number;
+        if (strcmp(option, "-") == 0) {
+            first++;
+            break;
+        }
+        if (*option == 'n' || *option == 'c') {
+            bytes = *option == 'c';
+            number = option + 1;
+            if (*number == '\0' && ++first < argc) number = argv[first];
+        } else if (*option >= '0' && *option <= '9') {
+            bytes = false;
+            number = option;
+        } else {
+            shell_error("tail: invalid option: %s\r\n", argv[first]);
+            return 1;
+        }
+        from_start = *number == '+';
+        if (*number == '+' || *number == '-') number++;
+        if (*number == '\0' || head_number(number, &limit) != 0) {
+            shell_error("tail: invalid count\r\n");
+            return 1;
+        }
+        first++;
+    }
+    if (first == argc) return tail_stream(NULL, limit, bytes, from_start) < 0 ? 1 : 0;
+    for (i = first; i < argc; i++) {
+        int rc;
+        if (strcmp(argv[i], "-") == 0) {
+            if (argc - first > 1) head_header("standard input", &printed);
+            rc = tail_stream(NULL, limit, bytes, from_start);
+        } else {
+            rc = tail_file(argv[i], limit, bytes, from_start, argc - first > 1, &printed);
+        }
+        if (rc < 0) {
+            shell_error("tail: %s: error %d\r\n", argv[i], rc);
+            status = 1;
+        }
+    }
+    return status;
+}
+
 struct grep_options {
     const char *pattern;
     bool ignore_case;
@@ -3201,6 +3351,7 @@ static int nshell_init(void)
     shell_register_cmd("mv", "Move or rename files", cmd_mv);
     shell_register_cmd("wc", "Count lines, words and bytes", cmd_wc);
     shell_register_cmd("head", "Print the start of files", cmd_head);
+    shell_register_cmd("tail", "Print the end of files", cmd_tail);
     shell_register_cmd("grep", "Search lines for a fixed string", cmd_grep);
     shell_register_cmd("mount", "Mount filesystem", cmd_mount);
     shell_register_cmd("ps", "Dump task status", cmd_ps);
