@@ -11,6 +11,7 @@ struct file_operations {
     loff_t (*llseek)(struct file *, loff_t, int);
 };
 struct file {
+    struct { void *dentry; } f_path;
     struct inode *f_inode;
     const struct file_operations *f_op;
     unsigned int f_refs;
@@ -19,4 +20,5 @@ struct file {
     sem_t f_pos_sem;
     int marker;
 };
+static inline void vfs_dentry_put(void *dentry) { (void)dentry; }
 #endif

@@ -12,6 +12,7 @@
 #include <kernel/mm.h>
 #include <kernel/printk.h>
 #include <lib/vsprintf.h>
+#include <limits.h>
 #include <string.h>
 #include "vfs_fd.h"
 
@@ -70,6 +71,7 @@ struct dentry *vfs_alloc_dentry(struct dentry *parent, const char *name,
         return NULL;
     }
     dentry->d_parent = parent;
+    dentry->d_refs = 1;
     dentry->d_sb = parent ? parent->d_sb : NULL;
     if (name != NULL && len > 0U) {
         memcpy(dentry->d_iname, name, len);
@@ -93,7 +95,7 @@ static void vfs_free_dentry_Subtree(struct dentry *dentry)
     list_for_each_entry_safe(child, tmp, &dentry->d_subdirs, d_child) {
         list_del(&child->d_child);
         vfs_free_dentry_Subtree(child);
-        kfree(child);
+        if (--child->d_refs == 0) kfree(child);
     }
 }
 
@@ -137,6 +139,39 @@ struct dentry *vfs_get_root(void)
     root = root_dentry;
     spin_unlock(&vfs_mount_lock);
     return root;
+}
+
+int vfs_dentry_get(struct dentry *dentry)
+{
+    struct dentry *entry;
+    if (dentry == NULL) return -EINVAL;
+    spin_lock(&vfs_mount_lock);
+    for (entry = dentry; entry != NULL; entry = entry->d_parent) {
+        if (entry->d_refs == 0 || entry->d_refs == UINT_MAX) {
+            spin_unlock(&vfs_mount_lock);
+            return -EINVAL;
+        }
+        if (entry->d_parent == entry) break;
+    }
+    for (entry = dentry; entry != NULL; entry = entry->d_parent) {
+        entry->d_refs++;
+        if (entry->d_parent == entry) break;
+    }
+    spin_unlock(&vfs_mount_lock);
+    return 0;
+}
+
+void vfs_dentry_put(struct dentry *dentry)
+{
+    struct dentry *entry = dentry;
+    spin_lock(&vfs_mount_lock);
+    while (entry != NULL) {
+        struct dentry *parent = entry->d_parent;
+        if (parent == entry) parent = NULL;
+        if (--entry->d_refs == 0) kfree(entry);
+        entry = parent;
+    }
+    spin_unlock(&vfs_mount_lock);
 }
 
 extern int init_ramfs(void);
@@ -289,6 +324,7 @@ struct dentry *vfs_mount(const char *fs_name, int flags, const char *dev_name,
     }
   }
   vfs_ensure_dentry_lists(mnt_root);
+  mnt_root->d_refs = 1;
 
   // If it's the first mount, set as root
   spin_lock(&vfs_mount_lock);
@@ -620,7 +656,7 @@ int vfs_remove_entry(struct dentry *dir, const char *name, bool is_dir)
         if (cached != NULL) {
             list_del(&cached->d_child);
             vfs_free_dentry_Subtree(cached);
-            kfree(cached);
+            if (--cached->d_refs == 0) kfree(cached);
         }
         spin_unlock(&vfs_mount_lock);
     }
@@ -670,6 +706,13 @@ int vfs_rename_entry(struct dentry *old_dir, const char *old_name,
 
     /* Moving a directory beneath itself would detach and cycle its tree. */
     spin_lock(&vfs_mount_lock);
+    for (ancestor = new_dir; ancestor != NULL; ancestor = ancestor->d_parent) {
+        if (UINT_MAX - ancestor->d_refs < cached_old->d_refs - 1U) {
+            spin_unlock(&vfs_mount_lock);
+            return -EOVERFLOW;
+        }
+        if (ancestor->d_parent == ancestor) break;
+    }
     for (i = 0; i < mount_count; i++) {
         if (mount_points[i].target == cached_old || mount_points[i].target == cached_new) {
             spin_unlock(&vfs_mount_lock);
@@ -716,9 +759,18 @@ int vfs_rename_entry(struct dentry *old_dir, const char *old_name,
         if (cached_new != NULL) {
             list_del(&cached_new->d_child);
             vfs_free_dentry_Subtree(cached_new);
-            kfree(cached_new);
+            if (--cached_new->d_refs == 0) kfree(cached_new);
         }
         if (cached_old != NULL) {
+            unsigned int pins = cached_old->d_refs - 1U;
+            for (ancestor = old_dir; ancestor != NULL; ancestor = ancestor->d_parent) {
+                ancestor->d_refs -= pins;
+                if (ancestor->d_parent == ancestor) break;
+            }
+            for (ancestor = new_dir; ancestor != NULL; ancestor = ancestor->d_parent) {
+                ancestor->d_refs += pins;
+                if (ancestor->d_parent == ancestor) break;
+            }
             list_del(&cached_old->d_child);
             cached_old->d_parent = new_dir;
             new_len = new_temp.d_name.len;
@@ -776,10 +828,11 @@ static struct dentry *vfs_resolve_path(const char *path, int create)
 
 int nos_open(const char *path, int flags, ...)
 {
-  struct dentry *dentry;
+  struct dentry *dentry = NULL;
   struct file *file;
   int fd;
   int ret;
+  bool pinned = false;
 
   if ((flags & O_TRUNC) && (flags & O_ACCMODE) == O_RDONLY)
     return -EINVAL;
@@ -791,6 +844,9 @@ int nos_open(const char *path, int flags, ...)
     ret = -ENOENT;
     goto release_fd;
   }
+  ret = vfs_dentry_get(dentry);
+  if (ret != 0) goto release_fd;
+  pinned = true;
 
   if (!dentry->d_inode || !dentry->d_inode->i_fop) {
     ret = -EACCES;
@@ -832,6 +888,7 @@ int nos_open(const char *path, int flags, ...)
 free_file:
   kfree(file);
 release_fd:
+  if (pinned) vfs_dentry_put(dentry);
   vfs_fd_cancel(fd);
   return ret;
 }
