@@ -801,6 +801,18 @@ def main():
         proc.stdin.flush()
         wait_for(b"\r\ncp-self-refused\r\n", pos)
         wait_for(b"nos# ", pos)
+        pos = len(output)
+        proc.stdin.write(b"touch /tmp/t1 /tmp/t2 && test -f /tmp/t1 -a -f /tmp/t2 && echo touch-created; echo keep > /tmp/t1; touch -am /tmp/t1; cat /tmp/t1\r")
+        proc.stdin.flush()
+        wait_for(b"\r\ntouch-created\r\n", pos)
+        wait_for(b"keep\n", pos)
+        wait_for(b"nos# ", pos)
+        pos = len(output)
+        proc.stdin.write(b"touch -c /tmp/t-absent && test ! -e /tmp/t-absent && echo touch-nocreate; touch /sys/arch || echo touch-rofs; rm /tmp/t1 /tmp/t2\r")
+        proc.stdin.flush()
+        wait_for(b"\r\ntouch-nocreate\r\n", pos)
+        wait_for(b"\r\ntouch-rofs\r\n", pos)
+        wait_for(b"nos# ", pos)
         print("QEMU STM32 boot, help, log statistics and RX burst passed")
     finally:
         if proc.poll() is None:

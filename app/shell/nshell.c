@@ -1253,6 +1253,83 @@ error:
     return status;
 }
 
+static int mv_parent(char *path, struct dentry **parent, char **name)
+{
+    size_t len = strlen(path);
+    char *slash;
+    while (len > 1 && path[len - 1] == '/') path[--len] = '\0';
+    slash = strrchr(path, '/');
+    *name = slash != NULL ? slash + 1 : path;
+    if (**name == '\0' || strcmp(*name, ".") == 0 || strcmp(*name, "..") == 0)
+        return -EINVAL;
+    if (slash == NULL) *parent = shell_cwd;
+    else if (slash == path) *parent = vfs_get_root();
+    else {
+        *slash = '\0';
+        *parent = vfs_lookup_path(shell_cwd, path);
+    }
+    if (*parent == NULL || (*parent)->d_inode == NULL) return -ENOENT;
+    if (!S_ISDIR((*parent)->d_inode->i_mode)) return -ENOTDIR;
+    return 0;
+}
+
+static int cmd_touch(int argc, char *argv[])
+{
+    bool no_create = false;
+    int first = 1, status = 0;
+    char *path;
+
+    while (first < argc && argv[first][0] == '-' && argv[first][1] != '\0') {
+        const char *option = argv[first] + 1;
+        if (strcmp(option, "-") == 0) { first++; break; }
+        for (; *option != '\0'; option++) {
+            if (*option == 'c') no_create = true;
+            else if (*option != 'a' && *option != 'm') {
+                shell_error("touch: invalid option: %s\r\n", argv[first]);
+                return 1;
+            }
+        }
+        first++;
+    }
+    if (first == argc) {
+        shell_error("touch: missing file operand\r\n");
+        return 1;
+    }
+    shell_init_cwd();
+    path = kmalloc(SHELL_SESSION_INPUT_MAX + 1, GFP_KERNEL);
+    if (path == NULL) return 1;
+    for (int i = first; i < argc; i++) {
+        size_t len = strlen(argv[i]);
+        struct dentry *existing, *parent;
+        char *name;
+        int rc = 0;
+
+        if (len == 0) { rc = -ENOENT; goto error; }
+        if (len > SHELL_SESSION_INPUT_MAX) { rc = -ENAMETOOLONG; goto error; }
+        existing = resolve_path(argv[i]);
+        if (existing != NULL && existing->d_inode != NULL) {
+            struct dentry *dir = S_ISDIR(existing->d_inode->i_mode) ? existing : existing->d_parent;
+            if (argv[i][len - 1] == '/' && !S_ISDIR(existing->d_inode->i_mode)) rc = -ENOTDIR;
+            else if (dir == NULL || dir->d_inode == NULL || dir->d_inode->i_op == NULL ||
+                     dir->d_inode->i_op->create == NULL) rc = -EROFS;
+        } else if (no_create) {
+            rc = 0;
+        } else if (argv[i][len - 1] == '/') {
+            rc = -ENOENT;
+        } else {
+            memcpy(path, argv[i], len + 1);
+            rc = mv_parent(path, &parent, &name);
+            if (rc == 0) rc = vfs_create_file(parent, name, 0644, NULL);
+        }
+        if (rc == 0) continue;
+error:
+        shell_error("touch: cannot touch '%s': error %d\r\n", argv[i], rc);
+        status = 1;
+    }
+    kfree(path);
+    return status;
+}
+
 struct rm_entry {
     char name[FS_NAME_LEN];
     int error;
@@ -2297,26 +2374,6 @@ out:
     return rc;
 }
 
-static int mv_parent(char *path, struct dentry **parent, char **name)
-{
-    size_t len = strlen(path);
-    char *slash;
-    while (len > 1 && path[len - 1] == '/') path[--len] = '\0';
-    slash = strrchr(path, '/');
-    *name = slash != NULL ? slash + 1 : path;
-    if (**name == '\0' || strcmp(*name, ".") == 0 || strcmp(*name, "..") == 0)
-        return -EINVAL;
-    if (slash == NULL) *parent = shell_cwd;
-    else if (slash == path) *parent = vfs_get_root();
-    else {
-        *slash = '\0';
-        *parent = vfs_lookup_path(shell_cwd, path);
-    }
-    if (*parent == NULL || (*parent)->d_inode == NULL) return -ENOENT;
-    if (!S_ISDIR((*parent)->d_inode->i_mode)) return -ENOTDIR;
-    return 0;
-}
-
 struct mv_dir_frame {
     struct mv_dir_frame *parent;
     struct file file;
@@ -3135,6 +3192,7 @@ static int nshell_init(void)
     shell_register_cmd("pwd", "Print working directory", cmd_pwd);
     shell_register_cmd("mkdir", "Make directory", cmd_mkdir);
     shell_register_cmd("rmdir", "Remove empty directories", cmd_rmdir);
+    shell_register_cmd("touch", "Create empty files or update timestamps", cmd_touch);
     shell_register_cmd("rm", "Remove files and directories", cmd_rm);
     shell_register_cmd("cat", "Concatenate file", cmd_cat);
     shell_register_cmd("basename", "Strip directory and suffix", cmd_basename);
