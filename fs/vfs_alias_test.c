@@ -7,6 +7,34 @@
 #include <string.h>
 #include "vfs_fd.h"
 
+struct alias_readdir_check {
+    int count;
+    char first[FS_NAME_LEN];
+};
+
+static int alias_stop_readdir(void *context, const char *name, int len,
+                              loff_t offset, u64 ino, unsigned type)
+{
+    struct alias_readdir_check *check = context;
+    (void)offset;
+    (void)ino;
+    (void)type;
+    if (check->count++ == 0 && len > 0 && len < FS_NAME_LEN) {
+        memcpy(check->first, name, (size_t)len);
+        check->first[len] = '\0';
+    }
+    return 1;
+}
+
+static int alias_accept_one(void *context, const char *name, int len,
+                            loff_t offset, u64 ino, unsigned type)
+{
+    struct alias_readdir_check *check = context;
+    int previous = check->count;
+    (void)alias_stop_readdir(context, name, len, offset, ino, type);
+    return previous != 0;
+}
+
 static int vfs_alias_test(void)
 {
     struct dentry *root = vfs_get_root();
@@ -17,6 +45,33 @@ static int vfs_alias_test(void)
     if (fd < 0 || nos_close(fd) != 0) goto failed;
     original = vfs_lookup_path(root, "/typecheck.tmp");
     if (original == NULL) goto failed;
+    {
+        struct alias_readdir_check first = {0}, retry = {0}, accepted = {0}, next = {0};
+        struct dentry *dir;
+        struct file file = {0};
+        if (nos_mkdir("/enum-test", 0755) != 0) goto failed;
+        fd = nos_open("/enum-test/a", O_CREAT | O_RDWR);
+        if (fd < 0 || nos_close(fd) != 0) goto failed;
+        fd = nos_open("/enum-test/b", O_CREAT | O_RDWR);
+        if (fd < 0 || nos_close(fd) != 0) goto failed;
+        dir = vfs_lookup_path(root, "/enum-test");
+        if (dir == NULL) goto failed;
+        file.f_inode = dir->d_inode;
+        file.f_op = dir->d_inode->i_fop;
+        file.f_path.dentry = dir;
+        if (file.f_op->open(file.f_inode, &file) != 0 ||
+            file.f_op->readdir(&file, &first, alias_stop_readdir) != 0 ||
+            first.count != 1 || file.f_pos != 0 ||
+            file.f_op->readdir(&file, &retry, alias_stop_readdir) != 0 ||
+            retry.count != 1 || strcmp(first.first, retry.first) != 0 ||
+            file.f_op->readdir(&file, &accepted, alias_accept_one) != 0 ||
+            accepted.count != 2 || file.f_pos != 1 ||
+            file.f_op->readdir(&file, &next, alias_stop_readdir) != 0 ||
+            next.count != 1 || strcmp(first.first, next.first) == 0 ||
+            file.f_op->release(file.f_inode, &file) != 0 ||
+            nos_unlink("/enum-test/a") != 0 || nos_unlink("/enum-test/b") != 0 ||
+            nos_rmdir("/enum-test") != 0) goto failed;
+    }
     {
         size_t used = mm_block_used_size();
         int i;
