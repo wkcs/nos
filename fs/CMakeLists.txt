@@ -15,6 +15,10 @@ if(CONFIG_VFS_FD_CONCURRENCY_TEST)
     list(APPEND FS_SRCS vfs_fd_test.c)
 endif()
 
+if(CONFIG_VFS_FAT_ALIAS_TEST)
+    list(APPEND FS_SRCS vfs_alias_test.c)
+endif()
+
 if(CONFIG_FATFS)
     list(APPEND FS_SRCS
         fatfs/diskio.c

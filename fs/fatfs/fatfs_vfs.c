@@ -191,6 +191,46 @@ static struct inode *fatfs_make_inode(struct super_block *sb, int mode) {
 }
 
 
+static FRESULT fatfs_stat_canonical(const char *path, struct dentry *dentry, FILINFO *info)
+{
+#if _USE_LFN && !_LFN_UNICODE
+    char long_name[FS_NAME_LEN];
+#endif
+    const char *name;
+    size_t length;
+    FRESULT result;
+
+    memset(info, 0, sizeof(*info));
+#if _USE_LFN && !_LFN_UNICODE
+    info->lfname = long_name;
+    info->lfsize = sizeof(long_name);
+#endif
+    result = f_stat(path, info);
+    if (result != FR_OK) return result;
+    name = info->fname;
+#if _USE_LFN && !_LFN_UNICODE
+    if (long_name[0] != '\0') name = long_name;
+#endif
+    length = strlen(name);
+    if (length == 0 || length >= FS_NAME_LEN) return FR_INVALID_NAME;
+    memcpy(dentry->d_iname, name, length + 1);
+    dentry->d_name.name = (const unsigned char *)dentry->d_iname;
+    dentry->d_name.len = (unsigned int)length;
+#if _USE_LFN && !_LFN_UNICODE
+    info->lfname = NULL;
+    info->lfsize = 0;
+#endif
+    return FR_OK;
+}
+
+static void fatfs_set_identity(struct inode *inode, const FILINFO *info)
+{
+    /* FatFs identifies an entry by its sector and offset until it is renamed. */
+    inode->i_file_sector = (u32)info->nos_dir_sector;
+    inode->i_file_offset = (u16)info->nos_dir_offset;
+    inode->i_file_id_valid = true;
+}
+
 static struct dentry *fatfs_lookup(struct inode *dir, struct dentry *dentry) {
     // We need to verify existence.
     // Construct path for child.
@@ -211,7 +251,7 @@ static struct dentry *fatfs_lookup(struct inode *dir, struct dentry *dentry) {
     
     // pr_info("FatFs: lookup path %s\r\n", path);
 
-    res = f_stat(path, &fno);
+    res = fatfs_stat_canonical(path, dentry, &fno);
     if (res == FR_OK) {
         // pr_info("FatFs: stat success. attrib=%x\r\n", fno.fattrib);
         // Found. Create inode.
@@ -221,6 +261,7 @@ static struct dentry *fatfs_lookup(struct inode *dir, struct dentry *dentry) {
         struct inode *inode = fatfs_make_inode(dir->i_sb, mode);
         if (inode) {
             inode->i_size = fno.fsize;
+            fatfs_set_identity(inode, &fno);
             dentry->d_inode = inode;
             return NULL; // Success
         }
@@ -249,8 +290,11 @@ static int fatfs_create(struct inode *dir, struct dentry *dentry, int mode) {
    }
    kfree(fp);
    if (res == FR_OK) {
+       FILINFO info;
+       if (fatfs_stat_canonical(path, dentry, &info) != FR_OK) return -EIO;
        struct inode *inode = fatfs_make_inode(dir->i_sb, mode);
        if (inode) {
+           fatfs_set_identity(inode, &info);
            dentry->d_inode = inode;
            return 0;
        }
@@ -267,8 +311,11 @@ static int fatfs_mkdir(struct inode *dir, struct dentry *dentry, int mode) {
     
     res = f_mkdir(path);
     if (res == FR_OK) {
+        FILINFO info;
+        if (fatfs_stat_canonical(path, dentry, &info) != FR_OK) return -EIO;
         struct inode *inode = fatfs_make_inode(dir->i_sb, S_IFDIR | 0755);
         if (inode) {
+            fatfs_set_identity(inode, &info);
             dentry->d_inode = inode;
             return 0;
         }

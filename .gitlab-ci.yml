@@ -22,6 +22,9 @@ board-builds:
     - cmake --preset qemu-stm32 -B build/qemu-vfs-concurrency -DNOS_CONFIG_FRAGMENTS=configs/fragments/vfs-fd-concurrency.conf
     - cmake --build build/qemu-vfs-concurrency
     - python3 tests/qemu_vfs_concurrency.py build/qemu-vfs-concurrency/nos.elf
+    - cmake --preset qemu-stm32 -B build/qemu-vfs-fat-alias -DNOS_CONFIG_FRAGMENTS=configs/fragments/vfs-fat-alias-test.conf
+    - cmake --build build/qemu-vfs-fat-alias
+    - python3 tests/qemu_vfs_fat_alias.py build/qemu-vfs-fat-alias/nos.elf
     - cmake --preset qemu-stm32 -B build/qemu-shell-pipe -DNOS_CONFIG_FRAGMENTS=configs/fragments/shell-pipe-test.conf
     - cmake --build build/qemu-shell-pipe
     - python3 tests/qemu_shell_pipe.py build/qemu-shell-pipe/nos.elf

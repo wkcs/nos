@@ -86,6 +86,10 @@ struct file_operations {
  */
 struct inode {
   unsigned long i_ino;
+  /* Optional filesystem-local directory-entry identity, scoped by i_sb. */
+  u32 i_file_sector;
+  u16 i_file_offset;
+  bool i_file_id_valid;
   umode_t i_mode;
   unsigned int i_nlink;
   uid_t i_uid;
