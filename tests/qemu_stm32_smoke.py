@@ -939,6 +939,13 @@ def main():
         wait_for(b"batch 1 2\r\n", pos)
         wait_for(b"batch 3\r\n", pos)
         wait_for(b"nos# ", pos)
+        pos = len(output)
+        proc.stdin.write(b"printf 'AB\\n' > /tmp/c1; printf 'AC\\n' > /tmp/c2; chmod 755 /tmp/c1; stat -t /tmp/c1; cmp /tmp/c1 /tmp/c2; hd -n 3 /tmp/c1; rm /tmp/c1 /tmp/c2\r")
+        proc.stdin.flush()
+        wait_for(b"/tmp/c1 3 0755 ", pos)
+        wait_for(b"/tmp/c1 /tmp/c2 differ: byte 2, line 1\r\n", pos)
+        wait_for(b"00000000  41 42 0a                                          |AB.|\r\n00000003\r\n", pos)
+        wait_for(b"nos# ", pos)
         print("QEMU STM32 boot, help, log statistics and RX burst passed")
     finally:
         if proc.poll() is None:
