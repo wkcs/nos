@@ -162,6 +162,34 @@ int main(void)
         assert(ramfs_file_ops.release(second.f_inode, &second) == 0);
         assert(atomic_load(&destroyed_inodes) == before + 1);
 
+        {
+            struct dentry subdir = { .d_name.name = "open-dir" };
+            struct file opened = {0};
+            assert(ramfs_mkdir(dir, &subdir, 0755) == 0);
+            opened.f_inode = subdir.d_inode;
+            assert(ramfs_dir_ops.open != NULL && ramfs_dir_ops.release != NULL);
+            assert(ramfs_dir_ops.open(opened.f_inode, &opened) == 0);
+            before = atomic_load(&destroyed_inodes);
+            assert(ramfs_rmdir(dir, &subdir) == 0);
+            assert(atomic_load(&destroyed_inodes) == before);
+            assert(ramfs_dir_ops.release(opened.f_inode, &opened) == 0);
+            assert(atomic_load(&destroyed_inodes) == before + 1);
+        }
+        {
+            struct dentry source_dir = { .d_name.name = "source-dir" };
+            struct dentry target_dir = { .d_name.name = "target-dir" };
+            struct file opened = {0};
+            assert(ramfs_mkdir(dir, &source_dir, 0755) == 0);
+            assert(ramfs_mkdir(dir, &target_dir, 0755) == 0);
+            opened.f_inode = target_dir.d_inode;
+            assert(ramfs_dir_ops.open(opened.f_inode, &opened) == 0);
+            before = atomic_load(&destroyed_inodes);
+            assert(ramfs_rename(dir, &source_dir, dir, &target_dir) == 0);
+            assert(atomic_load(&destroyed_inodes) == before);
+            assert(ramfs_dir_ops.release(opened.f_inode, &opened) == 0);
+            assert(atomic_load(&destroyed_inodes) == before + 1);
+        }
+
         assert(ramfs_create(dir, &source, 0644) == 0);
         assert(ramfs_create(dir, &target, 0644) == 0);
         file.f_inode = target.d_inode;
