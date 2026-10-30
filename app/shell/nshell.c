@@ -3480,16 +3480,18 @@ static int tr_expand_spec(const char *spec, unsigned char *out, size_t max_len)
 static int cmd_tr(int argc, char *argv[])
 {
     struct tr_workspace {
-        unsigned char s1[256];
-        unsigned char s2[256];
         unsigned char map[256];
-        unsigned char del[256];
-        unsigned char sqz[256];
+        unsigned char del_bits[32];
+        unsigned char sqz_bits[32];
         char in[64];
         char out[64];
     } *ws;
+    struct tr_spec_buf {
+        unsigned char s1[256];
+        unsigned char s2[256];
+    } *spec;
     bool delete_chars = false, squeeze = false, complement = false;
-    int first = 1, len1, len2 = 0, n, prev = -1, rc = 0;
+    int first = 1, len1, len2 = 0, n, out_len = 0, prev = -1, rc = 0;
     unsigned int c;
 
     while (first < argc && argv[first][0] == '-' && argv[first][1] != '\0') {
@@ -3515,58 +3517,73 @@ static int cmd_tr(int argc, char *argv[])
     }
     ws = kzalloc(sizeof(*ws), GFP_KERNEL);
     if (ws == NULL) return 1;
-    len1 = tr_expand_spec(argv[first], ws->s1, sizeof(ws->s1));
-    if (len1 < 0) { rc = 1; goto out; }
+    spec = kzalloc(sizeof(*spec), GFP_KERNEL);
+    if (spec == NULL) { kfree(ws); return 1; }
+    len1 = tr_expand_spec(argv[first], spec->s1, sizeof(spec->s1));
+    if (len1 < 0) { kfree(spec); rc = 1; goto out; }
     if (argc - first == 2) {
-        len2 = tr_expand_spec(argv[first + 1], ws->s2, sizeof(ws->s2));
-        if (len2 < 0 || (!delete_chars && len2 == 0)) { rc = 1; goto out; }
+        len2 = tr_expand_spec(argv[first + 1], spec->s2, sizeof(spec->s2));
+        if (len2 < 0 || (!delete_chars && len2 == 0)) { kfree(spec); rc = 1; goto out; }
     }
     if (complement) {
         int i;
-        for (i = 0; i < len1; i++) ws->del[ws->s1[i]] = 1U;
+        for (i = 0; i < len1; i++)
+            ws->del_bits[spec->s1[i] >> 3] |= (unsigned char)(1U << (spec->s1[i] & 7U));
         len1 = 0;
         for (c = 0; c < 256U; c++) {
-            if (!ws->del[c]) ws->s1[len1++] = (unsigned char)c;
-            ws->del[c] = 0U;
+            if (!(ws->del_bits[c >> 3] & (1U << (c & 7U))))
+                spec->s1[len1++] = (unsigned char)c;
         }
+        memset(ws->del_bits, 0, sizeof(ws->del_bits));
     }
     for (c = 0; c < 256U; c++) ws->map[c] = (unsigned char)c;
     if (delete_chars) {
         int i;
-        for (i = 0; i < len1; i++) ws->del[ws->s1[i]] = 1U;
+        for (i = 0; i < len1; i++)
+            ws->del_bits[spec->s1[i] >> 3] |= (unsigned char)(1U << (spec->s1[i] & 7U));
         if (squeeze) {
-            for (i = 0; i < len2; i++) ws->sqz[ws->s2[i]] = 1U;
+            for (i = 0; i < len2; i++)
+                ws->sqz_bits[spec->s2[i] >> 3] |= (unsigned char)(1U << (spec->s2[i] & 7U));
         }
     } else if (argc - first == 2) {
         int i;
         for (i = 0; i < len1; i++) {
-            unsigned char repl = ws->s2[i < len2 ? i : len2 - 1];
-            ws->map[ws->s1[i]] = repl;
-            if (squeeze) ws->sqz[repl] = 1U;
+            unsigned char repl = spec->s2[i < len2 ? i : len2 - 1];
+            ws->map[spec->s1[i]] = repl;
+            if (squeeze)
+                ws->sqz_bits[repl >> 3] |= (unsigned char)(1U << (repl & 7U));
         }
         if (squeeze) {
-            for (i = 0; i < len2; i++) ws->sqz[ws->s2[i]] = 1U;
+            for (i = 0; i < len2; i++)
+                ws->sqz_bits[spec->s2[i] >> 3] |= (unsigned char)(1U << (spec->s2[i] & 7U));
         }
     } else {
         int i;
-        for (i = 0; i < len1; i++) ws->sqz[ws->s1[i]] = 1U;
+        for (i = 0; i < len1; i++)
+            ws->sqz_bits[spec->s1[i] >> 3] |= (unsigned char)(1U << (spec->s1[i] & 7U));
     }
+    kfree(spec);
     while ((n = wc_read(NULL, ws->in, sizeof(ws->in))) > 0) {
-        int i, out_len = 0;
+        int i;
         for (i = 0; i < n; i++) {
             unsigned char ch = (unsigned char)ws->in[i];
-            if (ws->del[ch]) continue;
+            if (ws->del_bits[ch >> 3] & (1U << (ch & 7U))) continue;
             ch = ws->map[ch];
-            if (squeeze && ws->sqz[ch] && prev == (int)ch) continue;
+            if (squeeze && (ws->sqz_bits[ch >> 3] & (1U << (ch & 7U))) && prev == (int)ch)
+                continue;
             prev = (int)ch;
             ws->out[out_len++] = (char)ch;
-        }
-        if (out_len > 0 && nshell_write(ws->out, out_len) != out_len) {
-            rc = 1;
-            goto out;
+            if (out_len == (int)sizeof(ws->out)) {
+                if (nshell_write(ws->out, out_len) != out_len) {
+                    rc = 1;
+                    goto out;
+                }
+                out_len = 0;
+            }
         }
     }
     if (n < 0) rc = 1;
+    else if (out_len > 0 && nshell_write(ws->out, out_len) != out_len) rc = 1;
 out:
     kfree(ws);
     if (rc != 0) shell_error("tr: execution failed\r\n");
@@ -5040,6 +5057,235 @@ static int cmd_read(int argc, char *argv[])
     return got_any ? 0 : 1;
 }
 
+static int seq_parse_i64(const char *s, int64_t *out)
+{
+    bool neg = false;
+    u64 mag = 0;
+    if (s == NULL || *s == '\0') return -EINVAL;
+    if (*s == '+' || *s == '-') neg = (*s++ == '-');
+    if (*s == '\0' || head_number(s, &mag) != 0 || mag > (u64)INT64_MAX)
+        return -EINVAL;
+    *out = neg ? -(int64_t)mag : (int64_t)mag;
+    return 0;
+}
+
+static size_t seq_num_width(int64_t v)
+{
+    size_t w = v < 0 ? 1U : 0U;
+    uint64_t u = v < 0 ? (uint64_t)(-v) : (uint64_t)v;
+    do {
+        w++;
+        u /= 10U;
+    } while (u != 0U);
+    return w;
+}
+
+static int cmd_seq(int argc, char *argv[])
+{
+    const char *sep = "\r\n";
+    bool equal_width = false;
+    int64_t first_val = 1, step_val = 1, last_val = 1, cur;
+    size_t width = 0;
+    int first = 1, rem;
+    bool any = false;
+
+    while (first < argc && argv[first][0] == '-' && argv[first][1] != '\0') {
+        const char *opt = argv[first] + 1;
+        if (strcmp(opt, "-") == 0) { first++; break; }
+        if (*opt >= '0' && *opt <= '9') break;
+        while (*opt != '\0') {
+            if (*opt == 'w') {
+                equal_width = true;
+                opt++;
+            } else if (*opt == 's') {
+                if (opt[1] != '\0') {
+                    sep = opt + 1;
+                } else {
+                    if (++first >= argc) {
+                        shell_error("seq: option requires an argument -- 's'\r\n");
+                        return 1;
+                    }
+                    sep = argv[first];
+                }
+                break;
+            } else {
+                shell_error("seq: invalid option -- '%c'\r\n", *opt);
+                return 1;
+            }
+        }
+        first++;
+    }
+    rem = argc - first;
+    if (rem < 1 || rem > 3) {
+        shell_error("seq: invalid operand count\r\n");
+        return 1;
+    }
+    if (rem == 1) {
+        if (seq_parse_i64(argv[first], &last_val) != 0) goto bad_num;
+    } else if (rem == 2) {
+        if (seq_parse_i64(argv[first], &first_val) != 0 ||
+            seq_parse_i64(argv[first + 1], &last_val) != 0) goto bad_num;
+    } else {
+        if (seq_parse_i64(argv[first], &first_val) != 0 ||
+            seq_parse_i64(argv[first + 1], &step_val) != 0 ||
+            seq_parse_i64(argv[first + 2], &last_val) != 0) goto bad_num;
+    }
+    if (step_val == 0) {
+        shell_error("seq: zero increment\r\n");
+        return 1;
+    }
+    if (equal_width) {
+        size_t w1 = seq_num_width(first_val), w2 = seq_num_width(last_val);
+        width = w1 > w2 ? w1 : w2;
+    }
+    for (cur = first_val; step_val > 0 ? (cur <= last_val) : (cur >= last_val); cur += step_val) {
+        char num_buf[24];
+        size_t n = 0;
+        uint64_t u = cur < 0 ? (uint64_t)(-cur) : (uint64_t)cur;
+        if (any) shell_printf("%s", sep);
+        any = true;
+        do {
+            num_buf[n++] = (char)('0' + (u % 10U));
+            u /= 10U;
+        } while (u != 0U);
+        if (cur < 0) shell_printf("-");
+        if (equal_width) {
+            size_t total = n + (cur < 0 ? 1U : 0U);
+            while (total++ < width) shell_printf("0");
+        }
+        while (n > 0U) shell_printf("%c", num_buf[--n]);
+    }
+    if (any) shell_printf("\r\n");
+    return 0;
+bad_num:
+    shell_error("seq: invalid integer argument\r\n");
+    return 1;
+}
+
+struct xargs_workspace {
+    char pool[SHELL_SESSION_INPUT_MAX + 1];
+    char *exec_argv[MAX_ARGS + 1];
+};
+
+static int xargs_run_batch(struct nshell *shell, struct shell_cmd *cmd,
+                           struct xargs_workspace *ws, int total_argc, bool trace)
+{
+    struct file *saved_in = shell->input_file;
+    struct shell_stream_pipe *saved_pipe = shell->pipe_input;
+    int rc, i;
+
+    ws->exec_argv[total_argc] = NULL;
+    if (trace) {
+        for (i = 0; i < total_argc; i++)
+            shell_error("%s%s", i > 0 ? " " : "", ws->exec_argv[i]);
+        shell_error("\r\n");
+    }
+    shell->input_file = NULL;
+    shell->pipe_input = NULL;
+    rc = cmd->func(total_argc, ws->exec_argv);
+    shell->input_file = saved_in;
+    shell->pipe_input = saved_pipe;
+    return rc;
+}
+
+static int cmd_xargs(int argc, char *argv[])
+{
+    static char default_echo[] = "echo";
+    struct nshell *shell = nshell_current();
+    struct xargs_workspace *ws;
+    struct shell_cmd *cmd;
+    u64 max_args = MAX_ARGS;
+    bool no_run_empty = false, trace = false;
+    int first = 1, base_argc = 0, batch_count = 0, runs = 0, status = 0, i;
+    size_t pool_used = 0;
+    char quote = 0, ch;
+    bool in_word = false;
+    char *word_start = NULL;
+
+    while (first < argc && argv[first][0] == '-' && argv[first][1] != '\0') {
+        const char *opt = argv[first] + 1;
+        if (strcmp(opt, "-") == 0) { first++; break; }
+        while (*opt != '\0') {
+            if (*opt == 'r') {
+                no_run_empty = true;
+                opt++;
+            } else if (*opt == 't') {
+                trace = true;
+                opt++;
+            } else if (*opt == 'n') {
+                const char *arg = opt[1] != '\0' ? opt + 1 :
+                                  (++first < argc ? argv[first] : NULL);
+                if (arg == NULL || head_number(arg, &max_args) != 0 || max_args == 0U) {
+                    shell_error("xargs: invalid number for -n\r\n");
+                    return 1;
+                }
+                break;
+            } else {
+                shell_error("xargs: invalid option -- '%c'\r\n", *opt);
+                return 1;
+            }
+        }
+        first++;
+    }
+    ws = kmalloc(sizeof(*ws), GFP_KERNEL);
+    if (ws == NULL) return 1;
+    if (first == argc) {
+        ws->exec_argv[base_argc++] = default_echo;
+    } else {
+        for (i = first; i < argc && base_argc < MAX_ARGS - 1; i++)
+            ws->exec_argv[base_argc++] = argv[i];
+    }
+    if ((u64)(MAX_ARGS - base_argc) < max_args)
+        max_args = (u64)(MAX_ARGS - base_argc);
+    cmd = nshell_find_builtin(ws->exec_argv[0]);
+    if (cmd == NULL) {
+        shell_error("xargs: %s: No such command\r\n", ws->exec_argv[0]);
+        kfree(ws);
+        return 127;
+    }
+    while (nshell_read_char(shell, &ch) == 1) {
+        if (quote == 0 && (ch == ' ' || ch == '\t' || ch == '\r' || ch == '\n')) {
+            if (in_word) {
+                ws->pool[pool_used++] = '\0';
+                ws->exec_argv[base_argc + batch_count++] = word_start;
+                in_word = false;
+                if ((u64)batch_count >= max_args || pool_used + 16U >= sizeof(ws->pool)) {
+                    if (xargs_run_batch(shell, cmd, ws, base_argc + batch_count, trace) != 0)
+                        status = 123;
+                    runs++;
+                    batch_count = 0;
+                    pool_used = 0;
+                }
+            }
+            continue;
+        }
+        if (quote == 0 && (ch == '\'' || ch == '"')) {
+            quote = ch;
+            if (!in_word) { word_start = ws->pool + pool_used; in_word = true; }
+            continue;
+        }
+        if (quote != 0 && ch == quote) {
+            quote = 0;
+            continue;
+        }
+        if (quote == 0 && ch == '\\') {
+            if (nshell_read_char(shell, &ch) != 1) break;
+        }
+        if (!in_word) { word_start = ws->pool + pool_used; in_word = true; }
+        if (pool_used + 1U < sizeof(ws->pool)) ws->pool[pool_used++] = ch;
+    }
+    if (in_word) {
+        ws->pool[pool_used++] = '\0';
+        ws->exec_argv[base_argc + batch_count++] = word_start;
+    }
+    if (batch_count > 0 || (!no_run_empty && runs == 0)) {
+        if (xargs_run_batch(shell, cmd, ws, base_argc + batch_count, trace) != 0)
+            status = 123;
+    }
+    kfree(ws);
+    return status;
+}
+
 struct shell_script_frame {
     char saved_input[SHELL_SESSION_INPUT_MAX + 1];
     char line[SHELL_SESSION_INPUT_MAX + 1];
@@ -5456,10 +5702,12 @@ static void nshell_exec_cmd(struct nshell *shell)
     struct shell_parse_workspace {
         char check[SHELL_SESSION_INPUT_MAX + 1];
         char expanded[SHELL_SESSION_INPUT_MAX + 1];
-        char assignment_expanded[SHELL_SESSION_INPUT_MAX + 1];
+        union {
+            struct shell_redirection redir;
+            char assignment_expanded[SHELL_SESSION_INPUT_MAX + 1];
+        } u;
         struct shell_command commands[16];
-        struct shell_saved_variable saved[MAX_ARGS];
-        struct shell_redirection redir;
+        struct shell_saved_variable saved[8];
     } *workspace;
     struct shell_redirection *redir;
     int count;
@@ -5476,7 +5724,7 @@ static void nshell_exec_cmd(struct nshell *shell)
         shell->last_status = 1;
         return;
     }
-    redir = &workspace->redir;
+    redir = &workspace->u.redir;
     count = shell_split_commands(shell->session.input, workspace->commands, 16);
     if (count < 0) {
         shell_printf("shell: syntax error or too many arguments\r\n");
@@ -5525,10 +5773,10 @@ static void nshell_exec_cmd(struct nshell *shell)
             continue;
         }
         if (nshell_expand_aliases(shell, workspace->commands[i].text,
-                                  workspace->assignment_expanded,
-                                  sizeof(workspace->assignment_expanded),
-                                  workspace->check) != 0 ||
-            shell_expand_parameters(workspace->assignment_expanded, workspace->expanded,
+                                  workspace->check,
+                                  sizeof(workspace->check),
+                                  workspace->expanded) != 0 ||
+            shell_expand_parameters(workspace->check, workspace->expanded,
                                     sizeof(workspace->expanded), pipeline_status,
                                     variable_lookup, shell) != 0) {
             shell_error("shell: expanded command too long\r\n");
@@ -5657,15 +5905,19 @@ static void nshell_exec_cmd(struct nshell *shell)
                     char *value;
                     memcpy(workspace->check, word, word_len);
                     workspace->check[word_len] = '\0';
-                    rc = shell_expand_parameters(workspace->check, workspace->assignment_expanded,
-                                                sizeof(workspace->assignment_expanded), pipeline_status,
+                    rc = shell_expand_parameters(workspace->check, workspace->u.assignment_expanded,
+                                                sizeof(workspace->u.assignment_expanded), pipeline_status,
                                                 variable_lookup, shell);
-                    if (rc == 0 && shell_parse_redirect(workspace->assignment_expanded,
-                            assignment_argv, 2, redir) == 1 &&
+                    if (rc == 0 && shell_parse_line(workspace->u.assignment_expanded,
+                            assignment_argv, 2) == 1 &&
                         (value = strchr(assignment_argv[0], '=')) != NULL) {
                         if (persistent) {
                             rc = variable_set(shell, argv[j], (size_t)(equals - argv[j]), value + 1, false);
                         } else {
+                            if (saved_count >= 8) {
+                                rc = -E2BIG;
+                                break;
+                            }
                             rc = variable_push(shell, argv[j], (size_t)(equals - argv[j]), value + 1,
                                                &workspace->saved[saved_count]);
                             if (rc == 0) saved_count++;
@@ -6059,6 +6311,8 @@ static int nshell_init(void)
     shell_register_cmd("uniq", "Report or omit repeated lines", cmd_uniq);
     shell_register_cmd("cut", "Remove sections from each line of files", cmd_cut);
     shell_register_cmd("tr", "Translate or delete characters", cmd_tr);
+    shell_register_cmd("seq", "Print a sequence of numbers", cmd_seq);
+    shell_register_cmd("xargs", "Build and execute command lines from standard input", cmd_xargs);
     shell_register_cmd("mount", "Mount filesystem", cmd_mount);
     shell_register_cmd("df", "Report filesystem mount usage", cmd_df);
     shell_register_cmd("ps", "Dump task status", cmd_ps);
