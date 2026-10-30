@@ -1057,6 +1057,7 @@ static int shell_mkdir_parents(const char *path)
 
 static int cmd_mkdir(int argc, char *argv[])
 {
+    char *path;
     int status = 0;
     int i;
     int first = 1;
@@ -1079,8 +1080,9 @@ static int cmd_mkdir(int argc, char *argv[])
         return -EINVAL;
     }
     shell_init_cwd();
+    path = kmalloc(SHELL_SESSION_INPUT_MAX + 1, GFP_KERNEL);
+    if (path == NULL) return 1;
     for (i = first; i < argc; i++) {
-        char path[SHELL_SESSION_INPUT_MAX + 1];
         char *name;
         char *slash = NULL;
         char *p;
@@ -1131,6 +1133,61 @@ error:
         shell_error("mkdir: cannot create '%s': error %d\r\n", argv[i], rc);
         status = rc;
     }
+    kfree(path);
+    return status;
+}
+
+static int cmd_rmdir(int argc, char *argv[])
+{
+    char *path;
+    int first = 1;
+    int status = 0;
+
+    if (first < argc && strcmp(argv[first], "--") == 0) first++;
+    if (first == argc) {
+        shell_error("rmdir: missing operand\r\n");
+        return 1;
+    }
+    shell_init_cwd();
+    path = kmalloc(SHELL_SESSION_INPUT_MAX + 1, GFP_KERNEL);
+    if (path == NULL) return 1;
+    for (int i = first; i < argc; i++) {
+        char *slash;
+        char *name;
+        struct dentry *parent;
+        size_t len = strlen(argv[i]);
+        int rc;
+
+        if (argv[i][0] == '-' && argv[i][1] != '\0' && first == 1) {
+            shell_error("rmdir: invalid option: %s\r\n", argv[i]);
+            status = 1;
+            break;
+        }
+        if (len == 0 || len > SHELL_SESSION_INPUT_MAX) {
+            rc = -EINVAL;
+            goto error;
+        }
+        memcpy(path, argv[i], len + 1);
+        while (len > 1 && path[len - 1] == '/') path[--len] = '\0';
+        slash = strrchr(path, '/');
+        name = slash != NULL ? slash + 1 : path;
+        if (*name == '\0') {
+            rc = -EBUSY;
+            goto error;
+        }
+        if (slash == NULL) parent = shell_cwd;
+        else if (slash == path) parent = vfs_get_root();
+        else {
+            *slash = '\0';
+            parent = vfs_lookup_path(shell_cwd, path);
+        }
+        rc = parent != NULL ? vfs_remove_entry(parent, name, true) : -ENOENT;
+        if (rc == 0) continue;
+error:
+        shell_error("rmdir: cannot remove '%s': error %d\r\n", argv[i], rc);
+        status = 1;
+    }
+    kfree(path);
     return status;
 }
 
@@ -2542,6 +2599,7 @@ static int nshell_init(void)
     shell_register_cmd("cd", "Change directory", cmd_cd);
     shell_register_cmd("pwd", "Print working directory", cmd_pwd);
     shell_register_cmd("mkdir", "Make directory", cmd_mkdir);
+    shell_register_cmd("rmdir", "Remove empty directories", cmd_rmdir);
     shell_register_cmd("cat", "Concatenate file", cmd_cat);
     shell_register_cmd("basename", "Strip directory and suffix", cmd_basename);
     shell_register_cmd("dirname", "Strip final path component", cmd_dirname);
