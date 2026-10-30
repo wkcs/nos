@@ -2525,6 +2525,386 @@ static int cmd_grep(int argc, char *argv[])
     return error ? 2 : matched ? 0 : 1;
 }
 
+static int nshell_open_output(struct nshell *shell, const char *path, bool append,
+                              struct file **destination);
+static int nshell_close_output(struct file **destination);
+
+struct sort_options {
+    const char *output_path;
+    bool reverse;
+    bool unique;
+    bool numeric;
+    bool ignore_case;
+    bool ignore_blanks;
+};
+
+static long long sort_parse_num(const char *s)
+{
+    unsigned long long val = 0;
+    bool neg = false;
+    while (*s == ' ' || *s == '\t') s++;
+    if (*s == '-' || *s == '+') neg = *s++ == '-';
+    while (*s >= '0' && *s <= '9') {
+        val = val * 10ULL + (unsigned long long)(*s - '0');
+        s++;
+    }
+    return neg ? -(long long)val : (long long)val;
+}
+
+static int sort_compare(const char *a, const char *b, const struct sort_options *opts)
+{
+    int cmp = 0;
+    if (opts->ignore_blanks) {
+        while (*a == ' ' || *a == '\t') a++;
+        while (*b == ' ' || *b == '\t') b++;
+    }
+    if (opts->numeric) {
+        long long va = sort_parse_num(a), vb = sort_parse_num(b);
+        cmp = va < vb ? -1 : (va > vb ? 1 : 0);
+    } else {
+        while (*a != '\0' && *b != '\0') {
+            unsigned char ca = grep_fold((unsigned char)*a++, opts->ignore_case);
+            unsigned char cb = grep_fold((unsigned char)*b++, opts->ignore_case);
+            if (ca != cb) {
+                cmp = ca < cb ? -1 : 1;
+                break;
+            }
+        }
+        if (cmp == 0) {
+            unsigned char ca = grep_fold((unsigned char)*a, opts->ignore_case);
+            unsigned char cb = grep_fold((unsigned char)*b, opts->ignore_case);
+            cmp = ca < cb ? -1 : (ca > cb ? 1 : 0);
+        }
+    }
+    return opts->reverse ? -cmp : cmp;
+}
+
+static int sort_append_stream(struct file *file, char **data, size_t *used, size_t *cap)
+{
+    char buf[64];
+    int n;
+
+    while ((n = wc_read(file, buf, file == NULL ? 1 : sizeof(buf))) > 0) {
+        if (*used + (size_t)n + 2U > *cap) {
+            size_t next_cap = *cap == 0U ? 256U : *cap * 2U;
+            char *expanded;
+            while (next_cap < *used + (size_t)n + 2U) next_cap *= 2U;
+            if (next_cap > 8192U) return -EFBIG;
+            expanded = kmalloc(next_cap, GFP_KERNEL);
+            if (expanded == NULL) return -ENOMEM;
+            if (*used != 0U) memcpy(expanded, *data, *used);
+            kfree(*data);
+            *data = expanded;
+            *cap = next_cap;
+        }
+        memcpy(*data + *used, buf, (size_t)n);
+        *used += (size_t)n;
+    }
+    return n < 0 ? n : 0;
+}
+
+static int sort_append_file(const char *path, char **data, size_t *used, size_t *cap)
+{
+    struct dentry *entry = resolve_path(path);
+    struct file file;
+    int rc;
+
+    if (entry == NULL || entry->d_inode == NULL) return -ENOENT;
+    if (S_ISDIR(entry->d_inode->i_mode)) return -EISDIR;
+    if (entry->d_inode->i_fop == NULL || entry->d_inode->i_fop->read == NULL) return -EACCES;
+    memset(&file, 0, sizeof(file));
+    file.f_inode = entry->d_inode;
+    file.f_op = entry->d_inode->i_fop;
+    file.f_path.dentry = entry;
+    file.f_flags = O_RDONLY;
+    if (file.f_op->open != NULL) {
+        rc = file.f_op->open(file.f_inode, &file);
+        if (rc != 0) return rc;
+    }
+    rc = sort_append_stream(&file, data, used, cap);
+    if (file.f_op->release != NULL) {
+        int close_rc = file.f_op->release(file.f_inode, &file);
+        if (rc == 0 && close_rc != 0) rc = close_rc;
+    }
+    return rc;
+}
+
+static int cmd_sort(int argc, char *argv[])
+{
+    struct sort_options opts = {0};
+    char *data = NULL;
+    char **lines = NULL;
+    struct file *out_file = NULL;
+    size_t used = 0, cap = 0, line_count = 0, i, j;
+    int first = 1, rc = 0;
+
+    while (first < argc && argv[first][0] == '-' && argv[first][1] != '\0') {
+        const char *opt = argv[first] + 1;
+        if (strcmp(opt, "-") == 0) { first++; break; }
+        while (*opt != '\0') {
+            if (*opt == 'r') opts.reverse = true;
+            else if (*opt == 'u') opts.unique = true;
+            else if (*opt == 'n') opts.numeric = true;
+            else if (*opt == 'f') opts.ignore_case = true;
+            else if (*opt == 'b') opts.ignore_blanks = true;
+            else if (*opt == 'o') {
+                opts.output_path = opt + 1;
+                if (*opts.output_path == '\0') {
+                    if (++first >= argc) {
+                        shell_error("sort: option requires an argument -- 'o'\r\n");
+                        return 1;
+                    }
+                    opts.output_path = argv[first];
+                }
+                break;
+            } else {
+                shell_error("sort: invalid option -- '%c'\r\n", *opt);
+                return 1;
+            }
+            opt++;
+        }
+        first++;
+    }
+    shell_init_cwd();
+    if (first == argc) {
+        rc = sort_append_stream(NULL, &data, &used, &cap);
+        if (rc < 0) { shell_error("sort: input error %d\r\n", rc); goto out; }
+    } else {
+        int k;
+        for (k = first; k < argc; k++) {
+            rc = strcmp(argv[k], "-") == 0 ?
+                 sort_append_stream(NULL, &data, &used, &cap) :
+                 sort_append_file(argv[k], &data, &used, &cap);
+            if (rc < 0) {
+                shell_error("sort: %s: error %d\r\n", argv[k], rc);
+                goto out;
+            }
+        }
+    }
+    if (used > 0U) {
+        if (data[used - 1U] != '\n') data[used++] = '\n';
+        for (i = 0; i < used; i++) {
+            if (data[i] == '\n') line_count++;
+        }
+        lines = kmalloc(sizeof(*lines) * line_count, GFP_KERNEL);
+        if (lines == NULL) { rc = -ENOMEM; goto out; }
+        line_count = 0;
+        lines[line_count++] = data;
+        for (i = 0; i < used; i++) {
+            if (data[i] == '\n') {
+                if (i > 0U && data[i - 1U] == '\r') data[i - 1U] = '\0';
+                data[i] = '\0';
+                if (i + 1U < used) lines[line_count++] = data + i + 1U;
+            }
+        }
+        for (i = 1; i < line_count; i++) {
+            char *item = lines[i];
+            j = i;
+            while (j > 0U && sort_compare(lines[j - 1U], item, &opts) > 0) {
+                lines[j] = lines[j - 1U];
+                j--;
+            }
+            lines[j] = item;
+        }
+    }
+    if (opts.output_path != NULL) {
+        rc = nshell_open_output(nshell_current(), opts.output_path, false, &out_file);
+        if (rc < 0) {
+            shell_error("sort: %s: error %d\r\n", opts.output_path, rc);
+            goto out;
+        }
+    }
+    for (i = 0; i < line_count; i++) {
+        size_t len = strlen(lines[i]);
+        if (opts.unique && i > 0U && sort_compare(lines[i - 1U], lines[i], &opts) == 0)
+            continue;
+        if (out_file != NULL) {
+            if ((len != 0U && out_file->f_op->write(out_file, lines[i], len, &out_file->f_pos) != (ssize_t)len) ||
+                out_file->f_op->write(out_file, "\n", 1, &out_file->f_pos) != 1) {
+                rc = -EIO;
+                break;
+            }
+        } else if ((len != 0U && nshell_write(lines[i], (int)len) != (int)len) ||
+                   shell_printf("\r\n") < 0) {
+            rc = -EIO;
+            break;
+        }
+    }
+out:
+    if (nshell_close_output(&out_file) != 0 && rc == 0) rc = -EIO;
+    kfree(lines);
+    kfree(data);
+    return rc < 0 ? 1 : 0;
+}
+
+struct uniq_options {
+    bool count;
+    bool repeated;
+    bool unique;
+    bool ignore_case;
+};
+
+static bool uniq_equal(const char *a, size_t a_len, const char *b, size_t b_len, bool ignore_case)
+{
+    size_t i;
+    if (a_len != b_len) return false;
+    for (i = 0; i < a_len; i++) {
+        if (grep_fold((unsigned char)a[i], ignore_case) !=
+            grep_fold((unsigned char)b[i], ignore_case)) return false;
+    }
+    return true;
+}
+
+static int uniq_emit(const char *line, size_t len, u64 count,
+                     const struct uniq_options *opts, struct file *out_file)
+{
+    char prefix[24];
+    int plen = 0;
+    if (opts->repeated && count < 2U) return 0;
+    if (opts->unique && count != 1U) return 0;
+    if (opts->count) plen = snprintf(prefix, sizeof(prefix), "%llu ", (unsigned long long)count);
+    if (out_file != NULL) {
+        if ((plen > 0 && out_file->f_op->write(out_file, prefix, (size_t)plen, &out_file->f_pos) != plen) ||
+            (len > 0U && out_file->f_op->write(out_file, line, len, &out_file->f_pos) != (ssize_t)len) ||
+            out_file->f_op->write(out_file, "\n", 1, &out_file->f_pos) != 1)
+            return -EIO;
+        return 0;
+    }
+    if ((plen > 0 && nshell_write(prefix, plen) != plen) ||
+        (len > 0U && nshell_write(line, (int)len) != (int)len) ||
+        shell_printf("\r\n") < 0)
+        return -EIO;
+    return 0;
+}
+
+static int cmd_uniq(int argc, char *argv[])
+{
+    struct uniq_options opts = {0};
+    struct file in_file = {0}, *in_ptr = NULL, *out_file = NULL;
+    char input[64];
+    char *prev = NULL, *curr = NULL;
+    size_t prev_len = 0, curr_len = 0, curr_cap = 128;
+    u64 count = 0;
+    bool has_prev = false, in_opened = false;
+    int first = 1, n, rc = 0;
+
+    while (first < argc && argv[first][0] == '-' && argv[first][1] != '\0') {
+        const char *opt = argv[first] + 1;
+        if (strcmp(opt, "-") == 0) { first++; break; }
+        for (; *opt != '\0'; opt++) {
+            if (*opt == 'c') opts.count = true;
+            else if (*opt == 'd') opts.repeated = true;
+            else if (*opt == 'u') opts.unique = true;
+            else if (*opt == 'i') opts.ignore_case = true;
+            else {
+                shell_error("uniq: invalid option -- '%c'\r\n", *opt);
+                return 1;
+            }
+        }
+        first++;
+    }
+    if (argc - first > 2) {
+        shell_error("uniq: extra operand '%s'\r\n", argv[first + 2]);
+        return 1;
+    }
+    shell_init_cwd();
+    if (first < argc && strcmp(argv[first], "-") != 0) {
+        struct dentry *entry = resolve_path(argv[first]);
+        if (entry == NULL || entry->d_inode == NULL) {
+            shell_error("uniq: %s: No such file or directory\r\n", argv[first]);
+            return 1;
+        }
+        if (S_ISDIR(entry->d_inode->i_mode) || entry->d_inode->i_fop == NULL ||
+            entry->d_inode->i_fop->read == NULL) {
+            shell_error("uniq: %s: cannot read\r\n", argv[first]);
+            return 1;
+        }
+        in_file.f_inode = entry->d_inode;
+        in_file.f_op = entry->d_inode->i_fop;
+        in_file.f_path.dentry = entry;
+        in_file.f_flags = O_RDONLY;
+        if (in_file.f_op->open != NULL && in_file.f_op->open(in_file.f_inode, &in_file) != 0) {
+            shell_error("uniq: %s: open failed\r\n", argv[first]);
+            return 1;
+        }
+        in_opened = true;
+        in_ptr = &in_file;
+    }
+    if (first + 1 < argc && strcmp(argv[first + 1], "-") != 0) {
+        if (nshell_open_output(nshell_current(), argv[first + 1], false, &out_file) < 0) {
+            shell_error("uniq: %s: cannot open output\r\n", argv[first + 1]);
+            rc = -EIO;
+            goto out;
+        }
+    }
+    curr = kmalloc(curr_cap, GFP_KERNEL);
+    if (curr == NULL) { rc = -ENOMEM; goto out; }
+    while ((n = wc_read(in_ptr, input, in_ptr == NULL ? 1 : sizeof(input))) > 0) {
+        int i;
+        for (i = 0; i < n; i++) {
+            if (input[i] == '\r') continue;
+            if (input[i] == '\n') {
+                if (!has_prev) {
+                    prev = kmalloc(curr_len + 1U, GFP_KERNEL);
+                    if (prev == NULL) { rc = -ENOMEM; goto out; }
+                    memcpy(prev, curr, curr_len);
+                    prev_len = curr_len;
+                    count = 1U;
+                    has_prev = true;
+                } else if (uniq_equal(prev, prev_len, curr, curr_len, opts.ignore_case)) {
+                    count++;
+                } else {
+                    char *next_prev;
+                    rc = uniq_emit(prev, prev_len, count, &opts, out_file);
+                    if (rc != 0) goto out;
+                    next_prev = kmalloc(curr_len + 1U, GFP_KERNEL);
+                    if (next_prev == NULL) { rc = -ENOMEM; goto out; }
+                    kfree(prev);
+                    prev = next_prev;
+                    memcpy(prev, curr, curr_len);
+                    prev_len = curr_len;
+                    count = 1U;
+                }
+                curr_len = 0U;
+                continue;
+            }
+            if (curr_len == curr_cap) {
+                size_t next_cap = curr_cap * 2U;
+                char *expanded;
+                if (next_cap > 4096U) { rc = -EFBIG; goto out; }
+                expanded = kmalloc(next_cap, GFP_KERNEL);
+                if (expanded == NULL) { rc = -ENOMEM; goto out; }
+                memcpy(expanded, curr, curr_len);
+                kfree(curr);
+                curr = expanded;
+                curr_cap = next_cap;
+            }
+            curr[curr_len++] = input[i];
+        }
+    }
+    if (n < 0) { rc = n; goto out; }
+    if (curr_len != 0U) {
+        if (!has_prev) {
+            rc = uniq_emit(curr, curr_len, 1U, &opts, out_file);
+            goto out;
+        } else if (uniq_equal(prev, prev_len, curr, curr_len, opts.ignore_case)) {
+            count++;
+        } else {
+            rc = uniq_emit(prev, prev_len, count, &opts, out_file);
+            if (rc == 0) rc = uniq_emit(curr, curr_len, 1U, &opts, out_file);
+            goto out;
+        }
+    }
+    if (has_prev) rc = uniq_emit(prev, prev_len, count, &opts, out_file);
+out:
+    if (in_opened && in_file.f_op->release != NULL)
+        (void)in_file.f_op->release(in_file.f_inode, &in_file);
+    if (nshell_close_output(&out_file) != 0 && rc == 0) rc = -EIO;
+    kfree(prev);
+    kfree(curr);
+    return rc < 0 ? 1 : 0;
+}
+
 static int cmd_mount(int argc, char *argv[]) {
   char *fs_type = NULL;
   char *dev = NULL;
@@ -3987,6 +4367,8 @@ static int nshell_init(void)
     shell_register_cmd("tail", "Print the end of files", cmd_tail);
     shell_register_cmd("tee", "Duplicate standard input to files", cmd_tee);
     shell_register_cmd("grep", "Search lines for a fixed string", cmd_grep);
+    shell_register_cmd("sort", "Sort lines of text", cmd_sort);
+    shell_register_cmd("uniq", "Report or omit repeated lines", cmd_uniq);
     shell_register_cmd("mount", "Mount filesystem", cmd_mount);
     shell_register_cmd("df", "Report filesystem mount usage", cmd_df);
     shell_register_cmd("ps", "Dump task status", cmd_ps);
