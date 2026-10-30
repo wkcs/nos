@@ -858,6 +858,17 @@ def main():
         wait_for(b"Heap:", pos)
         wait_for(b"/tmp/cross\r\n", pos)
         wait_for(b"nos# ", pos)
+        pos = len(output)
+        proc.stdin.write(b"mkdir -p /tmp/froot/sub; echo hi > /tmp/froot/sub/item.txt; touch /tmp/froot/empty.dat; stat -t /tmp/froot/sub/item.txt; stat /tmp/froot\r")
+        proc.stdin.flush()
+        wait_for(b"/tmp/froot/sub/item.txt 3 ", pos)
+        wait_for(b"Type: directory\r\n", pos)
+        wait_for(b"nos# ", pos)
+        pos = len(output)
+        proc.stdin.write(b"find /tmp/froot -name '*.txt' -type f; find /tmp/froot -maxdepth 1 -empty -type f; rm -r /tmp/froot\r")
+        proc.stdin.flush()
+        wait_for(b"\r\n/tmp/froot/sub/item.txt\r\n/tmp/froot/empty.dat\r\n", pos)
+        wait_for(b"nos# ", pos)
         print("QEMU STM32 boot, help, log statistics and RX burst passed")
     finally:
         if proc.poll() is None:

@@ -26,6 +26,7 @@
 #include <nos/shell_session.h>
 #include <stdarg.h>
 #include "parse.h"
+#include "glob.h"
 #include "glob_vfs.h"
 #include "path.h"
 #include "move_replace.h"
@@ -1087,6 +1088,67 @@ static void ls_print_entry(const char *name, struct inode *inode, bool long_form
     shell_printf("%s %u %u %u %llu %s\r\n", mode, inode->i_nlink,
                  inode->i_uid, inode->i_gid,
                  (unsigned long long)inode->i_size, name);
+}
+
+static int cmd_stat(int argc, char *argv[])
+{
+    bool terse = false;
+    int first = 1, status = 0, i;
+
+    while (first < argc && argv[first][0] == '-' && argv[first][1] != '\0') {
+        const char *opt = argv[first] + 1;
+        if (strcmp(opt, "-") == 0) { first++; break; }
+        for (; *opt != '\0'; opt++) {
+            if (*opt == 't') terse = true;
+            else {
+                shell_error("stat: invalid option -- '%c'\r\n", *opt);
+                return 1;
+            }
+        }
+        first++;
+    }
+    if (first == argc) {
+        shell_error("stat: missing operand\r\n");
+        return 1;
+    }
+    shell_init_cwd();
+    for (i = first; i < argc; i++) {
+        size_t len = strlen(argv[i]);
+        struct dentry *entry = len != 0 ? resolve_path(argv[i]) : NULL;
+        struct inode *inode = entry != NULL ? entry->d_inode : NULL;
+        char mode[11] = "----------";
+        static const char bits[] = "rwxrwxrwx";
+        unsigned int b;
+
+        if (inode == NULL || (len > 0 && argv[i][len - 1] == '/' && !S_ISDIR(inode->i_mode))) {
+            shell_error("stat: cannot stat '%s'\r\n", argv[i]);
+            status = 1;
+            continue;
+        }
+        if (S_ISDIR(inode->i_mode)) mode[0] = 'd';
+        for (b = 0; b < 9; b++) {
+            if (inode->i_mode & (0400U >> b)) mode[b + 1] = bits[b];
+        }
+        if (terse) {
+            shell_printf("%s %llu %04o %s %u %u %u %llu\r\n",
+                         argv[i], (unsigned long long)inode->i_size,
+                         (unsigned int)(inode->i_mode & 07777U),
+                         S_ISDIR(inode->i_mode) ? "directory" : "regular",
+                         inode->i_nlink, inode->i_uid, inode->i_gid,
+                         (unsigned long long)inode->i_ino);
+        } else {
+            shell_printf("  File: %s\r\n"
+                         "  Size: %-12llu Type: %s\r\n"
+                         "  Mode: (%04o/%s) Inode: %-8llu Links: %u\r\n"
+                         "Access: (Uid: %4u   Gid: %4u)\r\n",
+                         argv[i], (unsigned long long)inode->i_size,
+                         S_ISDIR(inode->i_mode) ? "directory" : "regular file",
+                         (unsigned int)(inode->i_mode & 07777U), mode,
+                         (unsigned long long)inode->i_ino, inode->i_nlink,
+                         inode->i_uid, inode->i_gid);
+        }
+    }
+    return status;
 }
 
 static int shell_filldir(void *dirent, const char *name, int namelen,
@@ -3058,6 +3120,175 @@ static int mv_copy_tree(char *source, char *target, char *scratch, char *buffer,
     return rc;
 }
 
+struct find_options {
+    const char *name;
+    char type;
+    bool empty;
+    u64 mindepth;
+    u64 maxdepth;
+};
+
+static bool find_name_match(const char *pattern, const char *name)
+{
+    if (name[0] == '.' && pattern[0] != '.') {
+        if (pattern[0] == '?') return shell_glob_match(pattern + 1, NULL, name + 1) != 0;
+        if (pattern[0] == '*')
+            return shell_glob_match(pattern, NULL, name + 1) != 0 ||
+                   shell_glob_match(pattern + 1, NULL, name + 1) != 0;
+        return false;
+    }
+    return shell_glob_match(pattern, NULL, name) != 0;
+}
+
+static bool find_matches(const char *name, struct dentry *entry,
+                         const struct find_options *opts)
+{
+    struct inode *inode = entry->d_inode;
+    if (opts->type == 'f' && !S_ISREG(inode->i_mode)) return false;
+    if (opts->type == 'd' && !S_ISDIR(inode->i_mode)) return false;
+    if (opts->name != NULL && !find_name_match(opts->name, name)) return false;
+    if (opts->empty) {
+        if (S_ISREG(inode->i_mode)) return inode->i_size == 0;
+        if (S_ISDIR(inode->i_mode)) {
+            struct rm_entry probe = {0};
+            return rm_read_first(entry, &probe) == 0 && probe.name[0] == '\0';
+        }
+        return false;
+    }
+    return true;
+}
+
+static bool find_matches_root(const char *path, struct dentry *entry,
+                              const struct find_options *opts)
+{
+    char base[FS_NAME_LEN];
+    size_t len;
+    const char *part = shell_path_basename(path, NULL, &len);
+    if (len >= sizeof(base)) return false;
+    memcpy(base, part, len);
+    base[len] = '\0';
+    return find_matches(base, entry, opts);
+}
+
+static int cmd_find(int argc, char *argv[])
+{
+    static const char *const default_paths[] = { "." };
+    const char *const *start_paths;
+    struct find_options opts = { .maxdepth = UINT64_MAX };
+    char *path;
+    int path_end = 1, path_count, status = 0, i;
+
+    while (path_end < argc && argv[path_end][0] != '-') path_end++;
+    for (i = path_end; i < argc; i++) {
+        if (strcmp(argv[i], "-name") == 0) {
+            if (++i >= argc) { shell_error("find: missing argument to '-name'\r\n"); return 1; }
+            opts.name = argv[i];
+        } else if (strcmp(argv[i], "-type") == 0) {
+            if (++i >= argc || (strcmp(argv[i], "f") != 0 && strcmp(argv[i], "d") != 0)) {
+                shell_error("find: invalid argument to '-type'\r\n");
+                return 1;
+            }
+            opts.type = argv[i][0];
+        } else if (strcmp(argv[i], "-maxdepth") == 0) {
+            if (++i >= argc || head_number(argv[i], &opts.maxdepth) != 0) {
+                shell_error("find: invalid argument to '-maxdepth'\r\n");
+                return 1;
+            }
+        } else if (strcmp(argv[i], "-mindepth") == 0) {
+            if (++i >= argc || head_number(argv[i], &opts.mindepth) != 0) {
+                shell_error("find: invalid argument to '-mindepth'\r\n");
+                return 1;
+            }
+        } else if (strcmp(argv[i], "-empty") == 0) {
+            opts.empty = true;
+        } else if (strcmp(argv[i], "-print") != 0) {
+            shell_error("find: unknown predicate '%s'\r\n", argv[i]);
+            return 1;
+        }
+    }
+    shell_init_cwd();
+    path = kmalloc(SHELL_SESSION_INPUT_MAX + 1, GFP_KERNEL);
+    if (path == NULL) return 1;
+    if (path_end == 1) {
+        start_paths = default_paths;
+        path_count = 1;
+    } else {
+        start_paths = (const char *const *)(argv + 1);
+        path_count = path_end - 1;
+    }
+    for (i = 0; i < path_count; i++) {
+        const char *start_path = start_paths[i];
+        size_t len = strlen(start_path);
+        struct dentry *root_entry;
+        struct mv_dir_frame *top = NULL;
+        u64 depth = 0;
+
+        if (len == 0 || len > SHELL_SESSION_INPUT_MAX) {
+            shell_error("find: '%s': invalid path\r\n", start_path);
+            status = 1;
+            continue;
+        }
+        memcpy(path, start_path, len + 1);
+        while (len > 1 && path[len - 1] == '/') path[--len] = '\0';
+        root_entry = resolve_path(path);
+        if (root_entry == NULL || root_entry->d_inode == NULL ||
+            (start_path[strlen(start_path) - 1] == '/' && !S_ISDIR(root_entry->d_inode->i_mode))) {
+            shell_error("find: '%s': No such file or directory\r\n", start_path);
+            status = 1;
+            continue;
+        }
+        if (opts.mindepth == 0U && opts.maxdepth >= 0U &&
+            find_matches_root(path, root_entry, &opts))
+            shell_printf("%s\r\n", path);
+        if (S_ISDIR(root_entry->d_inode->i_mode) && opts.maxdepth > 0U) {
+            if (mv_push_dir(&top, root_entry, len, 0) != 0) {
+                status = 1;
+                continue;
+            }
+            depth = 1U;
+        }
+        while (top != NULL) {
+            struct rm_entry child = {0};
+            struct dentry *entry;
+            size_t base_len = top->source_len, child_len;
+            int rc = top->file.f_op->readdir(&top->file, &child, mv_collect_one);
+            if (rc == 0) rc = child.error;
+            if (rc != 0 || child.name[0] == '\0') {
+                if (rc != 0) status = 1;
+                (void)mv_pop_dir(&top);
+                depth--;
+                if (top != NULL) path[top->source_len] = '\0';
+                continue;
+            }
+            child_len = strlen(child.name);
+            if (base_len + (path[base_len - 1] != '/' ? 1U : 0U) + child_len > SHELL_SESSION_INPUT_MAX) {
+                status = 1;
+                continue;
+            }
+            if (path[base_len - 1] != '/') path[base_len++] = '/';
+            memcpy(path + base_len, child.name, child_len + 1);
+            entry = resolve_path(path);
+            if (entry == NULL || entry->d_inode == NULL) {
+                status = 1;
+                path[top->source_len] = '\0';
+                continue;
+            }
+            if (depth >= opts.mindepth && find_matches(child.name, entry, &opts))
+                shell_printf("%s\r\n", path);
+            if (S_ISDIR(entry->d_inode->i_mode) && depth < opts.maxdepth) {
+                if (mv_push_dir(&top, entry, strlen(path), 0) == 0) {
+                    depth++;
+                    continue;
+                }
+                status = 1;
+            }
+            path[top->source_len] = '\0';
+        }
+    }
+    kfree(path);
+    return status;
+}
+
 struct mv_workspace {
     char source[SHELL_SESSION_INPUT_MAX + 1];
     char target[SHELL_SESSION_INPUT_MAX + 1];
@@ -3738,6 +3969,8 @@ static int nshell_init(void)
     shell_register_cmd("history", "Show or clear command history", cmd_history);
     shell_register_cmd("log", "Toggle kernel log (on/off)", cmd_log);
     shell_register_cmd("ls", "List directory", cmd_ls);
+    shell_register_cmd("stat", "Display file or directory status", cmd_stat);
+    shell_register_cmd("find", "Search for files in a directory hierarchy", cmd_find);
     shell_register_cmd("cd", "Change directory", cmd_cd);
     shell_register_cmd("pwd", "Print working directory", cmd_pwd);
     shell_register_cmd("mkdir", "Make directory", cmd_mkdir);
