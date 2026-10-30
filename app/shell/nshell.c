@@ -2328,6 +2328,100 @@ static int cmd_cp(int argc, char *argv[])
     return status;
 }
 
+static int mv_parent(char *path, struct dentry **parent, char **name)
+{
+    size_t len = strlen(path);
+    char *slash;
+    while (len > 1 && path[len - 1] == '/') path[--len] = '\0';
+    slash = strrchr(path, '/');
+    *name = slash != NULL ? slash + 1 : path;
+    if (**name == '\0' || strcmp(*name, ".") == 0 || strcmp(*name, "..") == 0)
+        return -EINVAL;
+    if (slash == NULL) *parent = shell_cwd;
+    else if (slash == path) *parent = vfs_get_root();
+    else {
+        *slash = '\0';
+        *parent = vfs_lookup_path(shell_cwd, path);
+    }
+    if (*parent == NULL || (*parent)->d_inode == NULL) return -ENOENT;
+    if (!S_ISDIR((*parent)->d_inode->i_mode)) return -ENOTDIR;
+    return 0;
+}
+
+static int cmd_mv(int argc, char *argv[])
+{
+    struct mv_workspace {
+        char source[SHELL_SESSION_INPUT_MAX + 1];
+        char target[SHELL_SESSION_INPUT_MAX + 1];
+    } *workspace;
+    struct dentry *destination;
+    bool directory, no_clobber = false;
+    int first = 1, status = 0;
+
+    while (first < argc && argv[first][0] == '-' && argv[first][1] != '\0') {
+        const char *option = argv[first] + 1;
+        if (strcmp(option, "-") == 0) { first++; break; }
+        for (; *option != '\0'; option++) {
+            if (*option == 'n') no_clobber = true;
+            else { shell_error("mv: invalid option: %s\r\n", argv[first]); return 1; }
+        }
+        first++;
+    }
+    if (argc - first < 2) {
+        shell_error("mv: missing operand\r\n");
+        return 1;
+    }
+    shell_init_cwd();
+    destination = resolve_path(argv[argc - 1]);
+    directory = destination != NULL && destination->d_inode != NULL && S_ISDIR(destination->d_inode->i_mode);
+    if (argc - first > 2 && !directory) {
+        shell_error("mv: destination is not a directory\r\n");
+        return 1;
+    }
+    workspace = kmalloc(sizeof(*workspace), GFP_KERNEL);
+    if (workspace == NULL) return 1;
+    for (int i = first; i < argc - 1; i++) {
+        struct dentry *src, *existing, *old_parent, *new_parent;
+        char *old_name, *new_name;
+        size_t src_len = strlen(argv[i]), dst_len = strlen(argv[argc - 1]);
+        size_t name_len;
+        const char *base;
+        int rc;
+
+        if (src_len == 0 || src_len > SHELL_SESSION_INPUT_MAX || dst_len > SHELL_SESSION_INPUT_MAX) {
+            rc = -ENAMETOOLONG;
+            goto error;
+        }
+        src = resolve_path(argv[i]);
+        if (src == NULL || src->d_inode == NULL) { rc = -ENOENT; goto error; }
+        if (argv[i][src_len - 1] == '/' && !S_ISDIR(src->d_inode->i_mode)) { rc = -ENOTDIR; goto error; }
+        memcpy(workspace->source, argv[i], src_len + 1);
+        base = shell_path_basename(argv[i], NULL, &name_len);
+        if (directory) {
+            if (dst_len + name_len + 1U > SHELL_SESSION_INPUT_MAX) { rc = -ENAMETOOLONG; goto error; }
+            memcpy(workspace->target, argv[argc - 1], dst_len);
+            if (dst_len == 0 || workspace->target[dst_len - 1] != '/') workspace->target[dst_len++] = '/';
+            memcpy(workspace->target + dst_len, base, name_len);
+            workspace->target[dst_len + name_len] = '\0';
+        } else {
+            if (dst_len > 0 && argv[argc - 1][dst_len - 1] == '/') { rc = -ENOTDIR; goto error; }
+            memcpy(workspace->target, argv[argc - 1], dst_len + 1);
+        }
+        existing = resolve_path(workspace->target);
+        if (existing == src) { rc = -EINVAL; goto error; }
+        if (existing != NULL && no_clobber) continue;
+        rc = mv_parent(workspace->source, &old_parent, &old_name);
+        if (rc == 0) rc = mv_parent(workspace->target, &new_parent, &new_name);
+        if (rc == 0) rc = vfs_rename_entry(old_parent, old_name, new_parent, new_name);
+        if (rc == 0) continue;
+error:
+        shell_error("mv: cannot move '%s': error %d\r\n", argv[i], rc);
+        status = 1;
+    }
+    kfree(workspace);
+    return status;
+}
+
 struct shell_pipeline_group {
     sem_t done;
     int last_status;
@@ -2817,6 +2911,7 @@ static int nshell_init(void)
     shell_register_cmd("basename", "Strip directory and suffix", cmd_basename);
     shell_register_cmd("dirname", "Strip final path component", cmd_dirname);
     shell_register_cmd("cp", "Copy files", cmd_cp);
+    shell_register_cmd("mv", "Move or rename files", cmd_mv);
     shell_register_cmd("wc", "Count lines, words and bytes", cmd_wc);
     shell_register_cmd("head", "Print the start of files", cmd_head);
     shell_register_cmd("grep", "Search lines for a fixed string", cmd_grep);
