@@ -1192,8 +1192,17 @@ static int cmd_rmdir(int argc, char *argv[])
     char *path;
     int first = 1;
     int status = 0;
+    bool parents = false;
 
-    if (first < argc && strcmp(argv[first], "--") == 0) first++;
+    while (first < argc && argv[first][0] == '-' && argv[first][1] != '\0') {
+        const char *option = argv[first] + 1;
+        if (strcmp(option, "-") == 0) { first++; break; }
+        for (; *option != '\0'; option++) {
+            if (*option == 'p') parents = true;
+            else { shell_error("rmdir: invalid option: %s\r\n", argv[first]); return 1; }
+        }
+        first++;
+    }
     if (first == argc) {
         shell_error("rmdir: missing operand\r\n");
         return 1;
@@ -1208,30 +1217,32 @@ static int cmd_rmdir(int argc, char *argv[])
         size_t len = strlen(argv[i]);
         int rc;
 
-        if (argv[i][0] == '-' && argv[i][1] != '\0' && first == 1) {
-            shell_error("rmdir: invalid option: %s\r\n", argv[i]);
-            status = 1;
-            break;
-        }
         if (len == 0 || len > SHELL_SESSION_INPUT_MAX) {
             rc = -EINVAL;
             goto error;
         }
         memcpy(path, argv[i], len + 1);
         while (len > 1 && path[len - 1] == '/') path[--len] = '\0';
-        slash = strrchr(path, '/');
-        name = slash != NULL ? slash + 1 : path;
-        if (*name == '\0') {
-            rc = -EBUSY;
-            goto error;
-        }
-        if (slash == NULL) parent = shell_cwd;
-        else if (slash == path) parent = vfs_get_root();
-        else {
+        for (;;) {
+            slash = strrchr(path, '/');
+            name = slash != NULL ? slash + 1 : path;
+            if (*name == '\0') {
+                rc = -EBUSY;
+                break;
+            }
+            if (slash == NULL) parent = shell_cwd;
+            else if (slash == path) parent = vfs_get_root();
+            else {
+                *slash = '\0';
+                parent = vfs_lookup_path(shell_cwd, path);
+                *slash = '/';
+            }
+            rc = parent != NULL ? vfs_remove_entry(parent, name, true) : -ENOENT;
+            if (rc != 0 || !parents || slash == NULL || slash == path) break;
             *slash = '\0';
-            parent = vfs_lookup_path(shell_cwd, path);
+            len = (size_t)(slash - path);
+            while (len > 1 && path[len - 1] == '/') path[--len] = '\0';
         }
-        rc = parent != NULL ? vfs_remove_entry(parent, name, true) : -ENOENT;
         if (rc == 0) continue;
 error:
         shell_error("rmdir: cannot remove '%s': error %d\r\n", argv[i], rc);
