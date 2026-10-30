@@ -1,6 +1,7 @@
 /** Copyright (C) 2026 Nick Hu <huqihan@live.com> */
 #include <kernel/sem.h>
 #include <kernel/task.h>
+#include <kernel/mm.h>
 #include "ff.h"
 
 struct fatfs_sync_object {
@@ -8,6 +9,16 @@ struct fatfs_sync_object {
 };
 
 static struct fatfs_sync_object fatfs_sync_objects[_VOLUMES];
+
+void *ff_memalloc(UINT size)
+{
+    return kmalloc(size, GFP_KERNEL);
+}
+
+void ff_memfree(void *buffer)
+{
+    kfree(buffer);
+}
 
 int ff_cre_syncobj(BYTE vol, _SYNC_t *object)
 {

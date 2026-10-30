@@ -365,17 +365,24 @@ static int fatfs_rmdir(struct inode *dir, struct dentry *dentry)
 static int fatfs_rename(struct inode *old_dir, struct dentry *old_dentry,
                         struct inode *new_dir, struct dentry *new_dentry)
 {
-    char old_path[256];
-    char new_path[256];
+    char *paths;
+    char *old_path;
+    char *new_path;
     FRESULT res;
     (void)old_dir;
     (void)new_dir;
 
-    if (get_fatfs_path(old_dentry, old_path, sizeof(old_path)) != 0 ||
-        get_fatfs_path(new_dentry, new_path, sizeof(new_path)) != 0) {
+    paths = kmalloc(512, GFP_KERNEL);
+    if (paths == NULL) return -ENOMEM;
+    old_path = paths;
+    new_path = paths + 256;
+    if (get_fatfs_path(old_dentry, old_path, 256) != 0 ||
+        get_fatfs_path(new_dentry, new_path, 256) != 0) {
+        kfree(paths);
         return -ENAMETOOLONG;
     }
     res = f_rename(old_path, new_path);
+    kfree(paths);
     if (res == FR_OK) {
         new_dentry->d_inode = old_dentry->d_inode;
         return 0;
