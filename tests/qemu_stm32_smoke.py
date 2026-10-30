@@ -917,6 +917,11 @@ def main():
         proc.stdin.flush()
         wait_for(b"\r\nNOS\r\n", pos)
         wait_for(b"nos# ", pos)
+        pos = len(output)
+        proc.stdin.write(b"kill -l 9; kill -0 1 && echo pid1-alive; lsdev UART1\r")
+        proc.stdin.flush()
+        wait_for(b"\r\nKILL\r\npid1-alive\r\nUART1            ready=1", pos)
+        wait_for(b"nos# ", pos)
         print("QEMU STM32 boot, help, log statistics and RX burst passed")
     finally:
         if proc.poll() is None:
