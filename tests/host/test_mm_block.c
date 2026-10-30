@@ -63,6 +63,22 @@ int main(void)
     assert(__kalloc(0, 0, 1) == NULL);
     assert(__kalloc(U32_MAX, 0, 1) == NULL);
     {
+        void *large_hole = __kalloc(1200, 0, 1);
+        void *guard = __kalloc(600, 0, 1);
+        void *small_hole = __kalloc(600, 0, 1);
+        void *tail_guard = __kalloc(1000, 0, 1);
+        void *small;
+        assert(large_hole && guard && small_hole && tail_guard);
+        assert(__kfree(large_hole) == 0);
+        assert(__kfree(small_hole) == 0);
+        small = __kalloc(550, 0, 1);
+        assert(small == small_hole);
+        assert(__kfree(small) == 0);
+        assert(__kfree(guard) == 0);
+        assert(__kfree(tail_guard) == 0);
+        assert(__atomic_load_n(&pages_live, __ATOMIC_RELAXED) == 0);
+    }
+    {
         char *original = __kalloc(64, 0, 0);
         assert(original != NULL);
         memset(original, 0x5a, 64);
