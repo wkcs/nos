@@ -813,6 +813,16 @@ def main():
         wait_for(b"\r\ntouch-nocreate\r\n", pos)
         wait_for(b"\r\ntouch-rofs\r\n", pos)
         wait_for(b"nos# ", pos)
+        pos = len(output)
+        proc.stdin.write(b"printf 'l1\\nl2\\nl3\\nl4\\n' > /tmp/tailf; tail -n 2 /tmp/tailf; tail -n +3 /tmp/tailf\r")
+        proc.stdin.flush()
+        wait_count(b"l3\nl4\n", 2, pos)
+        wait_for(b"nos# ", pos)
+        pos = len(output)
+        proc.stdin.write(b"printf 'abcdef\\n' | tail -c 4; printf 'abcdef\\n' | tail -c +4; rm /tmp/tailf\r")
+        proc.stdin.flush()
+        wait_count(b"def\n", 2, pos)
+        wait_for(b"nos# ", pos)
         print("QEMU STM32 boot, help, log statistics and RX burst passed")
     finally:
         if proc.poll() is None:
