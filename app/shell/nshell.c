@@ -619,6 +619,127 @@ static int cmd_unset(int argc, char *argv[])
     return status;
 }
 
+static int cmd_printenv(int argc, char *argv[])
+{
+    struct nshell *shell = nshell_current();
+    int first = 1, status = 0, i;
+
+    if (first < argc && strcmp(argv[first], "--") == 0) first++;
+    else if (first < argc && argv[first][0] == '-' && argv[first][1] != '\0') {
+        shell_error("printenv: invalid option: %s\r\n", argv[first]);
+        return 1;
+    }
+    if (first == argc) {
+        struct shell_variable *var;
+        for (var = shell->variables; var != NULL; var = var->next) {
+            if (var->exported) shell_printf("%s=%s\r\n", var->name, var->value);
+        }
+        return 0;
+    }
+    for (i = first; i < argc; i++) {
+        struct shell_variable *var;
+        if (strchr(argv[i], '=') != NULL) {
+            status = 1;
+            continue;
+        }
+        var = *variable_slot(shell, argv[i], strlen(argv[i]));
+        if (var != NULL && var->exported) shell_printf("%s\r\n", var->value);
+        else status = 1;
+    }
+    return status;
+}
+
+static int cmd_env(int argc, char *argv[])
+{
+    struct nshell *shell = nshell_current();
+    struct shell_variable *orig_vars = shell->variables;
+    struct shell_variable *var;
+    int first = 1, status = 0;
+
+    shell->variables = NULL;
+    for (var = orig_vars; var != NULL; var = var->next) {
+        if (var->exported &&
+            variable_set(shell, var->name, strlen(var->name), var->value, true) != 0) {
+            status = 1;
+            goto out;
+        }
+    }
+    while (first < argc && argv[first][0] == '-') {
+        const char *option = argv[first] + 1;
+        if (strcmp(option, "-") == 0) { first++; break; }
+        if (*option == '\0') {
+            variable_clear(shell);
+            first++;
+            continue;
+        }
+        while (*option != '\0') {
+            if (*option == 'i') {
+                variable_clear(shell);
+                option++;
+            } else if (*option == 'u') {
+                const char *name = option + 1;
+                size_t len;
+                struct shell_variable **slot;
+                if (*name == '\0') {
+                    if (++first >= argc) {
+                        shell_error("env: option requires an argument -- 'u'\r\n");
+                        status = 1;
+                        goto out;
+                    }
+                    name = argv[first];
+                }
+                len = strlen(name);
+                if (!variable_name_valid(name, len)) {
+                    shell_error("env: cannot unset '%s': invalid name\r\n", name);
+                    status = 1;
+                    goto out;
+                }
+                slot = variable_slot(shell, name, len);
+                if (*slot != NULL) {
+                    struct shell_variable *dead = *slot;
+                    *slot = dead->next;
+                    kfree(dead);
+                }
+                break;
+            } else {
+                shell_error("env: invalid option -- '%c'\r\n", *option);
+                status = 1;
+                goto out;
+            }
+        }
+        first++;
+    }
+    while (first < argc) {
+        const char *equals = strchr(argv[first], '=');
+        if (equals == NULL) break;
+        if (variable_set(shell, argv[first], (size_t)(equals - argv[first]),
+                         equals + 1, true) != 0) {
+            shell_error("env: invalid assignment '%s'\r\n", argv[first]);
+            status = 1;
+            goto out;
+        }
+        first++;
+    }
+    if (first == argc) {
+        for (var = shell->variables; var != NULL; var = var->next) {
+            if (var->exported) shell_printf("%s=%s\r\n", var->name, var->value);
+        }
+    } else {
+        struct shell_cmd *curr = cmd_list;
+        while (curr != NULL && strcmp(curr->name, argv[first]) != 0) curr = curr->next;
+        if (curr == NULL) {
+            shell_error("env: '%s': command not found\r\n", argv[first]);
+            status = 127;
+        } else {
+            status = curr->func(argc - first, argv + first);
+        }
+    }
+out:
+    variable_clear(shell);
+    shell->variables = orig_vars;
+    return status;
+}
+
 static int cmd_help(int argc, char *argv[]) {
   struct shell_cmd *curr = cmd_list;
   shell_printf("Available commands:\r\n");
@@ -3400,6 +3521,8 @@ static int nshell_init(void)
     shell_register_cmd("[", "Evaluate a conditional expression", cmd_test);
     shell_register_cmd("export", "Mark shell variables for export", cmd_export);
     shell_register_cmd("unset", "Remove shell variables", cmd_unset);
+    shell_register_cmd("env", "Run a command in a modified environment", cmd_env);
+    shell_register_cmd("printenv", "Print environment variables", cmd_printenv);
     shell_register_cmd("history", "Show or clear command history", cmd_history);
     shell_register_cmd("log", "Toggle kernel log (on/off)", cmd_log);
     shell_register_cmd("ls", "List directory", cmd_ls);
