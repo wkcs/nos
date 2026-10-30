@@ -2398,6 +2398,16 @@ static int mv_pop_dir(struct mv_dir_frame **top)
     return rc;
 }
 
+static bool mv_is_mountpoint(struct dentry *entry)
+{
+    int count = vfs_get_mount_count();
+    for (int i = 1; i < count; i++) {
+        struct vfs_mount_entry mount;
+        if (vfs_get_mount_entry(i, &mount) == 0 && mount.dentry == entry) return true;
+    }
+    return false;
+}
+
 static int mv_copy_tree(char *source, char *target, char *scratch, char *buffer,
                         struct dentry *source_entry, struct dentry *target_parent,
                         const char *target_name, bool target_exists)
@@ -2442,6 +2452,7 @@ static int mv_copy_tree(char *source, char *target, char *scratch, char *buffer,
         memcpy(target + top->target_len + 1, child.name, child_len + 1);
         entry = resolve_path(source);
         if (entry == NULL || entry->d_inode == NULL || parent == NULL) { rc = -ENOENT; break; }
+        if (entry->d_sb != source_entry->d_sb || mv_is_mountpoint(entry)) { rc = -EXDEV; break; }
         if (S_ISDIR(entry->d_inode->i_mode)) {
             rc = vfs_make_dir(parent, child.name, entry->d_inode->i_mode & 0777, NULL);
             if (rc == 0) rc = mv_push_dir(&top, entry, strlen(source), strlen(target));

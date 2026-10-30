@@ -761,6 +761,13 @@ def main():
         wait_for(b"\r\ndescendant-refused\r\n", pos)
         wait_for(b"intact\n", pos)
         wait_for(b"nos# ", pos)
+        pos = len(output)
+        proc.stdin.write(b"echo mounted > /tmp/self/mnt/data; mv /tmp/self /tmp/cross/self || echo nested-mount-refused; cat /tmp/self/file /tmp/self/mnt/data\r")
+        proc.stdin.flush()
+        wait_for(b"\r\nnested-mount-refused\r\n", pos)
+        wait_for(b"intact\n", pos)
+        wait_for(b"mounted\n", pos)
+        wait_for(b"nos# ", pos)
         print("QEMU STM32 boot, help, log statistics and RX burst passed")
     finally:
         if proc.poll() is None:
