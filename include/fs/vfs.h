@@ -130,7 +130,7 @@ struct dentry_operations {
  * Dentry definition
  */
 struct dentry {
-  unsigned int d_flags;
+  unsigned int d_refs;     /* Cache reference plus explicit pins. */
   struct inode *d_inode;    /* Where the name belongs to - NULL is negative */
   struct hlist_node d_hash; /* lookup hash list */
   struct dentry *d_parent;  /* parent directory */
@@ -220,6 +220,8 @@ int register_filesystem(struct file_system_type *fs);
 int unregister_filesystem(struct file_system_type *fs);
 int vfs_init(void);
 struct dentry *vfs_get_root(void);
+int vfs_dentry_get(struct dentry *dentry);
+void vfs_dentry_put(struct dentry *dentry);
 struct dentry *vfs_lookup(struct dentry *parent, struct qstr *name);
 
 struct vfs_mount_entry {

@@ -17,6 +17,7 @@ static int vfs_fd_destroy(struct file *file)
     int rc = 0;
     if (file->f_op != NULL && file->f_op->release != NULL)
         rc = file->f_op->release(file->f_inode, file);
+    if (file->f_path.dentry != NULL) vfs_dentry_put(file->f_path.dentry);
     kfree(file);
     return rc;
 }
