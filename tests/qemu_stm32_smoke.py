@@ -932,6 +932,13 @@ def main():
         proc.stdin.flush()
         wait_for(b"\r\nalpha/beta gamma\r\n", pos)
         wait_for(b"nos# ", pos)
+        pos = len(output)
+        proc.stdin.write(b"seq -w -s : 8 10; seq 1 3 | xargs -n 2 echo batch\r")
+        proc.stdin.flush()
+        wait_for(b"\r\n08:09:10\r\n", pos)
+        wait_for(b"batch 1 2\r\n", pos)
+        wait_for(b"batch 3\r\n", pos)
+        wait_for(b"nos# ", pos)
         print("QEMU STM32 boot, help, log statistics and RX burst passed")
     finally:
         if proc.poll() is None:
