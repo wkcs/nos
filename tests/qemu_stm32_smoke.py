@@ -922,6 +922,16 @@ def main():
         proc.stdin.flush()
         wait_for(b"\r\nKILL\r\npid1-alive\r\nUART1            ready=1", pos)
         wait_for(b"nos# ", pos)
+        pos = len(output)
+        proc.stdin.write(b"alias echo='echo aliased'; type -t echo ls; command echo raw; unalias echo; eval ' EV=42; echo ev:$EV '; unset EV\r")
+        proc.stdin.flush()
+        wait_for(b"\r\nalias\r\nbuiltin\r\nraw\r\nev:42\r\n", pos)
+        wait_for(b"nos# ", pos)
+        pos = len(output)
+        proc.stdin.write(b"printf 'alpha beta gamma\\n' > /tmp/rd.txt; read A B < /tmp/rd.txt; echo $A/$B; unset A B; rm /tmp/rd.txt\r")
+        proc.stdin.flush()
+        wait_for(b"\r\nalpha/beta gamma\r\n", pos)
+        wait_for(b"nos# ", pos)
         print("QEMU STM32 boot, help, log statistics and RX burst passed")
     finally:
         if proc.poll() is None:
