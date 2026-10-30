@@ -2348,6 +2348,115 @@ static int mv_parent(char *path, struct dentry **parent, char **name)
     return 0;
 }
 
+struct mv_dir_frame {
+    struct mv_dir_frame *parent;
+    struct file file;
+    size_t source_len;
+    size_t target_len;
+};
+
+static int mv_collect_one(void *context, const char *name, int length,
+                          loff_t offset, u64 ino, unsigned type)
+{
+    struct rm_entry *child = context;
+    if (child->name[0] != '\0' || child->error != 0) return 1;
+    if ((length == 1 && name[0] == '.') ||
+        (length == 2 && name[0] == '.' && name[1] == '.')) return 0;
+    (void)rm_first_entry(context, name, length, offset, ino, type);
+    return child->error != 0;
+}
+
+static int mv_push_dir(struct mv_dir_frame **top, struct dentry *entry,
+                       size_t source_len, size_t target_len)
+{
+    struct mv_dir_frame *frame;
+    int rc;
+    if (entry->d_inode->i_fop == NULL || entry->d_inode->i_fop->readdir == NULL)
+        return -ENOTDIR;
+    frame = kzalloc(sizeof(*frame), GFP_KERNEL);
+    if (frame == NULL) return -ENOMEM;
+    frame->file.f_inode = entry->d_inode;
+    frame->file.f_op = entry->d_inode->i_fop;
+    frame->file.f_path.dentry = entry;
+    rc = frame->file.f_op->open != NULL ? frame->file.f_op->open(frame->file.f_inode, &frame->file) : 0;
+    if (rc != 0) { kfree(frame); return rc; }
+    frame->source_len = source_len;
+    frame->target_len = target_len;
+    frame->parent = *top;
+    *top = frame;
+    return 0;
+}
+
+static int mv_pop_dir(struct mv_dir_frame **top)
+{
+    struct mv_dir_frame *frame = *top;
+    int rc = 0;
+    *top = frame->parent;
+    if (frame->file.f_op->release != NULL)
+        rc = frame->file.f_op->release(frame->file.f_inode, &frame->file);
+    kfree(frame);
+    return rc;
+}
+
+static int mv_copy_tree(char *source, char *target, char *scratch, char *buffer,
+                        struct dentry *source_entry, struct dentry *target_parent,
+                        const char *target_name, bool target_exists)
+{
+    struct mv_dir_frame *top = NULL;
+    struct dentry *ancestor;
+    int rc;
+
+    if (target_exists) return -EEXIST;
+    for (ancestor = target_parent; ancestor != NULL; ancestor = ancestor->d_parent) {
+        if (ancestor == source_entry) return -EINVAL;
+        if (ancestor->d_parent == ancestor) break;
+    }
+    rc = vfs_make_dir(target_parent, target_name, source_entry->d_inode->i_mode & 0777, NULL);
+    if (rc != 0) return rc;
+    rc = mv_push_dir(&top, source_entry, strlen(source), strlen(target));
+    while (rc == 0 && top != NULL) {
+        struct rm_entry child = {0};
+        struct dentry *entry, *parent;
+        size_t child_len;
+        rc = top->file.f_op->readdir(&top->file, &child, mv_collect_one);
+        if (rc == 0) rc = child.error;
+        if (rc != 0) break;
+        if (child.name[0] == '\0') {
+            rc = mv_pop_dir(&top);
+            if (top != NULL) {
+                source[top->source_len] = '\0';
+                target[top->target_len] = '\0';
+            }
+            continue;
+        }
+        child_len = strlen(child.name);
+        if (top->source_len + child_len + 1U > SHELL_SESSION_INPUT_MAX ||
+            top->target_len + child_len + 1U > SHELL_SESSION_INPUT_MAX) {
+            rc = -ENAMETOOLONG;
+            break;
+        }
+        parent = resolve_path(target);
+        source[top->source_len] = '/';
+        memcpy(source + top->source_len + 1, child.name, child_len + 1);
+        target[top->target_len] = '/';
+        memcpy(target + top->target_len + 1, child.name, child_len + 1);
+        entry = resolve_path(source);
+        if (entry == NULL || entry->d_inode == NULL || parent == NULL) { rc = -ENOENT; break; }
+        if (S_ISDIR(entry->d_inode->i_mode)) {
+            rc = vfs_make_dir(parent, child.name, entry->d_inode->i_mode & 0777, NULL);
+            if (rc == 0) rc = mv_push_dir(&top, entry, strlen(source), strlen(target));
+        } else if (S_ISREG(entry->d_inode->i_mode)) {
+            rc = cp_one(nshell_current(), source, target, false, scratch, buffer, 128);
+            source[top->source_len] = '\0';
+            target[top->target_len] = '\0';
+        } else {
+            rc = -ENOTSUP;
+        }
+    }
+    while (top != NULL) (void)mv_pop_dir(&top);
+    return rc;
+}
+
 static int cmd_mv(int argc, char *argv[])
 {
     struct mv_workspace {
@@ -2420,6 +2529,16 @@ static int cmd_mv(int argc, char *argv[])
             rc = cp_one(nshell_current(), argv[i], workspace->target_path, false,
                         workspace->target, workspace->buffer, sizeof(workspace->buffer));
             if (rc == 0) rc = vfs_remove_entry(old_parent, old_name, false);
+        } else if (rc == -EXDEV && S_ISDIR(src->d_inode->i_mode)) {
+            strcpy(workspace->source, argv[i]);
+            while (src_len > 1 && workspace->source[src_len - 1] == '/')
+                workspace->source[--src_len] = '\0';
+            rc = mv_copy_tree(workspace->source, workspace->target_path, workspace->target,
+                              workspace->buffer, src, new_parent, new_name, existing != NULL);
+            if (rc == 0) {
+                strcpy(workspace->source, argv[i]);
+                rc = rm_path(workspace->source, true, false, false, false);
+            }
         }
         if (rc == 0) continue;
 error:
