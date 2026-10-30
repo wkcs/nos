@@ -903,6 +903,11 @@ def main():
         proc.stdin.flush()
         wait_for(b"\r\nmysh:1:arg1:vis:/tmp\r\nafter:5:/tmp/two:\r\n", pos)
         wait_for(b"nos# ", pos)
+        pos = len(output)
+        proc.stdin.write(b"alias say='echo [alias]' pfx='say '; pfx ok; alias say; unalias -a; alias\r")
+        proc.stdin.flush()
+        wait_for(b"\r\n[alias] ok\r\nalias say='echo [alias]'\r\n", pos)
+        wait_for(b"nos# ", pos)
         print("QEMU STM32 boot, help, log statistics and RX burst passed")
     finally:
         if proc.poll() is None:
