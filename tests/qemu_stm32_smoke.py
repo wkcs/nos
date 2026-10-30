@@ -823,6 +823,18 @@ def main():
         proc.stdin.flush()
         wait_count(b"def\n", 2, pos)
         wait_for(b"nos# ", pos)
+        pos = len(output)
+        proc.stdin.write(b"echo tee-one | tee /tmp/tee-a /tmp/tee-b | cat; echo tee-two | tee -a /tmp/tee-a > /tmp/tee-b; cat /tmp/tee-a /tmp/tee-b\r")
+        proc.stdin.flush()
+        wait_count(b"tee-one\n", 2, pos)
+        wait_count(b"tee-two\n", 2, pos)
+        wait_for(b"nos# ", pos)
+        pos = len(output)
+        proc.stdin.write(b"echo tee-partial | tee /sys/arch /tmp/tee-a || echo tee-failed; cat /tmp/tee-a; rm /tmp/tee-a /tmp/tee-b\r")
+        proc.stdin.flush()
+        wait_for(b"\r\ntee-failed\r\n", pos)
+        wait_count(b"tee-partial\n", 2, pos)
+        wait_for(b"nos# ", pos)
         print("QEMU STM32 boot, help, log statistics and RX burst passed")
     finally:
         if proc.poll() is None:
