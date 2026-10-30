@@ -90,7 +90,7 @@
 */
 
 
-#define	_USE_LFN	2
+#define	_USE_LFN	3
 #define	_MAX_LFN	255
 /* The _USE_LFN option switches the LFN feature.
 /
