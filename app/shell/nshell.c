@@ -2468,6 +2468,42 @@ static int mv_copy_tree(char *source, char *target, char *scratch, char *buffer,
     return rc;
 }
 
+static int mv_replace_fat_file(struct dentry *old_parent, const char *old_name,
+                               struct dentry *new_parent, const char *new_name,
+                               const char *target_path)
+{
+    static unsigned int sequence;
+    char backup[FS_NAME_LEN];
+    struct qstr name;
+    unsigned int i;
+    int rc, rollback;
+
+    for (i = 0; i < 128; i++) {
+        unsigned int id = __atomic_fetch_add(&sequence, 1U, __ATOMIC_RELAXED);
+        snprintf(backup, sizeof(backup), ".nosmv%08x", id);
+        name.name = (const unsigned char *)backup;
+        name.len = (unsigned int)strlen(backup);
+        name.hash = 0;
+        if (vfs_lookup(new_parent, &name) == NULL) break;
+    }
+    if (i == 128) return -EEXIST;
+    rc = vfs_rename_entry(new_parent, new_name, new_parent, backup);
+    if (rc != 0) return rc;
+    rc = vfs_rename_entry(old_parent, old_name, new_parent, new_name);
+    if (rc != 0) {
+        rollback = vfs_rename_entry(new_parent, backup, new_parent, new_name);
+        if (rollback != 0)
+            shell_error("mv: original target for '%s' remains as '%s' in its directory\r\n",
+                        target_path, backup);
+        return rc;
+    }
+    rc = vfs_remove_entry(new_parent, backup, false);
+    if (rc != 0)
+        shell_error("mv: previous target for '%s' remains as '%s' in its directory\r\n",
+                    target_path, backup);
+    return rc;
+}
+
 static int cmd_mv(int argc, char *argv[])
 {
     struct mv_workspace {
@@ -2485,6 +2521,7 @@ static int cmd_mv(int argc, char *argv[])
         if (strcmp(option, "-") == 0) { first++; break; }
         for (; *option != '\0'; option++) {
             if (*option == 'n') no_clobber = true;
+            else if (*option == 'f') no_clobber = false;
             else { shell_error("mv: invalid option: %s\r\n", argv[first]); return 1; }
         }
         first++;
@@ -2536,6 +2573,14 @@ static int cmd_mv(int argc, char *argv[])
         rc = mv_parent(workspace->source, &old_parent, &old_name);
         if (rc == 0) rc = mv_parent(workspace->target, &new_parent, &new_name);
         if (rc == 0) rc = vfs_rename_entry(old_parent, old_name, new_parent, new_name);
+        if (rc == -EEXIST && existing != NULL && existing->d_inode != NULL &&
+            S_ISREG(src->d_inode->i_mode) && S_ISREG(existing->d_inode->i_mode) &&
+            new_parent->d_sb != NULL && new_parent->d_sb->s_type != NULL &&
+            strcmp(new_parent->d_sb->s_type->name, "fatfs") == 0) {
+            if (existing->d_refs > 1U) rc = -EBUSY;
+            else rc = mv_replace_fat_file(old_parent, old_name, new_parent, new_name,
+                                          workspace->target_path);
+        }
         if (rc == -EXDEV && S_ISREG(src->d_inode->i_mode)) {
             rc = cp_one(nshell_current(), argv[i], workspace->target_path, false,
                         workspace->target, workspace->buffer, sizeof(workspace->buffer));
