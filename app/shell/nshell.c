@@ -2353,6 +2353,8 @@ static int cmd_mv(int argc, char *argv[])
     struct mv_workspace {
         char source[SHELL_SESSION_INPUT_MAX + 1];
         char target[SHELL_SESSION_INPUT_MAX + 1];
+        char target_path[SHELL_SESSION_INPUT_MAX + 1];
+        char buffer[128];
     } *workspace;
     struct dentry *destination;
     bool directory, no_clobber = false;
@@ -2410,9 +2412,15 @@ static int cmd_mv(int argc, char *argv[])
         existing = resolve_path(workspace->target);
         if (existing == src) { rc = -EINVAL; goto error; }
         if (existing != NULL && no_clobber) continue;
+        strcpy(workspace->target_path, workspace->target);
         rc = mv_parent(workspace->source, &old_parent, &old_name);
         if (rc == 0) rc = mv_parent(workspace->target, &new_parent, &new_name);
         if (rc == 0) rc = vfs_rename_entry(old_parent, old_name, new_parent, new_name);
+        if (rc == -EXDEV && S_ISREG(src->d_inode->i_mode)) {
+            rc = cp_one(nshell_current(), argv[i], workspace->target_path, false,
+                        workspace->target, workspace->buffer, sizeof(workspace->buffer));
+            if (rc == 0) rc = vfs_remove_entry(old_parent, old_name, false);
+        }
         if (rc == 0) continue;
 error:
         shell_error("mv: cannot move '%s': error %d\r\n", argv[i], rc);
