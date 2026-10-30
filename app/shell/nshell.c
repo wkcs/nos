@@ -71,6 +71,11 @@ struct shell_saved_variable {
     struct shell_variable *old;
 };
 
+struct shell_cwd_ref {
+    unsigned int refs;
+    struct file file;
+};
+
 struct nshell {
     struct task_struct *task;
     struct shell_session session;
@@ -86,6 +91,7 @@ struct nshell {
     struct shell_stream_pipe *error_pipe;
     int output_error;
     struct shell_variable *variables;
+    struct shell_cwd_ref *cwd_ref;
     uint32_t generation;
 };
 
@@ -415,6 +421,40 @@ static void shell_register_cmd(const char *name, const char *desc,
 /* --- Filesystem Helper Functions --- */
 
 #define shell_cwd (nshell_current()->session.cwd)
+
+static struct shell_cwd_ref *shell_cwd_open(struct dentry *entry)
+{
+    struct shell_cwd_ref *ref;
+    int rc;
+
+    if (entry == NULL || entry->d_inode == NULL || entry->d_inode->i_fop == NULL ||
+        vfs_dentry_get(entry) != 0) return NULL;
+    ref = kzalloc(sizeof(*ref), GFP_KERNEL);
+    if (ref == NULL) {
+        vfs_dentry_put(entry);
+        return NULL;
+    }
+    ref->refs = 1;
+    ref->file.f_path.dentry = entry;
+    ref->file.f_inode = entry->d_inode;
+    ref->file.f_op = entry->d_inode->i_fop;
+    ref->file.f_flags = O_RDONLY;
+    rc = ref->file.f_op->open != NULL ? ref->file.f_op->open(ref->file.f_inode, &ref->file) : 0;
+    if (rc != 0) {
+        vfs_dentry_put(entry);
+        kfree(ref);
+        return NULL;
+    }
+    return ref;
+}
+
+static void shell_cwd_put(struct shell_cwd_ref *ref)
+{
+    if (ref == NULL || __atomic_sub_fetch(&ref->refs, 1U, __ATOMIC_ACQ_REL) != 0) return;
+    if (ref->file.f_op->release != NULL) ref->file.f_op->release(ref->file.f_inode, &ref->file);
+    vfs_dentry_put(ref->file.f_path.dentry);
+    kfree(ref);
+}
 
 static void shell_init_cwd(void) {
   if (!shell_cwd) {
@@ -940,6 +980,7 @@ static int cmd_cd(int argc, char *argv[])
     struct nshell *shell = nshell_current();
     struct shell_saved_variable saved[2];
     struct dentry *dentry;
+    struct shell_cwd_ref *new_ref;
     const char *path;
     char *paths;
     char *old_path;
@@ -991,6 +1032,12 @@ static int cmd_cd(int argc, char *argv[])
         kfree(paths);
         return 1;
     }
+    new_ref = shell_cwd_open(dentry);
+    if (new_ref == NULL) {
+        shell_error("cd: cannot open directory: %s\r\n", path);
+        kfree(paths);
+        return 1;
+    }
     rc = variable_push(shell, "OLDPWD", 6, old_path, &saved[0]);
     if (rc == 0) {
         rc = variable_push(shell, "PWD", 3, new_path, &saved[1]);
@@ -998,12 +1045,15 @@ static int cmd_cd(int argc, char *argv[])
     }
     if (rc != 0) {
         shell_error("cd: out of memory\r\n");
+        shell_cwd_put(new_ref);
         kfree(paths);
         return 1;
     }
     if (saved[0].old != NULL) kfree(saved[0].old);
     if (saved[1].old != NULL) kfree(saved[1].old);
     shell_cwd = dentry;
+    shell_cwd_put(shell->cwd_ref);
+    shell->cwd_ref = new_ref;
     if (print_path) shell_printf("%s\r\n", new_path);
     kfree(paths);
     return 0;
@@ -2146,6 +2196,7 @@ static void shell_pipeline_worker(void *context)
     if (stage->last) stage->group->last_status = shell->last_status;
     shell_session_unregister(shell);
     variable_clear(shell);
+    shell_cwd_put(shell->cwd_ref);
     kfree(shell);
 }
 
@@ -2177,6 +2228,7 @@ static noinline int shell_run_pipeline(struct nshell *parent, struct shell_comma
         stages[i].shell = child;
         created++;
         memcpy(child, parent, sizeof(*child));
+        if (child->cwd_ref != NULL) __atomic_add_fetch(&child->cwd_ref->refs, 1U, __ATOMIC_RELAXED);
         child->next = NULL;
         child->pipeline_worker = true;
         child->variables = NULL;
@@ -2230,6 +2282,7 @@ cleanup:
             pending++;
         }
         variable_clear(stages[i].shell);
+        shell_cwd_put(stages[i].shell->cwd_ref);
         kfree(stages[i].shell);
     }
     /* The cleanup callback signals only after the task stack has been freed. */
@@ -2533,6 +2586,8 @@ static void nshell_task_entry(void* parameter)
             if (shell->remote && ctx != NULL) {
                 shell->generation = __atomic_load_n(&ctx->generation, __ATOMIC_ACQUIRE);
                 shell->session.tty = nlk_cap_shell_tty(ctx);
+                shell_cwd_put(shell->cwd_ref);
+                shell->cwd_ref = NULL;
                 shell_session_reset(&shell->session, vfs_get_root());
                 variable_clear(shell);
                 shell->last_status = variable_init(shell) == 0 ? 0 : 1;
