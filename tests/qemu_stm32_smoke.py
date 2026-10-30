@@ -876,6 +876,18 @@ def main():
         wait_for(b"10\r\n2\r\n1\r\n", pos)
         wait_for(b"A\r\n", pos)
         wait_for(b"nos# ", pos)
+        pos = len(output)
+        proc.stdin.write(b"printf 'one:two:three\\nplain\\n' | cut -d : -f 1,3 -s; printf 'abcdef\\n' | cut -c 2-4,6\r")
+        proc.stdin.flush()
+        wait_for(b"\r\none:three\r\n", pos)
+        wait_for(b"bcdf\r\n", pos)
+        wait_for(b"nos# ", pos)
+        pos = len(output)
+        proc.stdin.write(b"printf 'hello  world\\n' | tr -s ' ' '_' | tr '[:lower:]' '[:upper:]'; printf 'a1b2c3\\n' | tr -d '0-9'\r")
+        proc.stdin.flush()
+        wait_for(b"HELLO_WORLD\n", pos)
+        wait_for(b"abc\n", pos)
+        wait_for(b"nos# ", pos)
         print("QEMU STM32 boot, help, log statistics and RX burst passed")
     finally:
         if proc.poll() is None:

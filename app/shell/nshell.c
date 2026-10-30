@@ -2905,6 +2905,427 @@ out:
     return rc < 0 ? 1 : 0;
 }
 
+struct cut_options {
+    const char *list;
+    char mode;
+    char delim;
+    bool has_delim;
+    bool suppress;
+};
+
+static bool cut_parse_range(const char **p, unsigned int *start, unsigned int *end)
+{
+    unsigned int a = 0, b = 0;
+    const char *s = *p;
+
+    while (*s == ',' || *s == ' ' || *s == '\t') s++;
+    if (*s == '\0') { *p = s; return false; }
+    if (*s == '-') {
+        a = 1U;
+    } else {
+        if (*s < '0' || *s > '9') return false;
+        while (*s >= '0' && *s <= '9') a = a * 10U + (unsigned int)(*s++ - '0');
+        if (a == 0U) return false;
+    }
+    if (*s == '-') {
+        s++;
+        if (*s == '\0' || *s == ',' || *s == ' ' || *s == '\t') {
+            b = UINT32_MAX;
+        } else {
+            if (*s < '0' || *s > '9') return false;
+            while (*s >= '0' && *s <= '9') b = b * 10U + (unsigned int)(*s++ - '0');
+            if (b < a) return false;
+        }
+    } else {
+        b = a;
+    }
+    if (*s != '\0' && *s != ',' && *s != ' ' && *s != '\t') return false;
+    *start = a;
+    *end = b;
+    *p = s;
+    return true;
+}
+
+static bool cut_list_valid(const char *list)
+{
+    const char *p = list;
+    unsigned int a, b;
+    bool any = false;
+    if (list == NULL || *list == '\0') return false;
+    while (*p != '\0') {
+        if (!cut_parse_range(&p, &a, &b)) return *p == '\0' && any;
+        any = true;
+    }
+    return any;
+}
+
+static bool cut_list_selects(const char *list, unsigned int index)
+{
+    const char *p = list;
+    unsigned int a, b;
+    while (*p != '\0' && cut_parse_range(&p, &a, &b)) {
+        if (index >= a && index <= b) return true;
+    }
+    return false;
+}
+
+static int cut_process_line(const char *line, size_t len, const struct cut_options *opts)
+{
+    size_t i;
+
+    if (len > 0U && line[len - 1U] == '\r') len--;
+    if (opts->mode == 'b' || opts->mode == 'c') {
+        for (i = 0; i < len; i++) {
+            if (cut_list_selects(opts->list, (unsigned int)(i + 1U)) &&
+                nshell_write(line + i, 1) != 1)
+                return -EIO;
+        }
+        return shell_printf("\r\n") < 0 ? -EIO : 0;
+    }
+    if (memchr(line, (unsigned char)opts->delim, len) == NULL) {
+        if (opts->suppress) return 0;
+        if (len > 0U && nshell_write(line, (int)len) != (int)len) return -EIO;
+        return shell_printf("\r\n") < 0 ? -EIO : 0;
+    }
+    {
+        unsigned int field = 1U;
+        size_t start = 0;
+        bool printed = false;
+        for (i = 0; i <= len; i++) {
+            if (i == len || line[i] == opts->delim) {
+                if (cut_list_selects(opts->list, field)) {
+                    size_t flen = i - start;
+                    if (printed && nshell_write(&opts->delim, 1) != 1) return -EIO;
+                    if (flen > 0U && nshell_write(line + start, (int)flen) != (int)flen)
+                        return -EIO;
+                    printed = true;
+                }
+                field++;
+                start = i + 1U;
+            }
+        }
+    }
+    return shell_printf("\r\n") < 0 ? -EIO : 0;
+}
+
+static int cut_stream(struct file *file, const struct cut_options *opts)
+{
+    char input[64];
+    char *line;
+    size_t used = 0, cap = 128;
+    int n, rc = 0;
+
+    line = kmalloc(cap, GFP_KERNEL);
+    if (line == NULL) return -ENOMEM;
+    while ((n = wc_read(file, input, file == NULL ? 1 : sizeof(input))) > 0) {
+        int i;
+        for (i = 0; i < n; i++) {
+            if (input[i] == '\n') {
+                rc = cut_process_line(line, used, opts);
+                if (rc != 0) goto out;
+                used = 0;
+                continue;
+            }
+            if (used == cap) {
+                size_t next_cap = cap * 2U;
+                char *expanded;
+                if (next_cap > 4096U) { rc = -EFBIG; goto out; }
+                expanded = kmalloc(next_cap, GFP_KERNEL);
+                if (expanded == NULL) { rc = -ENOMEM; goto out; }
+                memcpy(expanded, line, used);
+                kfree(line);
+                line = expanded;
+                cap = next_cap;
+            }
+            line[used++] = input[i];
+        }
+    }
+    if (n < 0) rc = n;
+    else if (used > 0U) rc = cut_process_line(line, used, opts);
+out:
+    kfree(line);
+    return rc;
+}
+
+static int cut_file(const char *path, const struct cut_options *opts)
+{
+    struct dentry *entry = resolve_path(path);
+    struct file file;
+    int rc;
+
+    if (entry == NULL || entry->d_inode == NULL) return -ENOENT;
+    if (S_ISDIR(entry->d_inode->i_mode)) return -EISDIR;
+    if (entry->d_inode->i_fop == NULL || entry->d_inode->i_fop->read == NULL) return -EACCES;
+    memset(&file, 0, sizeof(file));
+    file.f_inode = entry->d_inode;
+    file.f_op = entry->d_inode->i_fop;
+    file.f_path.dentry = entry;
+    file.f_flags = O_RDONLY;
+    if (file.f_op->open != NULL) {
+        rc = file.f_op->open(file.f_inode, &file);
+        if (rc != 0) return rc;
+    }
+    rc = cut_stream(&file, opts);
+    if (file.f_op->release != NULL) {
+        int close_rc = file.f_op->release(file.f_inode, &file);
+        if (rc == 0 && close_rc != 0) rc = close_rc;
+    }
+    return rc;
+}
+
+static int cmd_cut(int argc, char *argv[])
+{
+    struct cut_options opts = { .delim = '\t' };
+    int first = 1, status = 0, i;
+
+    while (first < argc && argv[first][0] == '-' && argv[first][1] != '\0') {
+        const char *opt = argv[first] + 1;
+        if (strcmp(opt, "-") == 0) { first++; break; }
+        while (*opt != '\0') {
+            if (*opt == 'b' || *opt == 'c' || *opt == 'f') {
+                const char *arg = opt + 1;
+                if (opts.mode != '\0') {
+                    shell_error("cut: only one type of list may be specified\r\n");
+                    return 1;
+                }
+                opts.mode = *opt;
+                if (*arg == '\0') {
+                    if (++first >= argc) {
+                        shell_error("cut: option requires an argument\r\n");
+                        return 1;
+                    }
+                    arg = argv[first];
+                }
+                opts.list = arg;
+                break;
+            } else if (*opt == 'd') {
+                const char *arg = opt + 1;
+                if (*arg == '\0') {
+                    if (++first >= argc) {
+                        shell_error("cut: option requires an argument -- 'd'\r\n");
+                        return 1;
+                    }
+                    arg = argv[first];
+                }
+                if (arg[0] == '\0' || arg[1] != '\0') {
+                    shell_error("cut: the delimiter must be a single character\r\n");
+                    return 1;
+                }
+                opts.delim = arg[0];
+                opts.has_delim = true;
+                break;
+            } else if (*opt == 's') {
+                opts.suppress = true;
+            } else if (*opt != 'n') {
+                shell_error("cut: invalid option -- '%c'\r\n", *opt);
+                return 1;
+            }
+            opt++;
+        }
+        first++;
+    }
+    if (opts.mode == '\0' || !cut_list_valid(opts.list) ||
+        (opts.mode != 'f' && (opts.has_delim || opts.suppress))) {
+        shell_error("cut: invalid options or list\r\n");
+        return 1;
+    }
+    shell_init_cwd();
+    if (first == argc) return cut_stream(NULL, &opts) < 0 ? 1 : 0;
+    for (i = first; i < argc; i++) {
+        int rc = strcmp(argv[i], "-") == 0 ?
+                 cut_stream(NULL, &opts) : cut_file(argv[i], &opts);
+        if (rc < 0) {
+            shell_error("cut: %s: error %d\r\n", argv[i], rc);
+            status = 1;
+        }
+    }
+    return status;
+}
+
+static unsigned char tr_unescape(const char **p)
+{
+    const char *s = *p;
+    unsigned char c;
+    if (*s != '\\') {
+        *p = s + 1;
+        return (unsigned char)*s;
+    }
+    s++;
+    if (*s >= '0' && *s <= '7') {
+        unsigned int v = 0, digits = 0;
+        while (digits < 3U && *s >= '0' && *s <= '7') {
+            v = (v << 3) | (unsigned int)(*s++ - '0');
+            digits++;
+        }
+        *p = s;
+        return (unsigned char)(v & 0xFFU);
+    }
+    switch (*s) {
+    case 'a': c = '\a'; break;
+    case 'b': c = '\b'; break;
+    case 'f': c = '\f'; break;
+    case 'n': c = '\n'; break;
+    case 'r': c = '\r'; break;
+    case 't': c = '\t'; break;
+    case 'v': c = '\v'; break;
+    case '\0': *p = s; return '\\';
+    default: c = (unsigned char)*s; break;
+    }
+    *p = s + 1;
+    return c;
+}
+
+static int tr_expand_spec(const char *spec, unsigned char *out, size_t max_len)
+{
+    const char *p = spec;
+    size_t len = 0;
+
+    while (*p != '\0') {
+        unsigned int ch, end, c;
+        if (p[0] == '[' && p[1] == ':') {
+            const char *close = strstr(p + 2, ":]");
+            if (close != NULL) {
+                size_t clen = (size_t)(close - (p + 2));
+                const char *cname = p + 2;
+                p = close + 2;
+                for (c = 0; c < 256U; c++) {
+                    bool match = false;
+                    if (clen == 5 && memcmp(cname, "lower", 5) == 0)
+                        match = c >= 'a' && c <= 'z';
+                    else if (clen == 5 && memcmp(cname, "upper", 5) == 0)
+                        match = c >= 'A' && c <= 'Z';
+                    else if (clen == 5 && memcmp(cname, "digit", 5) == 0)
+                        match = c >= '0' && c <= '9';
+                    else if (clen == 5 && memcmp(cname, "alpha", 5) == 0)
+                        match = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z');
+                    else if (clen == 5 && memcmp(cname, "alnum", 5) == 0)
+                        match = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9');
+                    else if (clen == 5 && memcmp(cname, "space", 5) == 0)
+                        match = c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f' || c == '\v';
+                    else if (clen == 5 && memcmp(cname, "blank", 5) == 0)
+                        match = c == ' ' || c == '\t';
+                    else return -EINVAL;
+                    if (match) {
+                        if (len >= max_len) return -E2BIG;
+                        out[len++] = (unsigned char)c;
+                    }
+                }
+                continue;
+            }
+        }
+        ch = tr_unescape(&p);
+        if (*p == '-' && p[1] != '\0') {
+            p++;
+            end = tr_unescape(&p);
+            if (end < ch) return -EINVAL;
+            for (c = ch; c <= end; c++) {
+                if (len >= max_len) return -E2BIG;
+                out[len++] = (unsigned char)c;
+            }
+        } else {
+            if (len >= max_len) return -E2BIG;
+            out[len++] = (unsigned char)ch;
+        }
+    }
+    return (int)len;
+}
+
+static int cmd_tr(int argc, char *argv[])
+{
+    struct tr_workspace {
+        unsigned char s1[256];
+        unsigned char s2[256];
+        unsigned char map[256];
+        unsigned char del[256];
+        unsigned char sqz[256];
+        char in[64];
+        char out[64];
+    } *ws;
+    bool delete_chars = false, squeeze = false, complement = false;
+    int first = 1, len1, len2 = 0, n, prev = -1, rc = 0;
+    unsigned int c;
+
+    while (first < argc && argv[first][0] == '-' && argv[first][1] != '\0') {
+        const char *opt = argv[first] + 1;
+        if (strcmp(opt, "-") == 0) { first++; break; }
+        for (; *opt != '\0'; opt++) {
+            if (*opt == 'd') delete_chars = true;
+            else if (*opt == 's') squeeze = true;
+            else if (*opt == 'c' || *opt == 'C') complement = true;
+            else if (*opt != 't') {
+                shell_error("tr: invalid option -- '%c'\r\n", *opt);
+                return 1;
+            }
+        }
+        first++;
+    }
+    if (argc - first < 1 || argc - first > 2 ||
+        (delete_chars && !squeeze && argc - first != 1) ||
+        (delete_chars && squeeze && argc - first != 2) ||
+        (!delete_chars && !squeeze && argc - first != 2)) {
+        shell_error("tr: invalid operands\r\n");
+        return 1;
+    }
+    ws = kzalloc(sizeof(*ws), GFP_KERNEL);
+    if (ws == NULL) return 1;
+    len1 = tr_expand_spec(argv[first], ws->s1, sizeof(ws->s1));
+    if (len1 < 0) { rc = 1; goto out; }
+    if (argc - first == 2) {
+        len2 = tr_expand_spec(argv[first + 1], ws->s2, sizeof(ws->s2));
+        if (len2 < 0 || (!delete_chars && len2 == 0)) { rc = 1; goto out; }
+    }
+    if (complement) {
+        int i;
+        for (i = 0; i < len1; i++) ws->del[ws->s1[i]] = 1U;
+        len1 = 0;
+        for (c = 0; c < 256U; c++) {
+            if (!ws->del[c]) ws->s1[len1++] = (unsigned char)c;
+            ws->del[c] = 0U;
+        }
+    }
+    for (c = 0; c < 256U; c++) ws->map[c] = (unsigned char)c;
+    if (delete_chars) {
+        int i;
+        for (i = 0; i < len1; i++) ws->del[ws->s1[i]] = 1U;
+        if (squeeze) {
+            for (i = 0; i < len2; i++) ws->sqz[ws->s2[i]] = 1U;
+        }
+    } else if (argc - first == 2) {
+        int i;
+        for (i = 0; i < len1; i++) {
+            unsigned char repl = ws->s2[i < len2 ? i : len2 - 1];
+            ws->map[ws->s1[i]] = repl;
+            if (squeeze) ws->sqz[repl] = 1U;
+        }
+        if (squeeze) {
+            for (i = 0; i < len2; i++) ws->sqz[ws->s2[i]] = 1U;
+        }
+    } else {
+        int i;
+        for (i = 0; i < len1; i++) ws->sqz[ws->s1[i]] = 1U;
+    }
+    while ((n = wc_read(NULL, ws->in, sizeof(ws->in))) > 0) {
+        int i, out_len = 0;
+        for (i = 0; i < n; i++) {
+            unsigned char ch = (unsigned char)ws->in[i];
+            if (ws->del[ch]) continue;
+            ch = ws->map[ch];
+            if (squeeze && ws->sqz[ch] && prev == (int)ch) continue;
+            prev = (int)ch;
+            ws->out[out_len++] = (char)ch;
+        }
+        if (out_len > 0 && nshell_write(ws->out, out_len) != out_len) {
+            rc = 1;
+            goto out;
+        }
+    }
+    if (n < 0) rc = 1;
+out:
+    kfree(ws);
+    if (rc != 0) shell_error("tr: execution failed\r\n");
+    return rc;
+}
+
 static int cmd_mount(int argc, char *argv[]) {
   char *fs_type = NULL;
   char *dev = NULL;
@@ -4369,6 +4790,8 @@ static int nshell_init(void)
     shell_register_cmd("grep", "Search lines for a fixed string", cmd_grep);
     shell_register_cmd("sort", "Sort lines of text", cmd_sort);
     shell_register_cmd("uniq", "Report or omit repeated lines", cmd_uniq);
+    shell_register_cmd("cut", "Remove sections from each line of files", cmd_cut);
+    shell_register_cmd("tr", "Translate or delete characters", cmd_tr);
     shell_register_cmd("mount", "Mount filesystem", cmd_mount);
     shell_register_cmd("df", "Report filesystem mount usage", cmd_df);
     shell_register_cmd("ps", "Dump task status", cmd_ps);
