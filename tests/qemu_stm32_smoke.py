@@ -869,6 +869,13 @@ def main():
         proc.stdin.flush()
         wait_for(b"\r\n/tmp/froot/sub/item.txt\r\n/tmp/froot/empty.dat\r\n", pos)
         wait_for(b"nos# ", pos)
+        pos = len(output)
+        proc.stdin.write(b"printf 'b\\na\\nb\\nc\\n' | sort | uniq -c; printf '10\\n2\\n1\\n' | sort -nr; printf 'A\\na\\nB\\n' | uniq -id\r")
+        proc.stdin.flush()
+        wait_for(b"\r\n1 a\r\n2 b\r\n1 c\r\n", pos)
+        wait_for(b"10\r\n2\r\n1\r\n", pos)
+        wait_for(b"A\r\n", pos)
+        wait_for(b"nos# ", pos)
         print("QEMU STM32 boot, help, log statistics and RX burst passed")
     finally:
         if proc.poll() is None:
