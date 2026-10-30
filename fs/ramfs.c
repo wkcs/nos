@@ -215,6 +215,8 @@ static const struct file_operations ramfs_file_ops = {
 };
 
 static const struct file_operations ramfs_dir_ops = {
+    .open = ramfs_open,
+    .release = ramfs_release,
     .readdir = ramfs_readdir,
 };
 
@@ -235,7 +237,7 @@ static void ramfs_free_inode(struct inode *inode)
     nos_vfs_destroy_inode(inode);
 }
 
-/* A removed regular file stays alive until its last open file is released. */
+/* A removed inode stays alive until its last open file is released. */
 static void ramfs_drop_file_link(struct inode *inode)
 {
     struct ramfs_node *node = inode->i_private;
@@ -374,7 +376,7 @@ static int ramfs_rmdir(struct inode *dir, struct dentry *dentry)
             list_del(&de->list);
             mutex_unlock(&dir->i_mutex);
             kfree(de->name);
-            ramfs_free_inode(de->inode);
+            ramfs_drop_file_link(de->inode);
             kfree(de);
             return 0;
         }
@@ -443,11 +445,7 @@ static int ramfs_rename(struct inode *old_dir, struct dentry *old_dentry,
         }
         list_del(&dst_de->list);
         kfree(dst_de->name);
-        if (dst_de->inode->i_mode & S_IFDIR) {
-            ramfs_free_inode(dst_de->inode);
-        } else {
-            ramfs_drop_file_link(dst_de->inode);
-        }
+        ramfs_drop_file_link(dst_de->inode);
         kfree(dst_de);
     }
 
