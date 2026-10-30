@@ -134,11 +134,18 @@ static int fatfs_release(struct inode *inode, struct file *file) {
 static int fatfs_readdir(struct file *file, void *dirent, filldir_t filldir) {
     DIR *dp = (DIR *)file->private_data;
     FILINFO fno = { 0 };
+#if _USE_LFN && !_LFN_UNICODE
+    char long_name[FS_NAME_LEN];
+#endif
     FRESULT res;
     loff_t i;
 
     if (!dp) return -EBADF;
     if (file->f_pos < 0) return -EINVAL;
+#if _USE_LFN && !_LFN_UNICODE
+    fno.lfname = long_name;
+    fno.lfsize = sizeof(long_name);
+#endif
 
     /* A rejected entry must be offered again on the next call. */
     res = f_readdir(dp, NULL);
@@ -150,10 +157,15 @@ static int fatfs_readdir(struct file *file, void *dirent, filldir_t filldir) {
     }
 
     for (;;) {
+        const char *name;
         res = f_readdir(dp, &fno);
         if (res != FR_OK) return -EIO;
         if (fno.fname[0] == '\0') return 0;
-        if (filldir(dirent, fno.fname, strlen(fno.fname), file->f_pos, 0,
+        name = fno.fname;
+#if _USE_LFN && !_LFN_UNICODE
+        if (long_name[0] != '\0') name = long_name;
+#endif
+        if (filldir(dirent, name, strlen(name), file->f_pos, 0,
                     (fno.fattrib & AM_DIR) ? DT_DIR : DT_REG) != 0) return 0;
         file->f_pos++;
     }

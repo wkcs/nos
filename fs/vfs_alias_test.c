@@ -50,7 +50,7 @@ static int vfs_alias_test(void)
         struct dentry *dir;
         struct file file = {0};
         if (nos_mkdir("/enum-test", 0755) != 0) goto failed;
-        fd = nos_open("/enum-test/a", O_CREAT | O_RDWR);
+        fd = nos_open("/enum-test/long filename.txt", O_CREAT | O_RDWR);
         if (fd < 0 || nos_close(fd) != 0) goto failed;
         fd = nos_open("/enum-test/b", O_CREAT | O_RDWR);
         if (fd < 0 || nos_close(fd) != 0) goto failed;
@@ -61,7 +61,7 @@ static int vfs_alias_test(void)
         file.f_path.dentry = dir;
         if (file.f_op->open(file.f_inode, &file) != 0 ||
             file.f_op->readdir(&file, &first, alias_stop_readdir) != 0 ||
-            first.count != 1 || file.f_pos != 0 ||
+            first.count != 1 || strcmp(first.first, "long filename.txt") != 0 || file.f_pos != 0 ||
             file.f_op->readdir(&file, &retry, alias_stop_readdir) != 0 ||
             retry.count != 1 || strcmp(first.first, retry.first) != 0 ||
             file.f_op->readdir(&file, &accepted, alias_accept_one) != 0 ||
@@ -69,7 +69,7 @@ static int vfs_alias_test(void)
             file.f_op->readdir(&file, &next, alias_stop_readdir) != 0 ||
             next.count != 1 || strcmp(first.first, next.first) == 0 ||
             file.f_op->release(file.f_inode, &file) != 0 ||
-            nos_unlink("/enum-test/a") != 0 || nos_unlink("/enum-test/b") != 0 ||
+            nos_unlink("/enum-test/long filename.txt") != 0 || nos_unlink("/enum-test/b") != 0 ||
             nos_rmdir("/enum-test") != 0) goto failed;
     }
     {
