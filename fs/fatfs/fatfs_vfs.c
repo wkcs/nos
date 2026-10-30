@@ -132,41 +132,31 @@ static int fatfs_release(struct inode *inode, struct file *file) {
 }
 
 static int fatfs_readdir(struct file *file, void *dirent, filldir_t filldir) {
-    // FatFs readdir requires an open directory object (DIR).
-    // File structure usually holds file handle. For dir, we need DIR handle.
-    // In nos VFS current design, file->private_data can hold DIR* for directory.
-    
-    // WARNING: This depends on how VFS opens directories. 
-    // If VFS calls open() on dir, we allocate DIR.
     DIR *dp = (DIR *)file->private_data;
     FILINFO fno = { 0 };
     FRESULT res;
-    int i = 0;
+    loff_t i;
 
     if (!dp) return -EBADF;
-    
-    // FatFs doesn't support seekdir/rewinddir easily without reopen usually for sequence
-    // But f_readdir continues from last state.
-    
-    // If f_pos is 0, we might need to rewind? 
-    // f_readdir(dp, NULL) rewinds.
-    if (file->f_pos == 0) {
-        f_readdir(dp, NULL); 
+    if (file->f_pos < 0) return -EINVAL;
+
+    /* A rejected entry must be offered again on the next call. */
+    res = f_readdir(dp, NULL);
+    if (res != FR_OK) return -EIO;
+    for (i = 0; i < file->f_pos; i++) {
+        res = f_readdir(dp, &fno);
+        if (res != FR_OK) return -EIO;
+        if (fno.fname[0] == '\0') return 0;
     }
 
-    while (1) {
+    for (;;) {
         res = f_readdir(dp, &fno);
-        if (res != FR_OK || fno.fname[0] == 0) break;
-
-        // Skip . and ..? FatFs usually doesn't show them? Or does?
-        // filldir expects specific format.
-        
-        filldir(dirent, fno.fname, strlen(fno.fname), file->f_pos, 0, 
-                (fno.fattrib & AM_DIR) ? DT_DIR : DT_REG);
-        
+        if (res != FR_OK) return -EIO;
+        if (fno.fname[0] == '\0') return 0;
+        if (filldir(dirent, fno.fname, strlen(fno.fname), file->f_pos, 0,
+                    (fno.fattrib & AM_DIR) ? DT_DIR : DT_REG) != 0) return 0;
         file->f_pos++;
     }
-    return 0;
 }
 
 /*
