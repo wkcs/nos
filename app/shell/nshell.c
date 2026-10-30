@@ -3720,6 +3720,192 @@ static int cmd_ps(int argc, char *argv[]) {
   return 0;
 }
 
+struct kill_sig_entry {
+    int num;
+    const char *name;
+};
+
+static const struct kill_sig_entry kill_signals[] = {
+    { 0, "EXIT" },
+    { 1, "HUP" },
+    { 2, "INT" },
+    { 3, "QUIT" },
+    { 9, "KILL" },
+    { 15, "TERM" },
+    { 18, "CONT" },
+    { 19, "STOP" },
+};
+
+static int kill_parse_signal(const char *spec)
+{
+    u64 parsed = 0;
+    size_t i;
+    if (spec == NULL || *spec == '\0') return -1;
+    if (head_number(spec, &parsed) == 0) {
+        for (i = 0; i < sizeof(kill_signals) / sizeof(kill_signals[0]); i++) {
+            if ((u64)kill_signals[i].num == parsed) return kill_signals[i].num;
+        }
+        return -1;
+    }
+    if ((spec[0] == 'S' || spec[0] == 's') &&
+        (spec[1] == 'I' || spec[1] == 'i') &&
+        (spec[2] == 'G' || spec[2] == 'g'))
+        spec += 3;
+    for (i = 0; i < sizeof(kill_signals) / sizeof(kill_signals[0]); i++) {
+        const char *a = spec, *b = kill_signals[i].name;
+        while (*a != '\0' && *b != '\0') {
+            char ca = (*a >= 'a' && *a <= 'z') ? (char)(*a - ('a' - 'A')) : *a;
+            if (ca != *b) break;
+            a++;
+            b++;
+        }
+        if (*a == '\0' && *b == '\0') return kill_signals[i].num;
+    }
+    return -1;
+}
+
+static bool kill_task_protected(const struct task_struct *task)
+{
+    if (task == current || task->pid <= 1) return true;
+    if (task->name == NULL) return false;
+    return strcmp(task->name, "idle") == 0 ||
+           strcmp(task->name, "reaper") == 0 ||
+           strncmp(task->name, "nshell", 6) == 0;
+}
+
+static int cmd_kill(int argc, char *argv[])
+{
+    int sig = 15, first = 1, status = 0, i;
+
+    if (first < argc && strcmp(argv[first], "-l") == 0) {
+        size_t k;
+        first++;
+        if (first == argc) {
+            shell_printf("HUP INT QUIT KILL TERM CONT STOP\r\n");
+            return 0;
+        }
+        for (i = first; i < argc; i++) {
+            u64 num = 0;
+            int s;
+            if (head_number(argv[i], &num) == 0 && num > 128U)
+                num -= 128U;
+            s = head_number(argv[i], &num) == 0 ? (int)num : kill_parse_signal(argv[i]);
+            for (k = 0; k < sizeof(kill_signals) / sizeof(kill_signals[0]); k++) {
+                if (kill_signals[k].num == s) {
+                    shell_printf("%s\r\n", kill_signals[k].name);
+                    break;
+                }
+            }
+            if (k == sizeof(kill_signals) / sizeof(kill_signals[0])) {
+                shell_error("kill: %s: invalid signal specification\r\n", argv[i]);
+                status = 1;
+            }
+        }
+        return status;
+    }
+    while (first < argc && argv[first][0] == '-' && argv[first][1] != '\0') {
+        const char *opt = argv[first] + 1;
+        if (strcmp(opt, "-") == 0) { first++; break; }
+        if (strcmp(opt, "s") == 0 || strcmp(opt, "n") == 0) {
+            if (++first >= argc) {
+                shell_error("kill: -%s: option requires an argument\r\n", opt);
+                return 1;
+            }
+            sig = kill_parse_signal(argv[first]);
+        } else {
+            sig = kill_parse_signal(opt);
+        }
+        if (sig < 0) {
+            shell_error("kill: %s: invalid signal specification\r\n", argv[first]);
+            return 1;
+        }
+        first++;
+    }
+    if (first == argc) {
+        shell_error("kill: usage: kill [-s sigspec | -sigspec] pid ...\r\n");
+        return 1;
+    }
+    for (i = first; i < argc; i++) {
+        u64 pid_val = 0;
+        struct task_struct *task;
+        if (head_number(argv[i], &pid_val) != 0) {
+            shell_error("kill: %s: arguments must be process IDs\r\n", argv[i]);
+            status = 1;
+            continue;
+        }
+        task = task_find_by_pid((pid_t)pid_val);
+        if (task == NULL || task->status == TASK_CLOSE) {
+            shell_error("kill: (%s) - No such process\r\n", argv[i]);
+            status = 1;
+            continue;
+        }
+        if (sig == 0) continue;
+        if (kill_task_protected(task)) {
+            shell_error("kill: (%s) - Operation not permitted\r\n", argv[i]);
+            status = 1;
+            continue;
+        }
+        if (sig == 19) {
+            if (task->status == TASK_READY) (void)task_hang(task);
+        } else if (sig == 18) {
+            if (task->status == TASK_WAIT && task->list_lock == NULL) (void)task_resume(task);
+        } else {
+            task_del(task);
+        }
+    }
+    return status;
+}
+
+static int lsdev_print_one(struct device *dev, void *arg)
+{
+    bool *long_fmt = arg;
+    const char *name = dev->name != NULL ? dev->name : "unnamed";
+    if (*long_fmt) {
+        shell_printf("%-16s %-6s %4u %4d\r\n",
+                     name, dev->ready ? "ready" : "down",
+                     (unsigned int)dev->ref_count, dev->init_res);
+    } else {
+        shell_printf("%-16s ready=%u ref=%u init_res=%d\r\n",
+                     name, (unsigned int)dev->ready,
+                     (unsigned int)dev->ref_count, dev->init_res);
+    }
+    return 0;
+}
+
+static int cmd_lsdev(int argc, char *argv[])
+{
+    bool long_fmt = false;
+    int first = 1, status = 0, i;
+
+    while (first < argc && argv[first][0] == '-' && argv[first][1] != '\0') {
+        const char *opt = argv[first] + 1;
+        if (strcmp(opt, "-") == 0) { first++; break; }
+        for (; *opt != '\0'; opt++) {
+            if (*opt == 'l') long_fmt = true;
+            else {
+                shell_error("lsdev: invalid option -- '%c'\r\n", *opt);
+                return 1;
+            }
+        }
+        first++;
+    }
+    if (long_fmt) shell_printf("DEVICE           STATE   REF INIT\r\n");
+    if (first == argc) {
+        (void)device_foreach(lsdev_print_one, &long_fmt);
+        return 0;
+    }
+    for (i = first; i < argc; i++) {
+        struct device *dev = device_find_by_name(argv[i]);
+        if (dev == NULL) {
+            shell_error("lsdev: %s: device not found\r\n", argv[i]);
+            status = 1;
+        } else {
+            (void)lsdev_print_one(dev, &long_fmt);
+        }
+    }
+    return status;
+}
+
 #ifdef CONFIG_NLK_SERVER
 static int cmd_nlk(int argc, char *argv[])
 {
@@ -5579,6 +5765,8 @@ static int nshell_init(void)
     shell_register_cmd("mount", "Mount filesystem", cmd_mount);
     shell_register_cmd("df", "Report filesystem mount usage", cmd_df);
     shell_register_cmd("ps", "Dump task status", cmd_ps);
+    shell_register_cmd("kill", "Send a signal to a process", cmd_kill);
+    shell_register_cmd("lsdev", "List registered kernel devices", cmd_lsdev);
 #ifdef CONFIG_NLK_SERVER
     shell_register_cmd("nlk", "Show NLK soft-bus status & topology", cmd_nlk);
 #endif
