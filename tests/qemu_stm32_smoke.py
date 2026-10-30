@@ -908,6 +908,15 @@ def main():
         proc.stdin.flush()
         wait_for(b"\r\n[alias] ok\r\nalias say='echo [alias]'\r\n", pos)
         wait_for(b"nos# ", pos)
+        pos = len(output)
+        proc.stdin.write(b"touch /tmp/tab_unique\r")
+        proc.stdin.flush()
+        wait_for(b"nos# ", pos)
+        pos = len(output)
+        proc.stdin.write(b"unam\t-s; rm /tmp/tab_u\t\r")
+        proc.stdin.flush()
+        wait_for(b"\r\nNOS\r\n", pos)
+        wait_for(b"nos# ", pos)
         print("QEMU STM32 boot, help, log statistics and RX burst passed")
     finally:
         if proc.poll() is None:
