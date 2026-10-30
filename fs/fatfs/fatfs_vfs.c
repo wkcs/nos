@@ -126,6 +126,7 @@ static int fatfs_release(struct inode *inode, struct file *file) {
         f_close(fp);
         kfree(fp);
         file->private_data = NULL;
+        vfs_dentry_put(file->f_path.dentry);
     }
     return 0;
 }
@@ -417,6 +418,7 @@ static int fatfs_dir_release(struct inode *inode, struct file *file) {
         f_closedir(dp);
         kfree(dp);
         file->private_data = NULL;
+        vfs_dentry_put(file->f_path.dentry);
     }
     return 0;
 }
@@ -433,16 +435,23 @@ static int fatfs_dir_open(struct inode *inode, struct file *file) {
         // shell cmd_ls must provide it.
         return -EINVAL;
     }
+    if (vfs_dentry_get(file->f_path.dentry) != 0) return -EINVAL;
 
-    if (get_fatfs_path(file->f_path.dentry, path, sizeof(path)) != 0)
+    if (get_fatfs_path(file->f_path.dentry, path, sizeof(path)) != 0) {
+        vfs_dentry_put(file->f_path.dentry);
         return -ENAMETOOLONG;
+    }
 
     dp = kzalloc(sizeof(DIR), GFP_KERNEL);
-    if (!dp) return -ENOMEM;
+    if (!dp) {
+        vfs_dentry_put(file->f_path.dentry);
+        return -ENOMEM;
+    }
 
     res = f_opendir(dp, path);
     if (res != FR_OK) {
         kfree(dp);
+        vfs_dentry_put(file->f_path.dentry);
         return -ENOENT;
     }
 
@@ -474,18 +483,24 @@ static int fatfs_file_open(struct inode *inode, struct file *file) {
     if (!file->f_path.dentry) {
         return -EINVAL;
     }
+    if (vfs_dentry_get(file->f_path.dentry) != 0) return -EINVAL;
 
-    if (get_fatfs_path(file->f_path.dentry, path, sizeof(path)) != 0)
+    if (get_fatfs_path(file->f_path.dentry, path, sizeof(path)) != 0) {
+        vfs_dentry_put(file->f_path.dentry);
         return -ENAMETOOLONG;
+    }
 
     fp = kzalloc(sizeof(FIL), GFP_KERNEL);
-    if (!fp) return -ENOMEM;
+    if (!fp) {
+        vfs_dentry_put(file->f_path.dentry);
+        return -ENOMEM;
+    }
 
     switch (file->f_flags & O_ACCMODE) {
     case O_RDONLY: mode = FA_READ; break;
     case O_WRONLY: mode = FA_WRITE; break;
     case O_RDWR: mode = FA_READ | FA_WRITE; break;
-    default: kfree(fp); return -EINVAL;
+    default: kfree(fp); vfs_dentry_put(file->f_path.dentry); return -EINVAL;
     }
     if ((file->f_flags & O_TRUNC) && (mode & FA_WRITE)) {
         mode |= FA_CREATE_ALWAYS;
@@ -495,6 +510,7 @@ static int fatfs_file_open(struct inode *inode, struct file *file) {
     res = f_open(fp, path, mode);
     if (res != FR_OK) {
         kfree(fp);
+        vfs_dentry_put(file->f_path.dentry);
         if (res == FR_WRITE_PROTECTED) return -EROFS;
         if (res == FR_DENIED) return -EACCES;
         if (res == FR_NO_FILE || res == FR_NO_PATH) return -ENOENT;

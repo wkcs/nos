@@ -29,6 +29,7 @@ static const char *root_dev_name = "rootfs";
 static SPINLOCK(vfs_mount_lock);
 
 #define VFS_MAX_MOUNT_POINTS 8
+#define VFS_FAT_INODE_REMOVED 1UL
 
 struct mount_point {
     struct inode *parent;
@@ -44,6 +45,27 @@ struct mount_point {
 
 static struct mount_point mount_points[VFS_MAX_MOUNT_POINTS];
 static int mount_count = 0;
+
+static bool vfs_is_fat_dentry(struct dentry *dentry)
+{
+    return dentry->d_sb != NULL && dentry->d_sb->s_type != NULL &&
+           strcmp(dentry->d_sb->s_type->name, "fatfs") == 0;
+}
+
+static void vfs_destroy_dentry(struct dentry *dentry)
+{
+    if (vfs_is_fat_dentry(dentry) && dentry->d_inode != NULL &&
+        (dentry->d_inode->i_flags & VFS_FAT_INODE_REMOVED) != 0)
+        nos_vfs_destroy_inode(dentry->d_inode);
+    kfree(dentry);
+}
+
+static void vfs_drop_removed_dentry(struct dentry *dentry)
+{
+    if (vfs_is_fat_dentry(dentry) && dentry->d_inode != NULL)
+        dentry->d_inode->i_flags |= VFS_FAT_INODE_REMOVED;
+    if (--dentry->d_refs == 0) vfs_destroy_dentry(dentry);
+}
 
 static void vfs_ensure_dentry_lists(struct dentry *dentry)
 {
@@ -95,7 +117,7 @@ static void vfs_free_dentry_Subtree(struct dentry *dentry)
     list_for_each_entry_safe(child, tmp, &dentry->d_subdirs, d_child) {
         list_del(&child->d_child);
         vfs_free_dentry_Subtree(child);
-        if (--child->d_refs == 0) kfree(child);
+        if (--child->d_refs == 0) vfs_destroy_dentry(child);
     }
 }
 
@@ -168,7 +190,7 @@ void vfs_dentry_put(struct dentry *dentry)
     while (entry != NULL) {
         struct dentry *parent = entry->d_parent;
         if (parent == entry) parent = NULL;
-        if (--entry->d_refs == 0) kfree(entry);
+        if (--entry->d_refs == 0) vfs_destroy_dentry(entry);
         entry = parent;
     }
     spin_unlock(&vfs_mount_lock);
@@ -656,7 +678,7 @@ int vfs_remove_entry(struct dentry *dir, const char *name, bool is_dir)
         if (cached != NULL) {
             list_del(&cached->d_child);
             vfs_free_dentry_Subtree(cached);
-            if (--cached->d_refs == 0) kfree(cached);
+            vfs_drop_removed_dentry(cached);
         }
         spin_unlock(&vfs_mount_lock);
     }
@@ -759,7 +781,7 @@ int vfs_rename_entry(struct dentry *old_dir, const char *old_name,
         if (cached_new != NULL) {
             list_del(&cached_new->d_child);
             vfs_free_dentry_Subtree(cached_new);
-            if (--cached_new->d_refs == 0) kfree(cached_new);
+            vfs_drop_removed_dentry(cached_new);
         }
         if (cached_old != NULL) {
             unsigned int pins = cached_old->d_refs - 1U;
