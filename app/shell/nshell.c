@@ -57,6 +57,7 @@ struct shell_cmd {
 };
 
 static struct shell_cmd *cmd_list = NULL;
+static int head_number(const char *text, u64 *number);
 
 #define SHELL_CMD_STR_MAX SHELL_SESSION_INPUT_MAX
 
@@ -84,7 +85,13 @@ struct nshell {
     struct nshell *next;
     bool remote;
     bool pipeline_worker;
+    bool exit_requested;
+    unsigned char script_depth;
     int last_status;
+    int script_argc;
+    char * const *script_argv;
+    const char *script_name;
+    char argc_buf[8];
     struct file *input_file;
     struct file *output_file;
     struct file *error_file;
@@ -142,7 +149,21 @@ static struct shell_variable **variable_slot(struct nshell *shell, const char *n
 
 static const char *variable_lookup(void *context, const char *name, size_t length)
 {
-    struct shell_variable *var = *variable_slot(context, name, length);
+    struct nshell *shell = context;
+    struct shell_variable *var;
+    if (length == 1 && name[0] == '#') {
+        snprintf(shell->argc_buf, sizeof(shell->argc_buf), "%d", shell->script_argc);
+        return shell->argc_buf;
+    }
+    if (length == 1 && name[0] == '0') {
+        return shell->script_name != NULL ? shell->script_name : "nshell";
+    }
+    if (length == 1 && name[0] >= '1' && name[0] <= '9') {
+        int idx = name[0] - '1';
+        return idx < shell->script_argc && shell->script_argv != NULL ?
+               shell->script_argv[idx] : "";
+    }
+    var = *variable_slot(shell, name, length);
     return var != NULL ? var->value : NULL;
 }
 
@@ -1000,6 +1021,90 @@ static int cmd_false(int argc, char *argv[])
     (void)argc;
     (void)argv;
     return 1;
+}
+
+static int cmd_sleep(int argc, char *argv[])
+{
+    u64 total_ms = 0;
+    int first = 1, i;
+
+    if (first < argc && strcmp(argv[first], "--") == 0) first++;
+    if (first == argc) {
+        shell_error("sleep: missing operand\r\n");
+        return 1;
+    }
+    for (i = first; i < argc; i++) {
+        const char *s = argv[i];
+        u64 whole = 0, frac_ms = 0, mult = 1000U;
+        unsigned int frac_scale = 100U;
+        if (*s < '0' || *s > '9') {
+            shell_error("sleep: invalid time interval '%s'\r\n", argv[i]);
+            return 1;
+        }
+        while (*s >= '0' && *s <= '9') {
+            whole = whole * 10U + (u64)(*s++ - '0');
+        }
+        if (*s == '.') {
+            s++;
+            if (*s < '0' || *s > '9') {
+                shell_error("sleep: invalid time interval '%s'\r\n", argv[i]);
+                return 1;
+            }
+            while (*s >= '0' && *s <= '9') {
+                if (frac_scale > 0U) {
+                    frac_ms += (u64)(*s - '0') * frac_scale;
+                    frac_scale /= 10U;
+                }
+                s++;
+            }
+        }
+        if (strcmp(s, "ms") == 0) {
+            mult = 1U;
+            frac_ms = 0U;
+        } else if (strcmp(s, "m") == 0) {
+            mult = 60000U;
+            frac_ms *= 60U;
+        } else if (*s != '\0' && strcmp(s, "s") != 0) {
+            shell_error("sleep: invalid time interval '%s'\r\n", argv[i]);
+            return 1;
+        }
+        total_ms += whole * mult + frac_ms;
+    }
+    if (total_ms > 0U) msleep((uint32_t)total_ms);
+    return 0;
+}
+
+static int cmd_exit(int argc, char *argv[])
+{
+    struct nshell *shell = nshell_current();
+    int first = 1, code;
+    u64 parsed = 0;
+
+    if (shell == NULL) return 1;
+    if (first < argc && strcmp(argv[first], "--") == 0) first++;
+    if (argc - first > 1) {
+        shell_error("%s: too many arguments\r\n", argv[0]);
+        return 1;
+    }
+    if (strcmp(argv[0], "return") == 0 && shell->script_depth == 0U) {
+        shell_error("return: can only return from a script\r\n");
+        return 1;
+    }
+    if (first == argc) {
+        code = shell->last_status;
+    } else {
+        const char *s = argv[first];
+        bool neg = false;
+        if (*s == '+' || *s == '-') neg = *s++ == '-';
+        if (*s == '\0' || head_number(s, &parsed) != 0) {
+            shell_error("%s: %s: numeric argument required\r\n", argv[0], argv[first]);
+            code = 2;
+        } else {
+            code = (int)((neg ? -(int64_t)parsed : (int64_t)parsed) & 0xFF);
+        }
+    }
+    shell->exit_requested = true;
+    return code;
 }
 
 static unsigned int test_file_flags(void *context, const char *path)
@@ -3626,26 +3731,42 @@ static int nshell_close_output(struct file **destination)
     return rc;
 }
 
-static int nshell_drop_output(struct nshell *shell, bool error_stream)
+static int nshell_drop_stream(struct nshell *shell, bool error_stream,
+                              struct file *keep_output, struct file *keep_error)
 {
     struct file **destination = error_stream ? &shell->error_file : &shell->output_file;
     struct file *other = error_stream ? shell->output_file : shell->error_file;
     if (error_stream) shell->error_pipe = NULL;
-    if (*destination != NULL && *destination == other) {
+    if (*destination != NULL &&
+        (*destination == other || *destination == keep_output || *destination == keep_error)) {
         *destination = NULL;
         return 0;
     }
     return nshell_close_output(destination);
 }
 
-static int nshell_close_outputs(struct nshell *shell)
+static int nshell_restore_streams(struct nshell *shell, struct file *saved_input,
+                                  struct file *saved_output, struct file *saved_error,
+                                  struct shell_stream_pipe *saved_error_pipe)
 {
-    int rc;
+    int rc = 0;
 
-    if (shell->error_file == shell->output_file) shell->error_file = NULL;
-    shell->error_pipe = NULL;
-    rc = nshell_close_output(&shell->output_file);
+    if (shell->input_file != NULL && shell->input_file != saved_input) {
+        nshell_close_input(shell);
+    }
+    shell->input_file = saved_input;
+    if (shell->error_file == shell->output_file ||
+        shell->error_file == saved_output || shell->error_file == saved_error) {
+        shell->error_file = NULL;
+    }
+    if (shell->output_file == saved_output || shell->output_file == saved_error) {
+        shell->output_file = NULL;
+    }
+    if (nshell_close_output(&shell->output_file) != 0) rc = -EIO;
     if (nshell_close_output(&shell->error_file) != 0) rc = -EIO;
+    shell->output_file = saved_output;
+    shell->error_file = saved_error;
+    shell->error_pipe = saved_error_pipe;
     return rc;
 }
 
@@ -4299,6 +4420,198 @@ struct shell_pipeline_stage {
 
 static void nshell_exec_cmd(struct nshell *shell);
 
+struct shell_script_frame {
+    char saved_input[SHELL_SESSION_INPUT_MAX + 1];
+    char line[SHELL_SESSION_INPUT_MAX + 1];
+    size_t saved_input_len;
+    int saved_argc;
+    char * const *saved_argv;
+    const char *saved_name;
+};
+
+static noinline int nshell_run_script(struct nshell *shell, const char *path,
+                                      const char *inline_cmd, const char *script_name,
+                                      int script_argc, char * const *script_argv,
+                                      bool errexit)
+{
+    struct shell_script_frame *frame;
+    struct file *file = NULL;
+    int status = 0;
+
+    if (shell->script_depth >= 3U) {
+        shell_error("shell: maximum script depth exceeded\r\n");
+        return 1;
+    }
+    if (inline_cmd == NULL) {
+        int rc = nshell_open_input(shell, path, &file);
+        if (rc != 0) {
+            shell_error("%s: %s: cannot open (error %d)\r\n",
+                        script_name != NULL ? script_name : "sh", path, rc);
+            return 127;
+        }
+    } else if (strlen(inline_cmd) > SHELL_SESSION_INPUT_MAX) {
+        shell_error("sh: command string too long\r\n");
+        return 1;
+    }
+    frame = kmalloc(sizeof(*frame), GFP_KERNEL);
+    if (frame == NULL) {
+        (void)nshell_close_output(&file);
+        return 1;
+    }
+    memcpy(frame->saved_input, shell->session.input, sizeof(frame->saved_input));
+    frame->saved_input_len = shell->session.input_len;
+    frame->saved_argc = shell->script_argc;
+    frame->saved_argv = shell->script_argv;
+    frame->saved_name = shell->script_name;
+    shell->script_argc = script_argc;
+    shell->script_argv = script_argv;
+    shell->script_name = script_name;
+    shell->script_depth++;
+    shell->exit_requested = false;
+    shell->last_status = 0;
+
+    if (inline_cmd != NULL) {
+        strcpy(shell->session.input, inline_cmd);
+        shell->session.input_len = strlen(inline_cmd);
+        nshell_exec_cmd(shell);
+    } else {
+        char buf[64];
+        size_t used = 0;
+        bool overflow = false;
+        int n;
+        while ((n = file->f_op->read(file, buf, sizeof(buf), &file->f_pos)) > 0) {
+            int i;
+            for (i = 0; i < n; i++) {
+                char c = buf[i];
+                if (c == '\r') continue;
+                if (c == '\n') {
+                    if (overflow) {
+                        shell_error("%s: line too long\r\n", path);
+                        shell->last_status = 1;
+                        overflow = false;
+                    } else {
+                        frame->line[used] = '\0';
+                        memcpy(shell->session.input, frame->line, used + 1U);
+                        shell->session.input_len = used;
+                        nshell_exec_cmd(shell);
+                    }
+                    used = 0;
+                    if (shell->exit_requested || (errexit && shell->last_status != 0))
+                        goto done;
+                    continue;
+                }
+                if (used < SHELL_SESSION_INPUT_MAX) frame->line[used++] = c;
+                else overflow = true;
+            }
+        }
+        if (n < 0) {
+            shell_error("%s: read error %d\r\n", path, n);
+            shell->last_status = 1;
+        } else if (overflow) {
+            shell_error("%s: line too long\r\n", path);
+            shell->last_status = 1;
+        } else if (used > 0U) {
+            frame->line[used] = '\0';
+            memcpy(shell->session.input, frame->line, used + 1U);
+            shell->session.input_len = used;
+            nshell_exec_cmd(shell);
+        }
+    }
+done:
+    status = shell->last_status;
+    shell->exit_requested = false;
+    shell->script_depth--;
+    shell->script_argc = frame->saved_argc;
+    shell->script_argv = frame->saved_argv;
+    shell->script_name = frame->saved_name;
+    memcpy(shell->session.input, frame->saved_input, sizeof(shell->session.input));
+    shell->session.input_len = frame->saved_input_len;
+    (void)nshell_close_output(&file);
+    kfree(frame);
+    return status;
+}
+
+static int cmd_source(int argc, char *argv[])
+{
+    struct nshell *shell = nshell_current();
+    int first = 1;
+    if (first < argc && strcmp(argv[first], "--") == 0) first++;
+    if (first == argc) {
+        shell_error("%s: filename argument required\r\n", argv[0]);
+        return 2;
+    }
+    shell_init_cwd();
+    return nshell_run_script(shell, argv[first], NULL,
+                             shell->script_name != NULL ? shell->script_name : "nshell",
+                             argc - first - 1,
+                             argc - first - 1 > 0 ? argv + first + 1 : NULL,
+                             false);
+}
+
+static int cmd_sh(int argc, char *argv[])
+{
+    struct nshell *shell = nshell_current();
+    struct shell_variable *orig_vars = shell->variables, *var;
+    struct dentry *orig_cwd = shell->session.cwd;
+    struct shell_cwd_ref *orig_cwd_ref = shell->cwd_ref;
+    const char *cmd_str = NULL;
+    bool errexit = false, use_cmd = false;
+    int first = 1, status = 0;
+
+    while (first < argc && argv[first][0] == '-' && argv[first][1] != '\0') {
+        const char *opt = argv[first] + 1;
+        if (strcmp(opt, "-") == 0) { first++; break; }
+        for (; *opt != '\0'; opt++) {
+            if (*opt == 'e') errexit = true;
+            else if (*opt == 'c') use_cmd = true;
+            else {
+                shell_error("sh: invalid option -- '%c'\r\n", *opt);
+                return 2;
+            }
+        }
+        first++;
+        if (use_cmd) break;
+    }
+    if (use_cmd) {
+        if (first >= argc) {
+            shell_error("sh: -c: option requires an argument\r\n");
+            return 2;
+        }
+        cmd_str = argv[first++];
+    } else if (first >= argc) {
+        shell_error("sh: missing script operand\r\n");
+        return 2;
+    }
+    shell_init_cwd();
+    if (orig_cwd_ref != NULL) __atomic_add_fetch(&orig_cwd_ref->refs, 1U, __ATOMIC_RELAXED);
+    shell->variables = NULL;
+    for (var = orig_vars; var != NULL; var = var->next) {
+        if (var->exported &&
+            variable_set(shell, var->name, strlen(var->name), var->value, true) != 0) {
+            status = 1;
+            goto out;
+        }
+    }
+    if (use_cmd) {
+        const char *name = first < argc ? argv[first] : "sh";
+        int s_argc = first + 1 < argc ? argc - (first + 1) : 0;
+        char * const *s_argv = s_argc > 0 ? argv + first + 1 : NULL;
+        status = nshell_run_script(shell, NULL, cmd_str, name, s_argc, s_argv, errexit);
+    } else {
+        status = nshell_run_script(shell, argv[first], NULL, argv[first],
+                                   argc - first - 1,
+                                   argc - first - 1 > 0 ? argv + first + 1 : NULL,
+                                   errexit);
+    }
+out:
+    variable_clear(shell);
+    shell->variables = orig_vars;
+    shell_cwd_put(shell->cwd_ref);
+    shell->cwd_ref = orig_cwd_ref;
+    shell->session.cwd = orig_cwd;
+    return status;
+}
+
 static void shell_pipeline_worker(void *context)
 {
     struct shell_pipeline_stage *stage = context;
@@ -4454,6 +4767,10 @@ static void nshell_exec_cmd(struct nshell *shell)
     }
     for (i = 0; i < count; i++) {
         struct shell_cmd *curr = cmd_list;
+        struct file *saved_input = shell->input_file;
+        struct file *saved_output = shell->output_file;
+        struct file *saved_error = shell->error_file;
+        struct shell_stream_pipe *saved_error_pipe = shell->error_pipe;
         struct glob_state {
             struct shell_glob_result *results[MAX_ARGS];
             char *argv[MAX_ARGS + 1];
@@ -4463,6 +4780,7 @@ static void nshell_exec_cmd(struct nshell *shell)
         bool assignment_error = false;
         int assignments;
         int argc;
+        if (shell->exit_requested) break;
         if (workspace->commands[i].condition != SHELL_PIPE) {
             pipeline_status = shell->last_status;
             skip_pipeline = (workspace->commands[i].condition == SHELL_ON_SUCCESS && shell->last_status != 0) ||
@@ -4562,7 +4880,7 @@ static void nshell_exec_cmd(struct nshell *shell)
                 struct file *new_file = NULL;
                 int rc;
                 if (error_stream && op->to_output) {
-                    (void)nshell_drop_output(shell, true);
+                    (void)nshell_drop_stream(shell, true, saved_output, saved_error);
                     shell->error_file = shell->output_file;
                     if (shell->error_file == NULL) shell->error_pipe = shell->pipe_output;
                     continue;
@@ -4572,15 +4890,16 @@ static void nshell_exec_cmd(struct nshell *shell)
                 if (rc < 0) {
                     shell_error("shell: %s: cannot redirect (error %d)\r\n", path, rc);
                     shell->last_status = 1;
-                    nshell_close_input(shell);
-                    (void)nshell_close_outputs(shell);
+                    (void)nshell_restore_streams(shell, saved_input, saved_output,
+                                                 saved_error, saved_error_pipe);
                     goto next_command;
                 }
                 if (input_stream) {
-                    nshell_close_input(shell);
+                    if (shell->input_file != NULL && shell->input_file != saved_input)
+                        nshell_close_input(shell);
                     shell->input_file = new_file;
                 } else {
-                    (void)nshell_drop_output(shell, error_stream);
+                    (void)nshell_drop_stream(shell, error_stream, saved_output, saved_error);
                     *destination = new_file;
                 }
             }
@@ -4588,6 +4907,7 @@ static void nshell_exec_cmd(struct nshell *shell)
         assignment_only = assignments == argc;
         {
             bool persistent = assignment_only ||
+                strcmp(argv[assignments], ":") == 0 ||
                 strcmp(argv[assignments], "export") == 0 ||
                 strcmp(argv[assignments], "unset") == 0;
             int j;
@@ -4645,8 +4965,9 @@ static void nshell_exec_cmd(struct nshell *shell)
         variable_restore(shell, workspace->saved, saved_count,
                          !assignment_only && !assignment_error && curr != NULL &&
                          curr->func == cmd_cd && shell->last_status == 0);
-        nshell_close_input(shell);
-        if (nshell_close_outputs(shell) != 0) shell->last_status = 1;
+        if (nshell_restore_streams(shell, saved_input, saved_output,
+                                   saved_error, saved_error_pipe) != 0)
+            shell->last_status = 1;
 next_command:
         if (glob != NULL) {
             for (int j = 0; j < MAX_ARGS; j++) shell_glob_free(glob->results[j]);
@@ -4664,6 +4985,7 @@ glob_overflow:
         shell->last_status = 1;
         goto next_command;
     }
+    if (shell->script_depth == 0U) shell->exit_requested = false;
     kfree(workspace);
 }
 
@@ -4759,8 +5081,15 @@ static int nshell_init(void)
     shell_register_cmd("clear", "Clear screen", cmd_clear);
     shell_register_cmd("echo", "Print arguments", cmd_echo);
     shell_register_cmd("printf", "Format and print arguments", cmd_printf);
+    shell_register_cmd(":", "Null command", cmd_true);
     shell_register_cmd("true", "Return success", cmd_true);
     shell_register_cmd("false", "Return failure", cmd_false);
+    shell_register_cmd("sleep", "Delay for a specified time", cmd_sleep);
+    shell_register_cmd("exit", "Exit the shell or script", cmd_exit);
+    shell_register_cmd("return", "Return from a sourced script", cmd_exit);
+    shell_register_cmd(".", "Execute commands from a file in current shell", cmd_source);
+    shell_register_cmd("source", "Execute commands from a file in current shell", cmd_source);
+    shell_register_cmd("sh", "Execute shell script or command string", cmd_sh);
     shell_register_cmd("test", "Evaluate a conditional expression", cmd_test);
     shell_register_cmd("[", "Evaluate a conditional expression", cmd_test);
     shell_register_cmd("export", "Mark shell variables for export", cmd_export);

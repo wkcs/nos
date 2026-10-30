@@ -155,13 +155,20 @@ int shell_expand_parameters(const char *source, char *output, size_t size, int s
             int braces = *name == '{';
             int length_expansion = 0;
             if (braces) name++;
-            if (braces && *name == '#') {
+            if (braces && *name == '#' && name[1] != '\0' && name[1] != '}') {
                 length_expansion = 1;
                 name++;
             }
             if (*name == '?') {
                 len = 1;
                 replacement = number;
+            } else if (*name == '#' || (*name >= '0' && *name <= '9')) {
+                len = 1;
+                if (braces && *name >= '0' && *name <= '9') {
+                    while (name[len] >= '0' && name[len] <= '9') len++;
+                }
+                replacement = lookup != NULL ? lookup(context, name, len) : NULL;
+                if (replacement == NULL) replacement = *name == '#' ? "0" : "";
             } else if (name_start(*name)) {
                 len = 1;
                 while (name_char(name[len])) len++;
