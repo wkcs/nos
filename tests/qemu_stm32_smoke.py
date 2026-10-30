@@ -848,6 +848,16 @@ def main():
         wait_for(b"\r\nunset-in-env\r\n", pos)
         wait_for(b"\r\nshown\r\n", pos)
         wait_for(b"nos# ", pos)
+        pos = len(output)
+        proc.stdin.write(b"uname; uname -sm; uptime -p; free -h; mount | grep ramfs | wc -l; df /tmp/cross\r")
+        proc.stdin.flush()
+        wait_for(b"\r\nNOS\r\n", pos)
+        wait_for(b"NOS arm\r\n", pos)
+        wait_for(b"up 0 minutes,", pos)
+        wait_for(b"Mem:", pos)
+        wait_for(b"Heap:", pos)
+        wait_for(b"/tmp/cross\r\n", pos)
+        wait_for(b"nos# ", pos)
         print("QEMU STM32 boot, help, log statistics and RX burst passed")
     finally:
         if proc.poll() is None:
