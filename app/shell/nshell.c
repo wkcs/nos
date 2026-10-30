@@ -5249,6 +5249,203 @@ static void nshell_execute_line(struct shell_session *session, void *context)
     nshell_exec_cmd(context);
 }
 
+struct complete_workspace {
+    char token[SHELL_SESSION_INPUT_MAX + 1];
+    char dir_path[SHELL_SESSION_INPUT_MAX + 1];
+    char full_path[SHELL_SESSION_INPUT_MAX + 1];
+    char new_line[SHELL_SESSION_INPUT_MAX + 1];
+    char common[FS_NAME_LEN];
+    const char *name_prefix;
+    size_t name_len;
+    size_t common_len;
+    unsigned int matches;
+    bool list_mode;
+    struct file dir_file;
+};
+
+static void complete_consider(struct complete_workspace *ws, const char *candidate)
+{
+    if (strncmp(candidate, ws->name_prefix, ws->name_len) != 0)
+        return;
+    if (ws->list_mode) {
+        if (ws->matches > 0U) shell_printf("  ");
+        shell_printf("%s", candidate);
+        ws->matches++;
+        return;
+    }
+    if (ws->matches == 0U) {
+        strncpy(ws->common, candidate, sizeof(ws->common) - 1U);
+        ws->common[sizeof(ws->common) - 1U] = '\0';
+        ws->common_len = strlen(ws->common);
+    } else {
+        size_t i = 0U;
+        while (i < ws->common_len && candidate[i] != '\0' && ws->common[i] == candidate[i])
+            i++;
+        ws->common[i] = '\0';
+        ws->common_len = i;
+    }
+    ws->matches++;
+}
+
+static int complete_filldir(void *dirent, const char *name, int namelen,
+                            loff_t offset, u64 ino, unsigned d_type)
+{
+    struct complete_workspace *ws = dirent;
+    char entry_name[FS_NAME_LEN];
+    size_t len = (size_t)namelen;
+    (void)offset;
+    (void)ino;
+    (void)d_type;
+    if (name == NULL || namelen <= 0) return 0;
+    if (len >= sizeof(entry_name)) len = sizeof(entry_name) - 1U;
+    memcpy(entry_name, name, len);
+    entry_name[len] = '\0';
+    if (entry_name[0] == '.' && ws->name_prefix[0] != '.') return 0;
+    if (strcmp(entry_name, ".") == 0 || strcmp(entry_name, "..") == 0) return 0;
+    complete_consider(ws, entry_name);
+    return 0;
+}
+
+static void complete_scan_commands(struct nshell *shell, struct complete_workspace *ws)
+{
+    struct shell_cmd *cmd;
+    struct shell_variable *alias;
+    for (cmd = cmd_list; cmd != NULL; cmd = cmd->next)
+        complete_consider(ws, cmd->name);
+    for (alias = shell->aliases; alias != NULL; alias = alias->next) {
+        for (cmd = cmd_list; cmd != NULL && strcmp(cmd->name, alias->name) != 0; cmd = cmd->next)
+            ;
+        if (cmd == NULL)
+            complete_consider(ws, alias->name);
+    }
+}
+
+static void complete_scan_dir(struct dentry *dir, struct complete_workspace *ws)
+{
+    if (dir == NULL || dir->d_inode == NULL || dir->d_inode->i_fop == NULL ||
+        dir->d_inode->i_fop->readdir == NULL)
+        return;
+    memset(&ws->dir_file, 0, sizeof(ws->dir_file));
+    ws->dir_file.f_inode = dir->d_inode;
+    ws->dir_file.f_op = dir->d_inode->i_fop;
+    ws->dir_file.f_path.dentry = dir;
+    if (ws->dir_file.f_op->open != NULL &&
+        ws->dir_file.f_op->open(ws->dir_file.f_inode, &ws->dir_file) != 0)
+        return;
+    (void)ws->dir_file.f_op->readdir(&ws->dir_file, ws, complete_filldir);
+    if (ws->dir_file.f_op->release != NULL)
+        (void)ws->dir_file.f_op->release(ws->dir_file.f_inode, &ws->dir_file);
+}
+
+static void complete_apply(struct shell_session *session, struct complete_workspace *ws,
+                           size_t tok_start, size_t cursor, size_t dir_prefix_len, char suffix)
+{
+    size_t tail_len = session->text_len - cursor;
+    size_t new_cursor;
+    if (suffix != '\0' && session->input[cursor] == suffix)
+        suffix = '\0';
+    if (tok_start + dir_prefix_len + ws->common_len + (suffix != '\0' ? 1U : 0U) + tail_len >
+        SHELL_SESSION_INPUT_MAX)
+        return;
+    memcpy(ws->new_line, session->input, tok_start);
+    memcpy(ws->new_line + tok_start, ws->token, dir_prefix_len);
+    memcpy(ws->new_line + tok_start + dir_prefix_len, ws->common, ws->common_len);
+    new_cursor = tok_start + dir_prefix_len + ws->common_len;
+    if (suffix != '\0') ws->new_line[new_cursor++] = suffix;
+    memcpy(ws->new_line + new_cursor, session->input + cursor, tail_len + 1U);
+    shell_session_replace_input(session, ws->new_line, new_cursor);
+}
+
+static void nshell_complete(struct shell_session *session, void *context)
+{
+    struct nshell *shell = context;
+    struct complete_workspace *ws;
+    size_t cursor = session->input_len, tok_start = cursor, tok_len, scan;
+    size_t dir_prefix_len = 0U;
+    struct dentry *dir_entry = NULL;
+    bool cmd_pos;
+
+    while (tok_start > 0U &&
+           strchr(" \t;|&<>'\"", (int)(unsigned char)session->input[tok_start - 1U]) == NULL)
+        tok_start--;
+    tok_len = cursor - tok_start;
+    ws = kzalloc(sizeof(*ws), GFP_KERNEL);
+    if (ws == NULL) return;
+    memcpy(ws->token, session->input + tok_start, tok_len);
+    ws->token[tok_len] = '\0';
+    scan = tok_start;
+    while (scan > 0U && (session->input[scan - 1U] == ' ' || session->input[scan - 1U] == '\t'))
+        scan--;
+    cmd_pos = (scan == 0U || session->input[scan - 1U] == ';' ||
+               session->input[scan - 1U] == '|' || session->input[scan - 1U] == '&') &&
+              strchr(ws->token, '/') == NULL;
+    if (cmd_pos) {
+        if (tok_len == 0U) goto out;
+        ws->name_prefix = ws->token;
+        ws->name_len = tok_len;
+        complete_scan_commands(shell, ws);
+        if (ws->matches == 1U) {
+            complete_apply(session, ws, tok_start, cursor, 0U, ' ');
+        } else if (ws->matches > 1U) {
+            if (ws->common_len > ws->name_len)
+                complete_apply(session, ws, tok_start, cursor, 0U, '\0');
+            shell_printf("\r\n");
+            ws->list_mode = true;
+            ws->matches = 0U;
+            complete_scan_commands(shell, ws);
+            shell_printf("\r\n");
+            shell_session_redraw(session);
+        }
+        goto out;
+    }
+    shell_init_cwd();
+    {
+        const char *slash = strrchr(ws->token, '/');
+        if (slash != NULL) {
+            dir_prefix_len = (size_t)(slash - ws->token) + 1U;
+            if (slash == ws->token) {
+                strcpy(ws->dir_path, "/");
+            } else {
+                memcpy(ws->dir_path, ws->token, dir_prefix_len - 1U);
+                ws->dir_path[dir_prefix_len - 1U] = '\0';
+            }
+            ws->name_prefix = slash + 1;
+            ws->name_len = tok_len - dir_prefix_len;
+        } else {
+            strcpy(ws->dir_path, ".");
+            ws->name_prefix = ws->token;
+            ws->name_len = tok_len;
+        }
+    }
+    dir_entry = resolve_path(ws->dir_path);
+    if (dir_entry == NULL || dir_entry->d_inode == NULL || !S_ISDIR(dir_entry->d_inode->i_mode))
+        goto out;
+    complete_scan_dir(dir_entry, ws);
+    if (ws->matches == 1U) {
+        struct dentry *matched;
+        char suffix = ' ';
+        if (dir_prefix_len + ws->common_len <= SHELL_SESSION_INPUT_MAX) {
+            memcpy(ws->full_path, ws->token, dir_prefix_len);
+            memcpy(ws->full_path + dir_prefix_len, ws->common, ws->common_len + 1U);
+            matched = resolve_path(ws->full_path);
+            if (matched != NULL && matched->d_inode != NULL && S_ISDIR(matched->d_inode->i_mode))
+                suffix = '/';
+        }
+        complete_apply(session, ws, tok_start, cursor, dir_prefix_len, suffix);
+    } else if (ws->matches > 1U) {
+        if (ws->common_len > ws->name_len)
+            complete_apply(session, ws, tok_start, cursor, dir_prefix_len, '\0');
+        shell_printf("\r\n");
+        ws->list_mode = true;
+        ws->matches = 0U;
+        complete_scan_dir(dir_entry, ws);
+        shell_printf("\r\n");
+        shell_session_redraw(session);
+    }
+out:
+    kfree(ws);
+}
+
 static void nshell_task_entry(void* parameter)
 {
     struct nshell *shell = parameter;
@@ -5310,6 +5507,7 @@ static int nshell_start(bool remote)
     shell_session_init(&shell->session, NULL, NULL, history);
     shell->session.writer = nshell_transport_write;
     shell->session.writer_context = shell;
+    shell_session_set_completer(&shell->session, nshell_complete, shell);
     shell->remote = remote;
     shell->task = task_create(remote ? "nshell_nlk" : "nshell",
         nshell_task_entry, shell, 5, CONFIG_SHELL_STACK_SIZE, 10, NULL);
