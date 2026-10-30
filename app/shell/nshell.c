@@ -2230,18 +2230,18 @@ static int nshell_close_outputs(struct nshell *shell)
 }
 
 static int cp_one(struct nshell *shell, const char *source, const char *destination,
-                  bool directory, char *target, char *buffer, size_t buffer_size)
+                  bool directory, bool no_clobber, bool verbose,
+                  char *target, char *buffer, size_t buffer_size)
 {
     struct file *input = NULL, *output = NULL;
     struct dentry *existing;
     int rc, n;
 
     if (directory) {
-        const char *name = strrchr(source, '/');
         size_t length = strlen(destination), name_length;
-        name = name != NULL ? name + 1 : source;
-        name_length = strlen(name);
-        if (name_length == 0 || length + name_length + 2 > SHELL_SESSION_INPUT_MAX + 1U) return -ENAMETOOLONG;
+        const char *name = shell_path_basename(source, NULL, &name_length);
+        if (name_length == 0 || (name_length == 1 && name[0] == '/') ||
+            length + name_length + 2 > SHELL_SESSION_INPUT_MAX + 1U) return -ENAMETOOLONG;
         memcpy(target, destination, length);
         if (length != 0 && target[length - 1] != '/') target[length++] = '/';
         memcpy(target + length, name, name_length + 1);
@@ -2252,6 +2252,10 @@ static int cp_one(struct nshell *shell, const char *source, const char *destinat
     rc = nshell_open_input(shell, source, &input);
     if (rc != 0) return rc;
     existing = resolve_path(target);
+    if (existing != NULL && existing->d_inode != NULL && S_ISDIR(existing->d_inode->i_mode)) {
+        rc = -EISDIR;
+        goto out;
+    }
     if (existing != NULL && existing->d_inode == input->f_inode) {
         rc = -EINVAL;
         goto out;
@@ -2268,6 +2272,10 @@ static int cp_one(struct nshell *shell, const char *source, const char *destinat
             goto out;
         }
     }
+    if (existing != NULL && no_clobber) {
+        rc = 0;
+        goto out;
+    }
     rc = nshell_open_output(shell, target, false, &output);
     if (rc != 0) goto out;
     while ((n = input->f_op->read(input, buffer, buffer_size, &input->f_pos)) > 0) {
@@ -2282,51 +2290,11 @@ static int cp_one(struct nshell *shell, const char *source, const char *destinat
         }
     }
     rc = n < 0 ? n : 0;
+    if (rc == 0 && verbose) shell_printf("'%s' -> '%s'\r\n", source, target);
 out:
     if (nshell_close_output(&output) != 0 && rc == 0) rc = -EIO;
     if (nshell_close_output(&input) != 0 && rc == 0) rc = -EIO;
     return rc;
-}
-
-static int cmd_cp(int argc, char *argv[])
-{
-    struct cp_workspace {
-        char target[SHELL_SESSION_INPUT_MAX + 1];
-        char buffer[128];
-    } *workspace;
-    struct nshell *shell = nshell_current();
-    struct dentry *destination;
-    bool directory;
-    int first = 1, status = 0, i;
-
-    while (first < argc && argv[first][0] == '-' && argv[first][1] != '\0') {
-        const char *option = argv[first] + 1;
-        if (strcmp(option, "-") == 0) { first++; break; }
-        shell_error("cp: invalid option: %s\r\n", argv[first]);
-        return 1;
-    }
-    if (argc - first < 2) {
-        shell_error("cp: missing operand\r\n");
-        return 1;
-    }
-    destination = resolve_path(argv[argc - 1]);
-    directory = destination != NULL && destination->d_inode != NULL && S_ISDIR(destination->d_inode->i_mode);
-    if (argc - first > 2 && !directory) {
-        shell_error("cp: destination is not a directory\r\n");
-        return 1;
-    }
-    workspace = kmalloc(sizeof(*workspace), GFP_KERNEL);
-    if (workspace == NULL) return 1;
-    for (i = first; i < argc - 1; i++) {
-        int rc = cp_one(shell, argv[i], argv[argc - 1], directory,
-                        workspace->target, workspace->buffer, sizeof(workspace->buffer));
-        if (rc != 0) {
-            shell_error("cp: %s: cannot copy (error %d)\r\n", argv[i], rc);
-            status = 1;
-        }
-    }
-    kfree(workspace);
-    return status;
 }
 
 static int mv_parent(char *path, struct dentry **parent, char **name)
@@ -2411,18 +2379,28 @@ static bool mv_is_mountpoint(struct dentry *entry)
 
 static int mv_copy_tree(char *source, char *target, char *scratch, char *buffer,
                         struct dentry *source_entry, struct dentry *target_parent,
-                        const char *target_name, bool target_exists)
+                        const char *target_name, bool target_exists,
+                        bool allow_merge, bool no_clobber, bool verbose)
 {
     struct mv_dir_frame *top = NULL;
     struct dentry *ancestor;
     int rc;
 
-    if (target_exists) return -EEXIST;
+    if (target_exists) {
+        struct dentry *existing = resolve_path(target);
+        if (!allow_merge) return -EEXIST;
+        if (existing == source_entry) return -EINVAL;
+        if (existing == NULL || existing->d_inode == NULL || !S_ISDIR(existing->d_inode->i_mode))
+            return -EEXIST;
+    }
     for (ancestor = target_parent; ancestor != NULL; ancestor = ancestor->d_parent) {
         if (ancestor == source_entry) return -EINVAL;
         if (ancestor->d_parent == ancestor) break;
     }
-    rc = vfs_make_dir(target_parent, target_name, source_entry->d_inode->i_mode & 0777, NULL);
+    if (!target_exists) {
+        rc = vfs_make_dir(target_parent, target_name, source_entry->d_inode->i_mode & 0777, NULL);
+        if (rc == 0 && verbose) shell_printf("'%s' -> '%s'\r\n", source, target);
+    } else rc = 0;
     if (rc != 0) return rc;
     rc = mv_push_dir(&top, source_entry, strlen(source), strlen(target));
     while (rc == 0 && top != NULL) {
@@ -2453,12 +2431,21 @@ static int mv_copy_tree(char *source, char *target, char *scratch, char *buffer,
         memcpy(target + top->target_len + 1, child.name, child_len + 1);
         entry = resolve_path(source);
         if (entry == NULL || entry->d_inode == NULL || parent == NULL) { rc = -ENOENT; break; }
-        if (entry->d_sb != source_entry->d_sb || mv_is_mountpoint(entry)) { rc = -EXDEV; break; }
+        if (!allow_merge && (entry->d_sb != source_entry->d_sb || mv_is_mountpoint(entry))) {
+            rc = -EXDEV;
+            break;
+        }
         if (S_ISDIR(entry->d_inode->i_mode)) {
             rc = vfs_make_dir(parent, child.name, entry->d_inode->i_mode & 0777, NULL);
+            if (rc == -EEXIST && allow_merge) {
+                struct dentry *dst_child = resolve_path(target);
+                if (dst_child != NULL && dst_child->d_inode != NULL && S_ISDIR(dst_child->d_inode->i_mode))
+                    rc = 0;
+            } else if (rc == 0 && verbose) shell_printf("'%s' -> '%s'\r\n", source, target);
             if (rc == 0) rc = mv_push_dir(&top, entry, strlen(source), strlen(target));
         } else if (S_ISREG(entry->d_inode->i_mode)) {
-            rc = cp_one(nshell_current(), source, target, false, scratch, buffer, 128);
+            rc = cp_one(nshell_current(), source, target, false, no_clobber, verbose,
+                        scratch, buffer, 128);
             source[top->source_len] = '\0';
             target[top->target_len] = '\0';
         } else {
@@ -2469,14 +2456,102 @@ static int mv_copy_tree(char *source, char *target, char *scratch, char *buffer,
     return rc;
 }
 
+struct mv_workspace {
+    char source[SHELL_SESSION_INPUT_MAX + 1];
+    char target[SHELL_SESSION_INPUT_MAX + 1];
+    char target_path[SHELL_SESSION_INPUT_MAX + 1];
+    char buffer[128];
+};
+
+static int cmd_cp(int argc, char *argv[])
+{
+    struct mv_workspace *workspace;
+    struct nshell *shell = nshell_current();
+    struct dentry *destination;
+    bool directory, recursive = false, no_clobber = false, verbose = false;
+    int first = 1, status = 0, i;
+
+    while (first < argc && argv[first][0] == '-' && argv[first][1] != '\0') {
+        const char *option = argv[first] + 1;
+        if (strcmp(option, "-") == 0) { first++; break; }
+        for (; *option != '\0'; option++) {
+            if (*option == 'r' || *option == 'R') recursive = true;
+            else if (*option == 'n') no_clobber = true;
+            else if (*option == 'f') no_clobber = false;
+            else if (*option == 'v') verbose = true;
+            else { shell_error("cp: invalid option: %s\r\n", argv[first]); return 1; }
+        }
+        first++;
+    }
+    if (argc - first < 2) {
+        shell_error("cp: missing operand\r\n");
+        return 1;
+    }
+    shell_init_cwd();
+    destination = resolve_path(argv[argc - 1]);
+    directory = destination != NULL && destination->d_inode != NULL && S_ISDIR(destination->d_inode->i_mode);
+    if (argc - first > 2 && !directory) {
+        shell_error("cp: destination is not a directory\r\n");
+        return 1;
+    }
+    workspace = kmalloc(sizeof(*workspace), GFP_KERNEL);
+    if (workspace == NULL) return 1;
+    for (i = first; i < argc - 1; i++) {
+        size_t src_len = strlen(argv[i]), dst_len = strlen(argv[argc - 1]);
+        struct dentry *src;
+        int rc;
+
+        if (src_len == 0 || src_len > SHELL_SESSION_INPUT_MAX || dst_len > SHELL_SESSION_INPUT_MAX) {
+            rc = -ENAMETOOLONG;
+            goto error;
+        }
+        src = resolve_path(argv[i]);
+        if (src == NULL || src->d_inode == NULL) { rc = -ENOENT; goto error; }
+        if (S_ISDIR(src->d_inode->i_mode)) {
+            struct dentry *existing, *new_parent;
+            char *new_name;
+            size_t name_len;
+            const char *base = shell_path_basename(argv[i], NULL, &name_len);
+            if (!recursive) { rc = -EISDIR; goto error; }
+            memcpy(workspace->source, argv[i], src_len + 1);
+            while (src_len > 1 && workspace->source[src_len - 1] == '/')
+                workspace->source[--src_len] = '\0';
+            if (directory) {
+                if (dst_len + name_len + 1U > SHELL_SESSION_INPUT_MAX) { rc = -ENAMETOOLONG; goto error; }
+                memcpy(workspace->target, argv[argc - 1], dst_len);
+                if (dst_len == 0 || workspace->target[dst_len - 1] != '/') workspace->target[dst_len++] = '/';
+                memcpy(workspace->target + dst_len, base, name_len);
+                workspace->target[dst_len + name_len] = '\0';
+            } else {
+                memcpy(workspace->target, argv[argc - 1], dst_len + 1);
+                while (dst_len > 1 && workspace->target[dst_len - 1] == '/')
+                    workspace->target[--dst_len] = '\0';
+            }
+            existing = resolve_path(workspace->target);
+            strcpy(workspace->target_path, workspace->target);
+            rc = mv_parent(workspace->target, &new_parent, &new_name);
+            if (rc == 0)
+                rc = mv_copy_tree(workspace->source, workspace->target_path, workspace->target,
+                                  workspace->buffer, src, new_parent, new_name, existing != NULL,
+                                  true, no_clobber, verbose);
+        } else if (argv[i][src_len - 1] == '/') {
+            rc = -ENOTDIR;
+        } else {
+            rc = cp_one(shell, argv[i], argv[argc - 1], directory, no_clobber, verbose,
+                        workspace->target, workspace->buffer, sizeof(workspace->buffer));
+        }
+        if (rc == 0) continue;
+error:
+        shell_error("cp: %s: cannot copy (error %d)\r\n", argv[i], rc);
+        status = 1;
+    }
+    kfree(workspace);
+    return status;
+}
+
 static int cmd_mv(int argc, char *argv[])
 {
-    struct mv_workspace {
-        char source[SHELL_SESSION_INPUT_MAX + 1];
-        char target[SHELL_SESSION_INPUT_MAX + 1];
-        char target_path[SHELL_SESSION_INPUT_MAX + 1];
-        char buffer[128];
-    } *workspace;
+    struct mv_workspace *workspace;
     struct dentry *destination;
     bool directory, no_clobber = false;
     int first = 1, status = 0;
@@ -2552,7 +2627,7 @@ static int cmd_mv(int argc, char *argv[])
             }
         }
         if (rc == -EXDEV && S_ISREG(src->d_inode->i_mode)) {
-            rc = cp_one(nshell_current(), argv[i], workspace->target_path, false,
+            rc = cp_one(nshell_current(), argv[i], workspace->target_path, false, false, false,
                         workspace->target, workspace->buffer, sizeof(workspace->buffer));
             if (rc == 0) rc = vfs_remove_entry(old_parent, old_name, false);
         } else if (rc == -EXDEV && S_ISDIR(src->d_inode->i_mode)) {
@@ -2560,7 +2635,8 @@ static int cmd_mv(int argc, char *argv[])
             while (src_len > 1 && workspace->source[src_len - 1] == '/')
                 workspace->source[--src_len] = '\0';
             rc = mv_copy_tree(workspace->source, workspace->target_path, workspace->target,
-                              workspace->buffer, src, new_parent, new_name, existing != NULL);
+                              workspace->buffer, src, new_parent, new_name, existing != NULL,
+                              false, false, false);
             if (rc == 0) {
                 strcpy(workspace->source, argv[i]);
                 rc = rm_path(workspace->source, true, false, false, false);
