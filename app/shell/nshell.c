@@ -794,6 +794,141 @@ static int cmd_ver(int argc, char *argv[]) {
   return 0;
 }
 
+static int cmd_uname(int argc, char *argv[])
+{
+    enum {
+        UNAME_S = 1U << 0,
+        UNAME_N = 1U << 1,
+        UNAME_R = 1U << 2,
+        UNAME_V = 1U << 3,
+        UNAME_M = 1U << 4,
+        UNAME_P = 1U << 5,
+        UNAME_O = 1U << 6,
+        UNAME_ALL = 0x7FU
+    };
+    unsigned int flags = 0;
+    bool sep = false;
+    int first = 1;
+
+    while (first < argc && argv[first][0] == '-' && argv[first][1] != '\0') {
+        const char *opt = argv[first] + 1;
+        if (strcmp(opt, "-") == 0) { first++; break; }
+        for (; *opt != '\0'; opt++) {
+            if (*opt == 'a') flags |= UNAME_ALL;
+            else if (*opt == 's') flags |= UNAME_S;
+            else if (*opt == 'n') flags |= UNAME_N;
+            else if (*opt == 'r') flags |= UNAME_R;
+            else if (*opt == 'v') flags |= UNAME_V;
+            else if (*opt == 'm') flags |= UNAME_M;
+            else if (*opt == 'p') flags |= UNAME_P;
+            else if (*opt == 'o') flags |= UNAME_O;
+            else {
+                shell_error("uname: invalid option -- '%c'\r\n", *opt);
+                return 1;
+            }
+        }
+        first++;
+    }
+    if (first < argc) {
+        shell_error("uname: extra operand '%s'\r\n", argv[first]);
+        return 1;
+    }
+    if (flags == 0U) flags = UNAME_S;
+    if (flags & UNAME_S) { shell_printf("NOS"); sep = true; }
+    if (flags & UNAME_N) { shell_printf("%s%s", sep ? " " : "", CONFIG_BOARD); sep = true; }
+    if (flags & UNAME_R) {
+        shell_printf("%s%u.%u.%u", sep ? " " : "",
+                     (unsigned int)((CONFIG_VERSION_CODE >> 16) & 0xFFU),
+                     (unsigned int)((CONFIG_VERSION_CODE >> 8) & 0xFFU),
+                     (unsigned int)(CONFIG_VERSION_CODE & 0xFFU));
+        sep = true;
+    }
+    if (flags & UNAME_V) { shell_printf("%s%s", sep ? " " : "", CONFIG_BUILD_INFO); sep = true; }
+    if (flags & UNAME_M) { shell_printf("%s%s", sep ? " " : "", CONFIG_ARCH); sep = true; }
+    if (flags & UNAME_P) { shell_printf("%s%s", sep ? " " : "", CONFIG_CPU_TYPE); sep = true; }
+    if (flags & UNAME_O) shell_printf("%sNOS", sep ? " " : "");
+    shell_printf("\r\n");
+    return 0;
+}
+
+static int cmd_uptime(int argc, char *argv[])
+{
+    u64 ticks = cpu_run_ticks();
+    unsigned int secs = (unsigned int)(ticks / 1000ULL);
+    unsigned int ms = (unsigned int)(ticks % 1000ULL);
+    bool pretty = false;
+    int first = 1;
+
+    while (first < argc && argv[first][0] == '-' && argv[first][1] != '\0') {
+        const char *opt = argv[first] + 1;
+        if (strcmp(opt, "-") == 0) { first++; break; }
+        for (; *opt != '\0'; opt++) {
+            if (*opt == 'p') pretty = true;
+            else {
+                shell_error("uptime: invalid option -- '%c'\r\n", *opt);
+                return 1;
+            }
+        }
+        first++;
+    }
+    if (first < argc) {
+        shell_error("uptime: extra operand '%s'\r\n", argv[first]);
+        return 1;
+    }
+    if (pretty) shell_printf("up %u minutes, %u seconds\r\n", secs / 60U, secs % 60U);
+    else shell_printf("up %u.%03us\r\n", secs, ms);
+    return 0;
+}
+
+static int cmd_free(int argc, char *argv[])
+{
+    unsigned int total_pages = mm_get_total_page_num();
+    unsigned int free_pages = mm_get_free_page_num();
+    unsigned int mem_total = total_pages * (unsigned int)CONFIG_PAGE_SIZE;
+    unsigned int mem_free = free_pages * (unsigned int)CONFIG_PAGE_SIZE;
+    unsigned int mem_used = mem_total >= mem_free ? mem_total - mem_free : 0U;
+    unsigned int heap_total = (unsigned int)mm_block_total_size();
+    unsigned int heap_used = (unsigned int)mm_block_used_size();
+    unsigned int heap_free = (unsigned int)mm_block_free_size();
+    bool bytes = false, human = false;
+    int first = 1;
+
+    while (first < argc && argv[first][0] == '-' && argv[first][1] != '\0') {
+        const char *opt = argv[first] + 1;
+        if (strcmp(opt, "-") == 0) { first++; break; }
+        for (; *opt != '\0'; opt++) {
+            if (*opt == 'b') { bytes = true; human = false; }
+            else if (*opt == 'k') { bytes = false; human = false; }
+            else if (*opt == 'h') { human = true; bytes = false; }
+            else {
+                shell_error("free: invalid option -- '%c'\r\n", *opt);
+                return 1;
+            }
+        }
+        first++;
+    }
+    if (first < argc) {
+        shell_error("free: extra operand '%s'\r\n", argv[first]);
+        return 1;
+    }
+    shell_printf("              total        used        free\r\n");
+    if (human) {
+        shell_printf("Mem:      %8uK   %8uK   %8uK\r\n",
+                     mem_total / 1024U, mem_used / 1024U, mem_free / 1024U);
+        shell_printf("Heap:     %8uB   %8uB   %8uB\r\n",
+                     heap_total, heap_used, heap_free);
+    } else if (bytes) {
+        shell_printf("Mem:      %9u   %9u   %9u\r\n", mem_total, mem_used, mem_free);
+        shell_printf("Heap:     %9u   %9u   %9u\r\n", heap_total, heap_used, heap_free);
+    } else {
+        shell_printf("Mem:      %9u   %9u   %9u\r\n",
+                     mem_total / 1024U, mem_used / 1024U, mem_free / 1024U);
+        shell_printf("Heap:     %9u   %9u   %9u\r\n",
+                     heap_total / 1024U, heap_used / 1024U, heap_free / 1024U);
+    }
+    return 0;
+}
+
 static int cmd_clear(int argc, char *argv[]) {
   shell_printf("\033[2J\033[H");
   return 0;
@@ -2334,6 +2469,19 @@ static int cmd_mount(int argc, char *argv[]) {
   char *dir = NULL;
   int i;
   
+  if (argc == 1) {
+      int count = vfs_get_mount_count();
+      for (i = 0; i < count; i++) {
+          struct vfs_mount_entry entry;
+          if (vfs_get_mount_entry(i, &entry) == 0) {
+              shell_printf("%s on %s type %s (rw)\r\n",
+                           entry.dev_name ? entry.dev_name : "none",
+                           entry.mount_path ? entry.mount_path : "/",
+                           entry.fs_name ? entry.fs_name : "unknown");
+          }
+      }
+      return 0;
+  }
   if (argc < 2) {
       shell_error("Usage: mount [-t type] device dir\r\n");
       return -EINVAL;
@@ -2390,6 +2538,67 @@ static int cmd_mount(int argc, char *argv[]) {
   shell_printf("Mounted %s on %s type %s\r\n", dev, dir, fs_type);
   
   return 0;
+}
+
+static void df_print_mount(const struct vfs_mount_entry *entry)
+{
+    shell_printf("%-12s %-8s %s\r\n",
+                 entry->dev_name ? entry->dev_name : "none",
+                 entry->fs_name ? entry->fs_name : "unknown",
+                 entry->mount_path ? entry->mount_path : "/");
+}
+
+static int cmd_df(int argc, char *argv[])
+{
+    int first = 1, status = 0, count, i;
+
+    while (first < argc && argv[first][0] == '-' && argv[first][1] != '\0') {
+        const char *opt = argv[first] + 1;
+        if (strcmp(opt, "-") == 0) { first++; break; }
+        for (; *opt != '\0'; opt++) {
+            if (*opt != 'h' && *opt != 'k' && *opt != 'T' && *opt != 'P') {
+                shell_error("df: invalid option -- '%c'\r\n", *opt);
+                return 1;
+            }
+        }
+        first++;
+    }
+    shell_init_cwd();
+    count = vfs_get_mount_count();
+    shell_printf("Filesystem   Type     Mounted on\r\n");
+    if (first == argc) {
+        for (i = 0; i < count; i++) {
+            struct vfs_mount_entry entry;
+            if (vfs_get_mount_entry(i, &entry) == 0) df_print_mount(&entry);
+        }
+        return 0;
+    }
+    for (i = first; i < argc; i++) {
+        struct dentry *target = resolve_path(argv[i]);
+        struct dentry *cur;
+        struct vfs_mount_entry matched = {0};
+        bool found = false;
+        if (target == NULL || target->d_inode == NULL) {
+            shell_error("df: %s: No such file or directory\r\n", argv[i]);
+            status = 1;
+            continue;
+        }
+        for (cur = target; cur != NULL && !found; cur = cur->d_parent) {
+            int j;
+            for (j = count - 1; j >= 0; j--) {
+                struct vfs_mount_entry entry;
+                if (vfs_get_mount_entry(j, &entry) == 0 && entry.dentry == cur) {
+                    matched = entry;
+                    found = true;
+                    break;
+                }
+            }
+            if (cur->d_parent == cur) break;
+        }
+        if (!found && vfs_get_mount_entry(0, &matched) == 0) found = true;
+        if (found) df_print_mount(&matched);
+    }
+    return status;
 }
 
 extern void dump_all_task(void);
@@ -3512,6 +3721,9 @@ static int nshell_init(void)
     // Register basic commands
     shell_register_cmd("help", "List commands", cmd_help);
     shell_register_cmd("ver", "Show NOS kernel version & uptime", cmd_ver);
+    shell_register_cmd("uname", "Print system information", cmd_uname);
+    shell_register_cmd("uptime", "Show how long the system has been running", cmd_uptime);
+    shell_register_cmd("free", "Display amount of free and used memory", cmd_free);
     shell_register_cmd("clear", "Clear screen", cmd_clear);
     shell_register_cmd("echo", "Print arguments", cmd_echo);
     shell_register_cmd("printf", "Format and print arguments", cmd_printf);
@@ -3543,6 +3755,7 @@ static int nshell_init(void)
     shell_register_cmd("tee", "Duplicate standard input to files", cmd_tee);
     shell_register_cmd("grep", "Search lines for a fixed string", cmd_grep);
     shell_register_cmd("mount", "Mount filesystem", cmd_mount);
+    shell_register_cmd("df", "Report filesystem mount usage", cmd_df);
     shell_register_cmd("ps", "Dump task status", cmd_ps);
 #ifdef CONFIG_NLK_SERVER
     shell_register_cmd("nlk", "Show NLK soft-bus status & topology", cmd_nlk);
