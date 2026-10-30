@@ -8,6 +8,9 @@ static const char *lookup(void *context, const char *name, size_t len)
 {
     (void)context;
     if (len == 1 && name[0] == 'V') return "one two;\"$";
+    if (len == 1 && name[0] == '#') return "2";
+    if (len == 1 && name[0] == '0') return "mysh";
+    if (len == 1 && name[0] == '1') return "first arg";
     return NULL;
 }
 
@@ -134,6 +137,12 @@ int main(void)
         assert(expanded_argc == 5);
         assert(strcmp(argv[1], "10") == 0 && strcmp(argv[2], "0") == 0);
         assert(strcmp(argv[3], "3") == 0 && strcmp(argv[4], "${#V}") == 0);
+        assert(shell_expand_parameters("echo $0 \"$1\" $# ${#} ${#1} $2", expanded,
+                                       sizeof(expanded), 0, lookup, NULL) == 0);
+        expanded_argc = shell_parse_redirect(expanded, argv, 8, &redir);
+        assert(expanded_argc == 6);
+        assert(strcmp(argv[1], "mysh") == 0 && strcmp(argv[2], "first arg") == 0);
+        assert(strcmp(argv[3], "2") == 0 && strcmp(argv[4], "2") == 0 && strcmp(argv[5], "9") == 0);
         assert(shell_expand_parameters("echo $V \"$V\" '$V' $MISSING", expanded,
                                        sizeof(expanded), 0, lookup, NULL) == 0);
         expanded_argc = shell_parse_redirect(expanded, argv, 8, &redir);
