@@ -69,9 +69,8 @@ subshells, external processes, job control, and a complete standard error
 stream remain to be implemented. Some NOS-specific commands and VFS behavior
 also differ from Unix. Avoid using destructive operations until VFS object
 lifetime and concurrent access are fully addressed.
-In particular, removing a FatFs file through a differently cased alias can
-leave another cached name pointing at the deleted entry. Cached dentries and
-session working directories do not yet have a complete reference lifecycle.
+Cached dentries and session working directories do not yet have a complete
+reference lifecycle, including during concurrent removal and unmount.
 
 VFS descriptor operations retain an in-flight file reference across `close`
 and serialize operations on the same open file's position. RAMFS appends choose

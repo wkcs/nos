@@ -1715,6 +1715,8 @@ void get_fileinfo (		/* No return code */
 	p = fno->fname;
 	if (dp->sect) {		/* Get SFN */
 		dir = dp->dir;
+		fno->nos_dir_sector = dp->sect;
+		fno->nos_dir_offset = (WORD)(dir - dp->fs->win);
 		i = 0;
 		while (i < 11) {		/* Copy name body and extension */
 			c = (TCHAR)dir[i++];

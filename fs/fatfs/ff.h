@@ -167,6 +167,8 @@ typedef struct {
 
 typedef struct {
 	DWORD	fsize;			/* File size */
+	DWORD	nos_dir_sector;	/* NOS: sector containing the directory entry */
+	WORD	nos_dir_offset;	/* NOS: byte offset of the entry in the sector */
 	WORD	fdate;			/* Last modified date */
 	WORD	ftime;			/* Last modified time */
 	BYTE	fattrib;		/* Attribute */

@@ -25,6 +25,13 @@ config VFS_FD_CONCURRENCY_TEST
 	help
 	  Exercise shared file offsets using scheduled tasks in QEMU.
 
+config VFS_FAT_ALIAS_TEST
+	bool "FatFs alias identity test"
+	depends on VFS && FATFS && QEMU && BOARD_QEMU_STM32
+	default n
+	help
+	  Test cached FatFs aliases, removal, rename, and mount protection.
+
 config RAMFS
 	bool "RAM file system"
 	default y

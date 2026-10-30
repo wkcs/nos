@@ -116,6 +116,20 @@ static struct dentry *vfs_find_cached_child(struct dentry *parent,
     return NULL;
 }
 
+static struct dentry *vfs_find_cached_identity(struct dentry *parent, struct inode *inode)
+{
+    struct dentry *child;
+    if (inode == NULL || !inode->i_file_id_valid) return NULL;
+    vfs_ensure_dentry_lists(parent);
+    list_for_each_entry (child, &parent->d_subdirs, d_child) {
+        struct inode *other = child->d_inode;
+        if (other != NULL && other->i_file_id_valid && other->i_sb == inode->i_sb &&
+            other->i_file_sector == inode->i_file_sector &&
+            other->i_file_offset == inode->i_file_offset) return child;
+    }
+    return NULL;
+}
+
 struct dentry *vfs_get_root(void)
 {
     struct dentry *root;
@@ -223,6 +237,7 @@ struct inode *nos_vfs_alloc_inode(struct super_block *sb) {
     return NULL;
 
   inode->i_sb = sb;
+  inode->i_file_id_valid = false;
   INIT_LIST_HEAD(&inode->i_list);
   INIT_LIST_HEAD(&inode->i_sb_list);
   INIT_LIST_HEAD(&inode->i_dentry);
@@ -232,7 +247,7 @@ struct inode *nos_vfs_alloc_inode(struct super_block *sb) {
 }
 
 void nos_vfs_destroy_inode(struct inode *inode) {
-  if (inode->i_sb->s_op->destroy_inode)
+  if (inode->i_sb->s_op && inode->i_sb->s_op->destroy_inode)
     inode->i_sb->s_op->destroy_inode(inode);
   else
     kfree(inode);
@@ -566,6 +581,14 @@ int vfs_remove_entry(struct dentry *dir, const char *name, bool is_dir)
     q.hash = 0;
     target = vfs_lookup(dir, &q);
     if (target == NULL || target->d_inode == NULL) return -ENOENT;
+    spin_lock(&vfs_mount_lock);
+    for (i = 0; i < mount_count; i++) {
+        if (mount_points[i].target == target) {
+            spin_unlock(&vfs_mount_lock);
+            return -EBUSY;
+        }
+    }
+    spin_unlock(&vfs_mount_lock);
     if (is_dir && !S_ISDIR(target->d_inode->i_mode)) return -ENOTDIR;
     if (!is_dir && S_ISDIR(target->d_inode->i_mode)) return -EISDIR;
 
@@ -593,7 +616,7 @@ int vfs_remove_entry(struct dentry *dir, const char *name, bool is_dir)
     }
     if (rc == 0) {
         spin_lock(&vfs_mount_lock);
-        cached = vfs_find_cached_child(dir, name, len);
+        cached = vfs_find_cached_child(dir, (const char *)target->d_name.name, target->d_name.len);
         if (cached != NULL) {
             list_del(&cached->d_child);
             vfs_free_dentry_Subtree(cached);
@@ -609,8 +632,10 @@ int vfs_rename_entry(struct dentry *old_dir, const char *old_name,
 {
     struct dentry old_temp, new_temp;
     struct dentry *cached_old, *cached_new, *ancestor;
+    struct inode *refreshed = NULL;
+    struct qstr old_q, new_q;
     unsigned int old_len, new_len;
-    int rc;
+    int i, rc;
 
     if (old_dir == NULL || new_dir == NULL ||
         old_dir->d_inode == NULL || new_dir->d_inode == NULL ||
@@ -636,12 +661,24 @@ int vfs_rename_entry(struct dentry *old_dir, const char *old_name,
         return -EROFS;
     }
 
+    old_q = (struct qstr){ .name = (const unsigned char *)old_name, .len = old_len, .hash = 0 };
+    new_q = (struct qstr){ .name = (const unsigned char *)new_name, .len = new_len, .hash = 0 };
+    cached_old = vfs_lookup(old_dir, &old_q);
+    if (cached_old == NULL) return -ENOENT;
+    cached_new = vfs_lookup(new_dir, &new_q);
+    if (cached_old == cached_new) return 0;
+
     /* Moving a directory beneath itself would detach and cycle its tree. */
     spin_lock(&vfs_mount_lock);
+    for (i = 0; i < mount_count; i++) {
+        if (mount_points[i].target == cached_old || mount_points[i].target == cached_new) {
+            spin_unlock(&vfs_mount_lock);
+            return -EBUSY;
+        }
+    }
     for (ancestor = new_dir; ancestor != NULL && ancestor->d_parent != NULL &&
          ancestor->d_parent != ancestor; ancestor = ancestor->d_parent) {
-        if (ancestor->d_parent == old_dir && ancestor->d_name.len == old_len &&
-            memcmp(ancestor->d_name.name, old_name, old_len) == 0) {
+        if (ancestor == cached_old) {
             spin_unlock(&vfs_mount_lock);
             return -EINVAL;
         }
@@ -667,25 +704,40 @@ int vfs_rename_entry(struct dentry *old_dir, const char *old_name,
     rc = old_dir->d_inode->i_op->rename(old_dir->d_inode, &old_temp,
                                         new_dir->d_inode, &new_temp);
     if (rc == 0) {
+        /* A FatFs rename can move the directory entry to another sector/slot. */
+        if (cached_old->d_inode != NULL && cached_old->d_inode->i_file_id_valid &&
+            cached_old->d_sb != NULL && cached_old->d_sb->s_type != NULL &&
+            strcmp(cached_old->d_sb->s_type->name, "fatfs") == 0 &&
+            new_dir->d_inode->i_op != NULL && new_dir->d_inode->i_op->lookup != NULL) {
+            (void)new_dir->d_inode->i_op->lookup(new_dir->d_inode, &new_temp);
+            refreshed = new_temp.d_inode;
+        }
         spin_lock(&vfs_mount_lock);
-        cached_new = vfs_find_cached_child(new_dir, new_name, new_len);
         if (cached_new != NULL) {
             list_del(&cached_new->d_child);
             vfs_free_dentry_Subtree(cached_new);
             kfree(cached_new);
         }
-        cached_old = vfs_find_cached_child(old_dir, old_name, old_len);
         if (cached_old != NULL) {
             list_del(&cached_old->d_child);
             cached_old->d_parent = new_dir;
-            memcpy(cached_old->d_iname, new_name, new_len);
+            new_len = new_temp.d_name.len;
+            memcpy(cached_old->d_iname, new_temp.d_name.name, new_len);
             cached_old->d_iname[new_len] = '\0';
             cached_old->d_name.name = (const unsigned char *)cached_old->d_iname;
             cached_old->d_name.len = new_len;
+            if (cached_old->d_inode->i_file_id_valid) {
+                cached_old->d_inode->i_file_id_valid = refreshed != NULL && refreshed->i_file_id_valid;
+                if (cached_old->d_inode->i_file_id_valid) {
+                    cached_old->d_inode->i_file_sector = refreshed->i_file_sector;
+                    cached_old->d_inode->i_file_offset = refreshed->i_file_offset;
+                }
+            }
             vfs_ensure_dentry_lists(new_dir);
             list_add_tail(&cached_old->d_child, &new_dir->d_subdirs);
         }
         spin_unlock(&vfs_mount_lock);
+        if (refreshed != NULL) nos_vfs_destroy_inode(refreshed);
     }
     return rc;
 }
@@ -1058,7 +1110,7 @@ void vfs_setup_standard_mounts(void)
  * Simple path lookup stub
  */
 struct dentry *vfs_lookup(struct dentry *parent, struct qstr *name) {
-  struct inode *dir;
+  struct inode *dir, *lookup_inode;
   struct dentry *dentry, *cached;
   int i;
   
@@ -1088,31 +1140,49 @@ struct dentry *vfs_lookup(struct dentry *parent, struct qstr *name) {
       kfree(dentry);
       return NULL;
     }
+    lookup_inode = dentry->d_inode;
     
     // Check for mount points
     spin_lock(&vfs_mount_lock);
+    cached = NULL;
     for (i = 0; i < mount_count; i++) {
         if (mount_points[i].parent == dir) {
-             if (strcmp(dentry->d_name.name, mount_points[i].name) == 0) {
+             struct inode *original = mount_points[i].orig_inode;
+             if (strcmp(dentry->d_name.name, mount_points[i].name) == 0 ||
+                 (original != NULL && original->i_file_id_valid && lookup_inode->i_file_id_valid &&
+                  original->i_sb == lookup_inode->i_sb &&
+                  original->i_file_sector == lookup_inode->i_file_sector &&
+                  original->i_file_offset == lookup_inode->i_file_offset)) {
             
                 // Intercept! Replace inode with mount root inode
                 dentry->d_inode = mount_points[i].root->d_inode;
                 dentry->d_sb = mount_points[i].root->d_sb;
+                cached = mount_points[i].target;
                 // Also might need to update d_op if FS relies on it?
                 // For now only inode matters for file ops.
                 break;
              }
         }
     }
-    cached = vfs_find_cached_child(parent, dentry->d_iname, dentry->d_name.len);
+    if (cached == NULL) cached = vfs_find_cached_child(parent, dentry->d_iname, dentry->d_name.len);
+    if (cached == NULL) cached = vfs_find_cached_identity(parent, lookup_inode);
     if (cached != NULL) {
       spin_unlock(&vfs_mount_lock);
+      if (lookup_inode != cached->d_inode && lookup_inode->i_sb != NULL &&
+          lookup_inode->i_sb->s_type != NULL &&
+          strcmp(lookup_inode->i_sb->s_type->name, "fatfs") == 0)
+        nos_vfs_destroy_inode(lookup_inode);
       kfree(dentry);
       return cached;
     }
     vfs_ensure_dentry_lists(parent);
     list_add_tail(&dentry->d_child, &parent->d_subdirs);
     spin_unlock(&vfs_mount_lock);
+
+    if (lookup_inode != dentry->d_inode && lookup_inode->i_sb != NULL &&
+        lookup_inode->i_sb->s_type != NULL &&
+        strcmp(lookup_inode->i_sb->s_type->name, "fatfs") == 0)
+      nos_vfs_destroy_inode(lookup_inode);
 
     return dentry;
   }
