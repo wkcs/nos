@@ -100,6 +100,7 @@ struct nshell {
     struct shell_stream_pipe *error_pipe;
     int output_error;
     struct shell_variable *variables;
+    struct shell_variable *aliases;
     struct shell_cwd_ref *cwd_ref;
     uint32_t generation;
 };
@@ -137,14 +138,31 @@ static bool variable_name_valid(const char *name, size_t length)
     return true;
 }
 
-static struct shell_variable **variable_slot(struct nshell *shell, const char *name, size_t length)
+static bool alias_name_valid(const char *name, size_t length)
 {
-    struct shell_variable **slot = &shell->variables;
+    size_t i;
+    if (length == 0) return false;
+    for (i = 0; i < length; i++) {
+        unsigned char c = (unsigned char)name[i];
+        if (c <= ' ' || c == '=' || strchr("'\"\\;&|<>()$`/", (int)c) != NULL)
+            return false;
+    }
+    return true;
+}
+
+static struct shell_variable **variable_list_slot(struct shell_variable **slot,
+                                                  const char *name, size_t length)
+{
     while (*slot != NULL) {
         if (strlen((*slot)->name) == length && memcmp((*slot)->name, name, length) == 0) break;
         slot = &(*slot)->next;
     }
     return slot;
+}
+
+static struct shell_variable **variable_slot(struct nshell *shell, const char *name, size_t length)
+{
+    return variable_list_slot(&shell->variables, name, length);
 }
 
 static const char *variable_lookup(void *context, const char *name, size_t length)
@@ -182,6 +200,29 @@ static int variable_set(struct nshell *shell, const char *name, size_t length,
     old = *slot;
     var->next = old != NULL ? old->next : NULL;
     var->exported = exported || (old != NULL && old->exported);
+    memcpy(var->name, name, length);
+    var->name[length] = '\0';
+    var->value = var->name + length + 1;
+    memcpy(var->value, value, value_len + 1);
+    *slot = var;
+    if (old != NULL) kfree(old);
+    return 0;
+}
+
+static int alias_set(struct nshell *shell, const char *name, size_t length, const char *value)
+{
+    struct shell_variable **slot;
+    struct shell_variable *old, *var;
+    size_t value_len;
+
+    if (!alias_name_valid(name, length)) return -EINVAL;
+    value_len = strlen(value);
+    var = kmalloc(sizeof(*var) + length + value_len + 2U, GFP_KERNEL);
+    if (var == NULL) return -ENOMEM;
+    slot = variable_list_slot(&shell->aliases, name, length);
+    old = *slot;
+    var->next = old != NULL ? old->next : NULL;
+    var->exported = false;
     memcpy(var->name, name, length);
     var->name[length] = '\0';
     var->value = var->name + length + 1;
@@ -237,13 +278,18 @@ static void variable_restore(struct nshell *shell, struct shell_saved_variable *
     }
 }
 
-static void variable_clear(struct nshell *shell)
+static void variable_list_clear(struct shell_variable **head)
 {
-    while (shell->variables != NULL) {
-        struct shell_variable *var = shell->variables;
-        shell->variables = var->next;
+    while (*head != NULL) {
+        struct shell_variable *var = *head;
+        *head = var->next;
         kfree(var);
     }
+}
+
+static void variable_clear(struct nshell *shell)
+{
+    variable_list_clear(&shell->variables);
 }
 
 static int variable_init(struct nshell *shell)
@@ -636,6 +682,102 @@ static int cmd_unset(int argc, char *argv[])
             struct shell_variable *var = *slot;
             *slot = var->next;
             kfree(var);
+        }
+    }
+    return status;
+}
+
+static void alias_print(const struct shell_variable *var)
+{
+    const char *p;
+    shell_printf("alias %s='", var->name);
+    for (p = var->value; *p != '\0'; p++) {
+        if (*p == '\'') nshell_write("'\\''", 4);
+        else nshell_write(p, 1);
+    }
+    nshell_write("'\r\n", 3);
+}
+
+static int cmd_alias(int argc, char *argv[])
+{
+    struct nshell *shell = nshell_current();
+    bool print_all = false;
+    int first = 1, status = 0, i;
+
+    while (first < argc && argv[first][0] == '-' && argv[first][1] != '\0') {
+        const char *opt = argv[first] + 1;
+        if (strcmp(opt, "-") == 0) { first++; break; }
+        for (; *opt != '\0'; opt++) {
+            if (*opt == 'p') print_all = true;
+            else {
+                shell_error("alias: invalid option -- '%c'\r\n", *opt);
+                return 1;
+            }
+        }
+        first++;
+    }
+    if (print_all || first == argc) {
+        const struct shell_variable *var;
+        for (var = shell->aliases; var != NULL; var = var->next)
+            alias_print(var);
+    }
+    for (i = first; i < argc; i++) {
+        const char *equals = strchr(argv[i], '=');
+        if (equals != NULL) {
+            if (alias_set(shell, argv[i], (size_t)(equals - argv[i]), equals + 1) != 0) {
+                shell_error("alias: %s: invalid alias name\r\n", argv[i]);
+                status = 1;
+            }
+        } else {
+            struct shell_variable *var =
+                *variable_list_slot(&shell->aliases, argv[i], strlen(argv[i]));
+            if (var != NULL) {
+                alias_print(var);
+            } else {
+                shell_error("alias: %s: not found\r\n", argv[i]);
+                status = 1;
+            }
+        }
+    }
+    return status;
+}
+
+static int cmd_unalias(int argc, char *argv[])
+{
+    struct nshell *shell = nshell_current();
+    bool remove_all = false;
+    int first = 1, status = 0, i;
+
+    while (first < argc && argv[first][0] == '-' && argv[first][1] != '\0') {
+        const char *opt = argv[first] + 1;
+        if (strcmp(opt, "-") == 0) { first++; break; }
+        for (; *opt != '\0'; opt++) {
+            if (*opt == 'a') remove_all = true;
+            else {
+                shell_error("unalias: invalid option -- '%c'\r\n", *opt);
+                return 1;
+            }
+        }
+        first++;
+    }
+    if (remove_all) {
+        variable_list_clear(&shell->aliases);
+        return 0;
+    }
+    if (first == argc) {
+        shell_error("unalias: usage: unalias [-a] name [name ...]\r\n");
+        return 1;
+    }
+    for (i = first; i < argc; i++) {
+        struct shell_variable **slot =
+            variable_list_slot(&shell->aliases, argv[i], strlen(argv[i]));
+        if (*slot == NULL) {
+            shell_error("unalias: %s: not found\r\n", argv[i]);
+            status = 1;
+        } else {
+            struct shell_variable *dead = *slot;
+            *slot = dead->next;
+            kfree(dead);
         }
     }
     return status;
@@ -4552,6 +4694,7 @@ static int cmd_sh(int argc, char *argv[])
 {
     struct nshell *shell = nshell_current();
     struct shell_variable *orig_vars = shell->variables, *var;
+    struct shell_variable *orig_aliases = shell->aliases;
     struct dentry *orig_cwd = shell->session.cwd;
     struct shell_cwd_ref *orig_cwd_ref = shell->cwd_ref;
     const char *cmd_str = NULL;
@@ -4585,6 +4728,7 @@ static int cmd_sh(int argc, char *argv[])
     shell_init_cwd();
     if (orig_cwd_ref != NULL) __atomic_add_fetch(&orig_cwd_ref->refs, 1U, __ATOMIC_RELAXED);
     shell->variables = NULL;
+    shell->aliases = NULL;
     for (var = orig_vars; var != NULL; var = var->next) {
         if (var->exported &&
             variable_set(shell, var->name, strlen(var->name), var->value, true) != 0) {
@@ -4605,7 +4749,9 @@ static int cmd_sh(int argc, char *argv[])
     }
 out:
     variable_clear(shell);
+    variable_list_clear(&shell->aliases);
     shell->variables = orig_vars;
+    shell->aliases = orig_aliases;
     shell_cwd_put(shell->cwd_ref);
     shell->cwd_ref = orig_cwd_ref;
     shell->session.cwd = orig_cwd;
@@ -4623,6 +4769,7 @@ static void shell_pipeline_worker(void *context)
     if (stage->last) stage->group->last_status = shell->last_status;
     shell_session_unregister(shell);
     variable_clear(shell);
+    variable_list_clear(&shell->aliases);
     shell_cwd_put(shell->cwd_ref);
     kfree(shell);
 }
@@ -4659,6 +4806,7 @@ static noinline int shell_run_pipeline(struct nshell *parent, struct shell_comma
         child->next = NULL;
         child->pipeline_worker = true;
         child->variables = NULL;
+        child->aliases = NULL;
         child->input_file = NULL;
         child->output_file = NULL;
         child->error_file = NULL;
@@ -4671,6 +4819,10 @@ static noinline int shell_run_pipeline(struct nshell *parent, struct shell_comma
         child->session.input_len = strlen(child->session.input);
         for (var = parent->variables; var != NULL; var = var->next) {
             if (variable_set(child, var->name, strlen(var->name), var->value, var->exported) != 0)
+                goto cleanup;
+        }
+        for (var = parent->aliases; var != NULL; var = var->next) {
+            if (alias_set(child, var->name, strlen(var->name), var->value) != 0)
                 goto cleanup;
         }
         stages[i].group = group;
@@ -4709,6 +4861,7 @@ cleanup:
             pending++;
         }
         variable_clear(stages[i].shell);
+        variable_list_clear(&stages[i].shell->aliases);
         shell_cwd_put(stages[i].shell->cwd_ref);
         kfree(stages[i].shell);
     }
@@ -4719,6 +4872,103 @@ out:
     if (pipes != NULL) kfree(pipes);
     if (stages != NULL) kfree(stages);
     if (group != NULL) kfree(group);
+    return rc;
+}
+
+static const char *nshell_skip_word(const char *s)
+{
+    char quote = 0;
+    while (*s != '\0') {
+        char c = *s;
+        if (quote == 0 && (c == ' ' || c == '\t' || c == '<' || c == '>')) break;
+        s++;
+        if (c == '\\' && quote != '\'' && *s != '\0') s++;
+        else if (c == '\'' && quote != '"') quote = quote == '\'' ? 0 : '\'';
+        else if (c == '"' && quote != '\'') quote = quote == '"' ? 0 : '"';
+    }
+    return s;
+}
+
+static const char *nshell_find_cmd_word(const char *s)
+{
+    while (*s != '\0') {
+        const char *end, *eq;
+        while (*s == ' ' || *s == '\t') s++;
+        if (strncmp(s, "2>&1", 4) == 0 &&
+            (s[4] == '\0' || s[4] == ' ' || s[4] == '\t' || s[4] == '<' || s[4] == '>')) {
+            s += 4;
+            continue;
+        }
+        if (s[0] == '2' && s[1] == '>') s++;
+        if (*s == '<' || *s == '>') {
+            char op = *s++;
+            if (op == '>' && *s == '>') s++;
+            while (*s == ' ' || *s == '\t') s++;
+            s = nshell_skip_word(s);
+            continue;
+        }
+        end = nshell_skip_word(s);
+        eq = memchr(s, '=', (size_t)(end - s));
+        if (eq != NULL && variable_name_valid(s, (size_t)(eq - s))) {
+            s = end;
+            continue;
+        }
+        return s;
+    }
+    return s;
+}
+
+static int nshell_expand_aliases(struct nshell *shell, const char *source,
+                                 char *output, size_t size, char *scratch)
+{
+    struct shell_variable *var;
+    size_t word_offset = 0, next_offset = 0;
+    bool check_next = false;
+    int depth, rc = 0;
+
+    if (strlen(source) >= size) return -1;
+    strcpy(output, source);
+    if (shell->aliases == NULL) return 0;
+    for (depth = 0; depth < 16; depth++) {
+        const char *p = nshell_find_cmd_word(output + word_offset);
+        const char *end;
+        struct shell_variable *alias = NULL;
+        size_t prefix_len, token_len, value_len, suffix_len;
+
+        word_offset = (size_t)(p - output);
+        end = nshell_skip_word(p);
+        token_len = (size_t)(end - p);
+        if (token_len > 0U && alias_name_valid(p, token_len))
+            alias = *variable_list_slot(&shell->aliases, p, token_len);
+        if (alias == NULL || alias->exported) {
+            if (!check_next) break;
+            word_offset = next_offset;
+            check_next = false;
+            for (var = shell->aliases; var != NULL; var = var->next)
+                var->exported = false;
+            continue;
+        }
+        prefix_len = word_offset;
+        value_len = strlen(alias->value);
+        suffix_len = strlen(end);
+        if (prefix_len + value_len + suffix_len >= size) {
+            rc = -1;
+            break;
+        }
+        memcpy(scratch, output, prefix_len);
+        memcpy(scratch + prefix_len, alias->value, value_len);
+        memcpy(scratch + prefix_len + value_len, end, suffix_len + 1U);
+        memcpy(output, scratch, prefix_len + value_len + suffix_len + 1U);
+        alias->exported = true;
+        if (check_next) next_offset = next_offset + value_len - token_len;
+        if (value_len > 0U &&
+            (alias->value[value_len - 1U] == ' ' || alias->value[value_len - 1U] == '\t')) {
+            check_next = true;
+            next_offset = prefix_len + value_len;
+        }
+    }
+    for (var = shell->aliases; var != NULL; var = var->next)
+        var->exported = false;
     return rc;
 }
 
@@ -4796,7 +5046,11 @@ static void nshell_exec_cmd(struct nshell *shell)
             i = end - 1;
             continue;
         }
-        if (shell_expand_parameters(workspace->commands[i].text, workspace->expanded,
+        if (nshell_expand_aliases(shell, workspace->commands[i].text,
+                                  workspace->assignment_expanded,
+                                  sizeof(workspace->assignment_expanded),
+                                  workspace->check) != 0 ||
+            shell_expand_parameters(workspace->assignment_expanded, workspace->expanded,
                                     sizeof(workspace->expanded), pipeline_status,
                                     variable_lookup, shell) != 0) {
             shell_error("shell: expanded command too long\r\n");
@@ -5026,6 +5280,7 @@ static void nshell_task_entry(void* parameter)
                 shell->cwd_ref = NULL;
                 shell_session_reset(&shell->session, vfs_get_root());
                 variable_clear(shell);
+                variable_list_clear(&shell->aliases);
                 shell->last_status = variable_init(shell) == 0 ? 0 : 1;
                 if (ctx->session_open) shell_printf("\r\n" SHELL_PROMPT);
             }
@@ -5092,6 +5347,8 @@ static int nshell_init(void)
     shell_register_cmd("sh", "Execute shell script or command string", cmd_sh);
     shell_register_cmd("test", "Evaluate a conditional expression", cmd_test);
     shell_register_cmd("[", "Evaluate a conditional expression", cmd_test);
+    shell_register_cmd("alias", "Define or display aliases", cmd_alias);
+    shell_register_cmd("unalias", "Remove alias definitions", cmd_unalias);
     shell_register_cmd("export", "Mark shell variables for export", cmd_export);
     shell_register_cmd("unset", "Remove shell variables", cmd_unset);
     shell_register_cmd("env", "Run a command in a modified environment", cmd_env);
