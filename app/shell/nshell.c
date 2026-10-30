@@ -1241,6 +1241,152 @@ error:
     return status;
 }
 
+struct rm_entry {
+    char name[FS_NAME_LEN];
+    int error;
+};
+
+static int rm_first_entry(void *context, const char *name, int length,
+                          loff_t offset, u64 ino, unsigned type)
+{
+    struct rm_entry *entry = context;
+    (void)offset;
+    (void)ino;
+    (void)type;
+    if (entry->name[0] != '\0' || entry->error != 0) return 1;
+    if ((length == 1 && name[0] == '.') ||
+        (length == 2 && name[0] == '.' && name[1] == '.')) return 0;
+    if (length <= 0 || length >= FS_NAME_LEN) {
+        entry->error = -ENAMETOOLONG;
+        return 1;
+    }
+    memcpy(entry->name, name, (size_t)length);
+    entry->name[length] = '\0';
+    return 1;
+}
+
+static int rm_read_first(struct dentry *entry, struct rm_entry *child)
+{
+    struct file *file;
+    int rc;
+    if (entry->d_inode->i_fop == NULL || entry->d_inode->i_fop->readdir == NULL)
+        return -ENOTDIR;
+    file = kzalloc(sizeof(*file), GFP_KERNEL);
+    if (file == NULL) return -ENOMEM;
+    file->f_inode = entry->d_inode;
+    file->f_op = entry->d_inode->i_fop;
+    file->f_path.dentry = entry;
+    rc = file->f_op->open != NULL ? file->f_op->open(file->f_inode, file) : 0;
+    if (rc == 0) {
+        rc = file->f_op->readdir(file, child, rm_first_entry);
+        if (file->f_op->release != NULL) {
+            int close_rc = file->f_op->release(file->f_inode, file);
+            if (rc == 0) rc = close_rc;
+        }
+    }
+    kfree(file);
+    return rc != 0 ? rc : child->error;
+}
+
+static int rm_path(char *path, bool recursive, bool directories, bool force, bool verbose)
+{
+    size_t base_len = strlen(path);
+    bool trailing_slash = base_len > 0 && path[base_len - 1] == '/';
+    struct dentry *entry;
+
+    while (base_len > 1 && path[base_len - 1] == '/') path[--base_len] = '\0';
+    if (base_len == 0 || strcmp(path, "/") == 0) return -EINVAL;
+    {
+        const char *last = strrchr(path, '/');
+        last = last != NULL ? last + 1 : path;
+        if (strcmp(last, ".") == 0 || strcmp(last, "..") == 0) return -EINVAL;
+    }
+    for (;;) {
+        struct dentry *parent;
+        struct rm_entry child = {0};
+        char *slash;
+        const char *name;
+        bool is_dir;
+        int rc;
+
+        entry = resolve_path(path);
+        if (entry == NULL || entry->d_inode == NULL)
+            return force && strlen(path) == base_len ? 0 : -ENOENT;
+        is_dir = S_ISDIR(entry->d_inode->i_mode);
+        if (trailing_slash && strlen(path) == base_len && !is_dir) return -ENOTDIR;
+        if (is_dir && !recursive && !directories) return -EISDIR;
+        if (is_dir && recursive) {
+            rc = rm_read_first(entry, &child);
+            if (rc != 0) return rc;
+            if (child.name[0] != '\0') {
+                size_t len = strlen(path);
+                size_t child_len = strlen(child.name);
+                if (len + child_len + 1 > SHELL_SESSION_INPUT_MAX) return -ENAMETOOLONG;
+                path[len] = '/';
+                memcpy(path + len + 1, child.name, child_len + 1);
+                continue;
+            }
+        }
+        slash = strrchr(path, '/');
+        name = slash != NULL ? slash + 1 : path;
+        if (slash == NULL) parent = shell_cwd;
+        else if (slash == path) parent = vfs_get_root();
+        else {
+            *slash = '\0';
+            parent = resolve_path(path);
+            *slash = '/';
+        }
+        rc = parent != NULL ? vfs_remove_entry(parent, name, is_dir) : -ENOENT;
+        if (rc != 0) return rc;
+        if (verbose) shell_printf("removed '%s'\r\n", path);
+        if (strlen(path) == base_len) return 0;
+        *strrchr(path, '/') = '\0';
+    }
+}
+
+static int cmd_rm(int argc, char *argv[])
+{
+    bool recursive = false, directories = false, force = false, verbose = false;
+    int first = 1, status = 0;
+    char *path;
+
+    while (first < argc && argv[first][0] == '-' && argv[first][1] != '\0') {
+        const char *option = argv[first] + 1;
+        if (strcmp(option, "-") == 0) { first++; break; }
+        for (; *option != '\0'; option++) {
+            if (*option == 'r' || *option == 'R') recursive = true;
+            else if (*option == 'd') directories = true;
+            else if (*option == 'f') force = true;
+            else if (*option == 'v') verbose = true;
+            else { shell_error("rm: invalid option: %s\r\n", argv[first]); return 1; }
+        }
+        first++;
+    }
+    if (first == argc) {
+        if (force) return 0;
+        shell_error("rm: missing operand\r\n");
+        return 1;
+    }
+    shell_init_cwd();
+    path = kmalloc(SHELL_SESSION_INPUT_MAX + 1, GFP_KERNEL);
+    if (path == NULL) return 1;
+    for (int i = first; i < argc; i++) {
+        size_t len = strlen(argv[i]);
+        int rc;
+        if (len > SHELL_SESSION_INPUT_MAX) rc = -ENAMETOOLONG;
+        else {
+            memcpy(path, argv[i], len + 1);
+            rc = rm_path(path, recursive, directories, force, verbose);
+        }
+        if (rc != 0) {
+            shell_error("rm: cannot remove '%s': error %d\r\n", argv[i], rc);
+            status = 1;
+        }
+    }
+    kfree(path);
+    return status;
+}
+
 static int cat_stream(struct file *f)
 {
     char buf[64];
@@ -2655,6 +2801,7 @@ static int nshell_init(void)
     shell_register_cmd("pwd", "Print working directory", cmd_pwd);
     shell_register_cmd("mkdir", "Make directory", cmd_mkdir);
     shell_register_cmd("rmdir", "Remove empty directories", cmd_rmdir);
+    shell_register_cmd("rm", "Remove files and directories", cmd_rm);
     shell_register_cmd("cat", "Concatenate file", cmd_cat);
     shell_register_cmd("basename", "Strip directory and suffix", cmd_basename);
     shell_register_cmd("dirname", "Strip final path component", cmd_dirname);
