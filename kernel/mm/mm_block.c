@@ -103,12 +103,12 @@ void *__kalloc(u32 size, gfp_t flag, pid_t pid)
     }
 
     for (;;) {
+        struct memblock *best_block = NULL;
+        struct mem_base *best = NULL;
+        u32 max = 0;
         /* Keep selection, splitting and max_alloc_cap consistent across callers. */
         spin_lock_irq(&g_memblock_lock);
         list_for_each_entry(block, &g_memblock_list, list) {
-            u32 max = 0;
-            bool found = false;
-
             spin_lock_irq(&block->lock);
             if (block->max_alloc_cap >= size) {
                 list_for_each_entry(base, &block->base, list) {
@@ -120,16 +120,19 @@ void *__kalloc(u32 size, gfp_t flag, pid_t pid)
                         return NULL;
                     }
 #endif
-                    if (!base->used && base->size >= size) {
-                        found = true;
-                        break;
+                    if (!base->used && base->size >= size &&
+                        (best == NULL || base->size < best->size)) {
+                        best = base;
+                        best_block = block;
                     }
                 }
             }
-            if (!found) {
-                spin_unlock_irq(&block->lock);
-                continue;
-            }
+            spin_unlock_irq(&block->lock);
+        }
+        if (best != NULL) {
+            block = best_block;
+            base = best;
+            spin_lock_irq(&block->lock);
             base->used = true;
             base->pid = pid;
             addr = (addr_t)base + sizeof(*base);
