@@ -26,6 +26,20 @@ static int vfs_alias_test(void)
         }
         if (mm_block_used_size() != used) goto failed;
     }
+
+    {
+        struct file file = {0};
+        struct dentry *entry;
+        fd = nos_open("/direct.tmp", O_CREAT | O_RDWR);
+        if (fd < 0 || nos_close(fd) != 0) goto failed;
+        entry = vfs_lookup_path(root, "/direct.tmp");
+        if (entry == NULL) goto failed;
+        file.f_path.dentry = entry;
+        file.f_inode = entry->d_inode;
+        file.f_op = entry->d_inode->i_fop;
+        if (file.f_op->open(file.f_inode, &file) != 0 || nos_unlink("/direct.tmp") != 0 ||
+            file.f_inode->i_mode == 0 || file.f_op->release(file.f_inode, &file) != 0) goto failed;
+    }
     {
         struct file *file;
         if (nos_mkdir("/pin-old", 0755) != 0 || nos_mkdir("/pin-new", 0755) != 0) goto failed;
@@ -40,6 +54,16 @@ static int vfs_alias_test(void)
     }
     if (nos_unlink("/TYPECH~1.TMP") != 0 ||
         vfs_lookup_path(root, "/typecheck.tmp") != NULL || nos_rmdir("/SYS") != -EBUSY) goto failed;
+
+    {
+        size_t used = mm_block_used_size();
+        int i;
+        for (i = 0; i < 20; i++) {
+            fd = nos_open("/reclaim.tmp", O_CREAT | O_RDWR);
+            if (fd < 0 || nos_close(fd) != 0 || nos_unlink("/reclaim.tmp") != 0) goto failed;
+        }
+        if (mm_block_used_size() != used) goto failed;
+    }
 
     if (nos_mkdir("/AliasDir", 0755) != 0 ||
         vfs_lookup_path(root, "/ALIASDIR") != vfs_lookup_path(root, "/AliasDir") ||
