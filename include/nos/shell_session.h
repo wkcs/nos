@@ -62,4 +62,5 @@ const char *shell_session_history_get(const struct shell_session *session,
 void shell_session_history_clear(struct shell_session *session);
 void shell_session_feed(struct shell_session *session, unsigned char ch,
                         void (*execute)(struct shell_session *, void *), void *context);
+int nshell_spawn(struct nos_tty *tty, const char *name, bool show_banner);
 #endif

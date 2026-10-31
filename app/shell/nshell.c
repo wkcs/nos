@@ -12,6 +12,7 @@
 #include <kernel/errno.h>
 #include <kernel/sleep.h>
 #include <kernel/cpu.h>
+#include <kernel/boot.h>
 #include <kernel/irq.h>
 #include <kernel/device.h>
 #include <kernel/init.h>
@@ -83,7 +84,7 @@ struct nshell {
     struct task_struct *task;
     struct shell_session session;
     struct nshell *next;
-    bool remote;
+    bool show_banner;
     bool pipeline_worker;
     bool exit_requested;
     unsigned char script_depth;
@@ -318,44 +319,30 @@ static struct nshell *nshell_current(void)
 static int nshell_transport_write(void *context, const char *buf, unsigned int len)
 {
     struct nshell *shell = context;
+    unsigned int total = 0U;
+
     if (shell == NULL) return -EINVAL;
-    if (!shell->remote && shell->session.tty == NULL) return console_write(buf, len);
-#ifdef CONFIG_NLK_SERVER
-    if (shell->remote) {
-        struct nlk_shell_ctx *ctx = nlk_cap_shell_default_ctx();
-        if (ctx == NULL || !ctx->session_open || shell->generation != __atomic_load_n(&ctx->generation, __ATOMIC_ACQUIRE))
-            return -ENOTCONN;
-    }
-#endif
-    if (shell->remote) {
-        unsigned int total = 0;
-        while (total < len) {
-#ifdef CONFIG_NLK_SERVER
-            struct nlk_shell_ctx *ctx = nlk_cap_shell_default_ctx();
-            int rc = nlk_cap_shell_write_session(ctx, shell->generation,
-                         (const unsigned char *)buf + total, (unsigned int)(len - total));
-#else
-            int rc = -ENOTCONN;
-#endif
-            if (rc == -EAGAIN) {
-                msleep(10);
-#ifdef CONFIG_NLK_SERVER
-                {
-                    struct nlk_shell_ctx *ctx = nlk_cap_shell_default_ctx();
-                    if (ctx == NULL || shell->generation !=
-                        __atomic_load_n(&ctx->generation, __ATOMIC_ACQUIRE))
-                        return total != 0 ? (int)total : -ENOTCONN;
-                }
-#endif
-            } else if (rc <= 0) {
-                return total != 0 ? (int)total : rc;
-            } else {
-                total += rc;
-            }
+    if (shell->session.tty == NULL) return console_write(buf, len);
+    while (total < len) {
+        uint32_t gen = 0U;
+        int rc;
+
+        if (!nos_tty_poll_session(shell->session.tty, &gen, NULL) ||
+            (shell->generation != 0U && gen != shell->generation)) {
+            return total != 0U ? (int)total : -ENOTCONN;
         }
-        return (int)total;
+        rc = nos_tty_write(shell->session.tty,
+                           (const unsigned char *)buf + total,
+                           len - total);
+        if (rc == -EAGAIN) {
+            msleep(5);
+        } else if (rc <= 0) {
+            return total != 0U ? (int)total : rc;
+        } else {
+            total += (unsigned int)rc;
+        }
     }
-    return nos_tty_write(shell->session.tty, (const unsigned char *)buf, len);
+    return (int)total;
 }
 
 static int nshell_write(const char *buf, int len)
@@ -458,21 +445,28 @@ static int nshell_getc(void)
 {
     struct nshell *shell = nshell_current();
     if (shell == NULL) return -EINVAL;
-#ifdef CONFIG_NLK_SERVER
-    if (shell->remote) {
-        for (;;) {
-            struct nlk_shell_ctx *ctx = nlk_cap_shell_default_ctx();
-            unsigned char ch;
-            if (ctx != NULL) {
-                if (shell->generation != __atomic_load_n(&ctx->generation, __ATOMIC_ACQUIRE)) return -1;
-                if (ctx->session_open && nlk_cap_shell_read_session(ctx, shell->generation,
-                                                                    &ch, 1U) == 1) return ch;
-            }
-            msleep(10);
+    if (shell->session.tty == NULL) return console_getc();
+    for (;;) {
+        uint32_t gen = 0U;
+        unsigned char ch;
+        int rc;
+
+        if (!nos_tty_poll_session(shell->session.tty, &gen, NULL) ||
+            gen != shell->generation) {
+            return -ENOTCONN;
         }
+        rc = nos_tty_read(shell->session.tty, &ch, 1U, true);
+        if (rc == 1) {
+            return (int)ch;
+        }
+        if (rc == 0) {
+            return -ENOTCONN;
+        }
+        if (rc != -EAGAIN) {
+            return rc;
+        }
+        msleep(10);
     }
-#endif
-    return console_getc();
 }
 
 /* --- Filesystem Helper Functions --- */
@@ -6204,7 +6198,10 @@ glob_overflow:
         shell->last_status = 1;
         goto next_command;
     }
-    if (shell->script_depth == 0U) shell->exit_requested = false;
+    if (shell->script_depth == 0U && shell->exit_requested) {
+        shell->exit_requested = false;
+        nos_tty_on_exit(shell->session.tty, shell->last_status);
+    }
     kfree(workspace);
 }
 
@@ -6271,12 +6268,42 @@ static int complete_filldir(void *dirent, const char *name, int namelen,
     return 0;
 }
 
+static int cmd_reboot(int argc, char *argv[])
+{
+    enum boot_flag mode = BOOT_NORMAL;
+
+    if (argc > 2) {
+        shell_error("Usage: reboot [normal|bootloader|recovery]\r\n");
+        return 1;
+    }
+    if (argc == 2) {
+        if (strcmp(argv[1], "normal") == 0) {
+            mode = BOOT_NORMAL;
+        } else if (strcmp(argv[1], "bootloader") == 0) {
+            mode = BOOT_BOOTLOADER;
+        } else if (strcmp(argv[1], "recovery") == 0) {
+            mode = BOOT_RECOVERY;
+        } else {
+            shell_error("reboot: unknown mode '%s' (expected normal, bootloader, recovery)\r\n",
+                        argv[1]);
+            return 1;
+        }
+    }
+    shell_printf("Rebooting (%s)...\r\n",
+                 mode == BOOT_BOOTLOADER ? "bootloader" :
+                 (mode == BOOT_RECOVERY ? "recovery" : "normal"));
+    msleep(50);
+    cpu_reboot((uint32_t)mode);
+    return 0;
+}
+
 static const struct shell_cmd builtin_cmds[] = {
     { "help", "List commands", cmd_help },
     { "ver", "Show NOS kernel version & uptime", cmd_ver },
     { "uname", "Print system information", cmd_uname },
     { "uptime", "Show how long the system has been running", cmd_uptime },
     { "free", "Display amount of free and used memory", cmd_free },
+    { "reboot", "Reboot system [normal|bootloader|recovery]", cmd_reboot },
     { "clear", "Clear screen", cmd_clear },
     { "echo", "Print arguments", cmd_echo },
     { "printf", "Format and print arguments", cmd_printf },
@@ -6507,50 +6534,93 @@ out:
     kfree(ws);
 }
 
-static void nshell_task_entry(void* parameter)
+static void nshell_reset_session_state(struct nshell *shell, bool active, bool non_interactive)
+{
+    shell_cwd_put(shell->cwd_ref);
+    shell->cwd_ref = NULL;
+    if (active && !non_interactive && shell->session.history == NULL) {
+        shell->session.history = kzalloc(
+            SHELL_SESSION_HISTORY_MAX * sizeof(*shell->session.history),
+            GFP_KERNEL);
+    } else if (!active && shell->session.history != NULL) {
+        kfree(shell->session.history);
+        shell->session.history = NULL;
+    }
+    shell_session_reset(&shell->session, vfs_get_root());
+    variable_clear(shell);
+    variable_list_clear(&shell->aliases);
+    shell->last_status = variable_init(shell) == 0 ? 0 : 1;
+}
+
+static void nshell_run_non_interactive(struct nshell *shell)
+{
+    size_t pos = 0U;
+
+    memset(shell->session.input, 0, sizeof(shell->session.input));
+    while (pos < SHELL_SESSION_INPUT_MAX) {
+        unsigned char ch;
+        int rc = nos_tty_read(shell->session.tty, &ch, 1U, false);
+        if (rc <= 0) {
+            break;
+        }
+        if (ch == '\r' || ch == '\n') {
+            break;
+        }
+        shell->session.input[pos++] = (char)ch;
+    }
+    shell->session.input[pos] = '\0';
+    shell->session.input_len = pos;
+    shell->session.text_len = pos;
+    if (pos > 0U) {
+        nshell_exec_cmd(shell);
+    }
+    nos_tty_on_exit(shell->session.tty, shell->last_status);
+}
+
+static void nshell_task_entry(void *parameter)
 {
     struct nshell *shell = parameter;
 
-    if (!shell->remote) {
-        shell->session.tty = nos_console_tty();
-        shell_init_cwd();
-        // shell_printf("\033[2J\033[H"); /* Clear screen */
-        shell_printf("\033[1;36m");
-        shell_printf("  _   _  ___  ____  \r\n");
-        shell_printf(" | \\ | |/ _ \\/ ___| \r\n");
-        shell_printf(" |  \\| | | | \\___ \\ \r\n");
-        shell_printf(" | |\\  | |_| |___) |\r\n");
-        shell_printf(" |_| \\_|\\___/|____/ \r\n");
-        shell_printf("\033[0m");
-        shell_printf("Welcome to NOS Shell\r\n");
-        shell_printf(SHELL_PROMPT);
-    }
-
     while (true) {
-        int value = nshell_getc();
-        if (value < 0) {
-#ifdef CONFIG_NLK_SERVER
-            struct nlk_shell_ctx *ctx = nlk_cap_shell_default_ctx();
-            if (shell->remote && ctx != NULL) {
-                shell->generation = __atomic_load_n(&ctx->generation, __ATOMIC_ACQUIRE);
-                shell->session.tty = nlk_cap_shell_tty(ctx);
-                shell_cwd_put(shell->cwd_ref);
-                shell->cwd_ref = NULL;
-                if (ctx->session_open && shell->session.history == NULL) {
-                    shell->session.history = kzalloc(
-                        SHELL_SESSION_HISTORY_MAX * sizeof(*shell->session.history),
-                        GFP_KERNEL);
-                } else if (!ctx->session_open && shell->session.history != NULL) {
-                    kfree(shell->session.history);
-                    shell->session.history = NULL;
-                }
-                shell_session_reset(&shell->session, vfs_get_root());
-                variable_clear(shell);
-                variable_list_clear(&shell->aliases);
-                shell->last_status = variable_init(shell) == 0 ? 0 : 1;
-                if (ctx->session_open) shell_printf("\r\n" SHELL_PROMPT);
+        uint32_t gen = 0U;
+        bool non_interactive = false;
+        bool active = nos_tty_poll_session(shell->session.tty, &gen, &non_interactive);
+        int value;
+
+        if (!active) {
+            if (shell->generation != gen) {
+                shell->generation = gen;
+                nshell_reset_session_state(shell, false, false);
             }
-#endif
+            msleep(10);
+            continue;
+        }
+
+        if (gen != shell->generation) {
+            shell->generation = gen;
+            nshell_reset_session_state(shell, true, non_interactive);
+            if (non_interactive) {
+                nshell_run_non_interactive(shell);
+                continue;
+            }
+            if (shell->show_banner) {
+                shell->show_banner = false;
+                shell_printf("\033[1;36m");
+                shell_printf("  _   _  ___  ____  \r\n");
+                shell_printf(" | \\ | |/ _ \\/ ___| \r\n");
+                shell_printf(" |  \\| | | | \\___ \\ \r\n");
+                shell_printf(" | |\\  | |_| |___) |\r\n");
+                shell_printf(" |_| \\_|\\___/|____/ \r\n");
+                shell_printf("\033[0m");
+                shell_printf("Welcome to NOS Shell\r\n");
+                shell_printf(SHELL_PROMPT);
+            } else {
+                shell_printf("\r\n" SHELL_PROMPT);
+            }
+        }
+
+        value = nshell_getc();
+        if (value < 0) {
             continue;
         }
         shell_session_feed(&shell->session, (unsigned char)value,
@@ -6558,32 +6628,27 @@ static void nshell_task_entry(void* parameter)
     }
 }
 
-static int nshell_start(bool remote)
+int nshell_spawn(struct nos_tty *tty, const char *name, bool show_banner)
 {
-    char (*history)[SHELL_SESSION_INPUT_MAX + 1] = NULL;
-    struct nshell *shell = kzalloc(sizeof(*shell), GFP_KERNEL);
+    struct nshell *shell;
+
+    if (tty == NULL || name == NULL) {
+        return -EINVAL;
+    }
+    shell = kzalloc(sizeof(*shell), GFP_KERNEL);
     if (shell == NULL) return -ENOMEM;
     if (variable_init(shell) != 0) {
         kfree(shell);
         return -ENOMEM;
     }
-    if (!remote) {
-        history = kzalloc(SHELL_SESSION_HISTORY_MAX * sizeof(*history), GFP_KERNEL);
-        if (history == NULL) {
-            variable_clear(shell);
-            kfree(shell);
-            return -ENOMEM;
-        }
-    }
-    shell_session_init(&shell->session, NULL, NULL, history);
+    shell_session_init(&shell->session, tty, NULL, NULL);
     shell->session.writer = nshell_transport_write;
     shell->session.writer_context = shell;
     shell_session_set_completer(&shell->session, nshell_complete, shell);
-    shell->remote = remote;
-    shell->task = task_create(remote ? "nshell_nlk" : "nshell",
-        nshell_task_entry, shell, 5, CONFIG_SHELL_STACK_SIZE, 10, NULL);
+    shell->show_banner = show_banner;
+    shell->task = task_create(name, nshell_task_entry, shell, 5,
+                              CONFIG_SHELL_STACK_SIZE, 10, NULL);
     if (shell->task == NULL) {
-        kfree(history);
         variable_clear(shell);
         kfree(shell);
         return -ENOMEM;
@@ -6595,13 +6660,6 @@ static int nshell_start(bool remote)
 
 static int nshell_init(void)
 {
-    int rc;
-    rc = nshell_start(false);
-    if (rc < 0) return rc;
-#ifdef CONFIG_NLK_SERVER
-    rc = nshell_start(true);
-    if (rc < 0) pr_err("cannot start NLK shell: %d\r\n", rc);
-#endif
-    return 0;
+    return nshell_spawn(nos_console_tty(), "nshell", true);
 }
 task_init(nshell_init);

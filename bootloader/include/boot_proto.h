@@ -1,9 +1,8 @@
 /**
  * Copyright (C) 2024-2026 Nick Hu <huqihan@live.com>
  *
- * Shared NK60-V2 Bootloader & NLK OTA Wire/Flash Protocol Definitions.
- * Kept 100% binary-identical to NOS `include/uapi/nos/nlk.h` and
- * `board/nk60-v2/include/board/boot.h`.
+ * NK60-V2 独立 Bootloader 与 NLK Flash 协议共享定义。
+ * 与 NOS 内核 `include/uapi/nos/nlk.h`、`include/kernel/boot.h` 保持二进制 100% 一致。
  */
 
 #ifndef __NK60_BOOT_PROTO_H__
@@ -13,7 +12,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 
-/* STM32F401CCU6 Internal Flash & SRAM Geometry */
+/* STM32F401CCU6 片上 Flash 与 SRAM 物理几何参数 */
 #define NK60_INT_FLASH_BASE         0x08000000UL
 #define NK60_INT_FLASH_END          0x08040000UL
 #define NK60_BOOTLOADER_FLASH_BASE  0x08000000UL
@@ -22,40 +21,149 @@
 #define NK60_KERNEL_MAX_BIN         (240UL * 1024UL)
 #define NK60_SRAM_BASE              0x20000000UL
 #define NK60_SRAM_END               0x20010000UL
-#define NK60_IMG_HDR_SIZE           16UL
 
-/* External W25QXX SPI NOR Flash Partition Indices */
-#define NK60_PART_BOOTLOADER        0U
-#define NK60_PART_KERNEL            1U
-#define NK60_PART_ASSETS            2U
-#define NK60_PART_COUNT             3U
+/* 内核与 Bootloader 共享的启动标志编码（RTC->BKP0R，与 include/kernel/boot.h 一致） */
+#define BOOT_FLAG_MAGIC             0x20300000UL
+#define BOOT_FLAG_MAGIC_MASK        0xFFFF0000UL
+#define BOOT_FLAG_MASK              0x0000FFFFUL
 
-/* External W25QXX SPI NOR Flash Addresses (4 KB sector aligned) */
-#define NK60_W25Q_SECTOR_SIZE       4096UL
-#define NK60_W25Q_PAGE_SIZE         256UL
-#define NK60_W25Q_BOOTLOADER_ADDR   0x000000UL
-#define NK60_W25Q_KERNEL_ADDR       0x008000UL
-#define NK60_W25Q_ASSETS_ADDR       0x048000UL
+#define get_boot_flag(data)         ((uint32_t)(BOOT_FLAG_MASK & (uint32_t)(data)))
+#define get_boot_flag_magic(data)   ((uint32_t)(BOOT_FLAG_MAGIC_MASK & (uint32_t)(data)))
+#define get_boot_flag_data(flag)    ((uint32_t)(((uint32_t)(flag) & BOOT_FLAG_MASK) | BOOT_FLAG_MAGIC))
 
-/* NLK Firmware Image Header (16 bytes) */
-#define NLK_FW_IMG_MAGIC            0x20302030UL
-#define NLK_FW_IMG_TYPE_BOOTLOADER  0U
-#define NLK_FW_IMG_TYPE_KERNEL      1U
-#define NLK_FW_IMG_TYPE_ASSETS      3U
+enum boot_flag {
+    BOOT_NORMAL     = 0,
+    BOOT_BOOTLOADER = 1,
+    BOOT_RECOVERY   = 2,
+};
 
-struct nlk_fw_img_hdr {
-    uint32_t magic;         /* NLK_FW_IMG_MAGIC (0x20302030) */
-    uint32_t payload_crc32; /* IEEE 802.3 CRC32 of payload following header */
-    uint32_t size;          /* Raw binary payload size in bytes */
-    uint8_t  type;          /* NLK_FW_IMG_TYPE_* */
-    uint8_t  version[3];    /* [major, minor, patch] */
+/* NLK L2/L3/L4 协议核心常量与头部（与 include/uapi/nos/nlk.h 一致） */
+#define NLK_PROTO_VER_1             (1U << 5)
+#define NLK_PROTO_VER_MASK          0xE0U
+#define NLK_SOF_BYTE0               0x55U
+#define NLK_SOF_BYTE1               0xAAU
+
+#define NLK_FLAG_NONE               0x00U
+#define NLK_FLAG_ACK_REQ            (1U << 0)
+#define NLK_FLAG_IS_ACK             (1U << 1)
+#define NLK_FLAG_IS_ERR             (1U << 2)
+#define NLK_FLAG_MASK               0x1FU
+
+#define NLK_MODE_SYS                0x0U
+#define NLK_MODE_RPC                0x1U
+#define NLK_MODE_BULK               0x4U
+
+#define NLK_CAP_ID_CORE             0U
+#define NLK_CAP_ID_FLASH            1U
+
+#define NLK_CAP_CORE                0x0000U
+#define NLK_CAP_FLASH               0x0001U
+
+#define NLK_SUP_MODE_RPC            (1U << 0)
+#define NLK_SUP_MODE_BULK           (1U << 3)
+
+#define NLK_CORE_OP_GET_DEV_DESC    0x03U
+#define NLK_CORE_OP_GET_CAP_LIST    0x04U
+#define NLK_CORE_OP_GET_CAP_DESC    0x05U
+#define NLK_CORE_OP_PING            0x07U
+#define NLK_CORE_OP_RESET           0x08U
+#define NLK_CORE_OP_REBOOT          0x09U
+
+#define NLK_FLASH_OP_QUERY_PARTS    0x01U
+#define NLK_FLASH_OP_PREPARE        0x02U
+#define NLK_FLASH_OP_WRITE_CHUNK    0x03U
+#define NLK_FLASH_OP_COMMIT         0x04U
+#define NLK_FLASH_OP_ABORT          0x05U
+
+#define NLK_FLASH_PART_F_WRITABLE       (1U << 0)
+#define NLK_FLASH_PART_F_NEEDS_BL       (1U << 1)
+#define NLK_FLASH_PART_F_REBOOT_AFTER   (1U << 2)
+
+#define NLK_FLASH_MAX_PARTS         8U
+#define NLK_FLASH_PART_NAME_MAX     16U
+
+struct nlk_pkt_hdr {
+    uint8_t  ver_flags;
+    uint8_t  msg_type;
+    uint16_t src_addr;
+    uint16_t dst_addr;
+    uint8_t  dst_cap;
+    uint8_t  cmd_op;
+    uint16_t seq_id;
+    uint16_t payload_len;
 } __attribute__((packed));
 
-/* RTC Backup Register (RTC->BKP0R) Boot Commands (Zero Flash Wear) */
-#define NK60_BOOT_CMD_NONE              0U
-#define NK60_BOOT_CMD_UPDATE_KERNEL     1U
-#define NK60_BOOT_CMD_UPDATE_BL         3U
-#define NK60_BOOT_BKP_NORMAL            0xFFFFFFFFUL
+struct nlk_device_desc {
+    uint16_t vendor_id;
+    uint16_t product_id;
+    uint16_t device_class;
+    uint8_t  hw_ver[2];
+    uint8_t  fw_ver[4];
+    uint8_t  uuid[12];
+    char     name[16];
+    uint16_t max_payload_size;
+    uint8_t  cap_count;
+    uint8_t  dev_flags;
+    uint16_t parent_addr;
+    uint8_t  attached_children;
+    uint8_t  reserved;
+} __attribute__((packed));
+
+struct nlk_cap_item {
+    uint8_t  cap_id;
+    uint8_t  cap_ver;
+    uint16_t cap_type;
+    uint8_t  sup_modes;
+    uint8_t  sub_class;
+    uint16_t desc_size;
+} __attribute__((packed));
+
+struct nlk_core_reboot_req {
+    uint32_t boot_flag;
+} __attribute__((packed));
+
+struct nlk_flash_part_desc {
+    uint8_t  part_id;
+    uint8_t  flags;
+    uint16_t reserved;
+    uint32_t max_size;
+    uint32_t erase_size;
+    char     name[NLK_FLASH_PART_NAME_MAX];
+} __attribute__((packed));
+
+struct nlk_flash_query_resp {
+    uint8_t  part_count;
+    uint8_t  run_mode;
+    uint16_t max_chunk_size;
+    uint32_t running_version;
+    struct nlk_flash_part_desc parts[NLK_FLASH_MAX_PARTS];
+} __attribute__((packed));
+
+struct nlk_flash_prepare_req {
+    uint8_t  part_id;
+    uint8_t  flags;
+    uint16_t reserved;
+    uint32_t total_size;
+    uint32_t expected_crc32;
+    uint32_t version_code;
+} __attribute__((packed));
+
+struct nlk_flash_commit_req {
+    uint8_t  part_id;
+    uint8_t  reserved[3];
+    uint32_t total_size;
+    uint32_t expected_crc32;
+} __attribute__((packed));
+
+struct nlk_flash_chunk_hdr {
+    uint32_t offset;
+} __attribute__((packed));
+
+struct nlk_flash_chunk_ack {
+    uint32_t acked_offset;
+    uint16_t rx_window_bitmap;
+    int16_t  status;
+} __attribute__((packed));
 
 static inline bool nk60_validate_cortexm_vectors(uint32_t msp, uint32_t reset_pc,
                                                  uint32_t flash_start,

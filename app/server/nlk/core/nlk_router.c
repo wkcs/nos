@@ -262,8 +262,8 @@ static int nlk_dispatch_local(struct nlk_node *node,
 
             case NLK_MODE_BULK:
                 if (cap->ops->on_bulk != NULL &&
-                    payload_len >= sizeof(struct nlk_fw_chunk_hdr)) {
-                    struct nlk_fw_chunk_hdr chunk_hdr;
+                    payload_len >= sizeof(struct nlk_flash_chunk_hdr)) {
+                    struct nlk_flash_chunk_hdr chunk_hdr;
                     memcpy(&chunk_hdr, payload, sizeof(chunk_hdr));
                     rc = cap->ops->on_bulk(node, cap, hdr, chunk_hdr.offset,
                                            (const uint8_t *)payload + sizeof(chunk_hdr),

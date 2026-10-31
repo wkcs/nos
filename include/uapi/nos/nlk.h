@@ -212,7 +212,7 @@ enum nlk_device_class {
 enum nlk_cap_type {
     /* System & DevOps Family (0x0000 - 0x00FF) */
     NLK_CAP_CORE        = 0x0000U,
-    NLK_CAP_FW_UPDATE   = 0x0001U,
+    NLK_CAP_FLASH       = 0x0001U,
     NLK_CAP_LOG         = 0x0002U,
     NLK_CAP_SHELL       = 0x0003U,
     NLK_CAP_VFS         = 0x0004U,
@@ -253,8 +253,13 @@ enum nlk_core_opcode {
     NLK_CORE_OP_GET_TOPOLOGY    = 0x06U,
     NLK_CORE_OP_PING            = 0x07U,
     NLK_CORE_OP_RESET           = 0x08U,
+    NLK_CORE_OP_REBOOT          = 0x09U,
     NLK_CORE_EVT_TOPO_CHANGE    = 0x20U,
 };
+
+struct nlk_core_reboot_req {
+    uint32_t boot_flag;     /* 对应内核 enum boot_flag (BOOT_NORMAL / BOOT_BOOTLOADER / BOOT_RECOVERY) */
+} __attribute__((packed));
 
 struct nlk_hello_msg {
     uint16_t vendor_id;
@@ -329,62 +334,62 @@ struct nlk_topo_event_msg {
 } __attribute__((packed));
 
 /* =========================================================================
- * Cap 0x0001: NLK_CAP_FW_UPDATE — Firmware OTA / DFU
+ * Cap 0x0001: NLK_CAP_FLASH — 通用分区注册与固件刷写能力
  * ========================================================================= */
-enum nlk_fw_opcode {
-    NLK_FW_OP_GET_PART_INFO     = 0x01U,
-    NLK_FW_OP_PREPARE           = 0x02U,
-    NLK_FW_OP_WRITE_CHUNK       = 0x03U,
-    NLK_FW_OP_VERIFY_COMMIT     = 0x04U,
-    NLK_FW_OP_REBOOT            = 0x05U,
+enum nlk_flash_opcode {
+    NLK_FLASH_OP_QUERY_PARTS    = 0x01U,
+    NLK_FLASH_OP_PREPARE        = 0x02U,
+    NLK_FLASH_OP_WRITE_CHUNK    = 0x03U,
+    NLK_FLASH_OP_COMMIT         = 0x04U,
+    NLK_FLASH_OP_ABORT          = 0x05U,
 };
 
-#define NLK_FW_MAX_PARTS            4U
+/* 分区属性标志位 */
+#define NLK_FLASH_PART_F_WRITABLE       (1U << 0) /* 允许刷写 */
+#define NLK_FLASH_PART_F_NEEDS_BL       (1U << 1) /* 当前处于运行态 XIP，需先重启到 Bootloader 刷写 */
+#define NLK_FLASH_PART_F_REBOOT_AFTER   (1U << 2) /* 刷写提交后需重启生效 */
 
-#define NLK_FW_PART_SLOT0           0U
-#define NLK_FW_PART_SLOT1           1U
-#define NLK_FW_PART_SLOT2           2U
-#define NLK_FW_PART_SLOT3           3U
-#define NLK_FW_PART_AUTO            0xFFU
+#define NLK_FLASH_MAX_PARTS             8U
+#define NLK_FLASH_PART_NAME_MAX         16U
 
-enum nlk_fw_img_type {
-    NLK_FW_IMG_TYPE_BOOTLOADER  = 0U,
-    NLK_FW_IMG_TYPE_KERNEL      = 1U,
-    NLK_FW_IMG_TYPE_ASSETS      = 3U,
-};
-
-struct nlk_fw_img_hdr {
-    uint32_t magic;         /* NLK_FW_IMG_MAGIC (0x20302030) */
-    uint32_t payload_crc32; /* IEEE 802.3 CRC32 of payload following header */
-    uint32_t size;          /* Raw binary payload size in bytes */
-    uint8_t  type;          /* enum nlk_fw_img_type */
-    uint8_t  version[3];    /* [major, minor, patch] */
-} __attribute__((packed));
-
-struct nlk_fw_part_info_resp {
-    uint8_t  active_part;
-    uint8_t  part_count;
-    uint16_t max_chunk_size;
-    uint16_t max_window_pkts;
-    uint16_t reserved;
-    uint32_t running_version;
-    uint32_t part_max_size[NLK_FW_MAX_PARTS];
-} __attribute__((packed));
-
-struct nlk_fw_prepare_req {
-    uint8_t  part_index;
+struct nlk_flash_part_desc {
+    uint8_t  part_id;
     uint8_t  flags;
-    uint16_t window_pkts;
+    uint16_t reserved;
+    uint32_t max_size;
+    uint32_t erase_size;
+    char     name[NLK_FLASH_PART_NAME_MAX];
+} __attribute__((packed));
+
+struct nlk_flash_query_resp {
+    uint8_t  part_count;
+    uint8_t  run_mode;      /* 0 = BOOT_NORMAL, 1 = BOOT_BOOTLOADER */
+    uint16_t max_chunk_size;
+    uint32_t running_version;
+    struct nlk_flash_part_desc parts[NLK_FLASH_MAX_PARTS];
+} __attribute__((packed));
+
+struct nlk_flash_prepare_req {
+    uint8_t  part_id;
+    uint8_t  flags;
+    uint16_t reserved;
     uint32_t total_size;
-    uint32_t image_crc32;
+    uint32_t expected_crc32;
     uint32_t version_code;
 } __attribute__((packed));
 
-struct nlk_fw_chunk_hdr {
+struct nlk_flash_commit_req {
+    uint8_t  part_id;
+    uint8_t  reserved[3];
+    uint32_t total_size;
+    uint32_t expected_crc32;
+} __attribute__((packed));
+
+struct nlk_flash_chunk_hdr {
     uint32_t offset;
 } __attribute__((packed));
 
-struct nlk_fw_chunk_ack {
+struct nlk_flash_chunk_ack {
     uint32_t acked_offset;
     uint16_t rx_window_bitmap;
     int16_t  status;
@@ -432,9 +437,11 @@ enum nlk_shell_opcode {
     NLK_SHELL_OP_FLOW_CRED      = 0x04U,
     NLK_SHELL_OP_INPUT          = 0x05U,
     NLK_SHELL_OP_HEARTBEAT      = 0x06U,
+    NLK_SHELL_OP_EXEC           = 0x07U,
     NLK_SHELL_STREAM_STDIN      = 0x10U,
     NLK_SHELL_STREAM_STDOUT     = 0x11U,
     NLK_SHELL_STREAM_STDOUT_V2  = 0x12U,
+    NLK_SHELL_STREAM_EXIT       = 0x13U,
 };
 
 #define NLK_SHELL_SIG_INT           2U
@@ -448,8 +455,9 @@ struct nlk_shell_open_msg {
 } __attribute__((packed));
 
 /* Optional reliable session extension. All integers use NLK little endian. */
-#define NLK_SHELL_OPEN_RELIABLE (1U << 0)
-#define NLK_SHELL_INPUT_CHUNK_MAX 64U
+#define NLK_SHELL_OPEN_RELIABLE         (1U << 0)
+#define NLK_SHELL_OPEN_NONINTERACTIVE   (1U << 1)
+#define NLK_SHELL_INPUT_CHUNK_MAX       64U
 struct nlk_shell_open_v2_msg {
     struct nlk_shell_open_msg open;
     uint64_t session_id;
@@ -458,6 +466,138 @@ struct nlk_shell_open_v2_msg {
 struct nlk_shell_input_hdr {
     uint64_t session_id;
     uint32_t offset;
+} __attribute__((packed));
+
+struct nlk_shell_exit_msg {
+    int32_t  exit_code;
+} __attribute__((packed));
+
+/* =========================================================================
+ * Cap 0x0004: NLK_CAP_VFS — 远端虚拟文件系统协议（文件读写、目录枚举与属性管理）
+ * ========================================================================= */
+enum nlk_vfs_opcode {
+    NLK_VFS_OP_OPEN             = 0x01U,
+    NLK_VFS_OP_CLOSE            = 0x02U,
+    NLK_VFS_OP_READ             = 0x03U,
+    NLK_VFS_OP_WRITE            = 0x04U,
+    NLK_VFS_OP_STAT             = 0x05U,
+    NLK_VFS_OP_READDIR          = 0x06U,
+    NLK_VFS_OP_MKDIR            = 0x07U,
+    NLK_VFS_OP_REMOVE           = 0x08U,
+    NLK_VFS_OP_RENAME           = 0x09U,
+    NLK_VFS_OP_STATFS           = 0x0AU,
+};
+
+/* 跨平台文件打开标志位 */
+#define NLK_VFS_O_RDONLY            0x0001U
+#define NLK_VFS_O_WRONLY            0x0002U
+#define NLK_VFS_O_RDWR              0x0003U
+#define NLK_VFS_O_ACCMODE           0x0003U
+#define NLK_VFS_O_CREAT             0x0100U
+#define NLK_VFS_O_TRUNC             0x0200U
+#define NLK_VFS_O_APPEND            0x0400U
+
+/* 跨平台目录项类型 */
+#define NLK_VFS_DT_UNKNOWN          0U
+#define NLK_VFS_DT_REG              1U
+#define NLK_VFS_DT_DIR              2U
+#define NLK_VFS_DT_CHR              3U
+#define NLK_VFS_DT_BLK              4U
+
+#define NLK_VFS_PATH_MAX            128U
+#define NLK_VFS_NAME_MAX            64U
+#define NLK_VFS_MAX_HANDLES         8U
+
+struct nlk_vfs_open_req {
+    uint16_t flags;         /* NLK_VFS_O_* */
+    uint16_t mode;          /* 权限位，如 0644 */
+    char     path[NLK_VFS_PATH_MAX];
+} __attribute__((packed));
+
+struct nlk_vfs_open_resp {
+    int32_t  handle;        /* 会话文件句柄 (0..NLK_VFS_MAX_HANDLES-1) */
+    uint32_t reserved;
+    uint64_t file_size;     /* 当前文件字节大小 */
+} __attribute__((packed));
+
+struct nlk_vfs_close_req {
+    int32_t  handle;
+} __attribute__((packed));
+
+struct nlk_vfs_read_req {
+    int32_t  handle;
+    uint32_t offset;
+    uint16_t count;
+    uint16_t reserved;
+} __attribute__((packed));
+
+struct nlk_vfs_read_resp_hdr {
+    uint16_t bytes_read;
+    uint8_t  eof;
+    uint8_t  reserved;
+    /* 紧随其后为 uint8_t data[bytes_read] */
+} __attribute__((packed));
+
+struct nlk_vfs_write_req_hdr {
+    int32_t  handle;
+    uint32_t offset;
+    uint16_t count;
+    uint16_t reserved;
+    /* 紧随其后为 uint8_t data[count] */
+} __attribute__((packed));
+
+struct nlk_vfs_write_resp {
+    uint16_t bytes_written;
+    uint16_t reserved;
+} __attribute__((packed));
+
+struct nlk_vfs_path_req {
+    uint16_t mode;          /* 用于 MKDIR 等，其余操作置 0 */
+    uint16_t reserved;
+    char     path[NLK_VFS_PATH_MAX];
+} __attribute__((packed));
+
+struct nlk_vfs_rename_req {
+    char     old_path[NLK_VFS_PATH_MAX];
+    char     new_path[NLK_VFS_PATH_MAX];
+} __attribute__((packed));
+
+struct nlk_vfs_stat_resp {
+    uint64_t size;
+    uint64_t mtime;
+    uint32_t mode;
+    uint8_t  type;          /* NLK_VFS_DT_* */
+    uint8_t  reserved[3];
+} __attribute__((packed));
+
+struct nlk_vfs_readdir_req {
+    uint16_t start_index;
+    uint16_t max_entries;
+    char     path[NLK_VFS_PATH_MAX];
+} __attribute__((packed));
+
+struct nlk_vfs_dirent_wire {
+    uint64_t size;
+    uint32_t mode;
+    uint8_t  type;          /* NLK_VFS_DT_* */
+    uint8_t  name_len;
+    uint16_t rec_len;       /* 包含本头与对齐后文件名的总字节数 */
+    /* 紧随其后为 char name[name_len + 1] 并按 4 字节对齐 */
+} __attribute__((packed));
+
+struct nlk_vfs_readdir_resp_hdr {
+    uint16_t next_index;
+    uint8_t  eof;
+    uint8_t  entry_count;
+    /* 紧随其后为 entry_count 个变长 struct nlk_vfs_dirent_wire */
+} __attribute__((packed));
+
+struct nlk_vfs_statfs_resp {
+    uint32_t bsize;
+    uint32_t blocks;
+    uint32_t bfree;
+    uint32_t bavail;
+    uint32_t namelen;
 } __attribute__((packed));
 
 /* =========================================================================
@@ -768,8 +908,13 @@ _Static_assert(sizeof(struct nlk_frag_hdr) == 4, "nlk_frag_hdr must be 4 bytes")
 _Static_assert(sizeof(struct nlk_ms_poll_hdr) == 4, "nlk_ms_poll_hdr must be 4 bytes");
 _Static_assert(sizeof(struct nlk_device_desc) == 48, "nlk_device_desc must be 48 bytes");
 _Static_assert(sizeof(struct nlk_cap_item) == 8, "nlk_cap_item must be 8 bytes");
-_Static_assert(sizeof(struct nlk_fw_prepare_req) == 16, "nlk_fw_prepare_req must be 16 bytes");
-_Static_assert(sizeof(struct nlk_fw_chunk_ack) == 8, "nlk_fw_chunk_ack must be 8 bytes");
+_Static_assert(sizeof(struct nlk_flash_part_desc) == 28, "nlk_flash_part_desc must be 28 bytes");
+_Static_assert(sizeof(struct nlk_flash_prepare_req) == 16, "nlk_flash_prepare_req must be 16 bytes");
+_Static_assert(sizeof(struct nlk_flash_commit_req) == 12, "nlk_flash_commit_req must be 12 bytes");
+_Static_assert(sizeof(struct nlk_flash_chunk_ack) == 8, "nlk_flash_chunk_ack must be 8 bytes");
+_Static_assert(sizeof(struct nlk_vfs_open_resp) == 16, "nlk_vfs_open_resp must be 16 bytes");
+_Static_assert(sizeof(struct nlk_vfs_stat_resp) == 24, "nlk_vfs_stat_resp must be 24 bytes");
+_Static_assert(sizeof(struct nlk_vfs_dirent_wire) == 16, "nlk_vfs_dirent_wire must be 16 bytes");
 _Static_assert(sizeof(struct nlk_log_wire_hdr) == 8, "nlk_log_wire_hdr must be 8 bytes");
 _Static_assert(sizeof(struct nlk_disp_status_sync) == 28, "nlk_disp_status_sync must be 28 bytes");
 _Static_assert(sizeof(struct nlk_kb_desc) == 20, "nlk_kb_desc must be 20 bytes");

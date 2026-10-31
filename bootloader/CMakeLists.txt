@@ -62,23 +62,20 @@ target_link_libraries(bootloader.elf PRIVATE -lgcc)
 
 set(BL_BIN  "${CMAKE_CURRENT_BINARY_DIR}/bootloader.bin")
 set(BL_HEX  "${CMAKE_CURRENT_BINARY_DIR}/bootloader.hex")
-set(BL_IMG  "${CMAKE_CURRENT_BINARY_DIR}/bootloader.img")
 set(BL_LIST "${CMAKE_CURRENT_BINARY_DIR}/bootloader.list")
 
 add_custom_command(
-    OUTPUT "${BL_BIN}" "${BL_HEX}" "${BL_IMG}" "${BL_LIST}"
+    OUTPUT "${BL_BIN}" "${BL_HEX}" "${BL_LIST}"
     COMMAND "${CMAKE_OBJCOPY}" "$<TARGET_FILE:bootloader.elf>" "${BL_BIN}" -Obinary
     COMMAND "${CMAKE_OBJCOPY}" "$<TARGET_FILE:bootloader.elf>" "${BL_HEX}" -Oihex
-    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/scripts/create_img.py"
-            "${BL_BIN}" "${PROJECT_VERSION_MAJOR}" "${PROJECT_VERSION_MINOR}" "${PROJECT_VERSION_PATCH}" 0 "${BL_IMG}"
     COMMAND "${CMAKE_OBJDUMP}" -d -S "$<TARGET_FILE:bootloader.elf>" > "${BL_LIST}"
     COMMAND "${CMAKE_SIZE}" --format=berkeley "$<TARGET_FILE:bootloader.elf>"
-    DEPENDS bootloader.elf "${CMAKE_CURRENT_SOURCE_DIR}/scripts/create_img.py" "${BL_LD_SCRIPT}"
-    COMMENT "Generating bootloader.bin, bootloader.hex, bootloader.img (NLK OTA type=0) and reporting size"
+    DEPENDS bootloader.elf "${BL_LD_SCRIPT}"
+    COMMENT "Generating bootloader.bin, bootloader.hex and reporting size"
     VERBATIM
 )
 
-add_custom_target(bootloader_firmware ALL DEPENDS "${BL_BIN}" "${BL_HEX}" "${BL_IMG}" "${BL_LIST}")
+add_custom_target(bootloader_firmware ALL DEPENDS "${BL_BIN}" "${BL_HEX}" "${BL_LIST}")
 
 set(BL_OPENOCD_CFG "${CMAKE_CURRENT_SOURCE_DIR}/openocd.cfg")
 add_custom_target(flash

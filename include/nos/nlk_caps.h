@@ -12,44 +12,40 @@
 #include <kernel/spinlock.h>
 #include <nos/tty.h>
 
-/* 0x0001: Firmware Update Capability */
-typedef int (*nlk_fw_prepare_fn)(uint8_t part_index, uint32_t total_size, void *priv);
-typedef int (*nlk_flash_write_fn)(uint8_t part_index, uint32_t offset,
-                                  const uint8_t *data, uint32_t len, void *priv);
-typedef int (*nlk_flash_commit_fn)(uint8_t part_index, uint32_t total_size,
-                                   uint32_t crc32, void *priv);
-typedef void (*nlk_fw_reboot_fn)(uint8_t part_index, void *priv);
+/* 0x0001: NLK_CAP_FLASH — 通用分区注册与固件刷写能力 */
+typedef int (*nlk_flash_part_prepare_fn)(uint32_t total_size, uint32_t expected_crc32, void *priv);
+typedef int (*nlk_flash_part_write_fn)(uint32_t offset, const uint8_t *data, uint32_t len, void *priv);
+typedef int (*nlk_flash_part_commit_fn)(uint32_t total_size, uint32_t expected_crc32, void *priv);
 
-struct nlk_fw_update_ctx {
-    bool                session_active;
-    uint8_t             part_count;
-    uint8_t             active_part;
-    uint8_t             target_part;
-    uint16_t            max_window_pkts;
-    uint16_t            window_pkts;
-    uint16_t            rx_window_bitmap;
-    uint32_t            total_size;
-    uint32_t            expected_crc32;
-    uint32_t            running_crc32;
-    uint32_t            acked_offset;
-    uint32_t            running_version;
-    uint32_t            part_max_size[NLK_FW_MAX_PARTS];
-    nlk_fw_prepare_fn   flash_prepare;
-    nlk_flash_write_fn  flash_write;
-    nlk_flash_commit_fn flash_commit;
-    nlk_fw_reboot_fn    flash_reboot;
-    void               *flash_priv;
-    struct nlk_capability cap;
+struct nlk_flash_part_ops {
+    const char               *name;
+    uint32_t                  max_size;
+    uint32_t                  erase_size;
+    uint8_t                   flags;
+    void                     *priv;
+    nlk_flash_part_prepare_fn prepare;
+    nlk_flash_part_write_fn   write;
+    nlk_flash_part_commit_fn  commit;
 };
 
-int nlk_cap_fw_update_init(struct nlk_node *node, struct nlk_fw_update_ctx *ctx,
-                           uint32_t running_version,
-                           nlk_flash_write_fn write_fn,
-                           nlk_flash_commit_fn commit_fn,
-                           void *flash_priv);
-int nlk_cap_fw_update_set_partitions(struct nlk_fw_update_ctx *ctx,
-                                     uint8_t part_count, uint8_t active_part,
-                                     const uint32_t *part_max_sizes);
+struct nlk_flash_ctx {
+    bool                      session_active;
+    uint8_t                   part_count;
+    uint8_t                   run_mode;
+    uint8_t                   target_part;
+    uint32_t                  total_size;
+    uint32_t                  expected_crc32;
+    uint32_t                  running_crc32;
+    uint32_t                  acked_offset;
+    uint32_t                  running_version;
+    struct nlk_flash_part_ops parts[NLK_FLASH_MAX_PARTS];
+    struct nlk_capability     cap;
+};
+
+int nlk_cap_flash_init(struct nlk_node *node, struct nlk_flash_ctx *ctx,
+                       uint8_t run_mode, uint32_t running_version);
+int nlk_cap_flash_register_part(struct nlk_flash_ctx *ctx,
+                                const struct nlk_flash_part_ops *part);
 
 /* 0x0002: Kernel Log Capability */
 #ifndef CONFIG_NLK_LOG_TAP_BUF_SIZE
@@ -63,6 +59,7 @@ struct nlk_log_ctx {
     spinlock_t            tap_lock;
     uint8_t               min_level;
     uint8_t               subscriber_cap;
+    uint8_t               tx_fail_count;
     uint16_t              flush_interval_ms;
     nlk_addr_t            subscriber_addr;
     uint32_t              dropped_records;
@@ -94,8 +91,12 @@ int nlk_cap_log_flush_pending(struct nlk_log_ctx *ctx);
 
 struct nlk_shell_ctx {
     bool                  session_open;
+    bool                  non_interactive;
+    bool                  exit_pending;
     bool                  prompt_pending;
+    int32_t               exit_code;
     uint32_t              generation;
+    uint32_t              consumed_generation;
     bool                  reliable;
     bool                  lease_touched;
     bool                  lease_started;
@@ -108,6 +109,7 @@ struct nlk_shell_ctx {
     uint16_t              rows;
     uint16_t              rx_credit;
     uint8_t               last_signal;
+    uint8_t               tx_fail_count;
     uint16_t              rx_head;
     uint16_t              rx_tail;
     uint16_t              rx_count;
@@ -131,6 +133,16 @@ int nlk_cap_shell_write_session(struct nlk_shell_ctx *ctx, uint32_t generation,
                                 const unsigned char *buf, unsigned int len);
 struct nos_tty *nlk_cap_shell_tty(struct nlk_shell_ctx *ctx);
 struct nlk_shell_ctx *nlk_cap_shell_default_ctx(void);
+int nlk_cap_shell_exit_session(struct nlk_shell_ctx *ctx, int32_t exit_code);
+
+/* 0x0004: NLK_CAP_VFS — 远端虚拟文件系统能力 */
+struct nlk_vfs_ctx {
+    int                   open_fds[NLK_VFS_MAX_HANDLES];
+    struct nlk_node      *node;
+    struct nlk_capability cap;
+};
+
+int nlk_cap_vfs_init(struct nlk_node *node, struct nlk_vfs_ctx *ctx);
 
 /* 0x0100: Keyboard (Multi-Form-Factor, 6KRO/NKRO, Analog/RT & Integrated Lighting) */
 #define NLK_KB_MAX_LAYERS           4U

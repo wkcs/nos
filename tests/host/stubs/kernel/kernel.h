@@ -15,6 +15,8 @@
 #define __printf(fmt, args) __attribute__((format(printf, fmt, args)))
 #define min(a, b) ((a) < (b) ? (a) : (b))
 #define smp_wmb() __sync_synchronize()
+#define READ_ONCE(x) (x)
+#define WRITE_ONCE(x, val) ((x) = (val))
 #define __acquire(lock) ((void)(lock))
 #define __release(lock) ((void)(lock))
 typedef unsigned int gfp_t;

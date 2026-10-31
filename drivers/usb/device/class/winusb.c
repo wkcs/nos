@@ -7,6 +7,7 @@
  */
 
 #include <sys/types.h>
+#include <string.h>
 #define pr_fmt(fmt) "[WINUSB]:%s[%d]:"fmt, __func__, __LINE__
 
 #include <kernel/task.h>
@@ -24,6 +25,9 @@
 
 #define WINUSB_EP_BUFSIZE   512
 #define WINUSB_RX_FIFOSIZE  512
+#ifndef CONFIG_WINUSB_TX_BUFSIZE
+#define CONFIG_WINUSB_TX_BUFSIZE    512
+#endif
 
 void winusb_read_test(void);
 
@@ -33,6 +37,11 @@ struct winusb_device {
     struct ufunction *func;
     uint8_t cmd_buff[512];
     uint8_t ep_rx_buf[WINUSB_EP_BUFSIZE];
+    /*
+     * IN 方向发送缓冲：一次 write 对应一个完整的 USB 传输（多个 MPS 包 + 必要时的 ZLP）。
+     * 传输未完成前该缓冲与端点请求状态归硬件/USB 核心所有，任何人不得改写。
+     */
+    uint8_t ep_tx_buf[CONFIG_WINUSB_TX_BUFSIZE];
     uint8_t rx_fifo_buf[WINUSB_RX_FIFOSIZE];
     struct kfifo rx_fifo;
     uep_t ep_out;
@@ -40,6 +49,8 @@ struct winusb_device {
     sem_t read_sem;
     sem_t write_sem;
     struct mutex write_lock;
+    volatile bool tx_pending;   /* IN 传输已提交、尚未被主机取走 */
+    volatile bool zlp_pending;  /* 本次传输长度为 MPS 整数倍，完成后需补发 ZLP */
 };
 
 struct winusb_device *winusb_dev;
@@ -174,9 +185,34 @@ static int _ep_in_handler(ufunction_t func, size_t size)
 {
     struct winusb_device *winusb_device = (struct winusb_device *)func->user_data;
 
+    (void)size;
+    /*
+     * 长度恰为 MPS 整数倍时补发 ZLP，保证每个写请求在主机侧都以短包结束，
+     * 主机即可按“一次 Bulk 传输 = 一个完整报文”对齐，不会把半包与下一包粘连。
+     */
+    if (winusb_device->zlp_pending) {
+        winusb_device->zlp_pending = false;
+        winusb_device->ep_in->request.buffer = winusb_device->ep_tx_buf;
+        winusb_device->ep_in->request.size = 0;
+        winusb_device->ep_in->request.req_type = UIO_REQUEST_WRITE;
+        usbd_io_request(func->device, winusb_device->ep_in,
+                        &winusb_device->ep_in->request);
+        return 0;
+    }
+
+    /* 先发信号再清 pending：写者看到 pending == false 时信号必然已投递 */
     sem_send_one(&winusb_device->write_sem);
+    __atomic_store_n(&winusb_device->tx_pending, false, __ATOMIC_RELEASE);
 
     return 0;
+}
+
+/* 复位 IN 方向软件状态（仅在端点被 USB 核心关闭/重新使能后调用） */
+static void winusb_reset_tx_state(struct winusb_device *winusb_device)
+{
+    winusb_device->zlp_pending = false;
+    __atomic_store_n(&winusb_device->tx_pending, false, __ATOMIC_RELEASE);
+    sem_init(&winusb_device->write_sem, 0);
 }
 static ufunction_t cmd_func = NULL;
 static int _ep0_cmd_handler(udevice_t device, size_t size)
@@ -227,6 +263,8 @@ static int _function_enable(ufunction_t func)
 
     winusb_device = (struct winusb_device *)func->user_data;
     kfifo_skip(&winusb_device->rx_fifo, kfifo_used(&winusb_device->rx_fifo));
+    /* SET_CONFIGURATION 会关闭并重开端点（硬件 FIFO 已冲刷、数据翻转复位），软件侧同步复位 */
+    winusb_reset_tx_state(winusb_device);
 
     winusb_device->ep_out->buffer = winusb_device->ep_rx_buf;
     winusb_device->ep_out->request.buffer = winusb_device->ep_rx_buf;
@@ -246,6 +284,7 @@ static int _function_disable(ufunction_t func)
 
     winusb_device = (struct winusb_device *)func->user_data;
     kfifo_skip(&winusb_device->rx_fifo, kfifo_used(&winusb_device->rx_fifo));
+    winusb_reset_tx_state(winusb_device);
 
     return 0;
 }
@@ -287,28 +326,69 @@ static ssize_t winusb_read(struct device *dev, addr_t pos,
     return (ssize_t)read_size;
 }
 
+/*
+ * 提交一次 IN 传输。
+ *
+ * USB Bulk IN 由主机驱动：数据挂到端点后，只有主机发起 IN 令牌才会被取走。
+ * 若主机侧没有进程在读（nlk 已退出 / 被 Ctrl+C 杀掉），传输会一直挂在端点上。
+ * 此时绝不能再次改写端点请求（ep_in->request / DIEPTSIZ），否则多包传输被
+ * 拦腰截断，主机下次读取会拿到半个报文并与后续报文粘连，导致通讯永久错位。
+ *
+ * 因此语义为：
+ *   - 上一笔传输仍未完成：最多等待 tick；超时返回 -ETIMEDOUT，本次数据 **未提交**，
+ *     调用者可安全重试，不会产生重复数据；
+ *   - 数据一旦提交给端点即视为已发送（返回 size），即使主机暂时不读，
+ *     也会在主机下一次读取时完整送达（主机侧负责丢弃过期报文）。
+ */
+static ssize_t winusb_xmit(struct winusb_device *win_dev, const void *buffer,
+                           size_t size, uint32_t tick, bool forever)
+{
+    uint16_t mps;
+
+    if (buffer == NULL || size == 0)
+        return -EINVAL;
+    if (size > CONFIG_WINUSB_TX_BUFSIZE)
+        return -EMSGSIZE;
+    if (win_dev->func->device->state != USB_STATE_CONFIGURED)
+        return -ENOTCONN;
+
+    mutex_lock(&win_dev->write_lock);
+
+    if (__atomic_load_n(&win_dev->tx_pending, __ATOMIC_ACQUIRE)) {
+        if (forever) {
+            sem_get(&win_dev->write_sem);
+        } else if (sem_get_timeout(&win_dev->write_sem, tick) < 0) {
+            mutex_unlock(&win_dev->write_lock);
+            /* 主机未读取属于正常的对端离线/流控状态，此处不打印日志，避免远程日志自激 */
+            return -ETIMEDOUT;
+        }
+    }
+
+    /* 此时没有未完成传输：清掉可能残留的完成信号，再提交新传输 */
+    sem_init(&win_dev->write_sem, 0);
+    memcpy(win_dev->ep_tx_buf, buffer, size);
+    mps = EP_MAXPACKET(win_dev->ep_in);
+    win_dev->zlp_pending = (mps != 0U) && ((size % mps) == 0U);
+    __atomic_store_n(&win_dev->tx_pending, true, __ATOMIC_RELEASE);
+
+    win_dev->ep_in->buffer = win_dev->ep_tx_buf;
+    win_dev->ep_in->request.buffer = win_dev->ep_tx_buf;
+    win_dev->ep_in->request.size = size;
+    win_dev->ep_in->request.req_type = UIO_REQUEST_WRITE;
+    usbd_io_request(win_dev->func->device, win_dev->ep_in,
+                    &win_dev->ep_in->request);
+
+    mutex_unlock(&win_dev->write_lock);
+    return (ssize_t)size;
+}
+
 static ssize_t winusb_write(struct device *dev, addr_t pos,
     const void *buffer, size_t size)
 {
-    size_t write_size;
     struct winusb_device *win_dev = container_of(dev, struct winusb_device, dev);
 
     (void)pos;
-    if (win_dev->func->device->state != USB_STATE_CONFIGURED)
-        return 0;
-
-    mutex_lock(&win_dev->write_lock);
-    win_dev->ep_in->buffer = (void *)buffer;
-    win_dev->ep_in->request.buffer = win_dev->ep_in->buffer;
-    win_dev->ep_in->request.size = size;
-    win_dev->ep_in->request.req_type = UIO_REQUEST_WRITE;
-    write_size = usbd_io_request(win_dev->func->device, win_dev->ep_in,
-        &win_dev->ep_in->request);
-
-    sem_get(&win_dev->write_sem);
-    mutex_unlock(&win_dev->write_lock);
-
-    return write_size;
+    return winusb_xmit(win_dev, buffer, size, 0U, true);
 }
 
 static ssize_t winusb_read_timeout(struct device *dev, addr_t pos,
@@ -338,31 +418,11 @@ static ssize_t winusb_read_timeout(struct device *dev, addr_t pos,
 static ssize_t winusb_write_timeout(struct device *dev, addr_t pos,
     const void *buffer, size_t size, uint32_t tick)
 {
-    size_t write_size;
     struct winusb_device *win_dev =
         container_of(dev, struct winusb_device, dev);
-    int rc;
 
     (void)pos;
-    if (win_dev->func->device->state != USB_STATE_CONFIGURED)
-        return 0;
-
-    mutex_lock(&win_dev->write_lock);
-    win_dev->ep_in->buffer = (void *)buffer;
-    win_dev->ep_in->request.buffer = win_dev->ep_in->buffer;
-    win_dev->ep_in->request.size = size;
-    win_dev->ep_in->request.req_type = UIO_REQUEST_WRITE;
-    write_size = usbd_io_request(win_dev->func->device, win_dev->ep_in,
-        &win_dev->ep_in->request);
-
-    rc = sem_get_timeout(&win_dev->write_sem, tick);
-    mutex_unlock(&win_dev->write_lock);
-    if (rc < 0) {
-        pr_err("write timeout\r\n");
-        return -ETIMEDOUT;
-    }
-
-    return write_size;
+    return winusb_xmit(win_dev, buffer, size, tick, false);
 }
 
 static int  winusb_control(struct device *dev, int cmd, void *args)

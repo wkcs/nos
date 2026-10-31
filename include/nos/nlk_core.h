@@ -110,6 +110,8 @@ struct nlk_node {
     struct nlk_child_entry  children[CONFIG_NLK_MAX_CHILDREN];
     struct nlk_l3_reasm     l3_reasm;
     struct nlk_rpc_waiter   rpc_waiter;
+    void                  (*on_reboot)(uint32_t boot_flag, void *priv);
+    void                   *reboot_priv;
     /* Statistics */
     uint32_t                rx_packets;
     uint32_t                tx_packets;
@@ -131,6 +133,9 @@ int nlk_node_init(struct nlk_node *node, nlk_addr_t initial_addr,
 int nlk_node_set_identity(struct nlk_node *node, uint16_t vendor_id,
                           uint16_t product_id, uint16_t device_class,
                           const char *name);
+void nlk_node_set_reboot_handler(struct nlk_node *node,
+                                 void (*on_reboot)(uint32_t boot_flag, void *priv),
+                                 void *priv);
 int nlk_node_register_bearer(struct nlk_node *node, struct nlk_bearer *bearer);
 int nlk_node_set_upstream_port(struct nlk_node *node, uint8_t port_id);
 int nlk_node_poll_bearers(struct nlk_node *node, uint32_t timeout_ms);
@@ -164,7 +169,7 @@ int nlk_node_stream_write(struct nlk_node *node, nlk_addr_t dst_addr,
 int nlk_node_bulk_write(struct nlk_node *node, nlk_addr_t dst_addr,
                         uint8_t dst_cap, uint8_t bulk_op, uint16_t seq_id,
                         uint32_t offset, const void *data, uint16_t len,
-                        struct nlk_fw_chunk_ack *out_ack);
+                        struct nlk_flash_chunk_ack *out_ack);
 
 /* Cap 0 (Discovery & Topology) helpers */
 int nlk_discovery_send_hello(struct nlk_node *node, uint8_t port_id);

@@ -16,6 +16,9 @@
 #include <kernel/kernel.h>
 #include <kernel/types.h>
 #include <kernel/printk.h>
+#include <kernel/boot.h>
+#include <fs/fs.h>
+#include <fs/vfs.h>
 #include <nos/nlk_core.h>
 #include <nos/nlk_caps.h>
 #include "include/nlk_bearers.h"
@@ -257,8 +260,13 @@ static int vi2c_master_read(uint8_t bus_addr, uint8_t *buf,
 }
 
 /* --------------------------------------------------------------------------
- * Mock Flash Storage & Host Sink Capture State
+ * Mock Flash Storage, Mock VFS & Host Sink Capture State
  * -------------------------------------------------------------------------- */
+
+struct mock_flash_slot {
+    struct mock_flash *flash;
+    uint8_t            slot;
+};
 
 struct mock_flash {
     uint8_t  storage[4][512];
@@ -266,28 +274,307 @@ struct mock_flash {
     uint32_t committed_crc32;
     uint8_t  committed_part;
     uint32_t commit_count;
+    uint32_t last_reboot_flag;
+    uint32_t reboot_count;
 };
 
-static int mock_flash_write(uint8_t part_index, uint32_t offset,
-                            const uint8_t *data, uint32_t len, void *priv)
+static int mock_part_prepare(uint32_t total_size, uint32_t expected_crc32, void *priv)
 {
-    struct mock_flash *fl = (struct mock_flash *)priv;
-    if (part_index >= 4U || offset + len > sizeof(fl->storage[0])) {
+    struct mock_flash_slot *s = (struct mock_flash_slot *)priv;
+    (void)expected_crc32;
+    if (s == NULL || s->flash == NULL || total_size > sizeof(s->flash->storage[0])) {
         return -EFBIG;
     }
-    memcpy(&fl->storage[part_index][offset], data, len);
+    memset(s->flash->storage[s->slot], 0xFF, sizeof(s->flash->storage[0]));
     return 0;
 }
 
-static int mock_flash_commit(uint8_t part_index, uint32_t total_size,
-                             uint32_t crc32, void *priv)
+static int mock_part_write(uint32_t offset, const uint8_t *data, uint32_t len, void *priv)
+{
+    struct mock_flash_slot *s = (struct mock_flash_slot *)priv;
+    if (s == NULL || s->flash == NULL || offset + len > sizeof(s->flash->storage[0])) {
+        return -EFBIG;
+    }
+    memcpy(&s->flash->storage[s->slot][offset], data, len);
+    return 0;
+}
+
+static int mock_part_commit(uint32_t total_size, uint32_t expected_crc32, void *priv)
+{
+    struct mock_flash_slot *s = (struct mock_flash_slot *)priv;
+    s->flash->committed_part = s->slot;
+    s->flash->committed_size = total_size;
+    s->flash->committed_crc32 = expected_crc32;
+    s->flash->commit_count++;
+    return 0;
+}
+
+static void mock_reboot_cb(uint32_t boot_flag, void *priv)
 {
     struct mock_flash *fl = (struct mock_flash *)priv;
-    fl->committed_part = part_index;
-    fl->committed_size = total_size;
-    fl->committed_crc32 = crc32;
-    fl->commit_count++;
+    if (fl != NULL) {
+        fl->last_reboot_flag = boot_flag;
+        fl->reboot_count++;
+    }
+}
+
+/* Lightweight in-memory VFS stub for testing NLK_CAP_VFS */
+#define MOCK_VFS_MAX_NODES 8
+struct mock_vfs_node {
+    bool          used;
+    bool          is_dir;
+    char          path[128];
+    char          name[32];
+    uint8_t       data[512];
+    size_t        size;
+    struct inode  inode;
+    struct dentry dentry;
+};
+
+static struct mock_vfs_node g_vfs_nodes[MOCK_VFS_MAX_NODES];
+static struct super_block   g_vfs_sb = { .s_blocksize = 4096UL };
+static int                  g_vfs_fd_node[8] = { -1, -1, -1, -1, -1, -1, -1, -1 };
+static loff_t               g_vfs_fd_pos[8];
+
+static int mock_vfs_dir_readdir(struct file *file, void *dirent, filldir_t filldir)
+{
+    struct dentry *dir = file->f_path.dentry;
+    const char *dir_path = "/";
+    size_t dir_len = 1U;
+    int i;
+
+    for (i = 0; i < MOCK_VFS_MAX_NODES; i++) {
+        if (g_vfs_nodes[i].used && &g_vfs_nodes[i].dentry == dir) {
+            dir_path = g_vfs_nodes[i].path;
+            dir_len = strlen(dir_path);
+            break;
+        }
+    }
+    (void)filldir(dirent, ".", 1, 0, 1, DT_DIR);
+    (void)filldir(dirent, "..", 2, 1, 1, DT_DIR);
+    for (i = 1; i < MOCK_VFS_MAX_NODES; i++) {
+        const char *sub;
+        if (!g_vfs_nodes[i].used) continue;
+        if (strcmp(dir_path, "/") == 0) {
+            if (g_vfs_nodes[i].path[0] != '/' ||
+                strchr(g_vfs_nodes[i].path + 1, '/') != NULL) continue;
+            sub = g_vfs_nodes[i].path + 1;
+        } else {
+            if (strncmp(g_vfs_nodes[i].path, dir_path, dir_len) != 0 ||
+                g_vfs_nodes[i].path[dir_len] != '/' ||
+                strchr(g_vfs_nodes[i].path + dir_len + 1U, '/') != NULL) continue;
+            sub = g_vfs_nodes[i].path + dir_len + 1U;
+        }
+        (void)filldir(dirent, sub, (int)strlen(sub), i + 2, (u64)(i + 1),
+                      g_vfs_nodes[i].is_dir ? DT_DIR : DT_REG);
+    }
     return 0;
+}
+
+static const struct file_operations g_mock_dir_fop = {
+    .readdir = mock_vfs_dir_readdir,
+};
+
+static void mock_vfs_init(void)
+{
+    int i;
+    memset(g_vfs_nodes, 0, sizeof(g_vfs_nodes));
+    for (i = 0; i < 8; i++) g_vfs_fd_node[i] = -1;
+    g_vfs_nodes[0].used = true;
+    g_vfs_nodes[0].is_dir = true;
+    strcpy(g_vfs_nodes[0].path, "/");
+    strcpy(g_vfs_nodes[0].name, "/");
+    g_vfs_nodes[0].inode.i_mode = S_IFDIR | 0755U;
+    g_vfs_nodes[0].inode.i_fop = &g_mock_dir_fop;
+    g_vfs_nodes[0].inode.i_sb = &g_vfs_sb;
+    g_vfs_nodes[0].dentry.d_inode = &g_vfs_nodes[0].inode;
+    g_vfs_nodes[0].dentry.d_sb = &g_vfs_sb;
+}
+
+struct dentry *vfs_get_root(void)
+{
+    return &g_vfs_nodes[0].dentry;
+}
+
+struct dentry *vfs_lookup_path(struct dentry *base, const char *path)
+{
+    int i;
+    (void)base;
+    if (path == NULL) return NULL;
+    for (i = 0; i < MOCK_VFS_MAX_NODES; i++) {
+        if (g_vfs_nodes[i].used && strcmp(g_vfs_nodes[i].path, path) == 0) {
+            return &g_vfs_nodes[i].dentry;
+        }
+    }
+    return NULL;
+}
+
+struct dentry *vfs_lookup(struct dentry *parent, struct qstr *name)
+{
+    char full[128];
+    const char *p_path = "/";
+    int i;
+    if (parent == NULL || name == NULL || name->name == NULL) return NULL;
+    for (i = 0; i < MOCK_VFS_MAX_NODES; i++) {
+        if (g_vfs_nodes[i].used && &g_vfs_nodes[i].dentry == parent) {
+            p_path = g_vfs_nodes[i].path;
+            break;
+        }
+    }
+    if (strcmp(p_path, "/") == 0) {
+        snprintf(full, sizeof(full), "/%.*s", (int)name->len, (const char *)name->name);
+    } else {
+        snprintf(full, sizeof(full), "%s/%.*s", p_path, (int)name->len, (const char *)name->name);
+    }
+    return vfs_lookup_path(parent, full);
+}
+
+int nos_mkdir(const char *pathname, mode_t mode)
+{
+    int i;
+    if (vfs_lookup_path(NULL, pathname) != NULL) return -EEXIST;
+    for (i = 1; i < MOCK_VFS_MAX_NODES; i++) {
+        if (!g_vfs_nodes[i].used) {
+            const char *slash = strrchr(pathname, '/');
+            g_vfs_nodes[i].used = true;
+            g_vfs_nodes[i].is_dir = true;
+            strncpy(g_vfs_nodes[i].path, pathname, sizeof(g_vfs_nodes[i].path) - 1U);
+            strncpy(g_vfs_nodes[i].name, slash ? slash + 1 : pathname, sizeof(g_vfs_nodes[i].name) - 1U);
+            g_vfs_nodes[i].inode.i_mode = S_IFDIR | (mode & 0777U);
+            g_vfs_nodes[i].inode.i_fop = &g_mock_dir_fop;
+            g_vfs_nodes[i].inode.i_sb = &g_vfs_sb;
+            g_vfs_nodes[i].dentry.d_inode = &g_vfs_nodes[i].inode;
+            g_vfs_nodes[i].dentry.d_sb = &g_vfs_sb;
+            return 0;
+        }
+    }
+    return -ENOSPC;
+}
+
+int nos_open(const char *path, int flags, ...)
+{
+    int node_idx = -1, fd = -1, i;
+    for (i = 0; i < MOCK_VFS_MAX_NODES; i++) {
+        if (g_vfs_nodes[i].used && strcmp(g_vfs_nodes[i].path, path) == 0) {
+            node_idx = i;
+            break;
+        }
+    }
+    if (node_idx < 0) {
+        if (!(flags & O_CREAT)) return -ENOENT;
+        for (i = 1; i < MOCK_VFS_MAX_NODES; i++) {
+            if (!g_vfs_nodes[i].used) {
+                const char *slash = strrchr(path, '/');
+                node_idx = i;
+                g_vfs_nodes[i].used = true;
+                g_vfs_nodes[i].is_dir = false;
+                strncpy(g_vfs_nodes[i].path, path, sizeof(g_vfs_nodes[i].path) - 1U);
+                strncpy(g_vfs_nodes[i].name, slash ? slash + 1 : path, sizeof(g_vfs_nodes[i].name) - 1U);
+                g_vfs_nodes[i].inode.i_mode = S_IFREG | 0644U;
+                g_vfs_nodes[i].inode.i_sb = &g_vfs_sb;
+                g_vfs_nodes[i].dentry.d_inode = &g_vfs_nodes[i].inode;
+                g_vfs_nodes[i].dentry.d_sb = &g_vfs_sb;
+                break;
+            }
+        }
+        if (node_idx < 0) return -ENOSPC;
+    }
+    if ((flags & O_TRUNC) && !g_vfs_nodes[node_idx].is_dir) {
+        g_vfs_nodes[node_idx].size = 0U;
+        g_vfs_nodes[node_idx].inode.i_size = 0;
+    }
+    for (i = 0; i < 8; i++) {
+        if (g_vfs_fd_node[i] < 0) {
+            fd = i;
+            g_vfs_fd_node[i] = node_idx;
+            g_vfs_fd_pos[i] = (flags & O_APPEND) ? (loff_t)g_vfs_nodes[node_idx].size : 0;
+            return fd;
+        }
+    }
+    return -EMFILE;
+}
+
+int nos_close(int fd)
+{
+    if (fd < 0 || fd >= 8 || g_vfs_fd_node[fd] < 0) return -EBADF;
+    g_vfs_fd_node[fd] = -1;
+    return 0;
+}
+
+loff_t nos_lseek(int fd, loff_t offset, int whence)
+{
+    if (fd < 0 || fd >= 8 || g_vfs_fd_node[fd] < 0) return -EBADF;
+    if (whence == SEEK_SET) g_vfs_fd_pos[fd] = offset;
+    return g_vfs_fd_pos[fd];
+}
+
+ssize_t nos_read(int fd, void *buf, size_t count)
+{
+    struct mock_vfs_node *n;
+    size_t avail;
+    if (fd < 0 || fd >= 8 || g_vfs_fd_node[fd] < 0) return -EBADF;
+    n = &g_vfs_nodes[g_vfs_fd_node[fd]];
+    if ((size_t)g_vfs_fd_pos[fd] >= n->size) return 0;
+    avail = n->size - (size_t)g_vfs_fd_pos[fd];
+    if (count > avail) count = avail;
+    memcpy(buf, n->data + g_vfs_fd_pos[fd], count);
+    g_vfs_fd_pos[fd] += (loff_t)count;
+    return (ssize_t)count;
+}
+
+ssize_t nos_write(int fd, const void *buf, size_t count)
+{
+    struct mock_vfs_node *n;
+    if (fd < 0 || fd >= 8 || g_vfs_fd_node[fd] < 0) return -EBADF;
+    n = &g_vfs_nodes[g_vfs_fd_node[fd]];
+    if ((size_t)g_vfs_fd_pos[fd] + count > sizeof(n->data)) return -ENOSPC;
+    memcpy(n->data + g_vfs_fd_pos[fd], buf, count);
+    g_vfs_fd_pos[fd] += (loff_t)count;
+    if ((size_t)g_vfs_fd_pos[fd] > n->size) {
+        n->size = (size_t)g_vfs_fd_pos[fd];
+        n->inode.i_size = (loff_t)n->size;
+    }
+    return (ssize_t)count;
+}
+
+int nos_unlink(const char *pathname)
+{
+    int i;
+    for (i = 1; i < MOCK_VFS_MAX_NODES; i++) {
+        if (g_vfs_nodes[i].used && !g_vfs_nodes[i].is_dir &&
+            strcmp(g_vfs_nodes[i].path, pathname) == 0) {
+            memset(&g_vfs_nodes[i], 0, sizeof(g_vfs_nodes[i]));
+            return 0;
+        }
+    }
+    return -ENOENT;
+}
+
+int nos_rmdir(const char *pathname)
+{
+    int i;
+    for (i = 1; i < MOCK_VFS_MAX_NODES; i++) {
+        if (g_vfs_nodes[i].used && g_vfs_nodes[i].is_dir &&
+            strcmp(g_vfs_nodes[i].path, pathname) == 0) {
+            memset(&g_vfs_nodes[i], 0, sizeof(g_vfs_nodes[i]));
+            return 0;
+        }
+    }
+    return -ENOENT;
+}
+
+int nos_rename(const char *oldpath, const char *newpath)
+{
+    int i;
+    for (i = 1; i < MOCK_VFS_MAX_NODES; i++) {
+        if (g_vfs_nodes[i].used && strcmp(g_vfs_nodes[i].path, oldpath) == 0) {
+            const char *slash = strrchr(newpath, '/');
+            strncpy(g_vfs_nodes[i].path, newpath, sizeof(g_vfs_nodes[i].path) - 1U);
+            strncpy(g_vfs_nodes[i].name, slash ? slash + 1 : newpath, sizeof(g_vfs_nodes[i].name) - 1U);
+            return 0;
+        }
+    }
+    return -ENOENT;
 }
 
 /* Host-side sink capability to capture incoming streams & events from devices */
@@ -298,6 +585,8 @@ struct host_capture {
     char                    shell_stdout[128];
     uint16_t                shell_stdout_len;
     uint64_t                shell_token;
+    uint32_t                shell_exit_rx;
+    int32_t                 last_shell_exit_code;
     struct nlk_kb_hid_report last_hid_report;
     uint32_t                hid_reports_rx;
     struct nlk_capability   cap_log_sink;
@@ -323,6 +612,14 @@ static int host_sink_on_stream(struct nlk_node *node, struct nlk_capability *cap
         hc->last_log_msg[msg_len] = '\0';
         hc->last_log_level = lhdr->level;
         hc->log_records_rx++;
+        return 0;
+    }
+
+    if (hdr->cmd_op == NLK_SHELL_STREAM_EXIT &&
+        len >= sizeof(struct nlk_shell_exit_msg)) {
+        const struct nlk_shell_exit_msg *emsg = (const struct nlk_shell_exit_msg *)data;
+        hc->last_shell_exit_code = emsg->exit_code;
+        hc->shell_exit_rx++;
         return 0;
     }
 
@@ -428,16 +725,17 @@ int main(void)
     static struct host_capture       host_cap;
     static struct mock_flash         nk60_flash;
     static struct mock_flash         knob_flash;
-    static struct nlk_fw_update_ctx  nk60_fw;
+    static struct nlk_flash_ctx      nk60_flash_cap;
     static struct nlk_log_ctx        nk60_log;
     static struct nlk_shell_ctx      nk60_shell;
     static struct nlk_keyboard_ctx   nk60_kb;
     static struct nlk_encoder_ctx    nk60_enc;
+    static struct nlk_vfs_ctx        nk60_vfs_cap;
 
     static struct nlk_keyboard_ctx   keypad_kb;
 
     static struct nlk_encoder_ctx    knob_enc;
-    static struct nlk_fw_update_ctx  knob_fw;
+    static struct nlk_flash_ctx      knob_flash_cap;
 
     static struct nlk_display_ctx    screen_disp;
     static struct screen_capture     screen_cap;
@@ -445,11 +743,66 @@ int main(void)
     static struct nlk_keyboard_ctx   can_pad_kb;
     static struct nlk_wireless_ctx   wl_cap;
 
-    static const uint32_t nk60_parts[3] = {
-        16UL * 1024UL + 16UL, 240UL * 1024UL, 728UL * 1024UL
+    static struct mock_flash_slot nk60_slot0 = { &nk60_flash, 0U };
+    static struct mock_flash_slot nk60_slot1 = { &nk60_flash, 1U };
+    static struct mock_flash_slot nk60_slot2 = { &nk60_flash, 2U };
+    static struct mock_flash_slot knob_slot0 = { &knob_flash, 0U };
+    static struct mock_flash_slot knob_slot1 = { &knob_flash, 1U };
+
+    static const struct nlk_flash_part_ops nk60_parts[3] = {
+        {
+            .name       = "bootloader",
+            .max_size   = 16UL * 1024UL,
+            .erase_size = 16UL * 1024UL,
+            .flags      = NLK_FLASH_PART_F_WRITABLE,
+            .priv       = &nk60_slot0,
+            .prepare    = mock_part_prepare,
+            .write      = mock_part_write,
+            .commit     = mock_part_commit,
+        },
+        {
+            .name       = "kernel",
+            .max_size   = 240UL * 1024UL,
+            .erase_size = 64UL * 1024UL,
+            .flags      = NLK_FLASH_PART_F_WRITABLE | NLK_FLASH_PART_F_NEEDS_BL |
+                          NLK_FLASH_PART_F_REBOOT_AFTER,
+            .priv       = &nk60_slot1,
+            .prepare    = mock_part_prepare,
+            .write      = mock_part_write,
+            .commit     = mock_part_commit,
+        },
+        {
+            .name       = "assets",
+            .max_size   = 728UL * 1024UL,
+            .erase_size = 4096UL,
+            .flags      = NLK_FLASH_PART_F_WRITABLE,
+            .priv       = &nk60_slot2,
+            .prepare    = mock_part_prepare,
+            .write      = mock_part_write,
+            .commit     = mock_part_commit,
+        },
     };
-    static const uint32_t knob_parts[2] = {
-        16UL * 1024UL, 64UL * 1024UL
+    static const struct nlk_flash_part_ops knob_parts[2] = {
+        {
+            .name       = "bootloader",
+            .max_size   = 16UL * 1024UL,
+            .erase_size = 1024UL,
+            .flags      = NLK_FLASH_PART_F_WRITABLE,
+            .priv       = &knob_slot0,
+            .prepare    = mock_part_prepare,
+            .write      = mock_part_write,
+            .commit     = mock_part_commit,
+        },
+        {
+            .name       = "firmware",
+            .max_size   = 64UL * 1024UL,
+            .erase_size = 1024UL,
+            .flags      = NLK_FLASH_PART_F_WRITABLE | NLK_FLASH_PART_F_REBOOT_AFTER,
+            .priv       = &knob_slot1,
+            .prepare    = mock_part_prepare,
+            .write      = mock_part_write,
+            .commit     = mock_part_commit,
+        },
     };
 
     (void)wl_bridge_forward_to_host;
@@ -464,6 +817,7 @@ int main(void)
                          0x4E4BU, 0x0001U, NLK_DEV_CLASS_HOST, "NOS-Host") == 0);
     assert(nlk_node_init(&node_nk60, NLK_ADDR_PRIMARY,
                          0x4E4BU, 0x0060U, NLK_DEV_CLASS_KEYBOARD, "NK60-V2") == 0);
+    nlk_node_set_reboot_handler(&node_nk60, mock_reboot_cb, &nk60_flash);
     assert(nlk_node_init(&node_keypad, NLK_ADDR_UNASSIGNED,
                          0x4E4BU, 0x0061U, NLK_DEV_CLASS_KEYPAD, "NK-Numpad") == 0);
     assert(nlk_node_init(&node_knob, NLK_ADDR_UNASSIGNED,
@@ -492,25 +846,29 @@ int main(void)
     host_cap.cap_kb_sink.priv = &host_cap;
     assert(nlk_node_register_cap(&node_host, &host_cap.cap_kb_sink) == 3);
 
-    /* NK60 capabilities (IDs 1..5): FW Update, Log, Shell, Keyboard (with integrated Lighting), Encoder */
-    assert(nlk_cap_fw_update_init(&node_nk60, &nk60_fw, 0x00020100UL,
-                                  mock_flash_write, mock_flash_commit, &nk60_flash) == 1);
-    assert(nlk_cap_fw_update_set_partitions(&nk60_fw, 3U, NLK_FW_PART_SLOT1, nk60_parts) == 0);
+    /* NK60 capabilities (IDs 1..6): Flash, Log, Shell, Keyboard, Encoder, VFS */
+    assert(nlk_cap_flash_init(&node_nk60, &nk60_flash_cap,
+                              (uint8_t)BOOT_NORMAL, 0x00020100UL) == 1);
+    assert(nlk_cap_flash_register_part(&nk60_flash_cap, &nk60_parts[0]) == 0);
+    assert(nlk_cap_flash_register_part(&nk60_flash_cap, &nk60_parts[1]) == 1);
+    assert(nlk_cap_flash_register_part(&nk60_flash_cap, &nk60_parts[2]) == 2);
     assert(nlk_cap_log_init(&node_nk60, &nk60_log) == 2);
     assert(nlk_cap_shell_init(&node_nk60, &nk60_shell) == 3);
     assert(nlk_cap_keyboard_init(&node_nk60, &nk60_kb, 5U, 14U, 61U,
                                  nk60_on_hid_report, &node_nk60) == 4);
     assert(nlk_cap_encoder_init(&node_nk60, &nk60_enc, 24U, false, NULL, NULL) == 5);
+    assert(nlk_cap_vfs_init(&node_nk60, &nk60_vfs_cap) == 6);
 
     /* Keypad capability (ID 1: Numpad with integrated RGB lighting) */
     assert(nlk_cap_keyboard_init(&node_keypad, &keypad_kb, 5U, 4U, 21U, NULL, NULL) == 1);
     assert(keypad_kb.desc.form_factor == NLK_KB_FORM_NUMPAD);
 
-    /* Knob capabilities (IDs 1..2: Encoder + 2-partition Firmware Update) */
+    /* Knob capabilities (IDs 1..2: Encoder + 2-partition Flash) */
     assert(nlk_cap_encoder_init(&node_knob, &knob_enc, 24U, true, NULL, NULL) == 1);
-    assert(nlk_cap_fw_update_init(&node_knob, &knob_fw, 0x00010000UL,
-                                  mock_flash_write, mock_flash_commit, &knob_flash) == 2);
-    assert(nlk_cap_fw_update_set_partitions(&knob_fw, 2U, NLK_FW_PART_SLOT0, knob_parts) == 0);
+    assert(nlk_cap_flash_init(&node_knob, &knob_flash_cap,
+                              (uint8_t)BOOT_NORMAL, 0x00010000UL) == 2);
+    assert(nlk_cap_flash_register_part(&knob_flash_cap, &knob_parts[0]) == 0);
+    assert(nlk_cap_flash_register_part(&knob_flash_cap, &knob_parts[1]) == 1);
 
     /* Screen capability (ID 1) */
     assert(nlk_cap_display_init(&node_screen, &screen_disp, 240U, 135U,
@@ -631,7 +989,7 @@ int main(void)
                                  &desc, &rlen, 100U) == 0);
         assert(rlen == sizeof(desc));
         assert(strcmp(desc.name, "NK60-V2") == 0);
-        assert(desc.cap_count == 5U);
+        assert(desc.cap_count == 6U);
         assert(desc.attached_children == 4U);
 
         /* Query NK60 topology table */
@@ -662,17 +1020,19 @@ int main(void)
                                  caps, &rlen, 100U) == 0);
         assert(rlen == 2U * sizeof(struct nlk_cap_item));
         assert(caps[0].cap_type == NLK_CAP_ENCODER);
-        assert(caps[1].cap_type == NLK_CAP_FW_UPDATE);
+        assert(caps[1].cap_type == NLK_CAP_FLASH);
     }
 
     /* ----------------------------------------------------------------------
-     * 5. Test Firmware Update (0x0001) on NK60 & Cascaded Tier-3 Knob (L3 Frag)
+     * 5. Test Generic Flash Partitions (0x0001) + Direct STM32 Flash & Reboot
      * ---------------------------------------------------------------------- */
     {
         uint8_t fw_image[160];
-        struct nlk_fw_part_info_resp part_info;
-        struct nlk_fw_prepare_req prep;
-        struct nlk_fw_chunk_ack ack;
+        struct nlk_flash_query_resp qresp;
+        struct nlk_flash_prepare_req prep;
+        struct nlk_flash_chunk_ack ack;
+        struct nlk_core_reboot_req reboot_req;
+        uint32_t committed_crc = 0U;
         uint16_t rlen;
         uint32_t expected_crc;
         uint32_t offset;
@@ -683,30 +1043,52 @@ int main(void)
         }
         expected_crc = nlk_crc32(0U, fw_image, sizeof(fw_image));
 
-        /* 5a. Query partition info on NK60 (0x0001, Cap 1) */
-        rlen = sizeof(part_info);
+        /* 5a. Query partition table on NK60 (0x0001, Cap 1) */
+        rlen = sizeof(qresp);
         assert(nlk_node_rpc_call(&node_host, 0x0001U, 1U,
-                                 NLK_FW_OP_GET_PART_INFO, NULL, 0U,
-                                 &part_info, &rlen, 100U) == 0);
-        assert(part_info.running_version == 0x00020100UL);
-        assert(part_info.part_count == 3U);
+                                 NLK_FLASH_OP_QUERY_PARTS, NULL, 0U,
+                                 &qresp, &rlen, 100U) == 0);
+        assert(qresp.running_version == 0x00020100UL);
+        assert(qresp.part_count == 3U);
+        assert(qresp.run_mode == (uint8_t)BOOT_NORMAL);
+        assert(strcmp(qresp.parts[0].name, "bootloader") == 0);
+        assert(strcmp(qresp.parts[1].name, "kernel") == 0);
+        assert((qresp.parts[1].flags & NLK_FLASH_PART_F_NEEDS_BL) != 0U);
+        assert(strcmp(qresp.parts[2].name, "assets") == 0);
 
-        /* 5b. Upgrade NK60 Kernel partition (Slot 1, with duplicate chunk idempotency test) */
+        /* 5b. Preparing "kernel" (part_id=1) while NEEDS_BL is set returns -EBUSY */
         memset(&prep, 0, sizeof(prep));
-        prep.part_index = NLK_FW_PART_SLOT1;
-        prep.window_pkts = 4U;
+        prep.part_id = 1U;
         prep.total_size = sizeof(fw_image);
-        prep.image_crc32 = expected_crc;
+        prep.expected_crc32 = expected_crc;
         prep.version_code = 0x00020200UL;
 
         rlen = 0U;
         assert(nlk_node_rpc_call(&node_host, 0x0001U, 1U,
-                                 NLK_FW_OP_PREPARE, &prep, sizeof(prep),
+                                 NLK_FLASH_OP_PREPARE, &prep, sizeof(prep),
+                                 NULL, &rlen, 100U) == -EBUSY);
+
+        /* 5b-1. Host sends NLK_CORE_OP_REBOOT (BOOT_BOOTLOADER) and device switches to Bootloader */
+        memset(&reboot_req, 0, sizeof(reboot_req));
+        reboot_req.boot_flag = (uint32_t)BOOT_BOOTLOADER;
+        rlen = 0U;
+        assert(nlk_node_rpc_call(&node_host, 0x0001U, NLK_CAP_ID_CORE,
+                                 NLK_CORE_OP_REBOOT, &reboot_req, sizeof(reboot_req),
+                                 NULL, &rlen, 100U) == 0);
+        assert(nk60_flash.reboot_count == 1U);
+        assert(nk60_flash.last_reboot_flag == (uint32_t)BOOT_BOOTLOADER);
+
+        /* Simulate NK60 now running in Sector 0 Bootloader mode (kernel directly writable) */
+        nk60_flash_cap.run_mode = (uint8_t)BOOT_BOOTLOADER;
+        nk60_flash_cap.parts[1].flags &= (uint8_t)~NLK_FLASH_PART_F_NEEDS_BL;
+        rlen = 0U;
+        assert(nlk_node_rpc_call(&node_host, 0x0001U, 1U,
+                                 NLK_FLASH_OP_PREPARE, &prep, sizeof(prep),
                                  NULL, &rlen, 100U) == 0);
 
         for (offset = 0U; offset < sizeof(fw_image); offset += 40U) {
             assert(nlk_node_bulk_write(&node_host, 0x0001U, 1U,
-                                       NLK_FW_OP_WRITE_CHUNK,
+                                       NLK_FLASH_OP_WRITE_CHUNK,
                                        ++node_host.next_seq_id,
                                        offset, fw_image + offset, 40U, &ack) == 0);
             assert(ack.status == 0);
@@ -714,92 +1096,73 @@ int main(void)
         }
         /* Re-send duplicate chunk at offset 40 -> must be idempotent and not corrupt CRC */
         assert(nlk_node_bulk_write(&node_host, 0x0001U, 1U,
-                                   NLK_FW_OP_WRITE_CHUNK,
+                                   NLK_FLASH_OP_WRITE_CHUNK,
                                    ++node_host.next_seq_id,
                                    40U, fw_image + 40U, 40U, &ack) == 0);
         assert(ack.status == 0);
         assert(ack.acked_offset == sizeof(fw_image));
 
-        rlen = 0U;
+        rlen = sizeof(committed_crc);
         assert(nlk_node_rpc_call(&node_host, 0x0001U, 1U,
-                                 NLK_FW_OP_VERIFY_COMMIT, NULL, 0U,
-                                 NULL, &rlen, 100U) == 0);
+                                 NLK_FLASH_OP_COMMIT, NULL, 0U,
+                                 &committed_crc, &rlen, 100U) == 0);
+        assert(committed_crc == expected_crc);
         assert(nk60_flash.commit_count == 1U);
-        assert(nk60_flash.committed_part == NLK_FW_PART_SLOT1);
+        assert(nk60_flash.committed_part == 1U);
         assert(nk60_flash.committed_crc32 == expected_crc);
-        assert(memcmp(nk60_flash.storage[NLK_FW_PART_SLOT1],
-                      fw_image, sizeof(fw_image)) == 0);
-        assert(nk60_fw.active_part == NLK_FW_PART_SLOT1);
+        assert(memcmp(nk60_flash.storage[1U], fw_image, sizeof(fw_image)) == 0);
+        nk60_flash_cap.run_mode = (uint8_t)BOOT_NORMAL;
+        nk60_flash_cap.parts[1].flags |= NLK_FLASH_PART_F_NEEDS_BL;
 
-        /* 5b-2. Upgrade NK60 Bootloader (Slot 0) -> active_part must remain Kernel Slot 1 */
-        prep.part_index = NLK_FW_PART_SLOT0;
+        /* 5b-2. Upgrade NK60 Bootloader ("bootloader", part_id=0) directly in OS mode */
+        prep.part_id = 0U;
         rlen = 0U;
         assert(nlk_node_rpc_call(&node_host, 0x0001U, 1U,
-                                 NLK_FW_OP_PREPARE, &prep, sizeof(prep),
+                                 NLK_FLASH_OP_PREPARE, &prep, sizeof(prep),
                                  NULL, &rlen, 100U) == 0);
         for (offset = 0U; offset < sizeof(fw_image); offset += 80U) {
             assert(nlk_node_bulk_write(&node_host, 0x0001U, 1U,
-                                       NLK_FW_OP_WRITE_CHUNK,
+                                       NLK_FLASH_OP_WRITE_CHUNK,
                                        ++node_host.next_seq_id,
                                        offset, fw_image + offset, 80U, &ack) == 0);
         }
-        rlen = 0U;
+        rlen = sizeof(committed_crc);
         assert(nlk_node_rpc_call(&node_host, 0x0001U, 1U,
-                                 NLK_FW_OP_VERIFY_COMMIT, NULL, 0U,
-                                 NULL, &rlen, 100U) == 0);
-        assert(nk60_flash.committed_part == NLK_FW_PART_SLOT0);
-        assert(nk60_fw.active_part == NLK_FW_PART_SLOT1);
-
-        /* 5b-3. Upgrade NK60 via NLK_FW_PART_AUTO -> automatically targets single Kernel Slot 1 */
-        prep.part_index = NLK_FW_PART_AUTO;
-        rlen = 0U;
-        assert(nlk_node_rpc_call(&node_host, 0x0001U, 1U,
-                                 NLK_FW_OP_PREPARE, &prep, sizeof(prep),
-                                 NULL, &rlen, 100U) == 0);
-        for (offset = 0U; offset < sizeof(fw_image); offset += 80U) {
-            assert(nlk_node_bulk_write(&node_host, 0x0001U, 1U,
-                                       NLK_FW_OP_WRITE_CHUNK,
-                                       ++node_host.next_seq_id,
-                                       offset, fw_image + offset, 80U, &ack) == 0);
-        }
-        rlen = 0U;
-        assert(nlk_node_rpc_call(&node_host, 0x0001U, 1U,
-                                 NLK_FW_OP_VERIFY_COMMIT, NULL, 0U,
-                                 NULL, &rlen, 100U) == 0);
-        assert(nk60_flash.committed_part == NLK_FW_PART_SLOT1);
-        assert(nk60_fw.active_part == NLK_FW_PART_SLOT1);
+                                 NLK_FLASH_OP_COMMIT, NULL, 0U,
+                                 &committed_crc, &rlen, 100U) == 0);
+        assert(nk60_flash.committed_part == 0U);
 
         /*
          * 5c. Upgrade Tier-3 Knob (0x0111, Cap 2) 3 hops away using 80-byte chunks!
          * Because Keypad <-> Knob I2C link has MTU=48, Keypad automatically fragments
          * each 84-byte L3 payload into two L3 fragments, and Knob reassembles them!
          */
-        prep.part_index = NLK_FW_PART_SLOT2;
+        prep.part_id = 2U;
         rlen = 0U;
         assert(nlk_node_rpc_call(&node_host, 0x0111U, 2U,
-                                 NLK_FW_OP_PREPARE, &prep, sizeof(prep),
-                                 NULL, &rlen, 100U) == -EINVAL);
-        prep.part_index = NLK_FW_PART_SLOT1;
+                                 NLK_FLASH_OP_PREPARE, &prep, sizeof(prep),
+                                 NULL, &rlen, 100U) == -ENOENT);
+
+        prep.part_id = 1U;
         assert(nlk_node_rpc_call(&node_host, 0x0111U, 2U,
-                                 NLK_FW_OP_PREPARE, &prep, sizeof(prep),
+                                 NLK_FLASH_OP_PREPARE, &prep, sizeof(prep),
                                  NULL, &rlen, 100U) == 0);
 
         for (offset = 0U; offset < sizeof(fw_image); offset += 80U) {
             assert(nlk_node_bulk_write(&node_host, 0x0111U, 2U,
-                                       NLK_FW_OP_WRITE_CHUNK,
+                                       NLK_FLASH_OP_WRITE_CHUNK,
                                        ++node_host.next_seq_id,
                                        offset, fw_image + offset, 80U, &ack) == 0);
             assert(ack.status == 0);
             assert(ack.acked_offset == offset + 80U);
         }
-        rlen = 0U;
+        rlen = sizeof(committed_crc);
         assert(nlk_node_rpc_call(&node_host, 0x0111U, 2U,
-                                 NLK_FW_OP_VERIFY_COMMIT, NULL, 0U,
-                                 NULL, &rlen, 100U) == 0);
+                                 NLK_FLASH_OP_COMMIT, NULL, 0U,
+                                 &committed_crc, &rlen, 100U) == 0);
         assert(knob_flash.commit_count == 1U);
         assert(knob_flash.committed_crc32 == expected_crc);
-        assert(memcmp(knob_flash.storage[NLK_FW_PART_SLOT1],
-                      fw_image, sizeof(fw_image)) == 0);
+        assert(memcmp(knob_flash.storage[1U], fw_image, sizeof(fw_image)) == 0);
     }
 
     /* ----------------------------------------------------------------------
@@ -1045,6 +1408,31 @@ int main(void)
         hdr.cmd_op = NLK_SHELL_OP_OPEN;
         assert(nk60_shell.cap.ops->on_rpc(&node_nk60, &nk60_shell.cap, &hdr,
                                          &op, sizeof(op), NULL, &rlen) == 0);
+        /* Test non-interactive NLK_SHELL_OP_EXEC + nlk_cap_shell_exit_session */
+        hdr.cmd_op = NLK_SHELL_OP_CLOSE;
+        assert(nk60_shell.cap.ops->on_rpc(&node_nk60, &nk60_shell.cap, &hdr,
+                                         &op.session_id, sizeof(op.session_id),
+                                         NULL, &rlen) == 0);
+        {
+            unsigned char exec_rx[16];
+            rlen = 0U;
+            assert(nlk_node_rpc_call(&node_host, 0x0001U, 3U,
+                                     NLK_SHELL_OP_EXEC, "uname", 5U,
+                                     NULL, &rlen, 100U) == 0);
+            assert(nk60_shell.session_open);
+            assert(nk60_shell.non_interactive);
+            assert(nos_tty_read(nlk_cap_shell_tty(&nk60_shell), exec_rx, sizeof(exec_rx), false) == 6);
+            assert(memcmp(exec_rx, "uname\n", 6) == 0);
+            /* Further read on exhausted non-interactive buffer returns 0 (EOF) */
+            assert(nos_tty_read(nlk_cap_shell_tty(&nk60_shell), exec_rx, sizeof(exec_rx), false) == 0);
+            nk60_shell.cap.cap_id = 2U; /* Route to Host cap_shell_sink */
+            assert(nlk_cap_shell_exit_session(&nk60_shell, 0) == 0);
+            assert(nlk_cap_shell_flush_pending(&nk60_shell) > 0);
+            nk60_shell.cap.cap_id = 3U;
+            assert(!nk60_shell.session_open);
+            assert(host_cap.shell_exit_rx == 1U);
+            assert(host_cap.last_shell_exit_code == 0);
+        }
 #endif
     }
 
@@ -1262,6 +1650,180 @@ int main(void)
         assert(nlk_cap_wireless_switch_host_channel(&node_nk60, 0x0041U, 1U,
                                                     4U, NLK_WL_CHAN_USB_WIRED) == 0);
         assert(node_nk60.upstream_port == 0U);
+    }
+
+    /* ----------------------------------------------------------------------
+     * 12. Test Remote VFS Capability (0x0004): Push/Pull/Ls/Stat/Rename/Remove
+     * ---------------------------------------------------------------------- */
+    {
+        uint8_t req_buf[256];
+        uint8_t resp_buf[256];
+        uint16_t rlen;
+        int32_t handle = -1;
+
+        mock_vfs_init();
+
+        /* 12a. MKDIR "/etc" */
+        {
+            struct nlk_vfs_path_req preq;
+            memset(&preq, 0, sizeof(preq));
+            preq.mode = 0755U;
+            strncpy(preq.path, "/etc", sizeof(preq.path) - 1U);
+            rlen = 0U;
+            assert(nlk_node_rpc_call(&node_host, 0x0001U, 6U,
+                                     NLK_VFS_OP_MKDIR, &preq, sizeof(preq),
+                                     NULL, &rlen, 100U) == 0);
+        }
+
+        /* 12b. OPEN "/etc/hello.txt" for writing (CREATE | WRONLY | TRUNC) */
+        {
+            struct nlk_vfs_open_req oreq;
+            struct nlk_vfs_open_resp oresp;
+            memset(&oreq, 0, sizeof(oreq));
+            oreq.flags = NLK_VFS_O_WRONLY | NLK_VFS_O_CREAT | NLK_VFS_O_TRUNC;
+            oreq.mode = 0644U;
+            strncpy(oreq.path, "/etc/hello.txt", sizeof(oreq.path) - 1U);
+            rlen = sizeof(oresp);
+            assert(nlk_node_rpc_call(&node_host, 0x0001U, 6U,
+                                     NLK_VFS_OP_OPEN, &oreq, sizeof(oreq),
+                                     &oresp, &rlen, 100U) == 0);
+            assert(rlen == sizeof(oresp));
+            handle = oresp.handle;
+            assert(handle >= 0);
+        }
+
+        /* 12c. WRITE "Hello NOS VFS!" and CLOSE */
+        {
+            struct nlk_vfs_write_req_hdr *wreq = (struct nlk_vfs_write_req_hdr *)req_buf;
+            struct nlk_vfs_write_resp wresp;
+            struct nlk_vfs_close_req creq;
+            const char *msg = "Hello NOS VFS!";
+            uint16_t mlen = (uint16_t)strlen(msg);
+
+            memset(req_buf, 0, sizeof(req_buf));
+            wreq->handle = handle;
+            wreq->offset = 0U;
+            wreq->count = mlen;
+            memcpy(req_buf + sizeof(*wreq), msg, mlen);
+            rlen = sizeof(wresp);
+            assert(nlk_node_rpc_call(&node_host, 0x0001U, 6U,
+                                     NLK_VFS_OP_WRITE, req_buf,
+                                     (uint16_t)(sizeof(*wreq) + mlen),
+                                     &wresp, &rlen, 100U) == 0);
+            assert(wresp.bytes_written == mlen);
+
+            memset(&creq, 0, sizeof(creq));
+            creq.handle = handle;
+            rlen = 0U;
+            assert(nlk_node_rpc_call(&node_host, 0x0001U, 6U,
+                                     NLK_VFS_OP_CLOSE, &creq, sizeof(creq),
+                                     NULL, &rlen, 100U) == 0);
+        }
+
+        /* 12d. STAT "/etc/hello.txt" */
+        {
+            struct nlk_vfs_path_req preq;
+            struct nlk_vfs_stat_resp sresp;
+            memset(&preq, 0, sizeof(preq));
+            strncpy(preq.path, "/etc/hello.txt", sizeof(preq.path) - 1U);
+            rlen = sizeof(sresp);
+            assert(nlk_node_rpc_call(&node_host, 0x0001U, 6U,
+                                     NLK_VFS_OP_STAT, &preq, sizeof(preq),
+                                     &sresp, &rlen, 100U) == 0);
+            assert(sresp.type == NLK_VFS_DT_REG);
+            assert(sresp.size == 14ULL);
+        }
+
+        /* 12e. READDIR "/etc" */
+        {
+            struct nlk_vfs_readdir_req dreq;
+            const struct nlk_vfs_readdir_resp_hdr *dresp =
+                (const struct nlk_vfs_readdir_resp_hdr *)resp_buf;
+            const struct nlk_vfs_dirent_wire *dent =
+                (const struct nlk_vfs_dirent_wire *)(resp_buf + sizeof(*dresp));
+
+            memset(&dreq, 0, sizeof(dreq));
+            dreq.start_index = 0U;
+            dreq.max_entries = 8U;
+            strncpy(dreq.path, "/etc", sizeof(dreq.path) - 1U);
+            rlen = sizeof(resp_buf);
+            assert(nlk_node_rpc_call(&node_host, 0x0001U, 6U,
+                                     NLK_VFS_OP_READDIR, &dreq, sizeof(dreq),
+                                     resp_buf, &rlen, 100U) == 0);
+            assert(dresp->entry_count == 1U);
+            assert(dresp->eof == 1U);
+            assert(dent->type == NLK_VFS_DT_REG);
+            assert(dent->size == 14ULL);
+            assert(dent->name_len == 9U);
+            assert(memcmp((const char *)dent + sizeof(*dent), "hello.txt", 9U) == 0);
+        }
+
+        /* 12f. OPEN + READ "/etc/hello.txt" */
+        {
+            struct nlk_vfs_open_req oreq;
+            struct nlk_vfs_open_resp oresp;
+            struct nlk_vfs_read_req rreq;
+            struct nlk_vfs_close_req creq;
+            const struct nlk_vfs_read_resp_hdr *rresp =
+                (const struct nlk_vfs_read_resp_hdr *)resp_buf;
+
+            memset(&oreq, 0, sizeof(oreq));
+            oreq.flags = NLK_VFS_O_RDONLY;
+            strncpy(oreq.path, "/etc/hello.txt", sizeof(oreq.path) - 1U);
+            rlen = sizeof(oresp);
+            assert(nlk_node_rpc_call(&node_host, 0x0001U, 6U,
+                                     NLK_VFS_OP_OPEN, &oreq, sizeof(oreq),
+                                     &oresp, &rlen, 100U) == 0);
+
+            memset(&rreq, 0, sizeof(rreq));
+            rreq.handle = oresp.handle;
+            rreq.offset = 0U;
+            rreq.count = 64U;
+            rlen = sizeof(resp_buf);
+            assert(nlk_node_rpc_call(&node_host, 0x0001U, 6U,
+                                     NLK_VFS_OP_READ, &rreq, sizeof(rreq),
+                                     resp_buf, &rlen, 100U) == 0);
+            assert(rresp->bytes_read == 14U);
+            assert(rresp->eof == 1U);
+            assert(memcmp(resp_buf + sizeof(*rresp), "Hello NOS VFS!", 14U) == 0);
+
+            memset(&creq, 0, sizeof(creq));
+            creq.handle = oresp.handle;
+            rlen = 0U;
+            assert(nlk_node_rpc_call(&node_host, 0x0001U, 6U,
+                                     NLK_VFS_OP_CLOSE, &creq, sizeof(creq),
+                                     NULL, &rlen, 100U) == 0);
+        }
+
+        /* 12g. RENAME "/etc/hello.txt" -> "/etc/world.txt", REMOVE, STATFS */
+        {
+            struct nlk_vfs_rename_req rnreq;
+            struct nlk_vfs_path_req preq;
+            struct nlk_vfs_statfs_resp fsresp;
+
+            memset(&rnreq, 0, sizeof(rnreq));
+            strncpy(rnreq.old_path, "/etc/hello.txt", sizeof(rnreq.old_path) - 1U);
+            strncpy(rnreq.new_path, "/etc/world.txt", sizeof(rnreq.new_path) - 1U);
+            rlen = 0U;
+            assert(nlk_node_rpc_call(&node_host, 0x0001U, 6U,
+                                     NLK_VFS_OP_RENAME, &rnreq, sizeof(rnreq),
+                                     NULL, &rlen, 100U) == 0);
+
+            memset(&preq, 0, sizeof(preq));
+            strncpy(preq.path, "/etc/world.txt", sizeof(preq.path) - 1U);
+            rlen = 0U;
+            assert(nlk_node_rpc_call(&node_host, 0x0001U, 6U,
+                                     NLK_VFS_OP_REMOVE, &preq, sizeof(preq),
+                                     NULL, &rlen, 100U) == 0);
+
+            memset(&preq, 0, sizeof(preq));
+            strncpy(preq.path, "/", sizeof(preq.path) - 1U);
+            rlen = sizeof(fsresp);
+            assert(nlk_node_rpc_call(&node_host, 0x0001U, 6U,
+                                     NLK_VFS_OP_STATFS, &preq, sizeof(preq),
+                                     &fsresp, &rlen, 100U) == 0);
+            assert(fsresp.bsize == 4096U);
+        }
     }
 
     puts("nlk distributed soft-bus checks passed");
