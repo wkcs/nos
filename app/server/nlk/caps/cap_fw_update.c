@@ -65,28 +65,39 @@ static int fw_update_on_rpc(struct nlk_node *node, struct nlk_capability *cap,
     case NLK_FW_OP_PREPARE: {
         const struct nlk_fw_prepare_req *prep = (const struct nlk_fw_prepare_req *)req;
         uint32_t max_part_bytes;
+        uint8_t target_part;
 
-        if (req == NULL || req_len < sizeof(*prep)) {
+        if (req == NULL || req_len < sizeof(*prep) || prep->total_size == 0U) {
             return -EINVAL;
         }
-        if (prep->part_index >= ctx->part_count ||
-            prep->part_index >= NLK_FW_MAX_PARTS ||
-            prep->total_size == 0U) {
+        target_part = prep->part_index;
+        if (target_part == NLK_FW_PART_AUTO) {
+            if (ctx->part_count >= 4U &&
+                ctx->active_part == NLK_FW_PART_SLOT1) {
+                target_part = NLK_FW_PART_SLOT2;
+            } else if (ctx->part_count > NLK_FW_PART_SLOT1) {
+                target_part = NLK_FW_PART_SLOT1;
+            } else {
+                target_part = NLK_FW_PART_SLOT0;
+            }
+        }
+        if (target_part >= ctx->part_count ||
+            target_part >= NLK_FW_MAX_PARTS) {
             return -EINVAL;
         }
-        max_part_bytes = ctx->part_max_size[prep->part_index];
+        max_part_bytes = ctx->part_max_size[target_part];
         if (max_part_bytes > 0U && prep->total_size > max_part_bytes) {
             return -EFBIG;
         }
         if (ctx->flash_prepare != NULL) {
-            rc = ctx->flash_prepare(prep->part_index, prep->total_size, ctx->flash_priv);
+            rc = ctx->flash_prepare(target_part, prep->total_size, ctx->flash_priv);
             if (rc < 0) {
                 return rc;
             }
         }
 
         ctx->session_active = true;
-        ctx->target_part = prep->part_index;
+        ctx->target_part = target_part;
         ctx->window_pkts = (prep->window_pkts > 0U && prep->window_pkts <= 16U) ?
                            prep->window_pkts : 1U;
         ctx->rx_window_bitmap = 0U;
@@ -124,14 +135,18 @@ static int fw_update_on_rpc(struct nlk_node *node, struct nlk_capability *cap,
         pr_info("[NLK-FW] verify & commit ok: part=%u, size=%u, crc32=0x%08x\r\n",
                 (unsigned int)ctx->target_part, (unsigned int)ctx->total_size,
                 (unsigned int)ctx->running_crc32);
-        ctx->active_part = ctx->target_part;
+        if (ctx->part_count < 3U ||
+            ctx->target_part == NLK_FW_PART_SLOT1 ||
+            (ctx->part_count >= 4U && ctx->target_part == NLK_FW_PART_SLOT2)) {
+            ctx->active_part = ctx->target_part;
+        }
         ctx->session_active = false;
         return 0;
 
     case NLK_FW_OP_REBOOT:
         ctx->session_active = false;
         if (ctx->flash_reboot != NULL) {
-            ctx->flash_reboot(ctx->active_part, ctx->flash_priv);
+            ctx->flash_reboot(ctx->target_part, ctx->flash_priv);
         }
         return 0;
 

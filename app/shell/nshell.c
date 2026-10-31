@@ -6514,7 +6514,7 @@ static void nshell_task_entry(void* parameter)
     if (!shell->remote) {
         shell->session.tty = nos_console_tty();
         shell_init_cwd();
-        shell_printf("\033[2J\033[H"); /* Clear screen */
+        // shell_printf("\033[2J\033[H"); /* Clear screen */
         shell_printf("\033[1;36m");
         shell_printf("  _   _  ___  ____  \r\n");
         shell_printf(" | \\ | |/ _ \\/ ___| \r\n");

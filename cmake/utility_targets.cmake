@@ -18,10 +18,10 @@ add_custom_target(flash
 )
 
 add_custom_target(stflash
-    COMMAND st-flash --connect-under-reset write "${CMAKE_CURRENT_BINARY_DIR}/nos.bin" 0x08000000
+    COMMAND st-flash --connect-under-reset write "${CMAKE_CURRENT_BINARY_DIR}/nos.bin" "${CONFIG_KERNEL_ADDR}"
     DEPENDS nos_firmware
     WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
-    COMMENT "Flashing nos.bin via st-flash"
+    COMMENT "Flashing nos.bin to ${CONFIG_KERNEL_ADDR} via st-flash"
     VERBATIM
 )
 

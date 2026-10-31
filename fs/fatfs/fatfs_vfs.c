@@ -8,11 +8,13 @@
 
 #include <fs/fs.h>
 #include <fs/vfs.h>
+#include <kernel/device.h>
 #include <kernel/kernel.h>
 #include <kernel/mm.h>
 #include <kernel/printk.h>
 #include <string.h>
 
+#include "diskio.h"
 #include "ff.h"
 
 static struct inode_operations fatfs_dir_inode_ops;
@@ -581,6 +583,7 @@ static int fatfs_fill_super(struct super_block *sb, void *data, int silent) {
         res = f_mkfs("0:", 0, 0); 
         if (res != FR_OK) {
              pr_err("FatFs: mkfs failed: %d\r\n", res);
+             (void)f_mount(NULL, "0:", 0);
              kfree(fs);
              return -EIO;
         }
@@ -590,6 +593,7 @@ static int fatfs_fill_super(struct super_block *sb, void *data, int silent) {
     
     if (res != FR_OK) {
         pr_err("FatFs: mount failed: %d\r\n", res);
+        (void)f_mount(NULL, "0:", 0);
         kfree(fs);
         return -EIO;
     }
@@ -612,7 +616,16 @@ static int fatfs_fill_super(struct super_block *sb, void *data, int silent) {
 
 static struct dentry *fatfs_mount(struct file_system_type *fs_type, int flags,
                                   const char *dev_name, void *data) {
-    struct super_block *sb = kzalloc(sizeof(struct super_block), GFP_KERNEL);
+    struct super_block *sb;
+
+    if (dev_name != NULL && dev_name[0] != '\0') {
+        const struct device *bdev = device_get_binding(dev_name);
+        if (bdev != NULL) {
+            fatfs_set_block_device(bdev);
+        }
+    }
+
+    sb = kzalloc(sizeof(struct super_block), GFP_KERNEL);
     if (!sb) return NULL;
     
     if (fatfs_fill_super(sb, data, flags)) {

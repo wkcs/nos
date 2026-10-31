@@ -12,17 +12,27 @@
 #include <nos/driver.h>
 #endif
 #include <board/board.h>
+#include <board/boot.h>
 #include <board/nk60_spi.h>
+#include <fs/vfs.h>
 #include <kernel/device.h>
 #include <kernel/errno.h>
 #include <kernel/init.h>
 #include <kernel/mm.h>
 #include <string.h>
+#ifdef CONFIG_FATFS
+#include "../../fs/fatfs/diskio.h"
+#endif
 
 struct w25qxx_info {
     struct device dev;
     struct w25q_flash flash;
+    struct w25q_wl assets_wl;
+    struct device assets_dev;
+    bool assets_ready;
 };
+
+static struct w25qxx_info *g_nk60_flash_info;
 
 static struct w25q_spi nk60_flash_bus = {
     .bus = &nk60_spi_bus,
@@ -54,6 +64,25 @@ static ssize_t w25qxx_write(struct device *dev, addr_t pos,
     info = container_of(dev, struct w25qxx_info, dev);
     ret = w25q_flash_write(&info->flash, (uint32_t)pos, buffer, size);
     return ret == 0 ? (ssize_t)size : ret;
+}
+
+static int w25qxx_control(struct device *dev, int cmd, void *args)
+{
+    struct w25qxx_info *info;
+    uint32_t sector_addr;
+
+    if (dev == NULL || args == NULL) {
+        return -EINVAL;
+    }
+    info = container_of(dev, struct w25qxx_info, dev);
+    if (cmd == W25Q_FLASH_CTRL_ERASE_SECTOR) {
+        sector_addr = *(const uint32_t *)args;
+        if (sector_addr > 0xffffffU) {
+            return -EINVAL;
+        }
+        return w25q_flash_erase(&info->flash, sector_addr, 4096U);
+    }
+    return -EINVAL;
 }
 
 #ifdef CONFIG_DEVICE_TREE
@@ -134,6 +163,73 @@ static const struct nos_dt_driver w25qxx_driver = {
 };
 #endif
 
+struct w25q_wl *nk60_flash_get_assets_wl(void)
+{
+    if (g_nk60_flash_info == NULL || !g_nk60_flash_info->assets_ready) {
+        return NULL;
+    }
+    return &g_nk60_flash_info->assets_wl;
+}
+
+int nk60_assets_mount_fatfs(void)
+{
+#if defined(CONFIG_VFS) && defined(CONFIG_FATFS)
+    struct dentry *root;
+    struct dentry *dir = NULL;
+    struct dentry *mnt_root;
+
+    if (g_nk60_flash_info == NULL || !g_nk60_flash_info->assets_ready) {
+        return -ENODEV;
+    }
+
+    fatfs_set_block_device(&g_nk60_flash_info->assets_dev);
+    root = vfs_get_root();
+    if (root == NULL) {
+        return -ENOENT;
+    }
+
+    (void)vfs_make_dir(root, "assets", 0755, &dir);
+    if (dir == NULL) {
+        dir = vfs_lookup_path(root, "/assets");
+    }
+    if (dir == NULL) {
+        return -ENOENT;
+    }
+
+    (void)vfs_unmount(dir);
+    mnt_root = vfs_mount("fatfs", 0, "nk60_v2-assets", NULL);
+    if (mnt_root == NULL) {
+        pr_err("w25qxx: failed to mount FatFs on /assets\r\n");
+        return -EIO;
+    }
+    if (vfs_bind_mount(dir, mnt_root) != 0) {
+        pr_err("w25qxx: failed to bind /assets mount\r\n");
+        return -EIO;
+    }
+
+    pr_info("w25qxx: mounted wear-leveled assets FatFs at /assets (%u KB, %u spares)\r\n",
+            (unsigned int)(g_nk60_flash_info->assets_wl.logical_blocks * 4U),
+            (unsigned int)g_nk60_flash_info->assets_wl.spare_sectors);
+    return 0;
+#else
+    return 0;
+#endif
+}
+
+int nk60_assets_reload(void)
+{
+    int ret;
+
+    if (g_nk60_flash_info == NULL || !g_nk60_flash_info->assets_ready) {
+        return -ENODEV;
+    }
+    ret = w25q_wl_reset(&g_nk60_flash_info->assets_wl);
+    if (ret != 0) {
+        return ret;
+    }
+    return nk60_assets_mount_fatfs();
+}
+
 int spi_w25qxx_init(void)
 {
     struct w25qxx_info *info;
@@ -155,6 +251,7 @@ int spi_w25qxx_init(void)
         info->dev.name = "nk60_v2-flash";
         info->dev.ops.write = w25qxx_write;
         info->dev.ops.read = w25qxx_read;
+        info->dev.ops.control = w25qxx_control;
 #ifdef CONFIG_DEVICE_TREE
         ret = nos_dt_device_bind(&info->dev, node, &w25qxx_driver);
 #else
@@ -165,6 +262,24 @@ int spi_w25qxx_init(void)
     if (ret != 0) {
         kfree(info);
         return ret;
+    }
+
+    g_nk60_flash_info = info;
+    if (info->flash.capacity > NK60_W25Q_ASSETS_ADDR) {
+        uint32_t assets_region = info->flash.capacity - NK60_W25Q_ASSETS_ADDR;
+
+        if (w25q_wl_init(&info->assets_wl, &info->flash,
+                         NK60_W25Q_ASSETS_ADDR, assets_region) == 0 &&
+            device_init(&info->assets_dev) == 0) {
+            info->assets_dev.name = "nk60_v2-assets";
+            info->assets_dev.data = &info->assets_wl;
+            info->assets_dev.api = &w25q_wl_block_driver_api;
+            info->assets_dev.ready = true;
+            if (device_register(&info->assets_dev) == 0) {
+                info->assets_ready = true;
+                (void)nk60_assets_mount_fatfs();
+            }
+        }
     }
     return 0;
 }

@@ -62,4 +62,11 @@ config FATFS
 	help
 	  启用 FAT 文件系统支持（FAT12/FAT16/FAT32）。
 
+config FATFS_CODEPAGE
+	int "FatFs OEM code page"
+	default 936
+	depends on FATFS
+	help
+	  FatFs OEM 代码页（例如 936 为简体中文 GBK，437 为美式单字节编码以节省 Flash）。
+
 endmenu

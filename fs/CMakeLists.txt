@@ -7,7 +7,7 @@ set(FS_SRCS
     sysfs.c
 )
 
-if(CONFIG_FATFS OR CONFIG_VFS_SMOKE_TEST)
+if(CONFIG_VFS_SMOKE_TEST OR (CONFIG_FATFS AND CONFIG_BOARD_QEMU_STM32))
     list(APPEND FS_SRCS vfs_smoke.c)
 endif()
 
@@ -24,7 +24,7 @@ if(CONFIG_FATFS)
         fatfs/diskio.c
         fatfs/ff.c
         fatfs/sync.c
-        fatfs/option/cc936.c
+        fatfs/option/unicode.c
         fatfs/fatfs_vfs.c
     )
 endif()

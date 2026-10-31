@@ -345,6 +345,21 @@ enum nlk_fw_opcode {
 #define NLK_FW_PART_SLOT1           1U
 #define NLK_FW_PART_SLOT2           2U
 #define NLK_FW_PART_SLOT3           3U
+#define NLK_FW_PART_AUTO            0xFFU
+
+enum nlk_fw_img_type {
+    NLK_FW_IMG_TYPE_BOOTLOADER  = 0U,
+    NLK_FW_IMG_TYPE_KERNEL      = 1U,
+    NLK_FW_IMG_TYPE_ASSETS      = 3U,
+};
+
+struct nlk_fw_img_hdr {
+    uint32_t magic;         /* NLK_FW_IMG_MAGIC (0x20302030) */
+    uint32_t payload_crc32; /* IEEE 802.3 CRC32 of payload following header */
+    uint32_t size;          /* Raw binary payload size in bytes */
+    uint8_t  type;          /* enum nlk_fw_img_type */
+    uint8_t  version[3];    /* [major, minor, patch] */
+} __attribute__((packed));
 
 struct nlk_fw_part_info_resp {
     uint8_t  active_part;

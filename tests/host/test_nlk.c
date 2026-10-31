@@ -445,8 +445,8 @@ int main(void)
     static struct nlk_keyboard_ctx   can_pad_kb;
     static struct nlk_wireless_ctx   wl_cap;
 
-    static const uint32_t nk60_parts[4] = {
-        32UL * 1024UL, 200UL * 1024UL, 200UL * 1024UL, 512UL * 1024UL
+    static const uint32_t nk60_parts[3] = {
+        16UL * 1024UL + 16UL, 240UL * 1024UL, 728UL * 1024UL
     };
     static const uint32_t knob_parts[2] = {
         16UL * 1024UL, 64UL * 1024UL
@@ -495,7 +495,7 @@ int main(void)
     /* NK60 capabilities (IDs 1..5): FW Update, Log, Shell, Keyboard (with integrated Lighting), Encoder */
     assert(nlk_cap_fw_update_init(&node_nk60, &nk60_fw, 0x00020100UL,
                                   mock_flash_write, mock_flash_commit, &nk60_flash) == 1);
-    assert(nlk_cap_fw_update_set_partitions(&nk60_fw, 4U, NLK_FW_PART_SLOT1, nk60_parts) == 0);
+    assert(nlk_cap_fw_update_set_partitions(&nk60_fw, 3U, NLK_FW_PART_SLOT1, nk60_parts) == 0);
     assert(nlk_cap_log_init(&node_nk60, &nk60_log) == 2);
     assert(nlk_cap_shell_init(&node_nk60, &nk60_shell) == 3);
     assert(nlk_cap_keyboard_init(&node_nk60, &nk60_kb, 5U, 14U, 61U,
@@ -689,11 +689,11 @@ int main(void)
                                  NLK_FW_OP_GET_PART_INFO, NULL, 0U,
                                  &part_info, &rlen, 100U) == 0);
         assert(part_info.running_version == 0x00020100UL);
-        assert(part_info.part_count == 4U);
+        assert(part_info.part_count == 3U);
 
-        /* 5b. Upgrade NK60 Slot 2 partition (with duplicate chunk idempotency test) */
+        /* 5b. Upgrade NK60 Kernel partition (Slot 1, with duplicate chunk idempotency test) */
         memset(&prep, 0, sizeof(prep));
-        prep.part_index = NLK_FW_PART_SLOT2;
+        prep.part_index = NLK_FW_PART_SLOT1;
         prep.window_pkts = 4U;
         prep.total_size = sizeof(fw_image);
         prep.image_crc32 = expected_crc;
@@ -725,16 +725,56 @@ int main(void)
                                  NLK_FW_OP_VERIFY_COMMIT, NULL, 0U,
                                  NULL, &rlen, 100U) == 0);
         assert(nk60_flash.commit_count == 1U);
-        assert(nk60_flash.committed_part == NLK_FW_PART_SLOT2);
+        assert(nk60_flash.committed_part == NLK_FW_PART_SLOT1);
         assert(nk60_flash.committed_crc32 == expected_crc);
-        assert(memcmp(nk60_flash.storage[NLK_FW_PART_SLOT2],
+        assert(memcmp(nk60_flash.storage[NLK_FW_PART_SLOT1],
                       fw_image, sizeof(fw_image)) == 0);
+        assert(nk60_fw.active_part == NLK_FW_PART_SLOT1);
+
+        /* 5b-2. Upgrade NK60 Bootloader (Slot 0) -> active_part must remain Kernel Slot 1 */
+        prep.part_index = NLK_FW_PART_SLOT0;
+        rlen = 0U;
+        assert(nlk_node_rpc_call(&node_host, 0x0001U, 1U,
+                                 NLK_FW_OP_PREPARE, &prep, sizeof(prep),
+                                 NULL, &rlen, 100U) == 0);
+        for (offset = 0U; offset < sizeof(fw_image); offset += 80U) {
+            assert(nlk_node_bulk_write(&node_host, 0x0001U, 1U,
+                                       NLK_FW_OP_WRITE_CHUNK,
+                                       ++node_host.next_seq_id,
+                                       offset, fw_image + offset, 80U, &ack) == 0);
+        }
+        rlen = 0U;
+        assert(nlk_node_rpc_call(&node_host, 0x0001U, 1U,
+                                 NLK_FW_OP_VERIFY_COMMIT, NULL, 0U,
+                                 NULL, &rlen, 100U) == 0);
+        assert(nk60_flash.committed_part == NLK_FW_PART_SLOT0);
+        assert(nk60_fw.active_part == NLK_FW_PART_SLOT1);
+
+        /* 5b-3. Upgrade NK60 via NLK_FW_PART_AUTO -> automatically targets single Kernel Slot 1 */
+        prep.part_index = NLK_FW_PART_AUTO;
+        rlen = 0U;
+        assert(nlk_node_rpc_call(&node_host, 0x0001U, 1U,
+                                 NLK_FW_OP_PREPARE, &prep, sizeof(prep),
+                                 NULL, &rlen, 100U) == 0);
+        for (offset = 0U; offset < sizeof(fw_image); offset += 80U) {
+            assert(nlk_node_bulk_write(&node_host, 0x0001U, 1U,
+                                       NLK_FW_OP_WRITE_CHUNK,
+                                       ++node_host.next_seq_id,
+                                       offset, fw_image + offset, 80U, &ack) == 0);
+        }
+        rlen = 0U;
+        assert(nlk_node_rpc_call(&node_host, 0x0001U, 1U,
+                                 NLK_FW_OP_VERIFY_COMMIT, NULL, 0U,
+                                 NULL, &rlen, 100U) == 0);
+        assert(nk60_flash.committed_part == NLK_FW_PART_SLOT1);
+        assert(nk60_fw.active_part == NLK_FW_PART_SLOT1);
 
         /*
          * 5c. Upgrade Tier-3 Knob (0x0111, Cap 2) 3 hops away using 80-byte chunks!
          * Because Keypad <-> Knob I2C link has MTU=48, Keypad automatically fragments
          * each 84-byte L3 payload into two L3 fragments, and Knob reassembles them!
          */
+        prep.part_index = NLK_FW_PART_SLOT2;
         rlen = 0U;
         assert(nlk_node_rpc_call(&node_host, 0x0111U, 2U,
                                  NLK_FW_OP_PREPARE, &prep, sizeof(prep),
