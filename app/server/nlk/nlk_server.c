@@ -138,7 +138,7 @@ static int nlk_server_init(void)
 {
     memset(&g_nlk_srv, 0, sizeof(g_nlk_srv));
     g_nlk_srv.task = task_create("nlk_server", nlk_server_task_entry,
-                                 &g_nlk_srv, 6, 2048, 10, NULL);
+                                 &g_nlk_srv, 6, 4096, 10, NULL);
     if (g_nlk_srv.task == NULL) {
         pr_fatal("create nlk_server task failed\r\n");
         BUG_ON(true);

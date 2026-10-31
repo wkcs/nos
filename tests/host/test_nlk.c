@@ -429,6 +429,14 @@ struct dentry *vfs_lookup(struct dentry *parent, struct qstr *name)
     return vfs_lookup_path(parent, full);
 }
 
+struct dentry *vfs_find_cached_child(struct dentry *parent, const char *name, unsigned int len)
+{
+    struct qstr q;
+    q.name = (const unsigned char *)name;
+    q.len = len;
+    return vfs_lookup(parent, &q);
+}
+
 int nos_mkdir(const char *pathname, mode_t mode)
 {
     int i;

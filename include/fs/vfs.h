@@ -223,6 +223,8 @@ struct dentry *vfs_get_root(void);
 int vfs_dentry_get(struct dentry *dentry);
 void vfs_dentry_put(struct dentry *dentry);
 struct dentry *vfs_lookup(struct dentry *parent, struct qstr *name);
+struct dentry *vfs_find_cached_child(struct dentry *parent,
+                                     const char *name, unsigned int len);
 
 struct vfs_mount_entry {
   const char *dev_name;
