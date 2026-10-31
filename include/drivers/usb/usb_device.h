@@ -306,27 +306,27 @@ int usbd_connect_handler(udcd_t dcd);
 int usbd_disconnect_handler(udcd_t dcd);
 int usbd_sof_handler(udcd_t dcd);
 
-inline int dcd_set_address(udcd_t dcd, uint8_t address)
+static inline int dcd_set_address(udcd_t dcd, uint8_t address)
 {
     return dcd->ops->set_address(address);
 }
 
-inline int dcd_set_config(udcd_t dcd, uint8_t address)
+static inline int dcd_set_config(udcd_t dcd, uint8_t address)
 {
     return dcd->ops->set_config(address);
 }
 
-inline int dcd_ep_enable(udcd_t dcd, uep_t ep)
+static inline int dcd_ep_enable(udcd_t dcd, uep_t ep)
 {
     return dcd->ops->ep_enable(ep);
 }
 
-inline int dcd_ep_disable(udcd_t dcd, uep_t ep)
+static inline int dcd_ep_disable(udcd_t dcd, uep_t ep)
 {
     return dcd->ops->ep_disable(ep);
 }
 
-inline size_t dcd_ep_read_prepare(udcd_t dcd, uint8_t address, void *buffer,
+static inline size_t dcd_ep_read_prepare(udcd_t dcd, uint8_t address, void *buffer,
                                size_t size)
 {
     if(dcd->ops->ep_read_prepare != NULL) {
@@ -336,7 +336,7 @@ inline size_t dcd_ep_read_prepare(udcd_t dcd, uint8_t address, void *buffer,
     }
 }
 
-inline size_t dcd_ep_read(udcd_t dcd, uint8_t address, void *buffer)
+static inline size_t dcd_ep_read(udcd_t dcd, uint8_t address, void *buffer)
 {
     if(dcd->ops->ep_read != NULL) {
         return dcd->ops->ep_read(address, buffer);
@@ -345,23 +345,23 @@ inline size_t dcd_ep_read(udcd_t dcd, uint8_t address, void *buffer)
     }
 }
 
-inline size_t dcd_ep_write(udcd_t dcd, uint8_t address, void *buffer,
+static inline size_t dcd_ep_write(udcd_t dcd, uint8_t address, void *buffer,
                                  size_t size)
 {
     return dcd->ops->ep_write(address, buffer, size);
 }
 
-inline int dcd_ep0_send_status(udcd_t dcd)
+static inline int dcd_ep0_send_status(udcd_t dcd)
 {
     return dcd->ops->ep0_send_status();
 }
 
-inline int dcd_ep_set_stall(udcd_t dcd, uint8_t address)
+static inline int dcd_ep_set_stall(udcd_t dcd, uint8_t address)
 {
     return dcd->ops->ep_set_stall(address);
 }
 
-inline int dcd_ep_clear_stall(udcd_t dcd, uint8_t address)
+static inline int dcd_ep_clear_stall(udcd_t dcd, uint8_t address)
 {
     return dcd->ops->ep_clear_stall(address);
 }

@@ -35,11 +35,9 @@ __init int mm_init(void)
     return 0;
 }
 
+#ifdef CONFIG_MM_DEAMON
 static void mm_deamon_task_entry(void* parameter)
 {
-    u32 usage;
-    u32 all_usage;
-
     while (1) {
         sleep(2);
         pr_info("memory: %u/%u, totle: %u, free: %u\r\n",
@@ -64,3 +62,4 @@ static int mm_deamon_task_init(void)
     return 0;
 }
 task_init(mm_deamon_task_init);
+#endif

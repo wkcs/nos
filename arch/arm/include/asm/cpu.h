@@ -10,7 +10,7 @@
 #define __ARM_ASM_CPU_H__
 
 #define USE_CPU_FFS
-inline int __ffs(int value)
+static inline int __ffs(int value)
 {
     return __builtin_ffs(value);
 }

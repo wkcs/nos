@@ -23,7 +23,7 @@ static size_t usbd_ep_read_prepare(udevice_t device, uep_t ep, void *buffer, siz
 static int usbd_ep_assign(udevice_t device, uep_t ep);
 int usbd_ep_unassign(udevice_t device, uep_t ep);
 
-inline unsigned int list_len(const struct list_head *l)
+static unsigned int list_len(const struct list_head *l)
 {
     unsigned int len = 0;
     const struct list_head *p = l;
