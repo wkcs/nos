@@ -55,6 +55,14 @@ void sem_get(sem_t *sem)
     int rc;
 
     task = current;
+    if (task == NULL) {
+        spin_lock_irq(&sem->lock);
+        if (sem->count > 0) {
+            sem->count--;
+        }
+        spin_unlock_irq(&sem->lock);
+        return;
+    }
     if (task->pid == IDEL_TASK_PID) {
         pr_fatal("idle task can't use sem\r\n");
         return;
@@ -87,6 +95,16 @@ int sem_get_timeout(sem_t *sem, uint32_t tick)
     int rc;
 
     task = current;
+    if (task == NULL) {
+        spin_lock_irq(&sem->lock);
+        if (sem->count > 0) {
+            sem->count--;
+            spin_unlock_irq(&sem->lock);
+            return 0;
+        }
+        spin_unlock_irq(&sem->lock);
+        return -ETIMEDOUT;
+    }
     if (task->pid == IDEL_TASK_PID) {
         pr_fatal("idle task can't use sem\r\n");
         return -EINVAL;

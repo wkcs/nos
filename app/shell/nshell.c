@@ -53,10 +53,10 @@ struct shell_cmd {
   const char *name;
   const char *desc;
   cmd_func_t func;
-  struct shell_cmd *next;
 };
 
-static struct shell_cmd *cmd_list = NULL;
+static const struct shell_cmd *nshell_find_builtin(const char *name);
+static void nshell_print_commands(void);
 static int head_number(const char *text, u64 *number);
 
 #define SHELL_CMD_STR_MAX SHELL_SESSION_INPUT_MAX
@@ -475,18 +475,6 @@ static int nshell_getc(void)
     return console_getc();
 }
 
-static void shell_register_cmd(const char *name, const char *desc,
-                               cmd_func_t func) {
-  struct shell_cmd *cmd = kmalloc(sizeof(struct shell_cmd), GFP_KERNEL);
-  if (!cmd)
-    return;
-  cmd->name = name;
-  cmd->desc = desc;
-  cmd->func = func;
-  cmd->next = cmd_list;
-  cmd_list = cmd;
-}
-
 /* --- Filesystem Helper Functions --- */
 
 #define shell_cwd (nshell_current()->session.cwd)
@@ -889,8 +877,7 @@ static int cmd_env(int argc, char *argv[])
             if (var->exported) shell_printf("%s=%s\r\n", var->name, var->value);
         }
     } else {
-        struct shell_cmd *curr = cmd_list;
-        while (curr != NULL && strcmp(curr->name, argv[first]) != 0) curr = curr->next;
+        const struct shell_cmd *curr = nshell_find_builtin(argv[first]);
         if (curr == NULL) {
             shell_error("env: '%s': command not found\r\n", argv[first]);
             status = 127;
@@ -905,12 +892,9 @@ out:
 }
 
 static int cmd_help(int argc, char *argv[]) {
-  struct shell_cmd *curr = cmd_list;
-  shell_printf("Available commands:\r\n");
-  while (curr) {
-    shell_printf("  %-10s - %s\r\n", curr->name, curr->desc);
-    curr = curr->next;
-  }
+  (void)argc;
+  (void)argv;
+  nshell_print_commands();
   return 0;
 }
 
@@ -4765,14 +4749,6 @@ struct shell_pipeline_stage {
 
 static void nshell_exec_cmd(struct nshell *shell);
 
-static struct shell_cmd *nshell_find_builtin(const char *name)
-{
-    struct shell_cmd *curr = cmd_list;
-    while (curr != NULL && strcmp(curr->name, name) != 0)
-        curr = curr->next;
-    return curr;
-}
-
 static int cmd_type(int argc, char *argv[])
 {
     struct nshell *shell = nshell_current();
@@ -4795,7 +4771,7 @@ static int cmd_type(int argc, char *argv[])
     for (i = first; i < argc; i++) {
         struct shell_variable *alias =
             *variable_list_slot(&shell->aliases, argv[i], strlen(argv[i]));
-        struct shell_cmd *cmd = nshell_find_builtin(argv[i]);
+        const struct shell_cmd *cmd = nshell_find_builtin(argv[i]);
         if (alias != NULL) {
             if (type_only) shell_printf("alias\r\n");
             else shell_printf("%s is aliased to '%s'\r\n", argv[i], alias->value);
@@ -4832,7 +4808,7 @@ static int cmd_which(int argc, char *argv[])
     for (i = first; i < argc; i++) {
         struct shell_variable *alias =
             *variable_list_slot(&shell->aliases, argv[i], strlen(argv[i]));
-        struct shell_cmd *cmd = nshell_find_builtin(argv[i]);
+        const struct shell_cmd *cmd = nshell_find_builtin(argv[i]);
         if (alias == NULL && cmd == NULL) {
             shell_error("which: no %s\r\n", argv[i]);
             status = 1;
@@ -4869,7 +4845,7 @@ static int cmd_command(int argc, char *argv[])
         for (i = first; i < argc; i++) {
             struct shell_variable *alias =
                 *variable_list_slot(&shell->aliases, argv[i], strlen(argv[i]));
-            struct shell_cmd *cmd = nshell_find_builtin(argv[i]);
+            const struct shell_cmd *cmd = nshell_find_builtin(argv[i]);
             if (alias != NULL) {
                 if (mode_v) alias_print(alias);
                 else shell_printf("%s is aliased to '%s'\r\n", argv[i], alias->value);
@@ -4884,7 +4860,7 @@ static int cmd_command(int argc, char *argv[])
         return status;
     }
     {
-        struct shell_cmd *cmd = nshell_find_builtin(argv[first]);
+        const struct shell_cmd *cmd = nshell_find_builtin(argv[first]);
         if (cmd == NULL) {
             shell_error("command: %s: not found\r\n", argv[first]);
             return 127;
@@ -5167,7 +5143,7 @@ struct xargs_workspace {
     char *exec_argv[MAX_ARGS + 1];
 };
 
-static int xargs_run_batch(struct nshell *shell, struct shell_cmd *cmd,
+static int xargs_run_batch(struct nshell *shell, const struct shell_cmd *cmd,
                            struct xargs_workspace *ws, int total_argc, bool trace)
 {
     struct file *saved_in = shell->input_file;
@@ -5193,7 +5169,7 @@ static int cmd_xargs(int argc, char *argv[])
     static char default_echo[] = "echo";
     struct nshell *shell = nshell_current();
     struct xargs_workspace *ws;
-    struct shell_cmd *cmd;
+    const struct shell_cmd *cmd;
     u64 max_args = MAX_ARGS;
     bool no_run_empty = false, trace = false;
     int first = 1, base_argc = 0, batch_count = 0, runs = 0, status = 0, i;
@@ -6003,7 +5979,7 @@ static void nshell_exec_cmd(struct nshell *shell)
         }
     }
     for (i = 0; i < count; i++) {
-        struct shell_cmd *curr = cmd_list;
+        const struct shell_cmd *curr = NULL;
         struct file *saved_input = shell->input_file;
         struct file *saved_output = shell->output_file;
         struct file *saved_error = shell->error_file;
@@ -6196,12 +6172,10 @@ static void nshell_exec_cmd(struct nshell *shell)
             }
         }
         if (assignment_only && !assignment_error) shell->last_status = 0;
-        while (!assignment_only && !assignment_error && curr != NULL) {
-            if (strcmp(curr->name, argv[assignments]) == 0) {
+        if (!assignment_only && !assignment_error) {
+            curr = nshell_find_builtin(argv[assignments]);
+            if (curr != NULL)
                 shell->last_status = curr->func(argc - assignments, argv + assignments);
-                break;
-            }
-            curr = curr->next;
         }
         if (!assignment_only && !assignment_error && curr == NULL) {
             shell_error("%s: command not found\r\n", argv[assignments]);
@@ -6297,16 +6271,108 @@ static int complete_filldir(void *dirent, const char *name, int namelen,
     return 0;
 }
 
+static const struct shell_cmd builtin_cmds[] = {
+    { "help", "List commands", cmd_help },
+    { "ver", "Show NOS kernel version & uptime", cmd_ver },
+    { "uname", "Print system information", cmd_uname },
+    { "uptime", "Show how long the system has been running", cmd_uptime },
+    { "free", "Display amount of free and used memory", cmd_free },
+    { "clear", "Clear screen", cmd_clear },
+    { "echo", "Print arguments", cmd_echo },
+    { "printf", "Format and print arguments", cmd_printf },
+    { ":", "Null command", cmd_true },
+    { "true", "Return success", cmd_true },
+    { "false", "Return failure", cmd_false },
+    { "sleep", "Delay for a specified time", cmd_sleep },
+    { "exit", "Exit the shell or script", cmd_exit },
+    { "return", "Return from a sourced script", cmd_exit },
+    { ".", "Execute commands from a file in current shell", cmd_source },
+    { "source", "Execute commands from a file in current shell", cmd_source },
+    { "sh", "Execute shell script or command string", cmd_sh },
+    { "eval", "Construct command by concatenating arguments", cmd_eval },
+    { "read", "Read a line from standard input", cmd_read },
+    { "type", "Describe how command names are interpreted", cmd_type },
+    { "which", "Locate a command", cmd_which },
+    { "command", "Execute a simple command or display information", cmd_command },
+    { "test", "Evaluate a conditional expression", cmd_test },
+    { "[", "Evaluate a conditional expression", cmd_test },
+    { "alias", "Define or display aliases", cmd_alias },
+    { "unalias", "Remove alias definitions", cmd_unalias },
+    { "export", "Mark shell variables for export", cmd_export },
+    { "unset", "Remove shell variables", cmd_unset },
+    { "env", "Run a command in a modified environment", cmd_env },
+    { "printenv", "Print environment variables", cmd_printenv },
+    { "history", "Show or clear command history", cmd_history },
+    { "log", "Toggle kernel log (on/off)", cmd_log },
+    { "ls", "List directory", cmd_ls },
+    { "stat", "Display file or directory status", cmd_stat },
+    { "find", "Search for files in a directory hierarchy", cmd_find },
+    { "cd", "Change directory", cmd_cd },
+    { "pwd", "Print working directory", cmd_pwd },
+    { "mkdir", "Make directory", cmd_mkdir },
+    { "rmdir", "Remove empty directories", cmd_rmdir },
+    { "touch", "Create empty files or update timestamps", cmd_touch },
+    { "chmod", "Change file mode bits", cmd_chmod },
+    { "rm", "Remove files and directories", cmd_rm },
+    { "cat", "Concatenate file", cmd_cat },
+    { "cmp", "Compare two files byte by byte", cmd_cmp },
+    { "hexdump", "Display file contents in hexadecimal and ASCII", cmd_hexdump },
+    { "hd", "Display file contents in hexadecimal and ASCII", cmd_hexdump },
+    { "basename", "Strip directory and suffix", cmd_basename },
+    { "dirname", "Strip final path component", cmd_dirname },
+    { "cp", "Copy files", cmd_cp },
+    { "mv", "Move or rename files", cmd_mv },
+    { "wc", "Count lines, words and bytes", cmd_wc },
+    { "head", "Print the start of files", cmd_head },
+    { "tail", "Print the end of files", cmd_tail },
+    { "tee", "Duplicate standard input to files", cmd_tee },
+    { "grep", "Search lines for a fixed string", cmd_grep },
+    { "sort", "Sort lines of text", cmd_sort },
+    { "uniq", "Report or omit repeated lines", cmd_uniq },
+    { "cut", "Remove sections from each line of files", cmd_cut },
+    { "tr", "Translate or delete characters", cmd_tr },
+    { "seq", "Print a sequence of numbers", cmd_seq },
+    { "xargs", "Build and execute command lines from standard input", cmd_xargs },
+    { "mount", "Mount filesystem", cmd_mount },
+    { "df", "Report filesystem mount usage", cmd_df },
+    { "ps", "Dump task status", cmd_ps },
+    { "kill", "Send a signal to a process", cmd_kill },
+    { "lsdev", "List registered kernel devices", cmd_lsdev },
+#ifdef CONFIG_NLK_SERVER
+    { "nlk", "Show NLK soft-bus status & topology", cmd_nlk },
+#endif
+};
+
+static const struct shell_cmd *nshell_find_builtin(const char *name)
+{
+    size_t i;
+
+    for (i = 0U; i < sizeof(builtin_cmds) / sizeof(builtin_cmds[0]); i++) {
+        if (strcmp(builtin_cmds[i].name, name) == 0)
+            return &builtin_cmds[i];
+    }
+    return NULL;
+}
+
+static void nshell_print_commands(void)
+{
+    size_t i;
+
+    shell_printf("Available commands:\r\n");
+    for (i = 0U; i < sizeof(builtin_cmds) / sizeof(builtin_cmds[0]); i++) {
+        const struct shell_cmd *cmd = &builtin_cmds[i];
+        shell_printf("  %-10s - %s\r\n", cmd->name, cmd->desc);
+    }
+}
+
 static void complete_scan_commands(struct nshell *shell, struct complete_workspace *ws)
 {
-    struct shell_cmd *cmd;
     struct shell_variable *alias;
-    for (cmd = cmd_list; cmd != NULL; cmd = cmd->next)
-        complete_consider(ws, cmd->name);
+    size_t i;
+    for (i = 0U; i < sizeof(builtin_cmds) / sizeof(builtin_cmds[0]); i++)
+        complete_consider(ws, builtin_cmds[i].name);
     for (alias = shell->aliases; alias != NULL; alias = alias->next) {
-        for (cmd = cmd_list; cmd != NULL && strcmp(cmd->name, alias->name) != 0; cmd = cmd->next)
-            ;
-        if (cmd == NULL)
+        if (nshell_find_builtin(alias->name) == NULL)
             complete_consider(ws, alias->name);
     }
 }
@@ -6466,6 +6532,14 @@ static void nshell_task_entry(void* parameter)
                 shell->session.tty = nlk_cap_shell_tty(ctx);
                 shell_cwd_put(shell->cwd_ref);
                 shell->cwd_ref = NULL;
+                if (ctx->session_open && shell->session.history == NULL) {
+                    shell->session.history = kzalloc(
+                        SHELL_SESSION_HISTORY_MAX * sizeof(*shell->session.history),
+                        GFP_KERNEL);
+                } else if (!ctx->session_open && shell->session.history != NULL) {
+                    kfree(shell->session.history);
+                    shell->session.history = NULL;
+                }
                 shell_session_reset(&shell->session, vfs_get_root());
                 variable_clear(shell);
                 variable_list_clear(&shell->aliases);
@@ -6482,18 +6556,20 @@ static void nshell_task_entry(void* parameter)
 
 static int nshell_start(bool remote)
 {
-    char (*history)[SHELL_SESSION_INPUT_MAX + 1];
+    char (*history)[SHELL_SESSION_INPUT_MAX + 1] = NULL;
     struct nshell *shell = kzalloc(sizeof(*shell), GFP_KERNEL);
     if (shell == NULL) return -ENOMEM;
     if (variable_init(shell) != 0) {
         kfree(shell);
         return -ENOMEM;
     }
-    history = kzalloc(SHELL_SESSION_HISTORY_MAX * sizeof(*history), GFP_KERNEL);
-    if (history == NULL) {
-        variable_clear(shell);
-        kfree(shell);
-        return -ENOMEM;
+    if (!remote) {
+        history = kzalloc(SHELL_SESSION_HISTORY_MAX * sizeof(*history), GFP_KERNEL);
+        if (history == NULL) {
+            variable_clear(shell);
+            kfree(shell);
+            return -ENOMEM;
+        }
     }
     shell_session_init(&shell->session, NULL, NULL, history);
     shell->session.writer = nshell_transport_write;
@@ -6516,78 +6592,6 @@ static int nshell_start(bool remote)
 static int nshell_init(void)
 {
     int rc;
-    // Register basic commands
-    shell_register_cmd("help", "List commands", cmd_help);
-    shell_register_cmd("ver", "Show NOS kernel version & uptime", cmd_ver);
-    shell_register_cmd("uname", "Print system information", cmd_uname);
-    shell_register_cmd("uptime", "Show how long the system has been running", cmd_uptime);
-    shell_register_cmd("free", "Display amount of free and used memory", cmd_free);
-    shell_register_cmd("clear", "Clear screen", cmd_clear);
-    shell_register_cmd("echo", "Print arguments", cmd_echo);
-    shell_register_cmd("printf", "Format and print arguments", cmd_printf);
-    shell_register_cmd(":", "Null command", cmd_true);
-    shell_register_cmd("true", "Return success", cmd_true);
-    shell_register_cmd("false", "Return failure", cmd_false);
-    shell_register_cmd("sleep", "Delay for a specified time", cmd_sleep);
-    shell_register_cmd("exit", "Exit the shell or script", cmd_exit);
-    shell_register_cmd("return", "Return from a sourced script", cmd_exit);
-    shell_register_cmd(".", "Execute commands from a file in current shell", cmd_source);
-    shell_register_cmd("source", "Execute commands from a file in current shell", cmd_source);
-    shell_register_cmd("sh", "Execute shell script or command string", cmd_sh);
-    shell_register_cmd("eval", "Construct command by concatenating arguments", cmd_eval);
-    shell_register_cmd("read", "Read a line from standard input", cmd_read);
-    shell_register_cmd("type", "Describe how command names are interpreted", cmd_type);
-    shell_register_cmd("which", "Locate a command", cmd_which);
-    shell_register_cmd("command", "Execute a simple command or display information", cmd_command);
-    shell_register_cmd("test", "Evaluate a conditional expression", cmd_test);
-    shell_register_cmd("[", "Evaluate a conditional expression", cmd_test);
-    shell_register_cmd("alias", "Define or display aliases", cmd_alias);
-    shell_register_cmd("unalias", "Remove alias definitions", cmd_unalias);
-    shell_register_cmd("export", "Mark shell variables for export", cmd_export);
-    shell_register_cmd("unset", "Remove shell variables", cmd_unset);
-    shell_register_cmd("env", "Run a command in a modified environment", cmd_env);
-    shell_register_cmd("printenv", "Print environment variables", cmd_printenv);
-    shell_register_cmd("history", "Show or clear command history", cmd_history);
-    shell_register_cmd("log", "Toggle kernel log (on/off)", cmd_log);
-    shell_register_cmd("ls", "List directory", cmd_ls);
-    shell_register_cmd("stat", "Display file or directory status", cmd_stat);
-    shell_register_cmd("find", "Search for files in a directory hierarchy", cmd_find);
-    shell_register_cmd("cd", "Change directory", cmd_cd);
-    shell_register_cmd("pwd", "Print working directory", cmd_pwd);
-    shell_register_cmd("mkdir", "Make directory", cmd_mkdir);
-    shell_register_cmd("rmdir", "Remove empty directories", cmd_rmdir);
-    shell_register_cmd("touch", "Create empty files or update timestamps", cmd_touch);
-    shell_register_cmd("chmod", "Change file mode bits", cmd_chmod);
-    shell_register_cmd("rm", "Remove files and directories", cmd_rm);
-    shell_register_cmd("cat", "Concatenate file", cmd_cat);
-    shell_register_cmd("cmp", "Compare two files byte by byte", cmd_cmp);
-    shell_register_cmd("hexdump", "Display file contents in hexadecimal and ASCII", cmd_hexdump);
-    shell_register_cmd("hd", "Display file contents in hexadecimal and ASCII", cmd_hexdump);
-    shell_register_cmd("basename", "Strip directory and suffix", cmd_basename);
-    shell_register_cmd("dirname", "Strip final path component", cmd_dirname);
-    shell_register_cmd("cp", "Copy files", cmd_cp);
-    shell_register_cmd("mv", "Move or rename files", cmd_mv);
-    shell_register_cmd("wc", "Count lines, words and bytes", cmd_wc);
-    shell_register_cmd("head", "Print the start of files", cmd_head);
-    shell_register_cmd("tail", "Print the end of files", cmd_tail);
-    shell_register_cmd("tee", "Duplicate standard input to files", cmd_tee);
-    shell_register_cmd("grep", "Search lines for a fixed string", cmd_grep);
-    shell_register_cmd("sort", "Sort lines of text", cmd_sort);
-    shell_register_cmd("uniq", "Report or omit repeated lines", cmd_uniq);
-    shell_register_cmd("cut", "Remove sections from each line of files", cmd_cut);
-    shell_register_cmd("tr", "Translate or delete characters", cmd_tr);
-    shell_register_cmd("seq", "Print a sequence of numbers", cmd_seq);
-    shell_register_cmd("xargs", "Build and execute command lines from standard input", cmd_xargs);
-    shell_register_cmd("mount", "Mount filesystem", cmd_mount);
-    shell_register_cmd("df", "Report filesystem mount usage", cmd_df);
-    shell_register_cmd("ps", "Dump task status", cmd_ps);
-    shell_register_cmd("kill", "Send a signal to a process", cmd_kill);
-    shell_register_cmd("lsdev", "List registered kernel devices", cmd_lsdev);
-#ifdef CONFIG_NLK_SERVER
-    shell_register_cmd("nlk", "Show NLK soft-bus status & topology", cmd_nlk);
-#endif
-
-
     rc = nshell_start(false);
     if (rc < 0) return rc;
 #ifdef CONFIG_NLK_SERVER
