@@ -60,6 +60,10 @@ def main():
         proc.stdin.flush()
         wait_for(b"Available commands:", pos)
         wait_for(b"nos# ", pos)
+        help_out = bytes(output[pos:])
+        for hidden in (b"  :          -", b"  .          -", b"  [          -"):
+            if hidden in help_out:
+                raise RuntimeError(f"unexpected punctuation entry in help: {hidden!r}")
         pos = len(output)
         proc.stdin.write(b"echo 'hello world'\r")
         proc.stdin.flush()
