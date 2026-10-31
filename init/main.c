@@ -25,8 +25,7 @@ void nos_print_kernel_info(void) {
   pr_info("    cpu-type[%s]\r\n", CONFIG_CPU_TYPE);
   pr_info("    version[%u.%u.%u]\r\n", (CONFIG_VERSION_CODE >> 16) & 0xff,
           (CONFIG_VERSION_CODE >> 8) & 0xff, CONFIG_VERSION_CODE & 0xff);
-  // pr_info("    page-size[%d]\r\n", CONFIG_PAGE_SIZE);
-  pr_info("    page-size[4096]\r\n");
+  pr_info("    page-size[%d]\r\n", CONFIG_PAGE_SIZE);
 }
 
 #include <fs/vfs.h>
