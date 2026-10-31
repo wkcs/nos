@@ -121,8 +121,8 @@ static void vfs_free_dentry_Subtree(struct dentry *dentry)
     }
 }
 
-static struct dentry *vfs_find_cached_child(struct dentry *parent,
-                                            const char *name, unsigned int len)
+struct dentry *vfs_find_cached_child(struct dentry *parent,
+                                     const char *name, unsigned int len)
 {
     struct dentry *child;
 

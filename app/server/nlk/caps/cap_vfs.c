@@ -25,6 +25,10 @@ static void cap_vfs_copy_path(char *dst, size_t dst_size, const char *src, size_
     for (size_t s = 0U; i < limit && s < src_max && src[s] != '\0'; s++) {
         dst[i++] = src[s];
     }
+    /* 去除尾随的重复斜杠，但保留根目录 "/" */
+    while (i > 1U && dst[i - 1U] == '/') {
+        i--;
+    }
     dst[i] = '\0';
 }
 
@@ -163,15 +167,7 @@ static int cap_vfs_filldir(void *dirent, const char *name, int namelen,
     }
 
     if (rctx->dir_dentry != NULL) {
-        struct qstr q;
-        char entry_name[FS_NAME_LEN];
-        size_t qlen = (nlen < sizeof(entry_name) - 1U) ? nlen : (sizeof(entry_name) - 1U);
-        memcpy(entry_name, name, qlen);
-        entry_name[qlen] = '\0';
-        q.name = (const unsigned char *)entry_name;
-        q.len = (unsigned int)qlen;
-        q.hash = 0U;
-        child = vfs_lookup(rctx->dir_dentry, &q);
+        child = vfs_find_cached_child(rctx->dir_dentry, name, (unsigned int)nlen);
         if (child != NULL) {
             cinode = child->d_inode;
         }
