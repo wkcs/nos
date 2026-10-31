@@ -16,7 +16,7 @@
  */
 void arch_mmu_init(void)
 {
-    pr_info("ARM Cortex-M: No MMU support\n");
+    pr_info("ARM Cortex-M: No MMU support\r\n");
 }
 
 /**
@@ -32,7 +32,7 @@ int arch_map_page(unsigned long vaddr, unsigned long paddr,
 {
     /* Cortex-M 系列使用恒等映射 */
     if (vaddr != paddr) {
-        pr_err("ARM Cortex-M: Virtual address must equal physical address\n");
+        pr_err("ARM Cortex-M: Virtual address must equal physical address\r\n");
         return -1;
     }
     
