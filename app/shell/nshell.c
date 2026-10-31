@@ -6280,13 +6280,13 @@ static const struct shell_cmd builtin_cmds[] = {
     { "clear", "Clear screen", cmd_clear },
     { "echo", "Print arguments", cmd_echo },
     { "printf", "Format and print arguments", cmd_printf },
-    { ":", "Null command", cmd_true },
+    { ":", NULL, cmd_true },
     { "true", "Return success", cmd_true },
     { "false", "Return failure", cmd_false },
     { "sleep", "Delay for a specified time", cmd_sleep },
     { "exit", "Exit the shell or script", cmd_exit },
     { "return", "Return from a sourced script", cmd_exit },
-    { ".", "Execute commands from a file in current shell", cmd_source },
+    { ".", NULL, cmd_source },
     { "source", "Execute commands from a file in current shell", cmd_source },
     { "sh", "Execute shell script or command string", cmd_sh },
     { "eval", "Construct command by concatenating arguments", cmd_eval },
@@ -6295,7 +6295,7 @@ static const struct shell_cmd builtin_cmds[] = {
     { "which", "Locate a command", cmd_which },
     { "command", "Execute a simple command or display information", cmd_command },
     { "test", "Evaluate a conditional expression", cmd_test },
-    { "[", "Evaluate a conditional expression", cmd_test },
+    { "[", NULL, cmd_test },
     { "alias", "Define or display aliases", cmd_alias },
     { "unalias", "Remove alias definitions", cmd_unalias },
     { "export", "Mark shell variables for export", cmd_export },
@@ -6361,6 +6361,8 @@ static void nshell_print_commands(void)
     shell_printf("Available commands:\r\n");
     for (i = 0U; i < sizeof(builtin_cmds) / sizeof(builtin_cmds[0]); i++) {
         const struct shell_cmd *cmd = &builtin_cmds[i];
+        if (cmd->desc == NULL)
+            continue;
         shell_printf("  %-10s - %s\r\n", cmd->name, cmd->desc);
     }
 }
@@ -6369,8 +6371,10 @@ static void complete_scan_commands(struct nshell *shell, struct complete_workspa
 {
     struct shell_variable *alias;
     size_t i;
-    for (i = 0U; i < sizeof(builtin_cmds) / sizeof(builtin_cmds[0]); i++)
-        complete_consider(ws, builtin_cmds[i].name);
+    for (i = 0U; i < sizeof(builtin_cmds) / sizeof(builtin_cmds[0]); i++) {
+        if (builtin_cmds[i].desc != NULL)
+            complete_consider(ws, builtin_cmds[i].name);
+    }
     for (alias = shell->aliases; alias != NULL; alias = alias->next) {
         if (nshell_find_builtin(alias->name) == NULL)
             complete_consider(ws, alias->name);
