@@ -28,9 +28,10 @@ if(CONFIG_NLK_SERVER OR CONFIG_NDK_SERVER)
         server/nlk/core/nlk_discovery.c
         server/nlk/core/nlk_router.c
         server/nlk/core/nlk_core.c
-        server/nlk/caps/cap_fw_update.c
+        server/nlk/caps/cap_flash.c
         server/nlk/caps/cap_log.c
         server/nlk/caps/cap_shell.c
+        server/nlk/caps/cap_vfs.c
         server/nlk/caps/cap_keyboard.c
         server/nlk/caps/cap_encoder.c
         server/nlk/caps/cap_display.c

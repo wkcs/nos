@@ -1,158 +1,54 @@
-"""Host shell forwards bytes and closes its remote session on exit."""
-import io
-import os
+"""NLK UAPI 协议契约、BootFlag 内核接口与分布式软总线主机回归测试。"""
+import pathlib
+import subprocess
+import sys
 import unittest
-from unittest import mock
-from scripts import nlk_tool
+
+ROOT = pathlib.Path(__file__).resolve().parents[1]
 
 
-class Client:
-    def __init__(self):
-        self.calls = []
-        self.sent = []
-    def find_cap_id(self, addr, cap):
-        return 3
-    def rpc_call(self, addr, cap, op, data=b"", **kwargs):
-        self.calls.append(op)
-        if op == nlk_tool.NLK_SHELL_OP_INPUT:
-            self.sent.append(data[12:])
-    def poll_async_packet(self, timeout_ms):
-        return None
-    def stream_write(self, addr, cap, op, data):
-        self.sent.append(data)
+class NLKProtocolAndRegressionTest(unittest.TestCase):
+    def test_nlk_tool_py_is_removed(self):
+        """确保旧版 scripts/nlk_tool.py 已被移除，统一使用独立 nlk_cli。"""
+        self.assertFalse((ROOT / "scripts" / "nlk_tool.py").exists())
+        self.assertFalse((ROOT / "app" / "server" / "nlk" / "caps" / "cap_fw_update.c").exists())
 
+    def test_kernel_boot_flag_contract(self):
+        """验证内核级 boot_flag 定义位于 include/kernel/boot.h。"""
+        boot_h = (ROOT / "include" / "kernel" / "boot.h").read_text(encoding="utf-8")
+        self.assertIn("BOOT_FLAG_MAGIC", boot_h)
+        self.assertIn("BOOT_NORMAL", boot_h)
+        self.assertIn("BOOT_BOOTLOADER", boot_h)
+        self.assertIn("BOOT_RECOVERY", boot_h)
+        self.assertIn("write_boot_flag", boot_h)
+        self.assertIn("read_boot_flag", boot_h)
 
-def nllk_payload(token, data):
-    return nlk_tool.struct.pack("<Q", token) + data
+    def test_nlk_uapi_capabilities_contract(self):
+        """验证 NLK UAPI 包含通用 Flash、Log、Shell、VFS 和 Core Reboot 契约。"""
+        nlk_h = (ROOT / "include" / "uapi" / "nos" / "nlk.h").read_text(encoding="utf-8")
+        self.assertIn("NLK_CORE_OP_REBOOT", nlk_h)
+        self.assertIn("NLK_CAP_FLASH", nlk_h)
+        self.assertIn("NLK_CAP_LOG", nlk_h)
+        self.assertIn("NLK_CAP_SHELL", nlk_h)
+        self.assertIn("NLK_CAP_VFS", nlk_h)
+        self.assertIn("NLK_SHELL_OP_EXEC", nlk_h)
+        self.assertIn("NLK_SHELL_STREAM_EXIT", nlk_h)
+        self.assertIn("NLK_VFS_OP_READDIR", nlk_h)
+        self.assertNotIn("NLK_CAP_FW_UPDATE", nlk_h)
 
+    def test_shared_nshell_has_no_remote_branch(self):
+        """验证 UART 与 NLK 共用同一套 nshell 服务，无 remote 特判分支。"""
+        nshell_c = (ROOT / "app" / "shell" / "nshell.c").read_text(encoding="utf-8")
+        self.assertIn("nshell_spawn(", nshell_c)
+        self.assertNotIn("shell->remote", nshell_c)
 
-class TerminalTest(unittest.TestCase):
-    def test_reliable_chunks_retry_same_offset_after_backpressure(self):
-        class BackpressureClient(Client):
-            def __init__(self):
-                super().__init__()
-                self.offsets = []
-                self.failed = False
-            def rpc_call(self, addr, cap, op, data=b"", **kwargs):
-                if op == nlk_tool.NLK_SHELL_OP_INPUT:
-                    self.offsets.append(nlk_tool.struct.unpack_from("<I", data, 8)[0])
-                    if not self.failed:
-                        self.failed = True
-                        raise nlk_tool.NLKRPCError(-28)
-                return super().rpc_call(addr, cap, op, data, **kwargs)
-        client = BackpressureClient()
-        session = nlk_tool.RemoteShellSession(client, 1, 3)
-        session.open()
-        with mock.patch.object(nlk_tool.time, "sleep"):
-            session.write(b"x" * 150)
-        session.close()
-        self.assertEqual(client.offsets, [0, 0, 64, 128])
-        self.assertEqual(b"".join(client.sent), b"x" * 150)
+    def test_nlk_host_suite_passes(self):
+        """运行 C 语言主机端 NLK 全能力（Flash/Log/Shell/VFS/路由）回归测试。"""
+        subprocess.run(
+            [sys.executable, str(ROOT / "tests" / "host" / "run_nlk_test.py")],
+            check=True,
+        )
 
-    def test_falls_back_to_legacy_v1_shell_when_reliable_open_rejected(self):
-        class LegacyClient(Client):
-            def rpc_call(self, addr, cap, op, data=b"", **kwargs):
-                if op == nlk_tool.NLK_SHELL_OP_OPEN and len(data) > nlk_tool.SHELL_OPEN_STRUCT.size:
-                    raise nlk_tool.NLKRPCError(-22)
-                return super().rpc_call(addr, cap, op, data, **kwargs)
-        client = LegacyClient()
-        session = nlk_tool.RemoteShellSession(client, 1, 3)
-        session.open()
-        self.assertFalse(session.reliable)
-        session.write(b"pwd\r")
-        session.close()
-        self.assertEqual(client.sent, [b"pwd\r"])
-
-    def test_fragmented_stdout_is_reassembled_before_dispatch(self):
-        token = 42
-        payload = nllk_payload(token, b"hello")
-        base = {"src_addr": 1, "dst_addr": 0, "dst_cap": 3,
-                "mode": nlk_tool.NLK_MODE_STREAM, "cmd_op": 0x12, "seq_id": 9}
-        first = dict(base, flags=nlk_tool.NLK_FLAG_FRAG | nlk_tool.NLK_FLAG_MORE_FRAG,
-                     payload=nlk_tool.struct.pack("<HH", len(payload), 0) + payload[:6])
-        last = dict(base, flags=nlk_tool.NLK_FLAG_FRAG,
-                    payload=nlk_tool.struct.pack("<HH", len(payload), 6) + payload[6:])
-        transport = mock.Mock()
-        transport.recv_packet.side_effect = [first, last]
-        client = nlk_tool.NLKHostClient(transport)
-        session = nlk_tool.RemoteShellSession(client, 1, 3)
-        session.token = token
-        self.assertEqual(session.poll(timeout_ms=100)["payload"], b"hello")
-
-    def test_matching_stdout_preserves_other_async_packets(self):
-        transport = mock.Mock()
-        transport.recv_packet.side_effect = TimeoutError()
-        client = nlk_tool.NLKHostClient(transport)
-        other = {"src_addr": 2, "dst_cap": 3, "mode": nlk_tool.NLK_MODE_STREAM,
-                 "cmd_op": nlk_tool.NLK_SHELL_STREAM_STDOUT, "payload": b"other"}
-        wanted = dict(other, src_addr=1, payload=b"wanted")
-        client.async_queue.extend((other, wanted))
-        self.assertIs(client.poll_matching(1, 3, nlk_tool.NLK_SHELL_STREAM_STDOUT), wanted)
-        self.assertEqual(list(client.async_queue), [other])
-
-    def test_stdout_is_bound_to_session_token(self):
-        transport = mock.Mock()
-        transport.recv_packet.side_effect = TimeoutError()
-        client = nlk_tool.NLKHostClient(transport)
-        session = nlk_tool.RemoteShellSession(client, 1, 3)
-        stale = {"src_addr": 1, "dst_cap": 3, "mode": nlk_tool.NLK_MODE_STREAM,
-                 "cmd_op": 0x12, "payload": nlk_tool.struct.pack("<Q", session.token + 1) + b"old"}
-        wanted = dict(stale, payload=nllk_payload(session.token, b"new"))
-        client.async_queue.extend((stale, wanted))
-        self.assertEqual(session.poll(timeout_ms=1)["payload"], b"new")
-        self.assertEqual(list(client.async_queue), [stale])
-
-    def test_split_utf8_is_decoded_across_packets(self):
-        client = Client()
-        packets = iter([{"payload": b"\xe4\xbd"}, {"payload": b"\xa0"}, None])
-        client.poll_async_packet = lambda **kwargs: next(packets)
-        stdin = mock.Mock()
-        stdin.fileno.return_value = 5
-        stdin.isatty.return_value = False
-        output = io.StringIO()
-        with mock.patch.object(nlk_tool.sys, "stdin", stdin), \
-             mock.patch.object(nlk_tool.sys, "stdout", output), \
-             mock.patch.object(nlk_tool.select, "select", side_effect=[([], [], []), ([], [], []), ([5], [], [])]), \
-             mock.patch.object(nlk_tool.os, "read", return_value=b"\x04"):
-            nlk_tool.cmd_shell_interactive(client, 1)
-        self.assertIn("你", output.getvalue())
-        self.assertNotIn("�", output.getvalue())
-
-    @unittest.skipIf(os.name == "nt", "POSIX terminal test")
-    def test_restores_terminal_after_transport_error(self):
-        import termios
-        import tty
-        client = Client()
-        stdin = mock.Mock()
-        stdin.fileno.return_value = 5
-        stdin.isatty.return_value = True
-        saved = [1, 2, 3]
-        with mock.patch.object(nlk_tool.sys, "stdin", stdin), \
-             mock.patch.object(nlk_tool.sys, "stdout", io.StringIO()), \
-             mock.patch.object(termios, "tcgetattr", return_value=saved), \
-             mock.patch.object(tty, "setraw"), \
-             mock.patch.object(termios, "tcsetattr") as restore, \
-             mock.patch.object(nlk_tool.select, "select", side_effect=OSError("broken")):
-            with self.assertRaises(OSError):
-                nlk_tool.cmd_shell_interactive(client, 1)
-        restore.assert_called_once_with(5, termios.TCSADRAIN, saved)
-        self.assertEqual(client.calls[-1], nlk_tool.NLK_SHELL_OP_CLOSE)
-
-    def test_character_input_and_close(self):
-        client = Client()
-        stdin = mock.Mock()
-        stdin.fileno.return_value = 5
-        stdin.isatty.return_value = False
-        stdin.readline.side_effect = ["a\n", "exit\n"]
-        with mock.patch.object(nlk_tool.sys, "stdin", stdin), \
-             mock.patch.object(nlk_tool.sys, "stdout", io.StringIO()), \
-             mock.patch.object(nlk_tool.select, "select", return_value=([5], [], [])), \
-             mock.patch.object(nlk_tool.os, "read", side_effect=[b"a\x03\x04"]):
-            nlk_tool.cmd_shell_interactive(client, 1)
-        self.assertEqual(client.sent, [b"a\x03"])
-        self.assertEqual(client.calls, [nlk_tool.NLK_SHELL_OP_OPEN,
-                                        nlk_tool.NLK_SHELL_OP_INPUT,
-                                        nlk_tool.NLK_SHELL_OP_CLOSE])
 
 if __name__ == "__main__":
     unittest.main()

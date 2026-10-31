@@ -163,6 +163,7 @@ static int cap_log_on_rpc(struct nlk_node *node, struct nlk_capability *cap,
         spin_lock(&ctx->tap_lock);
         ctx->tap_head = ctx->tap_tail = ctx->tap_used = 0U;
         ctx->pending_len = 0U;
+        ctx->tx_fail_count = 0U;
         ctx->subscribed = (sub->enable != 0U);
         ctx->min_level = sub->min_level;
         ctx->flush_interval_ms = sub->flush_interval_ms;
@@ -245,7 +246,26 @@ int nlk_cap_log_flush_pending(struct nlk_log_ctx *ctx)
         rc = nlk_node_stream_write(ctx->node, ctx->subscriber_addr,
                                    ctx->cap.cap_id, NLK_LOG_STREAM_RECORD,
                                    ctx->pending_buf, ctx->pending_len);
-        if (rc < 0) return sent != 0 ? sent : rc;
+        if (rc < 0) {
+            if (rc != -EAGAIN) {
+                ctx->tx_fail_count++;
+                /* 当底层链路超时（如 USB 主机端已关闭读取）或连续发送失败时，
+                 * 自动解除日志订阅并清空缓冲，避免无限重发与日志自激死循环。 */
+                if (rc == -ETIMEDOUT || ctx->tx_fail_count >= 2U) {
+                    addr_t flags = disable_irq_save();
+                    spin_lock(&ctx->tap_lock);
+                    ctx->subscribed = false;
+                    ctx->pending_len = 0U;
+                    ctx->tap_head = ctx->tap_tail = ctx->tap_used = 0U;
+                    ctx->tx_fail_count = 0U;
+                    ctx->dropped_records++;
+                    spin_unlock(&ctx->tap_lock);
+                    enable_irq_save(flags);
+                }
+            }
+            return sent != 0 ? sent : rc;
+        }
+        ctx->tx_fail_count = 0U;
         ctx->pending_len = 0U;
         sent++;
     }

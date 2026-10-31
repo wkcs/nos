@@ -71,6 +71,17 @@ int nlk_node_set_identity(struct nlk_node *node, uint16_t vendor_id,
     return 0;
 }
 
+void nlk_node_set_reboot_handler(struct nlk_node *node,
+                                 void (*on_reboot)(uint32_t boot_flag, void *priv),
+                                 void *priv)
+{
+    if (node == NULL) {
+        return;
+    }
+    node->on_reboot = on_reboot;
+    node->reboot_priv = priv;
+}
+
 int nlk_node_register_bearer(struct nlk_node *node, struct nlk_bearer *bearer)
 {
     uint8_t i;
@@ -279,10 +290,10 @@ int nlk_node_stream_write(struct nlk_node *node, nlk_addr_t dst_addr,
 int nlk_node_bulk_write(struct nlk_node *node, nlk_addr_t dst_addr,
                         uint8_t dst_cap, uint8_t bulk_op, uint16_t seq_id,
                         uint32_t offset, const void *data, uint16_t len,
-                        struct nlk_fw_chunk_ack *out_ack)
+                        struct nlk_flash_chunk_ack *out_ack)
 {
     uint8_t payload_buf[CONFIG_NLK_PACKET_MTU];
-    struct nlk_fw_chunk_hdr chunk_hdr;
+    struct nlk_flash_chunk_hdr chunk_hdr;
     uint16_t ack_len = sizeof(*out_ack);
     int rc;
 

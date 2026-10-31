@@ -68,7 +68,7 @@ struct nshell {
     struct task_struct *task;
     struct shell_session session;
     struct nshell *next;
-    bool remote;
+    bool show_banner;
     bool exit_requested;
     int last_status;
     uint32_t generation;

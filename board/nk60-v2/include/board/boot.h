@@ -36,10 +36,14 @@
 #define NK60_W25Q_ASSETS_ADDR       0x048000UL
 #define NK60_W25Q_ASSETS_MAX_SIZE   (736UL * 1024UL)
 
-/* RTC Backup Register (RTC->BKP0R) Boot Commands (Zero Flash Wear) */
-#define NK60_BOOT_CMD_NONE              0U
-#define NK60_BOOT_CMD_UPDATE_KERNEL     1U
-#define NK60_BOOT_CMD_UPDATE_BL         3U
+/* 内核与 Bootloader 共享的 RTC->BKP0R 启动模式编码（与 <kernel/boot.h> 完全一致） */
+#define NK60_BOOT_FLAG_MAGIC        0x20300000UL
+#define NK60_BOOT_FLAG_MAGIC_MASK   0xFFFF0000UL
+#define NK60_BOOT_FLAG_MASK         0x0000FFFFUL
+#define NK60_BOOT_MODE_NORMAL       0U
+#define NK60_BOOT_MODE_BOOTLOADER   1U
+#define NK60_BOOT_MODE_RECOVERY     2U
+#define NK60_BOOT_FLAG_MAKE(mode)   (NK60_BOOT_FLAG_MAGIC | ((uint32_t)(mode) & NK60_BOOT_FLAG_MASK))
 
 static inline bool nk60_validate_cortexm_vectors(uint32_t msp, uint32_t reset_pc,
                                                  uint32_t flash_start,

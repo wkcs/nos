@@ -341,6 +341,22 @@ int nlk_discovery_handle_packet(struct nlk_node *node,
         *resp_len = 0U;
         return 0;
 
+    case NLK_CORE_OP_REBOOT: {
+        uint32_t boot_flag = 0U;
+
+        if (payload != NULL && payload_len >= sizeof(struct nlk_core_reboot_req)) {
+            const struct nlk_core_reboot_req *req =
+                (const struct nlk_core_reboot_req *)payload;
+            boot_flag = req->boot_flag;
+        }
+        node->l3_reasm.active = false;
+        *resp_len = 0U;
+        if (node->on_reboot != NULL) {
+            node->on_reboot(boot_flag, node->reboot_priv);
+        }
+        return 0;
+    }
+
     case NLK_CORE_EVT_TOPO_CHANGE: {
         const struct nlk_topo_event_msg *evt =
             (const struct nlk_topo_event_msg *)payload;

@@ -137,3 +137,27 @@ int nos_tty_write(struct nos_tty *tty, const unsigned char *buf, unsigned int le
     }
     return tty->ops->write(tty->context, buf, len);
 }
+
+bool nos_tty_poll_session(struct nos_tty *tty, uint32_t *generation, bool *non_interactive)
+{
+    if (tty == NULL || tty->ops == NULL) {
+        return false;
+    }
+    if (tty->ops->poll_session != NULL) {
+        return tty->ops->poll_session(tty->context, generation, non_interactive);
+    }
+    if (generation != NULL) {
+        *generation = 1U;
+    }
+    if (non_interactive != NULL) {
+        *non_interactive = false;
+    }
+    return true;
+}
+
+void nos_tty_on_exit(struct nos_tty *tty, int32_t exit_code)
+{
+    if (tty != NULL && tty->ops != NULL && tty->ops->on_exit != NULL) {
+        tty->ops->on_exit(tty->context, exit_code);
+    }
+}
