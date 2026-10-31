@@ -48,6 +48,12 @@ int main(void)
     owner.current_priority = owner.init_priority = 5;
     waiter.current_priority = waiter.init_priority = 3;
     mutex_init(&mutex);
+    current = NULL;
+    mutex_lock(&mutex);
+    assert(mutex.locked && mutex.owner == NULL);
+    mutex_unlock(&mutex);
+    assert(!mutex.locked && mutex.owner == NULL);
+
     current = &owner;
     mutex_lock(&mutex);
     current = &waiter;
