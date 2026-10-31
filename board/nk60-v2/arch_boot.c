@@ -8,12 +8,21 @@
 
 #include <kernel/kernel.h>
 #include "board.h"
+#include "stm32f4xx_pwr.h"
+#include "stm32f4xx_rcc.h"
 #include "stm32f4xx_rtc.h"
 
 #define BOOT_SAVE_ADDR RTC_BKP_DR0
 
+static void nk60_enable_bkp_access(void)
+{
+    RCC_APB1PeriphClockCmd(RCC_APB1Periph_PWR, ENABLE);
+    PWR_BackupAccessCmd(ENABLE);
+}
+
 int board_write_boot_flag(u32 flag)
 {
+    nk60_enable_bkp_access();
     RTC_WriteBackupRegister(BOOT_SAVE_ADDR, flag);
 
     return 0;
@@ -23,6 +32,7 @@ u32 board_read_boot_flag(void)
 {
     u32 flag;
 
+    nk60_enable_bkp_access();
     flag = RTC_ReadBackupRegister(BOOT_SAVE_ADDR);
 
     return flag;

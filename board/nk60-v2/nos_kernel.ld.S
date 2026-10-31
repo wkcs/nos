@@ -13,7 +13,7 @@ _Min_Stack_Size = 0x200; /* required amount of stack */
 /* Specify the memory areas */
 MEMORY
 {
-    FLASH (rx)     : ORIGIN = CONFIG_KERNEL_ADDR, LENGTH = 224K
+    FLASH (rx)     : ORIGIN = CONFIG_KERNEL_ADDR, LENGTH = 240K
     RAM (xrw)      : ORIGIN = 0x20000000, LENGTH = 64K
 }
 

@@ -131,6 +131,11 @@ NLK_FW_OP_PREPARE = 0x02
 NLK_FW_OP_WRITE_CHUNK = 0x03
 NLK_FW_OP_VERIFY_COMMIT = 0x04
 NLK_FW_OP_REBOOT = 0x05
+NLK_FW_IMG_MAGIC = 0x20302030
+NLK_FW_PART_AUTO = 0xFF
+NLK_FW_IMG_TYPE_BOOTLOADER = 0
+NLK_FW_IMG_TYPE_KERNEL = 1
+NLK_FW_IMG_TYPE_ASSETS = 3
 
 # Kernel Log Opcodes (Cap 0x0002)
 NLK_LOG_OP_SUBSCRIBE = 0x01
@@ -181,6 +186,7 @@ FW_PART_INFO_STRUCT = struct.Struct("<BBHHHI4I")
 FW_PREPARE_STRUCT = struct.Struct("<BBHIII")
 FW_CHUNK_HDR_STRUCT = struct.Struct("<I")
 FW_CHUNK_ACK_STRUCT = struct.Struct("<Ihh")
+FW_IMG_HDR_STRUCT = struct.Struct("<III4B")
 LOG_SUB_REQ_STRUCT = struct.Struct("<BBH")
 LOG_STATS_RESP_STRUCT = struct.Struct("<IIIBBH")
 LOG_WIRE_HDR_STRUCT = struct.Struct("<IHBB")
@@ -533,7 +539,7 @@ class WinUSBTransport:
         # Read first USB FS packet (64B) so exact-multiple packets never hang waiting for ZLP
         first = self._bulk_read_raw(self.mps_in, timeout_ms)
         while len(first) < PKT_HDR_STRUCT.size:
-            more = self._bulk_read_raw(self.mps_in - len(first), timeout_ms)
+            more = self._bulk_read_raw(self.mps_in, timeout_ms)
             first += more
 
         hdr_tuple = PKT_HDR_STRUCT.unpack_from(first, 0)
@@ -541,8 +547,7 @@ class WinUSBTransport:
         total_len = PKT_HDR_STRUCT.size + payload_len
         raw = bytearray(first)
         while len(raw) < total_len:
-            rem = total_len - len(raw)
-            chunk = self._bulk_read_raw(rem, timeout_ms)
+            chunk = self._bulk_read_raw(self.mps_in, timeout_ms)
             raw.extend(chunk)
         return unpack_nlk_pkt(bytes(raw[:total_len]))
 
@@ -961,11 +966,28 @@ def cmd_info(client: NLKHostClient, addr: int):
     print("=" * 72)
 
 
+def parse_fw_part_arg(val) -> int:
+    if isinstance(val, int):
+        return val
+    s = str(val).strip().lower()
+    mapping = {
+        "auto": NLK_FW_PART_AUTO,
+        "bootloader": 0,
+        "bl": 0,
+        "kernel": 1,
+        "nos": 1,
+        "assets": 2,
+    }
+    if s in mapping:
+        return mapping[s]
+    return int(s, 0)
+
+
 def cmd_fw_update(
     client: NLKHostClient,
     addr: int,
     fw_path: str,
-    part_index: int = 1,
+    part_index: int = NLK_FW_PART_AUTO,
     chunk_size: int = 0,
     reboot: bool = False,
     max_bytes: int = 0,
@@ -975,11 +997,6 @@ def cmd_fw_update(
 
     with open(fw_path, "rb") as f:
         fw_data = f.read()
-    if max_bytes > 0 and len(fw_data) > max_bytes:
-        fw_data = fw_data[:max_bytes]
-
-    total_size = len(fw_data)
-    expected_crc = nlk_crc32(fw_data, 0)
 
     fw_cap_id = client.find_cap_id(addr, NLK_CAP_FW_UPDATE)
     raw_info = client.rpc_call(addr, fw_cap_id, NLK_FW_OP_GET_PART_INFO)
@@ -987,16 +1004,61 @@ def cmd_fw_update(
         FW_PART_INFO_STRUCT.unpack_from(raw_info, 0)
     )
     part_sizes = [p0, p1, p2, p3]
-    if part_index >= part_cnt:
-        raise ValueError(f"Invalid partition {part_index} (device has {part_cnt} partitions)")
-    if part_sizes[part_index] > 0 and total_size > part_sizes[part_index]:
+
+    part_index = parse_fw_part_arg(part_index)
+    has_img_hdr = (
+        len(fw_data) >= FW_IMG_HDR_STRUCT.size
+        and FW_IMG_HDR_STRUCT.unpack_from(fw_data, 0)[0] == NLK_FW_IMG_MAGIC
+    )
+
+    if has_img_hdr:
+        _, hdr_crc, hdr_size, hdr_type, vmaj, vmin, vpat = FW_IMG_HDR_STRUCT.unpack_from(
+            fw_data, 0
+        )
+        if part_index == NLK_FW_PART_AUTO and hdr_type == NLK_FW_IMG_TYPE_BOOTLOADER:
+            part_index = 0
+        print(
+            f"[FW-UPDATE] Image Header: type={hdr_type}, payload_size={hdr_size}B, "
+            f"payload_crc32=0x{hdr_crc:08x}, version={vmaj}.{vmin}.{vpat}"
+        )
+
+    eff_part = part_index
+    if eff_part == NLK_FW_PART_AUTO:
+        eff_part = 2 if (act_part == 1 and part_cnt >= 4) else (1 if part_cnt > 1 else 0)
+
+    if eff_part >= part_cnt:
+        raise ValueError(f"Invalid partition {eff_part} (device has {part_cnt} partitions)")
+
+    is_assets_part = (part_cnt == 3 and eff_part == 2) or (part_cnt >= 4 and eff_part == 3)
+    if not has_img_hdr and not is_assets_part:
+        img_type = NLK_FW_IMG_TYPE_BOOTLOADER if eff_part == 0 else NLK_FW_IMG_TYPE_KERNEL
+        pay_crc = nlk_crc32(fw_data, 0)
+        vmaj = (run_ver >> 16) & 0xFF
+        vmin = (run_ver >> 8) & 0xFF
+        vpat = run_ver & 0xFF
+        hdr = FW_IMG_HDR_STRUCT.pack(
+            NLK_FW_IMG_MAGIC, pay_crc, len(fw_data), img_type, vmaj, vmin, vpat
+        )
+        fw_data = hdr + fw_data
+        print(
+            f"[FW-UPDATE] Wrapped raw binary with 16B NLK header (type={img_type}, payload_crc32=0x{pay_crc:08x})"
+        )
+
+    if max_bytes > 0 and len(fw_data) > max_bytes:
+        fw_data = fw_data[:max_bytes]
+
+    total_size = len(fw_data)
+    expected_crc = nlk_crc32(fw_data, 0)
+
+    if part_sizes[eff_part] > 0 and total_size > part_sizes[eff_part]:
         raise ValueError(
-            f"Image size ({total_size}B) exceeds partition {part_index} max ({part_sizes[part_index]}B)"
+            f"Image size ({total_size}B) exceeds partition {eff_part} max ({part_sizes[eff_part]}B)"
         )
 
     step = chunk_size if (0 < chunk_size <= max_chunk) else max_chunk
     print(
-        f"[FW-UPDATE] Target=0x{addr:04x} Cap={fw_cap_id} Partition={part_index} (max={part_sizes[part_index] // 1024}KB)"
+        f"[FW-UPDATE] Target=0x{addr:04x} Cap={fw_cap_id} Partition={eff_part} "
+        f"(req={'AUTO' if part_index == NLK_FW_PART_AUTO else part_index}, active={act_part}, max={part_sizes[eff_part] // 1024}KB)"
     )
     print(
         f"[FW-UPDATE] File='{fw_path}' Size={total_size} bytes ({total_size / 1024:.1f} KB) CRC32=0x{expected_crc:08x} Chunk={step}B"
@@ -1034,7 +1096,7 @@ def cmd_fw_update(
     client.rpc_call(addr, fw_cap_id, NLK_FW_OP_VERIFY_COMMIT, b"", timeout_ms=2000)
     dt = time.perf_counter() - t0
     print(
-        f"[FW-UPDATE] SUCCESS! CRC32 0x{expected_crc:08x} verified & committed to Partition {part_index} in {dt:.2f}s."
+        f"[FW-UPDATE] SUCCESS! CRC32 0x{expected_crc:08x} verified & committed to Partition {eff_part} in {dt:.2f}s."
     )
 
     if reboot:
@@ -1420,9 +1482,9 @@ def main():
     )
     p_fw.add_argument(
         "--part",
-        type=int,
-        default=1,
-        help="Target partition index (0=Bootloader, 1=Kernel-A, 2=Kernel-B, 3=Assets)",
+        type=parse_fw_part_arg,
+        default=NLK_FW_PART_AUTO,
+        help="Target partition (auto, 0/bootloader, 1/kernel, 2/assets)",
     )
     p_fw.add_argument(
         "--chunk-size", type=int, default=0, help="Override bulk chunk size"

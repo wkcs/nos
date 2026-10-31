@@ -1,0 +1,23 @@
+{
+  "version": 3,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 20,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "nk60-v2",
+      "displayName": "NK60-V2 Standalone Bootloader (STM32F401 Sector 0, 16KB)",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/nk60-v2",
+      "toolchainFile": "${sourceDir}/cmake/arm-none-eabi.cmake"
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "nk60-v2",
+      "configurePreset": "nk60-v2"
+    }
+  ]
+}
