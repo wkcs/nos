@@ -65,6 +65,7 @@ enum boot_flag {
 #define NLK_CORE_OP_GET_DEV_DESC    0x03U
 #define NLK_CORE_OP_GET_CAP_LIST    0x04U
 #define NLK_CORE_OP_GET_CAP_DESC    0x05U
+#define NLK_CORE_OP_GET_TOPOLOGY    0x06U
 #define NLK_CORE_OP_PING            0x07U
 #define NLK_CORE_OP_RESET           0x08U
 #define NLK_CORE_OP_REBOOT          0x09U
@@ -116,6 +117,16 @@ struct nlk_cap_item {
     uint8_t  sup_modes;
     uint8_t  sub_class;
     uint16_t desc_size;
+} __attribute__((packed));
+
+struct nlk_topo_node_entry {
+    uint16_t node_addr;
+    uint16_t parent_addr;
+    uint16_t vendor_id;
+    uint16_t product_id;
+    uint16_t device_class;
+    uint8_t  cap_count;
+    uint8_t  port_id;
 } __attribute__((packed));
 
 struct nlk_core_reboot_req {

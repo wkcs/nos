@@ -17,7 +17,8 @@ set(BL_COMPILE_FLAGS
     -Os
     -Wall
     -Wextra
-    -Werror
+    -Wno-unused-parameter
+    -Wno-sign-compare
     -ffreestanding
     -fno-builtin
     -ffunction-sections
@@ -31,13 +32,38 @@ set(BL_LD_SCRIPT "${CMAKE_CURRENT_SOURCE_DIR}/nk60_bootloader.ld")
 add_executable(bootloader.elf
     start.S
     main.c
+    drivers/clock.c
+    drivers/uart.c
+    drivers/rgb.c
+    drivers/key.c
+    drivers/flash.c
+    nlk/nlk_bl.c
+    usb/app/src/usb_bsp.c
+    usb/app/src/usbd_conf.c
+    usb/app/src/usbd_desc.c
+    usb/app/src/usbd_winusb.c
+    usb/core/src/usbd_core.c
+    usb/core/src/usbd_ctlreq.c
+    usb/core/src/usbd_ioreq.c
+    usb/hal/src/hal_glue.c
+    usb/hal/src/stm32f4xx_hal_pcd.c
+    usb/hal/src/stm32f4xx_hal_pcd_ex.c
+    usb/hal/src/stm32f4xx_ll_usb.c
 )
 
 target_include_directories(bootloader.elf PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/include"
+    "${CMAKE_CURRENT_SOURCE_DIR}/drivers"
+    "${CMAKE_CURRENT_SOURCE_DIR}/nlk"
+    "${CMAKE_CURRENT_SOURCE_DIR}/usb/app/inc"
+    "${CMAKE_CURRENT_SOURCE_DIR}/usb/core/inc"
+    "${CMAKE_CURRENT_SOURCE_DIR}/usb/hal/inc"
+    "${CMAKE_CURRENT_SOURCE_DIR}/usb/cmsis/inc"
 )
 
 target_compile_definitions(bootloader.elf PRIVATE
+    STM32F401xC=1
+    USE_HAL_DRIVER=1
     NK60_BOOTLOADER_BUILD=1
     BL_VER_MAJOR=${PROJECT_VERSION_MAJOR}
     BL_VER_MINOR=${PROJECT_VERSION_MINOR}
