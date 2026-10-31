@@ -3,9 +3,15 @@ set(FS_SRCS
     vfs_fd.c
     vfs_io.c
     ramfs.c
-    procfs.c
-    sysfs.c
 )
+
+if(CONFIG_PROCFS)
+    list(APPEND FS_SRCS procfs.c)
+endif()
+
+if(CONFIG_SYSFS)
+    list(APPEND FS_SRCS sysfs.c)
+endif()
 
 if(CONFIG_VFS_SMOKE_TEST OR (CONFIG_FATFS AND CONFIG_BOARD_QEMU_STM32))
     list(APPEND FS_SRCS vfs_smoke.c)

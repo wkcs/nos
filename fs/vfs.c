@@ -216,17 +216,23 @@ int vfs_init(void) {
   }
 #endif
 
+#ifdef CONFIG_PROCFS
+  extern int init_procfs(void);
   ret = init_procfs();
   if (ret) {
     pr_err("VFS: Failed to register procfs\r\n");
     return ret;
   }
+#endif
 
+#ifdef CONFIG_SYSFS
+  extern int init_sysfs(void);
   ret = init_sysfs();
   if (ret) {
     pr_err("VFS: Failed to register sysfs\r\n");
     return ret;
   }
+#endif
 
   return 0;
 }
