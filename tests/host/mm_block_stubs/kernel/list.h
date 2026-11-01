@@ -10,6 +10,8 @@ static inline void list_del(struct list_head *e) { e->prev->next = e->next; e->n
 static inline int list_empty(const struct list_head *h) { return h->next == h; }
 #define list_entry(p,t,m) ((t *)((char *)(p) - offsetof(t,m)))
 #define list_first_entry(h,t,m) list_entry((h)->next,t,m)
+#define list_for_each(pos, head) for (pos = (head)->next; pos != (head); pos = pos->next)
+#define list_for_each_safe(pos, n, head) for (pos = (head)->next, n = pos->next; pos != (head); pos = n, n = pos->next)
 #define list_for_each_entry(p,h,m) for (struct list_head *_pos = (h)->next; _pos != (h) && ((p) = (void *)((char *)_pos - offsetof(__typeof__(*(p)), m)), 1); _pos = _pos->next)
 #define list_prev_entry(p,m) list_entry((p)->m.prev,__typeof__(*(p)),m)
 #define list_next_entry(p,m) list_entry((p)->m.next,__typeof__(*(p)),m)

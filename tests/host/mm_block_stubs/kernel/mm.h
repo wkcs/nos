@@ -75,6 +75,9 @@ struct kmem_cache {
 
 addr_t alloc_page(gfp_t flag);
 int free_page(addr_t addr);
+void *kmalloc(u32 size, gfp_t flag);
+void *kzalloc(u32 size, gfp_t flag);
+int kfree(void *addr);
 int mm_slub_init(void);
 struct kmem_cache *kmem_cache_create(const char *name, size_t size, size_t align, u32 flags);
 void *kmem_cache_alloc(struct kmem_cache *cache, gfp_t flag);
