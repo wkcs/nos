@@ -6,8 +6,8 @@
  * Email: huqihan@live.com
  *
  * NK60-V2 Keyboard Profile Configuration:
- * - 74HC595 hardware scan-bit to logical key index mapping (position_index)
  * - Default 3-layer keycode layout (def_key_code_layout) & action map (def_action_layout)
+ * - Multi-Layout, Multi-Zone Backlight, Actions & Macro definitions
  * - Registered with the generic Keyboard Server at application init time
  */
 
@@ -16,19 +16,6 @@
 
 #define NK60_KEY_NUM        61U
 #define NK60_KEY_LAYER_NUM  3U
-#define NK60_RAW_BIT_NUM    (8U * 9U)
-
-static const int8_t g_nk60_position_index[NK60_RAW_BIT_NUM] = {
-     0,  1,  2,  3,  4,  5,  6,  7,
-     8,  9, 10, 11, 12, 13, -1, -1,
-    14, 15, 16, 17, 18, 19, 20, 21,
-    22, 23, 24, 25, 26, 27, -1, -1,
-    36, 37, 38, 39, 40, -1, -1, -1,
-    49, 50, 51, 52, -1, -1, -1, -1,
-    53, 54, 55, 56, 57, 58, 59, 60,
-    41, 42, 43, 44, 45, 46, 47, 48,
-    28, 29, 30, 31, 32, 33, 34, 35
-};
 
 static const uint8_t g_nk60_def_key_code_layout[NK60_KEY_LAYER_NUM][NK60_KEY_NUM] = {
     KEYMAP(
@@ -51,25 +38,154 @@ static const uint8_t g_nk60_def_key_code_layout[NK60_KEY_LAYER_NUM][NK60_KEY_NUM
         NO,  NO,  NO,            NO,                      NO,  NO,  NO,  NO   ),
 };
 
-static const uint8_t g_nk60_def_action_layout[NK60_KEY_LAYER_NUM][NK60_KEY_NUM] = {
-    ACTION_MAP(
-        NO,  NO,  NO,  NO,  NO,  NO,  NO,  NO,  NO,  NO,  NO,  NO,  NO,  NO,   \
-        NO,  NO,  NO,  NO,  NO,  NO,  NO,  NO,  NO,  NO,  NO,  NO,  NO,  NO,   \
-        CAPS,NO,  NO,  NO,  NO,  NO,  NO,  NO,  NO,  NO,  NO,  NO,       NO,   \
-        NO,  NO,  NO,  NO,  NO,  NO,  NO,  NO,  NO,  NO,  NO,            NO,   \
-        NO,  NO,  NO,            NO,                      NO,  NO,  NO,  NO    ),
-    ACTION_MAP(
-        NO,  NO,  NO,  NO,  NO,  NO,  NO,  NO,  NO,  NO,  NO,  NO,  NO,  NO,   \
-        NO,  NO,  NO,  NO,  NO,  NO,  NO,  NO,  NO,  NO,  NO,  NO,  NO,  NO,   \
-        NO,  NO,  NO,  NO,  NO,  NO,  NO,  NO,  NO,  NO,  NO,  NO,       NO,   \
-        NO,  NO,  NO,  NO,  NO,  NO,  NO,  NO,  NO,  NO,  NO,            NO,   \
-        NO,  NO,  NO,            NO,                      NO,  NO,  NO,  NO    ),
-    ACTION_MAP(
-        NO,  NO,  NO,  NO,  NO,  NO,  NO,  NO,  NO,  NO,  NO,  NO,  NO,  NO,   \
-        NO,  NO,  NO,  NO,  NO,  NO,  NO,  NO,  NO,  NO,  NO,  NO,  NO,  NO,   \
-        NO,  NO,  NO,  NO,  NO,  NO,  NO,  NO,  NO,  NO,  NO,  NO,       NO,   \
-        NO,  NO,  NO,  NO,  NO,  NO,  LED, NO,  NO,  NO,  NO,            NO,   \
-        NO,  NO,  NO,            NO,                      NO,  NO,  NO,  NO    ),
+static const struct key_action_default_binding g_nk60_default_action_bindings[] = {
+    { 0U, 28U, "caps_lock" },    /* Layer 0 Key 28: 大小写切换及特殊灯效动作 */
+    { 2U, 47U, "light_toggle" }, /* Layer 2 Key 47: 背光开关动作 */
+};
+
+static const struct keyboard_profile_layout g_nk60_layouts[2] = {
+    {
+        .info = {
+            .layout_id   = NLK_KB_LAYOUT_STD_60_ANSI,
+            .key_count   = NK60_KEY_NUM,
+            .matrix_rows = 5U,
+            .matrix_cols = 14U,
+            .name        = "ANSI-61",
+        },
+        .default_keymap     = &g_nk60_def_key_code_layout[0][0],
+    },
+    {
+        .info = {
+            .layout_id   = NLK_KB_LAYOUT_ARROW_60,
+            .key_count   = 64U,
+            .matrix_rows = 5U,
+            .matrix_cols = 14U,
+            .name        = "Arrow-64",
+        },
+        .default_keymap     = &g_nk60_def_key_code_layout[0][0],
+    },
+};
+
+static const struct nlk_kb_light_zone_desc g_nk60_light_zones[3] = {
+    {
+        .zone_id           = 0U,
+        .type              = NLK_KB_LIGHT_TYPE_RGB_MATRIX,
+        .led_start         = 0U,
+        .led_count         = 61U,
+        .supported_effects = 0x7FU,
+        .name              = "Key-RGB",
+    },
+    {
+        .zone_id           = 1U,
+        .type              = NLK_KB_LIGHT_TYPE_UNDERGLOW,
+        .led_start         = 61U,
+        .led_count         = 9U,
+        .supported_effects = 0x3FU,
+        .name              = "Underglow",
+    },
+    {
+        .zone_id           = 2U,
+        .type              = NLK_KB_LIGHT_TYPE_INDICATOR,
+        .led_start         = 70U,
+        .led_count         = 3U,
+        .supported_effects = 0x03U,
+        .name              = "Indicators",
+    },
+};
+
+static const struct nlk_kb_zone_light_cfg g_nk60_default_zone_cfgs[3] = {
+    {
+        .zone_id    = 0U,
+        .enable     = 1U,
+        .effect_id  = NLK_KB_LIGHT_EFF_GRADIENT_WAVE,
+        .brightness = 200U,
+        .speed      = 128U,
+        .color_r    = 255U,
+        .color_g    = 128U,
+        .color_b    = 0U,
+    },
+    {
+        .zone_id    = 1U,
+        .enable     = 1U,
+        .effect_id  = NLK_KB_LIGHT_EFF_BREATH,
+        .brightness = 180U,
+        .speed      = 96U,
+        .color_r    = 0U,
+        .color_g    = 200U,
+        .color_b    = 255U,
+    },
+    {
+        .zone_id    = 2U,
+        .enable     = 1U,
+        .effect_id  = NLK_KB_LIGHT_EFF_STATIC,
+        .brightness = 255U,
+        .speed      = 0U,
+        .color_r    = 255U,
+        .color_g    = 255U,
+        .color_b    = 255U,
+    },
+};
+
+static const struct nlk_kb_action_desc g_nk60_actions[6] = {
+    {
+        .action_id = 1U,
+        .flags     = 0U,
+        .reserved  = 0U,
+        .name      = "light_toggle",
+        .desc      = "Toggle RGB backlight",
+    },
+    {
+        .action_id = 2U,
+        .flags     = 0U,
+        .reserved  = 0U,
+        .name      = "caps_lock",
+        .desc      = "Toggle Caps Lock",
+    },
+    {
+        .action_id = 3U,
+        .flags     = 0U,
+        .reserved  = 0U,
+        .name      = "macro_play",
+        .desc      = "Play keyboard macro",
+    },
+    {
+        .action_id = 4U,
+        .flags     = 0U,
+        .reserved  = 0U,
+        .name      = "key_light",
+        .desc      = "Per-key reactive",
+    },
+    {
+        .action_id = 5U,
+        .flags     = 0U,
+        .reserved  = 0U,
+        .name      = "profile_next",
+        .desc      = "Switch next profile",
+    },
+    {
+        .action_id = 6U,
+        .flags     = 0U,
+        .reserved  = 0U,
+        .name      = "win_lock",
+        .desc      = "Lock Windows key",
+    },
+};
+
+static const struct nlk_kb_macro_info g_nk60_default_macro_info[1] = {
+    {
+        .macro_id     = 0U,
+        .step_count   = 2U,
+        .repeat_count = 1U,
+        .flags        = 0U,
+        .name         = "Quick-Paste",
+    },
+};
+
+static const struct nlk_kb_macro_step g_nk60_default_macro_steps[1][NLK_KB_MAX_MACRO_STEPS] = {
+    {
+        { .type = NLK_KB_MACRO_ACT_KEY_DOWN, .key_code = KC_LCTRL, .delay_ms = 10U },
+        { .type = NLK_KB_MACRO_ACT_KEY_TAP,  .key_code = KC_V,     .delay_ms = 20U },
+    },
 };
 
 static const struct keyboard_profile g_nk60_kb_profile = {
@@ -90,10 +206,31 @@ static const struct keyboard_profile g_nk60_kb_profile = {
     .underglow_leds     = 9U,
     .led_count          = 70U,
     .poll_rate_hz       = 100U,
-    .raw_bit_num        = NK60_RAW_BIT_NUM,
-    .position_index     = g_nk60_position_index,
     .default_keymap     = &g_nk60_def_key_code_layout[0][0],
-    .default_action_map = &g_nk60_def_action_layout[0][0],
+
+    /* Default Action Bindings */
+    .default_action_binding_count = (uint8_t)(sizeof(g_nk60_default_action_bindings) /
+                                              sizeof(g_nk60_default_action_bindings[0])),
+    .default_action_bindings      = g_nk60_default_action_bindings,
+
+    /* Multi-Layout Registration */
+    .layout_count       = 2U,
+    .layouts            = g_nk60_layouts,
+
+    /* Multi-Zone Backlight Registration */
+    .light_zone_count   = 3U,
+    .light_zones        = g_nk60_light_zones,
+    .default_zone_cfgs  = g_nk60_default_zone_cfgs,
+
+    /* Dynamic Action Registration */
+    .action_count       = 6U,
+    .action_descs       = g_nk60_actions,
+    .action_handlers    = NULL,
+
+    /* Predefined Macros */
+    .macro_count        = 1U,
+    .macro_infos        = g_nk60_default_macro_info,
+    .default_macros     = g_nk60_default_macro_steps,
 };
 
 static int nk60_keyboard_profile_init(void)

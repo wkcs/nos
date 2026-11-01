@@ -22,6 +22,7 @@
 #include <kernel/console.h>
 
 #include <nos/display.h>
+#include <nos/keyboard.h>
 
 #define LED_WIDTH  14
 #define LED_HEIGHT 5
@@ -73,18 +74,55 @@ static void nk60_display_server_data_update(struct nk60_display_server *nk60_ds)
     int i;
     static int index = GRADATION_DATA_MAX;
     int tmp_index;
+    bool caps_active = keyboard_server_is_caps_lock_active();
 
     area = &nk60_ds->draw_info->area;
-    index--;
-    if (index < 0)
-        index = GRADATION_DATA_MAX - 1;
 
-    for (i = 0; i < LED_WIDTH * LED_HEIGHT; i++) {
-        tmp_index = (index + (i % LED_WIDTH)) % GRADATION_DATA_MAX;
-        data = &area->data[i];
-        data->data[DS_COLOR_R] = g_gradation_rgb_data[tmp_index][DS_COLOR_R];
-        data->data[DS_COLOR_G] = g_gradation_rgb_data[tmp_index][DS_COLOR_G];
-        data->data[DS_COLOR_B] = g_gradation_rgb_data[tmp_index][DS_COLOR_B];
+    if (caps_active) {
+        /* 大写锁定特殊灯效：
+         * 1. CapsLock 键 (第 3 行第 1 列，索引 28) 保持纯白高亮 (255, 255, 255) 指示
+         * 2. 全键盘其他按键呈现动态冰蓝呼吸灯效 (40 ~ 255)
+         */
+        static int breath_val = 60;
+        static int breath_dir = 5;
+
+        breath_val += breath_dir;
+        if (breath_val >= 255) {
+            breath_val = 255;
+            breath_dir = -5;
+        } else if (breath_val <= 40) {
+            breath_val = 40;
+            breath_dir = 5;
+        }
+
+        for (i = 0; i < LED_WIDTH * LED_HEIGHT; i++) {
+            data = &area->data[i];
+            if (i == 28) {
+                /* CapsLock 键纯白高亮指示 */
+                data->data[DS_COLOR_R] = 255;
+                data->data[DS_COLOR_G] = 255;
+                data->data[DS_COLOR_B] = 255;
+            } else {
+                /* 其他按键冰蓝呼吸效果 */
+                data->data[DS_COLOR_R] = 0;
+                data->data[DS_COLOR_G] = (uint8_t)(breath_val / 2);
+                data->data[DS_COLOR_B] = (uint8_t)breath_val;
+            }
+        }
+    } else {
+        /* 常规彩虹波浪流光渐变 */
+        index--;
+        if (index < 0) {
+            index = GRADATION_DATA_MAX - 1;
+        }
+
+        for (i = 0; i < LED_WIDTH * LED_HEIGHT; i++) {
+            tmp_index = (index + (i % LED_WIDTH)) % GRADATION_DATA_MAX;
+            data = &area->data[i];
+            data->data[DS_COLOR_R] = g_gradation_rgb_data[tmp_index][DS_COLOR_R];
+            data->data[DS_COLOR_G] = g_gradation_rgb_data[tmp_index][DS_COLOR_G];
+            data->data[DS_COLOR_B] = g_gradation_rgb_data[tmp_index][DS_COLOR_B];
+        }
     }
 }
 

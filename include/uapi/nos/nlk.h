@@ -616,7 +616,28 @@ enum nlk_kb_opcode {
     NLK_KB_OP_GET_ANALOG_CFG        = 0x08U,
     NLK_KB_OP_SET_ANALOG_CFG        = 0x09U,
     NLK_KB_OP_GET_NKRO_REPORT       = 0x0AU,
+    NLK_KB_OP_GET_LAYOUT_LIST       = 0x0BU,
+    NLK_KB_OP_SET_LAYOUT            = 0x0CU,
+    NLK_KB_OP_GET_LIGHT_ZONES       = 0x0DU,
+    NLK_KB_OP_GET_ZONE_LIGHT_CFG    = 0x0EU,
+    NLK_KB_OP_SET_ZONE_LIGHT_CFG    = 0x0FU,
     NLK_KB_STREAM_LIGHT_FRAME       = 0x10U,
+    NLK_KB_OP_GET_LAYERS            = 0x11U,
+    NLK_KB_OP_SET_ACTIVE_LAYER      = 0x12U,
+    NLK_KB_OP_GET_MACRO_LIST        = 0x13U,
+    NLK_KB_OP_GET_MACRO             = 0x14U,
+    NLK_KB_OP_SET_MACRO             = 0x15U,
+    NLK_KB_OP_RECORD_MACRO          = 0x16U,
+    NLK_KB_OP_GET_ACTIONS           = 0x17U,
+    NLK_KB_OP_GET_PARAMS            = 0x18U,
+    NLK_KB_OP_SET_PARAMS            = 0x19U,
+    NLK_KB_OP_RESET_PARAMS          = 0x1AU,
+    NLK_KB_OP_GET_PROFILE_INFO      = 0x1BU,
+    NLK_KB_OP_SAVE_PROFILE          = 0x1CU,
+    NLK_KB_OP_LOAD_PROFILE          = 0x1DU,
+    NLK_KB_OP_BIND_ACTION           = 0x24U,
+    NLK_KB_OP_UNBIND_ACTION         = 0x25U,
+    NLK_KB_OP_GET_KEY_ACTIONS       = 0x26U,
     NLK_KB_EVT_SWITCH_DELTA         = 0x20U,
     NLK_KB_EVT_HID_REPORT           = 0x21U,
     NLK_KB_EVT_LIGHT_SYNC_BEACON    = 0x22U,
@@ -678,6 +699,7 @@ enum nlk_kb_light_effect {
     NLK_KB_LIGHT_EFF_REACTIVE       = 4U,
     NLK_KB_LIGHT_EFF_RIPPLE         = 5U,
     NLK_KB_LIGHT_EFF_DIRECT_STREAM  = 6U,
+    NLK_KB_LIGHT_EFF_CAPS_LOCK      = 7U, /* 大写锁定专用指示灯效 */
 };
 
 #define NLK_KB_LIGHT_ZONE_KEYS          (1U << 0)
@@ -773,6 +795,274 @@ struct nlk_kb_light_sync_beacon {
     uint8_t  speed;
     uint8_t  brightness;
     uint8_t  hue_offset;
+} __attribute__((packed));
+
+/* =========================================================================
+ * Multi-Layout, Multi-Zone Backlight, Layers, Macros, Actions & Parameters
+ * ========================================================================= */
+
+/* Predefined Keyboard Layout Identifiers */
+#define NLK_KB_LAYOUT_STD_60_ANSI       0x01U /* 60% Standard ANSI (61 keys) */
+#define NLK_KB_LAYOUT_STD_60_ISO        0x02U /* 60% Standard ISO (62 keys) */
+#define NLK_KB_LAYOUT_ARROW_60          0x03U /* 60% with dedicated Arrow cluster (64 keys) */
+#define NLK_KB_LAYOUT_HHKB_60           0x04U /* 60% HHKB ergonomic layout (60 keys) */
+#define NLK_KB_LAYOUT_STD_65            0x05U /* 65% Compact (67-68 keys) */
+#define NLK_KB_LAYOUT_STD_75            0x06U /* 75% Compact (82-84 keys) */
+#define NLK_KB_LAYOUT_TKL_87_ANSI       0x07U /* 87-key Tenkeyless ANSI */
+#define NLK_KB_LAYOUT_TKL_88_ISO        0x08U /* 88-key Tenkeyless ISO */
+#define NLK_KB_LAYOUT_FULL_104_ANSI     0x09U /* 104-key Full ANSI */
+#define NLK_KB_LAYOUT_FULL_108_ANSI     0x0AU /* 108-key Full ANSI with Media */
+#define NLK_KB_LAYOUT_ALICE_ERGO        0x0BU /* Alice / Arisu Ergonomic */
+#define NLK_KB_LAYOUT_SPLIT_68          0x0CU /* Split Ergonomic 68-key */
+#define NLK_KB_LAYOUT_NUMPAD_21         0x0DU /* Standalone Numpad 21-key */
+#define NLK_KB_LAYOUT_CUSTOM            0xFFU /* Custom Matrix Layout */
+
+#define NLK_KB_MAX_LAYOUTS              4U
+#define NLK_KB_LAYOUT_NAME_MAX          16U
+
+struct nlk_kb_layout_info {
+    uint8_t  layout_id;            /* Predefined NLK_KB_LAYOUT_* or custom */
+    uint8_t  key_count;            /* Key count */
+    uint8_t  matrix_rows;          /* Physical matrix rows */
+    uint8_t  matrix_cols;          /* Physical matrix cols */
+    char     name[NLK_KB_LAYOUT_NAME_MAX]; /* e.g. "ANSI-61", "Arrow-64" */
+} __attribute__((packed));
+
+struct nlk_kb_layout_list_resp {
+    uint8_t  layout_count;         /* Number of registered layouts */
+    uint8_t  active_layout_id;     /* Currently active layout ID */
+    uint16_t reserved;
+    struct nlk_kb_layout_info layouts[NLK_KB_MAX_LAYOUTS];
+} __attribute__((packed));
+
+struct nlk_kb_set_layout_req {
+    uint8_t  layout_id;
+    uint8_t  reserved[3];
+} __attribute__((packed));
+
+/* Multi-Zone Backlight Layouts & Profiles */
+enum nlk_kb_light_type {
+    NLK_KB_LIGHT_TYPE_NONE          = 0U,
+    NLK_KB_LIGHT_TYPE_MONO          = 1U, /* Single-color backlight */
+    NLK_KB_LIGHT_TYPE_RGB_MATRIX    = 2U, /* Per-key RGB Matrix */
+    NLK_KB_LIGHT_TYPE_UNDERGLOW     = 3U, /* Peripheral Underglow / Ambient RGB */
+    NLK_KB_LIGHT_TYPE_INDICATOR     = 4U, /* Status Indicator LEDs */
+    NLK_KB_LIGHT_TYPE_LOGO          = 5U, /* Badge / Logo LED */
+};
+
+#define NLK_KB_MAX_LIGHT_ZONES          4U
+#define NLK_KB_ZONE_NAME_MAX            16U
+
+struct nlk_kb_light_zone_desc {
+    uint8_t  zone_id;              /* Zone ID (0..MAX-1) */
+    uint8_t  type;                 /* enum nlk_kb_light_type */
+    uint16_t led_start;            /* First LED index in string/matrix */
+    uint16_t led_count;            /* Number of LEDs in zone */
+    uint16_t supported_effects;    /* Supported effect bitmask (1 << effect_id) */
+    char     name[NLK_KB_ZONE_NAME_MAX]; /* e.g. "Key-RGB", "Underglow" */
+} __attribute__((packed));
+
+struct nlk_kb_light_zones_resp {
+    uint8_t  zone_count;           /* Number of registered light zones */
+    uint8_t  global_enable;        /* Global backlight master switch */
+    uint16_t reserved;
+    struct nlk_kb_light_zone_desc zones[NLK_KB_MAX_LIGHT_ZONES];
+} __attribute__((packed));
+
+struct nlk_kb_zone_light_cfg {
+    uint8_t  zone_id;              /* Target zone ID */
+    uint8_t  enable;               /* Zone enable switch */
+    uint8_t  effect_id;            /* enum nlk_kb_light_effect */
+    uint8_t  brightness;           /* 0..255 */
+    uint8_t  speed;                /* 0..255 */
+    uint8_t  color_r;              /* RGB Red */
+    uint8_t  color_g;              /* RGB Green */
+    uint8_t  color_b;              /* RGB Blue */
+} __attribute__((packed));
+
+/* Multi-Layer Configuration */
+#define NLK_KB_LAYER_NAME_MAX           16U
+#define NLK_KB_MAX_LAYERS               8U
+
+struct nlk_kb_layer_desc {
+    uint8_t  layer_id;             /* Layer index 0..layer_count-1 */
+    uint8_t  flags;                /* 0=NORMAL, 1=TRANSIENT/MOMENTARY, 2=TOGGLE */
+    char     name[NLK_KB_LAYER_NAME_MAX]; /* e.g. "Base", "FN", "PN", "Gaming" */
+} __attribute__((packed));
+
+struct nlk_kb_layers_resp {
+    uint8_t  layer_count;          /* Registered layer count */
+    uint8_t  active_layer;         /* Currently active layer */
+    uint8_t  default_layer;        /* Default base layer */
+    uint8_t  reserved;
+    struct nlk_kb_layer_desc layers[NLK_KB_MAX_LAYERS];
+} __attribute__((packed));
+
+struct nlk_kb_set_active_layer_req {
+    uint8_t  active_layer;
+    uint8_t  reserved[3];
+} __attribute__((packed));
+
+/* Keyboard Macro Recording & Configuration */
+#define NLK_KB_MAX_MACROS               8U
+#define NLK_KB_MAX_MACRO_STEPS          32U
+#define NLK_KB_MACRO_NAME_MAX           16U
+
+enum nlk_kb_macro_action_type {
+    NLK_KB_MACRO_ACT_NONE           = 0U,
+    NLK_KB_MACRO_ACT_KEY_DOWN       = 1U, /* Key press event */
+    NLK_KB_MACRO_ACT_KEY_UP         = 2U, /* Key release event */
+    NLK_KB_MACRO_ACT_KEY_TAP        = 3U, /* Key tap (press + release) */
+    NLK_KB_MACRO_ACT_DELAY_MS       = 4U, /* Delay interval in milliseconds */
+};
+
+struct nlk_kb_macro_step {
+    uint8_t  type;                 /* enum nlk_kb_macro_action_type */
+    uint8_t  key_code;             /* KC_* HID keycode */
+    uint16_t delay_ms;             /* Delay or duration in milliseconds */
+} __attribute__((packed));
+
+struct nlk_kb_macro_info {
+    uint8_t  macro_id;             /* Macro slot 0..NLK_KB_MAX_MACROS-1 */
+    uint8_t  step_count;           /* Number of active steps (0=empty) */
+    uint8_t  repeat_count;         /* Playback loops (1..255) */
+    uint8_t  flags;                /* Reserved flags */
+    char     name[NLK_KB_MACRO_NAME_MAX]; /* Macro description/name */
+} __attribute__((packed));
+
+struct nlk_kb_macro_list_resp {
+    uint8_t  macro_count;          /* Total macro slots */
+    uint8_t  recording_macro_id;   /* ID of macro currently recording (0xFF if none) */
+    uint16_t reserved;
+    struct nlk_kb_macro_info macros[NLK_KB_MAX_MACROS];
+} __attribute__((packed));
+
+struct nlk_kb_macro_cfg_hdr {
+    uint8_t  macro_id;             /* Macro slot ID */
+    uint8_t  step_count;           /* Number of steps following this header */
+    uint8_t  repeat_count;         /* Playback loops */
+    uint8_t  reserved;
+    char     name[NLK_KB_MACRO_NAME_MAX];
+} __attribute__((packed));
+
+struct nlk_kb_macro_record_req {
+    uint8_t  macro_id;             /* Target macro ID to record */
+    uint8_t  record_cmd;           /* 0 = STOP, 1 = START, 2 = CLEAR */
+    uint16_t reserved;
+} __attribute__((packed));
+
+/* Key Action Binding & Metadata */
+#define NLK_KB_MAX_ACTIONS              6U
+#define NLK_KB_ACTION_NAME_MAX          16U
+#define NLK_KB_ACTION_DESC_MAX          20U
+#define NLK_KB_MAX_KEY_ACTIONS          4U
+
+/* 按键动作上下文（输入按键信息） */
+struct key_action_context {
+    uint8_t layer;        /* 按键所在层 (0..7) */
+    uint8_t key_index;    /* 按键逻辑序号 (0..key_count-1) */
+    uint8_t initial_code; /* 初始配置的 HID 键码 (未经过 action 处理) */
+    uint8_t key_code;     /* 当前输入按键码 (上一动作输出，初始为 initial_code) */
+    uint8_t event_type;   /* 触发事件类型: 1 = 按下, 0 = 释放 */
+    uint8_t state;        /* 按键物理状态: 1 = pressed, 0 = released */
+    uint8_t reserved[2];
+} __attribute__((packed));
+
+/* 按键动作处理函数返回值宏定义 */
+#define KEY_ACTION_PASS                 (0)     /* 动作未返回/未修改按键值 (保持已有键码继续传递) */
+#define KEY_ACTION_DROP                 (-1)    /* 动作显式拦截按键 (丢弃按键，不输出 HID 报告) */
+
+/* 动作实际处理回调函数
+ * 返回值:
+ *  > 0 (1..255)            : 输出了新的 HID keycode，流水线以最后一个输出的为准；
+ *  0 (KEY_ACTION_PASS)     : 未返回按键值 (如仅用于点灯/旁路通知)，保持原有键码继续流转；
+ *  < 0 (KEY_ACTION_DROP)   : 显式拦截按键，丢弃该按键，不产生 HID 上报。
+ */
+typedef int (*key_action_handler_fn_t)(
+    const struct key_action_context *ctx,
+    void *priv
+);
+
+/* 按键动作链结构体 */
+struct nlk_kb_key_action_chain {
+    uint8_t action_ids[NLK_KB_MAX_KEY_ACTIONS]; /* 绑定的局部动作 ID，按顺序触发 (0=无) */
+    uint8_t count;                              /* 绑定的动作数量 (0..NLK_KB_MAX_KEY_ACTIONS) */
+} __attribute__((packed));
+
+/* 动作注册描述符 */
+struct nlk_kb_action_desc {
+    uint8_t  action_id;            /* 内部分配的动作 ID (1..255) */
+    uint8_t  flags;                /* 属性标志: 0=默认 */
+    uint16_t reserved;
+    char     name[NLK_KB_ACTION_NAME_MAX]; /* 动作唯一标识字符串，如 "light_toggle", "key_light" */
+    char     desc[NLK_KB_ACTION_DESC_MAX]; /* 人类可读描述，如 "Toggle RGB Light" */
+} __attribute__((packed));
+
+/* 动作列表查询响应 */
+struct nlk_kb_action_list_resp {
+    uint8_t  action_count;         /* Number of registered actions */
+    uint8_t  reserved[3];
+    struct nlk_kb_action_desc actions[NLK_KB_MAX_ACTIONS];
+} __attribute__((packed));
+
+/* 绑定动作请求 */
+struct nlk_kb_bind_action_req {
+    uint8_t layer;        /* 目标层 (0..7, 0xFF = 所有层) */
+    uint8_t key_index;    /* 目标按键 (0..key_count-1, 0xFF = 所有按键) */
+    uint8_t append;       /* 1 = 追加到动作链末尾, 0 = 清空后设置 */
+    uint8_t reserved;
+    char    action_name[NLK_KB_ACTION_NAME_MAX]; /* 动作名字字符串 */
+} __attribute__((packed));
+
+/* 解绑动作请求 */
+struct nlk_kb_unbind_action_req {
+    uint8_t layer;        /* 目标层 (0..7, 0xFF = 所有层) */
+    uint8_t key_index;    /* 目标按键 (0..key_count-1, 0xFF = 所有按键) */
+    uint8_t reserved[2];
+    char    action_name[NLK_KB_ACTION_NAME_MAX]; /* 为空表示清空该键所有动作 */
+} __attribute__((packed));
+
+/* 查询按键动作请求 */
+struct nlk_kb_get_key_actions_req {
+    uint8_t layer;        /* 目标层 (0..7) */
+    uint8_t key_index;    /* 目标按键 (0..key_count-1) */
+    uint16_t reserved;
+} __attribute__((packed));
+
+/* 查询按键动作响应 */
+struct nlk_kb_key_actions_resp {
+    uint8_t action_count; /* 该按键绑定的动作数量 */
+    uint8_t reserved[3];
+    char    action_names[NLK_KB_MAX_KEY_ACTIONS][NLK_KB_ACTION_NAME_MAX];
+} __attribute__((packed));
+
+/* Keyboard Runtime Parameters */
+struct nlk_kb_params {
+    uint8_t  debounce_ms;          /* Key matrix filter debounce time (ms) */
+    uint8_t  poll_rate_hz_div;     /* Rate divider: 1=1000Hz, 2=500Hz, 4=250Hz, 8=125Hz */
+    uint8_t  nkro_enable;          /* 0 = 6KRO mode, 1 = Full NKRO mode */
+    uint8_t  win_lock;             /* 0 = Normal, 1 = Lock Windows/GUI key */
+    uint8_t  fn_lock;              /* 0 = Normal, 1 = Invert FN key modifier */
+    uint8_t  sleep_timeout_min;    /* Sleep timeout (minutes, 0=never) */
+    uint8_t  active_layout_id;     /* Currently active layout ID */
+    uint8_t  default_layer;        /* Default base layer */
+    uint16_t poll_rate_hz;         /* Polling rate in Hz (e.g. 1000) */
+    uint16_t reserved;
+} __attribute__((packed));
+
+/* Multi-Configuration Profile Storage & Preset Slots */
+#define NLK_KB_MAX_PROFILE_SLOTS        4U
+
+struct nlk_kb_profile_info_resp {
+    uint8_t  active_slot;          /* Active profile slot ID 0..NLK_KB_MAX_PROFILE_SLOTS-1 */
+    uint8_t  slot_count;           /* Maximum supported profile slots */
+    uint8_t  saved_slots_mask;     /* Bitmask of slots persisted in Flash (bit 0..bit 3) */
+    uint8_t  reserved;
+} __attribute__((packed));
+
+struct nlk_kb_profile_slot_req {
+    uint8_t  slot_id;              /* Target profile slot ID */
+    uint8_t  reserved[3];
 } __attribute__((packed));
 
 /* =========================================================================
