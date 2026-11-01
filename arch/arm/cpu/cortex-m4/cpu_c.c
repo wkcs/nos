@@ -10,9 +10,19 @@
 #include <kernel/cpu.h>
 #include <kernel/printk.h>
 #include <kernel/task.h>
+#include <kernel/kallsyms.h>
+#include <kernel/unwind.h>
 #include <asm/irq.h>
 #include <asm/platform.h>
 #include <nos/mm.h>
+
+extern char __mm_pool_end[];
+extern char _estack[];
+
+#define ARMV7M_CFSR_REG  (*(volatile uint32_t *)0xE000ED28UL)
+#define ARMV7M_HFSR_REG  (*(volatile uint32_t *)0xE000ED2CUL)
+#define ARMV7M_MMFAR_REG (*(volatile uint32_t *)0xE000ED34UL)
+#define ARMV7M_BFAR_REG  (*(volatile uint32_t *)0xE000ED38UL)
 
 #if (defined ( __GNUC__ ) && defined ( __VFP_FP__ ) && !defined(__SOFTFP__))
 #define USE_FPU   1
@@ -93,8 +103,79 @@ void NMI_Handler(void)
     reboot_to_bootloader();
 }
 
+static void armv7m_decode_fault_regs(const char *fault_name)
+{
+    uint32_t cfsr = ARMV7M_CFSR_REG;
+    uint32_t hfsr = ARMV7M_HFSR_REG;
+    uint32_t mmfar = ARMV7M_MMFAR_REG;
+    uint32_t bfar = ARMV7M_BFAR_REG;
+
+    pr_info("Fault: %s | CFSR=0x%08lx HFSR=0x%08lx MMFAR=0x%08lx BFAR=0x%08lx\n",
+            fault_name,
+            (unsigned long)cfsr,
+            (unsigned long)hfsr,
+            (unsigned long)mmfar,
+            (unsigned long)bfar);
+    if (hfsr & (1UL << 30)) {
+        pr_info("  HFSR: FORCED (escalated fault)\n");
+    }
+    if (hfsr & (1UL << 1)) {
+        pr_info("  HFSR: VECTTBL (vector table read fault)\n");
+    }
+    if (cfsr & 0x000000FFUL) {
+        pr_info("  MMFSR: %s%s%s%s%s\n",
+                (cfsr & (1UL << 0)) ? "IACCVIOL " : "",
+                (cfsr & (1UL << 1)) ? "DACCVIOL " : "",
+                (cfsr & (1UL << 3)) ? "MUNSTKERR " : "",
+                (cfsr & (1UL << 4)) ? "MSTKERR " : "",
+                (cfsr & (1UL << 7)) ? "MMARVALID" : "");
+    }
+    if (cfsr & 0x0000FF00UL) {
+        pr_info("  BFSR: %s%s%s%s%s%s\n",
+                (cfsr & (1UL << 8)) ? "IBUSERR " : "",
+                (cfsr & (1UL << 9)) ? "PRECISERR " : "",
+                (cfsr & (1UL << 10)) ? "IMPRECISERR " : "",
+                (cfsr & (1UL << 11)) ? "UNSTKERR " : "",
+                (cfsr & (1UL << 12)) ? "STKERR " : "",
+                (cfsr & (1UL << 15)) ? "BFARVALID" : "");
+    }
+    if (cfsr & 0xFFFF0000UL) {
+        pr_info("  UFSR: %s%s%s%s%s%s\n",
+                (cfsr & (1UL << 16)) ? "UNDEFINSTR " : "",
+                (cfsr & (1UL << 17)) ? "INVSTATE " : "",
+                (cfsr & (1UL << 18)) ? "INVPC " : "",
+                (cfsr & (1UL << 19)) ? "NOCP " : "",
+                (cfsr & (1UL << 24)) ? "UNALIGNED " : "",
+                (cfsr & (1UL << 25)) ? "DIVBYZERO" : "");
+    }
+}
+
+static void armv7m_dump_stack_top(uintptr_t sp, uintptr_t stack_high)
+{
+    const uint32_t *words = (const uint32_t *)(sp & ~(uintptr_t)3U);
+    uint32_t i;
+
+    pr_info("Stack top (sp=0x%08lx):\n", (unsigned long)sp);
+    for (i = 0U; i < 8U; i += 4U) {
+        uintptr_t addr = (uintptr_t)&words[i];
+        if (stack_high != 0U && addr + 16U > stack_high) {
+            break;
+        }
+        pr_info("  0x%08lx: %08lx %08lx %08lx %08lx\n",
+                (unsigned long)addr,
+                (unsigned long)words[i],
+                (unsigned long)words[i + 1U],
+                (unsigned long)words[i + 2U],
+                (unsigned long)words[i + 3U]);
+    }
+}
+
 void cpu_hard_fault(struct cpu_dump_type *cpu_dump_type)
 {
+    uintptr_t stack_low = 0U;
+    uintptr_t stack_high = 0U;
+    uintptr_t trap_sp = (uintptr_t)(cpu_dump_type + 1);
+
     pr_info("-------------------\n");
     pr_info("r0  = 0x%08lx\n", cpu_dump_type->stack_frame.exception_stack_frame.r0);
     pr_info("r1  = 0x%08lx\n", cpu_dump_type->stack_frame.exception_stack_frame.r1);
@@ -112,15 +193,34 @@ void cpu_hard_fault(struct cpu_dump_type *cpu_dump_type)
     pr_info("lr  = 0x%08lx\n", cpu_dump_type->stack_frame.exception_stack_frame.lr);
     pr_info("pc  = 0x%08lx\n", cpu_dump_type->stack_frame.exception_stack_frame.pc);
     pr_info("psr = 0x%08lx\n", cpu_dump_type->stack_frame.exception_stack_frame.psr);
+    print_symbol("pc_sym = [<0x%08lx>] %s\n", cpu_dump_type->stack_frame.exception_stack_frame.pc);
+    print_symbol("lr_sym = [<0x%08lx>] %s\n", cpu_dump_type->stack_frame.exception_stack_frame.lr);
     pr_info("-------------------\n");
+    armv7m_decode_fault_regs("HardFault");
+
     struct task_struct *task = current;
-    pr_info("current task is %s\n", task->name);
-    if (cpu_dump_type->sp & 1 << 2) {
-        pr_info("cpu hard fault on task(name = %s)\n", task->name);
+    if (task != NULL) {
+        pr_info("current task is %s\n", task->name ? task->name : "-");
+    }
+    if (cpu_dump_type->sp & (1UL << 2)) {
+        if (task != NULL) {
+            pr_info("cpu hard fault on task(name = %s)\n", task->name ? task->name : "-");
+            task_get_stack_bounds(task, &stack_low, &stack_high);
+        }
     } else {
         pr_info("cpu hard fault on handler\n");
+        stack_low = (uintptr_t)__mm_pool_end;
+        stack_high = (uintptr_t)_estack;
     }
 
+    dump_trap_backtrace(trap_sp,
+                        (uintptr_t)cpu_dump_type->stack_frame.exception_stack_frame.pc,
+                        (uintptr_t)cpu_dump_type->stack_frame.exception_stack_frame.lr,
+                        (uintptr_t)cpu_dump_type->stack_frame.r7,
+                        stack_low,
+                        stack_high,
+                        NULL);
+    armv7m_dump_stack_top(trap_sp, stack_high);
     dump_all_task();
     reboot_to_bootloader();
 }
@@ -128,7 +228,9 @@ void cpu_hard_fault(struct cpu_dump_type *cpu_dump_type)
 void MemManage_Handler(void)
 {
     pr_fatal("%s entry\n", __func__);
+    armv7m_decode_fault_regs("MemManage");
     arch_mpu_handle_fault(0U);
+    dump_task_stack(current, NULL);
     dump_all_task();
     /* Go to infinite loop when Memory Manage exception occurs */
     reboot_to_bootloader();
@@ -138,6 +240,9 @@ void MemManage_Handler(void)
 void BusFault_Handler(void)
 {
     pr_fatal("%s entry\n", __func__);
+    armv7m_decode_fault_regs("BusFault");
+    dump_task_stack(current, NULL);
+    dump_all_task();
     /* Go to infinite loop when Bus Fault exception occurs */
     reboot_to_bootloader();
 }
@@ -145,6 +250,9 @@ void BusFault_Handler(void)
 void UsageFault_Handler(void)
 {
     pr_fatal("%s entry\n", __func__);
+    armv7m_decode_fault_regs("UsageFault");
+    dump_task_stack(current, NULL);
+    dump_all_task();
     /* Go to infinite loop when Usage Fault exception occurs */
     reboot_to_bootloader();
 }

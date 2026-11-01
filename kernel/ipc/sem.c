@@ -76,6 +76,7 @@ void sem_get(sem_t *sem)
         spin_unlock_irq(&task->lock);
         return;
     }
+    task_set_wchan(task, "sem", (uintptr_t)sem);
     rc = task_hang_lock(task);
     if (rc < 0) {
         spin_unlock_irq(&sem->lock);
@@ -119,6 +120,7 @@ int sem_get_timeout(sem_t *sem, uint32_t tick)
         return 0;
     }
 
+    task_set_wchan(task, "sem", (uintptr_t)sem);
     rc = task_hang_lock(task);
     if (rc < 0) {
         spin_unlock_irq(&sem->lock);
@@ -159,7 +161,7 @@ void sem_send(sem_t *sem, uint8_t num)
     if (!list_empty(&sem->wait_list)) {
         list_for_each_entry_safe (task, tmp, &sem->wait_list, list) {
             num--;
-            list_del(&task->list);
+            list_del_init(&task->list);
             task->list_lock = NULL;
             list_add(&task->list, &tmp_list);
             if (num == 0) {
@@ -176,6 +178,7 @@ void sem_send(sem_t *sem, uint8_t num)
 
     if (!list_empty(&tmp_list)) {
         list_for_each_entry_safe (task, tmp, &tmp_list, list) {
+            list_del_init(&task->list);
             task_resume(task);
         }
     }
@@ -191,7 +194,7 @@ void sem_send_all(sem_t *sem)
     spin_lock_irq(&sem->lock);
     if (!list_empty(&sem->wait_list)) {
         list_for_each_entry_safe (task, tmp, &sem->wait_list, list) {
-            list_del(&task->list);
+            list_del_init(&task->list);
             task->list_lock = NULL;
             list_add(&task->list, &tmp_list);
         }
@@ -200,6 +203,7 @@ void sem_send_all(sem_t *sem)
 
     if (!list_empty(&tmp_list)) {
         list_for_each_entry_safe (task, tmp, &tmp_list, list) {
+            list_del_init(&task->list);
             task_resume(task);
         }
     }

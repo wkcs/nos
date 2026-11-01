@@ -63,7 +63,7 @@ static int msg_free(msg_t *msg)
 int msg_q_send(struct msg_queue *msg_q, const char *buf, int size)
 {
     msg_t *msg;
-    bool need_resched = false;
+    struct task_struct *wake_owner = NULL;
 
     if (msg_q == NULL) {
         pr_err("msg_q is NULL\n");
@@ -83,13 +83,14 @@ int msg_q_send(struct msg_queue *msg_q, const char *buf, int size)
 
     spin_lock_irq(&msg_q->lock);
     list_add_tail(&msg->list, &msg_q->msg_list);
-    if (msg_q->owner != NULL && msg_q->owner->status == TASK_WAIT) {
-        task_resume(msg_q->owner);
-        need_resched = true;
+    if (msg_q->owner != NULL &&
+        (msg_q->owner->status == TASK_WAIT || msg_q->owner->status == TASK_BLOCKED)) {
+        wake_owner = msg_q->owner;
     }
     spin_unlock_irq(&msg_q->lock);
 
-    if (need_resched) {
+    if (wake_owner != NULL) {
+        task_resume(wake_owner);
         switch_task();
     }
 
@@ -137,12 +138,13 @@ int msg_q_recv(struct msg_queue *msg_q, char *buf, int size)
         pr_err("msg_q owner is %s, %s can't use recv it's msg\n", msg_q->owner->name, task->name);
         return -EFAULT;
     }
+    spin_lock_irq(&task->lock);
     spin_lock_irq(&msg_q->lock);
     if (list_empty(&msg_q->msg_list)) {
-        spin_lock_irq(&task->lock);
+        task_set_wchan(task, "msgq", (uintptr_t)msg_q);
         rc = task_hang_lock(task);
-        spin_unlock_irq(&task->lock);
         spin_unlock_irq(&msg_q->lock);
+        spin_unlock_irq(&task->lock);
         if (rc < 0) {
             pr_err("%s task hang error, rc=%d\n", task->name, rc);
             return rc;
@@ -150,6 +152,7 @@ int msg_q_recv(struct msg_queue *msg_q, char *buf, int size)
         switch_task();
     } else {
         spin_unlock_irq(&msg_q->lock);
+        spin_unlock_irq(&task->lock);
     }
 
     msg = __msg_q_recv(msg_q);
@@ -194,22 +197,24 @@ int msg_q_recv_timeout(struct msg_queue *msg_q, char *buf, int size, u32 tick)
         return -EFAULT;
     }
 
+    spin_lock_irq(&task->lock);
     spin_lock_irq(&msg_q->lock);
     if (list_empty(&msg_q->msg_list)) {
-        spin_lock_irq(&task->lock);
+        task_set_wchan(task, "msgq", (uintptr_t)msg_q);
         rc = task_hang_lock(task);
         if (rc < 0) {
-            spin_unlock_irq(&task->lock);
             spin_unlock_irq(&msg_q->lock);
+            spin_unlock_irq(&task->lock);
             pr_err("%s task hang error, rc=%d\n", task->name, rc);
             return rc;
         }
         timer_start(&task->timer, tick);
-        spin_unlock_irq(&task->lock);
         spin_unlock_irq(&msg_q->lock);
+        spin_unlock_irq(&task->lock);
         switch_task();
     } else {
         spin_unlock_irq(&msg_q->lock);
+        spin_unlock_irq(&task->lock);
     }
 
     if (task->flag == -ETIMEDOUT) {

@@ -130,9 +130,11 @@ int nos_notify_wait_obj(struct nos_notification *notif,
         return -EINVAL;
     }
 
+    spin_lock_irq(&task->lock);
     spin_lock_irq(&notif->lock);
     if (notif->closed) {
         spin_unlock_irq(&notif->lock);
+        spin_unlock_irq(&task->lock);
         return -EPIPE;
     }
 
@@ -140,19 +142,21 @@ int nos_notify_wait_obj(struct nos_notification *notif,
         *out_bits = notif->pending_bits;
         notif->pending_bits = 0ULL;
         spin_unlock_irq(&notif->lock);
+        spin_unlock_irq(&task->lock);
         return 0;
     }
 
     if (timeout_ticks == NOS_IPC_TIMEOUT_NONBLOCK) {
         spin_unlock_irq(&notif->lock);
+        spin_unlock_irq(&task->lock);
         return -EAGAIN;
     }
 
-    spin_lock_irq(&task->lock);
+    task_set_wchan(task, "notify", (uintptr_t)notif);
     rc = task_hang_lock(task);
     if (rc < 0) {
-        spin_unlock_irq(&task->lock);
         spin_unlock_irq(&notif->lock);
+        spin_unlock_irq(&task->lock);
         return rc;
     }
     task->flag = 0;
@@ -163,8 +167,8 @@ int nos_notify_wait_obj(struct nos_notification *notif,
     if (timeout_ticks != NOS_IPC_TIMEOUT_INFINITE) {
         timer_start(&task->timer, timeout_ticks);
     }
-    spin_unlock_irq(&task->lock);
     spin_unlock_irq(&notif->lock);
+    spin_unlock_irq(&task->lock);
 
     switch_task();
 

@@ -12,7 +12,10 @@
 #include <kernel/mm.h>
 #include <kernel/cpu.h>
 #include <kernel/task.h>
+#include <kernel/sched.h>
+#include <kernel/kallsyms.h>
 #include <kernel/printk.h>
+#include <nos/sched.h>
 #include <string.h>
 #include <lib/vsprintf.h>
 
@@ -30,6 +33,8 @@
 #define PROC_MOUNTS_INO 6
 #define PROC_FILESYSTEMS_INO 7
 #define PROC_TASKS_INO 8
+#define PROC_LOADAVG_INO 9
+#define PROC_STAT_INO 10
 
 struct proc_entry {
     const char *name;
@@ -45,6 +50,8 @@ static const struct proc_entry proc_files[] = {
     { "mounts",      S_IFREG | 0444, PROC_MOUNTS_INO },
     { "filesystems", S_IFREG | 0444, PROC_FILESYSTEMS_INO },
     { "tasks",       S_IFREG | 0444, PROC_TASKS_INO },
+    { "loadavg",     S_IFREG | 0444, PROC_LOADAVG_INO },
+    { "stat",        S_IFREG | 0444, PROC_STAT_INO },
     { NULL, 0, 0 }
 };
 
@@ -131,33 +138,51 @@ struct proc_task_buf {
     int pos;
 };
 
-static const char *proc_task_state(uint8_t status)
+static const char *proc_task_wchan(struct task_struct *task)
 {
-    switch (status) {
-    case TASK_RUNING:  return "R";
-    case TASK_READY:   return "R";
-    case TASK_WAIT:    return "S";
-    case TASK_SUSPEND: return "T";
-    case TASK_CLOSE:   return "Z";
-    default:           return "?";
+    const char *sym;
+
+    if (task == NULL) {
+        return "-";
     }
+    if (task->status != TASK_SLEEPING && task->status != TASK_BLOCKED) {
+        return "-";
+    }
+    if (task->wchan_name != NULL && task->wchan_name[0] != '\0') {
+        return task->wchan_name;
+    }
+    if (task->wchan_addr != 0U) {
+        sym = kallsyms_lookup((unsigned long)task->wchan_addr, NULL, NULL, NULL, NULL);
+        if (sym != NULL) {
+            return sym;
+        }
+        return "blocked";
+    }
+    return "-";
 }
 
 static int proc_task_iter(struct task_struct *task, void *arg)
 {
     struct proc_task_buf *tb = arg;
+    u32 usage = task_get_cpu_usage(task);
     int n;
 
     if ((size_t)tb->pos >= tb->size) {
         return 1;
     }
     n = snprintf(tb->buf + tb->pos, tb->size - (size_t)tb->pos,
-                 "%4u  %3u  %-5s %6u %6u  %s\n",
+                 "%4u %4u %3u %-3s %4u %-5s %3u.%u %6u %6u %-12s %s\n",
                  (unsigned int)task->pid,
+                 (unsigned int)task->ppid,
+                 (unsigned int)task->cpu,
+                 task_policy_short_str(task->policy),
                  (unsigned int)task->current_priority,
-                 proc_task_state(task->status),
+                 task_state_short_str(task->status),
+                 (unsigned int)(usage / 100U),
+                 (unsigned int)((usage % 100U) / 10U),
                  (unsigned int)task->stack_size,
                  (unsigned int)task_stack_max_used(task),
+                 proc_task_wchan(task),
                  task->name ? task->name : "-");
     if (n < 0 || (size_t)(tb->pos + n) >= tb->size) {
         tb->pos = (int)tb->size - 1;
@@ -170,12 +195,96 @@ static int proc_task_iter(struct task_struct *task, void *arg)
 static int proc_read_tasks(char *buf, size_t size)
 {
     struct proc_task_buf tb = { .buf = buf, .size = size, .pos = 0 };
-    int n = snprintf(buf, size, " PID PRIO STATE  STACK   USED  NAME\n");
+    int n = snprintf(buf, size,
+                     " PID PPID CPU POL PRIO STATE  %%CPU  STACK   USED WCHAN        NAME\n");
     if (n > 0 && (size_t)n < size) {
         tb.pos = n;
         task_foreach(proc_task_iter, &tb);
     }
     return tb.pos;
+}
+
+static int proc_read_loadavg(char *buf, size_t size)
+{
+    uint32_t loads[3] = { 0U, 0U, 0U };
+    uint32_t nr_running = 0U;
+    uint32_t nr_total = 0U;
+
+    sched_get_loadavg(loads, &nr_running, &nr_total);
+    return snprintf(buf, size, "%u.%02u %u.%02u %u.%02u %u/%u %u\n",
+                    (unsigned int)SCHED_LOAD_INT(loads[0]),
+                    (unsigned int)SCHED_LOAD_FRAC(loads[0]),
+                    (unsigned int)SCHED_LOAD_INT(loads[1]),
+                    (unsigned int)SCHED_LOAD_FRAC(loads[1]),
+                    (unsigned int)SCHED_LOAD_INT(loads[2]),
+                    (unsigned int)SCHED_LOAD_FRAC(loads[2]),
+                    (unsigned int)nr_running,
+                    (unsigned int)nr_total,
+                    (unsigned int)(current ? current->pid : 0));
+}
+
+static int proc_read_stat(char *buf, size_t size)
+{
+    uint64_t total_busy_us = 0ULL;
+    uint64_t total_idle_us = 0ULL;
+    uint32_t procs_running = 0U;
+    uint32_t procs_blocked = 0U;
+    uint32_t loads[3] = { 0U, 0U, 0U };
+    uint32_t nr_total = 0U;
+    uint32_t cpu;
+    int pos = 0;
+    int n;
+
+    for (cpu = 0U; cpu < (uint32_t)CONFIG_NR_CPUS; cpu++) {
+        struct sched_rq *rq = sched_rq_of(cpu);
+        if (rq == NULL) {
+            continue;
+        }
+        total_busy_us += rq->busy_time_us;
+        total_idle_us += rq->idle_time_us;
+        procs_running += rq->nr_running;
+        procs_blocked += rq->nr_uninterruptible;
+    }
+
+    n = snprintf(buf, size, "cpu  %llu %llu\n",
+                 (unsigned long long)total_busy_us,
+                 (unsigned long long)total_idle_us);
+    if (n < 0 || (size_t)n >= size) {
+        return (int)size - 1;
+    }
+    pos += n;
+
+    for (cpu = 0U; cpu < (uint32_t)CONFIG_NR_CPUS; cpu++) {
+        struct sched_rq *rq = sched_rq_of(cpu);
+        if (rq == NULL) {
+            continue;
+        }
+        n = snprintf(buf + pos, size - (size_t)pos, "cpu%u %llu %llu %u\n",
+                     (unsigned int)cpu,
+                     (unsigned long long)rq->busy_time_us,
+                     (unsigned long long)rq->idle_time_us,
+                     (unsigned int)rq->cpu_util_avg);
+        if (n < 0 || (size_t)(pos + n) >= size) {
+            return (int)size - 1;
+        }
+        pos += n;
+    }
+
+    sched_get_loadavg(loads, NULL, &nr_total);
+    n = snprintf(buf + pos, size - (size_t)pos,
+                 "ctxt %llu\n"
+                 "processes %u\n"
+                 "procs_running %u\n"
+                 "procs_blocked %u\n",
+                 (unsigned long long)sched_get_total_switches(),
+                 (unsigned int)nr_total,
+                 (unsigned int)procs_running,
+                 (unsigned int)procs_blocked);
+    if (n < 0 || (size_t)(pos + n) >= size) {
+        return (int)size - 1;
+    }
+    pos += n;
+    return pos;
 }
 
 /*
@@ -213,6 +322,12 @@ static ssize_t procfs_read(struct file *file, char *buf, size_t count, loff_t *p
             break;
         case PROC_TASKS_INO:
             len = proc_read_tasks(page, page_size);
+            break;
+        case PROC_LOADAVG_INO:
+            len = proc_read_loadavg(page, page_size);
+            break;
+        case PROC_STAT_INO:
+            len = proc_read_stat(page, page_size);
             break;
         default:
             kfree(page);

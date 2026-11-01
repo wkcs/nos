@@ -6,16 +6,36 @@ import sys
 
 def parse_symbols_from_lines(lines):
     symbols = []
+    seen_addrs = set()
     for line in lines:
         parts = line.strip().split()
         if len(parts) < 3:
             continue
         addr_str = parts[0]
-        type_char = parts[1]
-        name = parts[2]
-        if type_char.upper() in ["T", "t"]:
+        if len(parts) == 3 and parts[1].upper() in ["T", "t"]:
             try:
-                symbols.append((int(addr_str, 16), name))
+                addr = int(addr_str, 16)
+                if addr not in seen_addrs:
+                    seen_addrs.add(addr)
+                    symbols.append((addr, parts[2]))
+            except ValueError:
+                continue
+            continue
+        if ".text" in parts and len(parts) >= 4:
+            sec_idx = parts.index(".text")
+            flags = parts[1:sec_idx]
+            if "d" in flags or "O" in flags or "df" in flags:
+                continue
+            name = parts[-1]
+            if name == ".text" or name.startswith("$") or "." in name:
+                continue
+            if "g" not in flags and "w" not in flags and not name.endswith("_task_entry") and name != "task_exit":
+                continue
+            try:
+                addr = int(addr_str, 16)
+                if addr != 0 and addr not in seen_addrs:
+                    seen_addrs.add(addr)
+                    symbols.append((addr, name))
             except ValueError:
                 continue
     symbols.sort(key=lambda x: x[0])
