@@ -22,20 +22,56 @@ extern void *__kalloc(u32 size, gfp_t flag, pid_t pid);
 extern int __kfree(void *addr);
 extern int __kfree_by_pid(pid_t pid);
 
+__attribute__((weak)) void *mm_backend_alloc(size_t size, size_t align, gfp_t flag, pid_t pid)
+{
+    (void)align;
+    return __kalloc((u32)size, flag, pid);
+}
+
+__attribute__((weak)) int mm_backend_free(void *addr)
+{
+    return __kfree(addr);
+}
+
+__attribute__((weak)) void *mm_backend_realloc(void *ptr, size_t size, gfp_t flag)
+{
+    (void)ptr;
+    (void)size;
+    (void)flag;
+    return NULL;
+}
+
+__attribute__((weak)) int mm_backend_free_by_pid(pid_t pid)
+{
+    return __kfree_by_pid(pid);
+}
+
 void *kmalloc(u32 size, gfp_t flag)
 {
-    void *buf;
-    buf = __kalloc(size, flag, 0);
-    //pr_info("region:0x%08lx - 0x%08lx\n", (addr_t)buf, (addr_t)buf + size);
-    return buf;
+    return mm_backend_alloc(size, sizeof(addr_t), flag, 0);
 }
 
 void *kzalloc(u32 size, gfp_t flag)
 {
     void *buf;
-    buf = __kalloc(size, flag, 0);
+    buf = mm_backend_alloc(size, sizeof(addr_t), flag, 0);
     if (buf == NULL)
         return NULL;
+    memset(buf, 0, size);
+    return buf;
+}
+
+void *kmalloc_aligned(size_t size, size_t align, gfp_t flag)
+{
+    return mm_backend_alloc(size, align, flag, 0);
+}
+
+void *kzalloc_aligned(size_t size, size_t align, gfp_t flag)
+{
+    void *buf = mm_backend_alloc(size, align, flag, 0);
+    if (buf == NULL) {
+        return NULL;
+    }
     memset(buf, 0, size);
     return buf;
 }
@@ -47,11 +83,16 @@ void *krealloc(void *ptr, u32 size, gfp_t flag)
     struct mem_base *base;
 
     if (size == 0) {
-        if (ptr != NULL) __kfree(ptr);
+        if (ptr != NULL) mm_backend_free(ptr);
         return NULL;
     }
     if (ptr == NULL)
-        goto alloc;
+        return mm_backend_alloc(size, sizeof(addr_t), flag, 0);
+
+    buf = mm_backend_realloc(ptr, size, flag);
+    if (buf != NULL) {
+        return buf;
+    }
 
     block = find_block(ptr);
     if (block == NULL) {
@@ -64,7 +105,6 @@ void *krealloc(void *ptr, u32 size, gfp_t flag)
         return NULL;
     }
 
-alloc:
     buf = __kalloc(size, flag, 0);
     if (buf == NULL) {
         return NULL;
@@ -79,15 +119,15 @@ alloc:
 
 void *kalloc_by_pid(u32 size, gfp_t flag, pid_t pid)
 {
-    return __kalloc(size, flag, pid);
+    return mm_backend_alloc(size, sizeof(addr_t), flag, pid);
 }
 
 int kfree(void *addr)
 {
-    return __kfree(addr);
+    return mm_backend_free(addr);
 }
 
 int kfree_by_pid(pid_t pid)
 {
-    return __kfree_by_pid(pid);
+    return mm_backend_free_by_pid(pid);
 }

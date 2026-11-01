@@ -15,6 +15,21 @@
 static LIST_HEAD(g_memblock_list);
 static SPINLOCK(g_memblock_lock);
 
+__attribute__((weak)) size_t mm_backend_tlsf_total_size(void)
+{
+    return 0U;
+}
+
+__attribute__((weak)) size_t mm_backend_tlsf_used_size(void)
+{
+    return 0U;
+}
+
+__attribute__((weak)) size_t mm_backend_tlsf_free_size(void)
+{
+    return 0U;
+}
+
 static int memblock_init(struct memblock *block)
 {
     u32 size;
@@ -349,7 +364,7 @@ void mm_block_dump(void)
 size_t mm_block_free_size(void)
 {
     struct memblock *block;
-    size_t size = 0;
+    size_t size = mm_backend_tlsf_free_size();
 
     spin_lock_irq(&g_memblock_lock);
     list_for_each_entry (block, &g_memblock_list, list) {
@@ -365,7 +380,7 @@ size_t mm_block_free_size(void)
 size_t mm_block_total_size(void)
 {
     struct memblock *block;
-    size_t size = 0;
+    size_t size = mm_backend_tlsf_total_size();
 
     spin_lock_irq(&g_memblock_lock);
     list_for_each_entry (block, &g_memblock_list, list) {
@@ -380,7 +395,7 @@ size_t mm_block_used_size(void)
 {
     struct memblock *block;
     struct mem_base *base;
-    size_t size = 0;
+    size_t size = mm_backend_tlsf_used_size();
 
     spin_lock_irq(&g_memblock_lock);
     list_for_each_entry (block, &g_memblock_list, list) {

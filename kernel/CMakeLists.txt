@@ -7,6 +7,8 @@ set(KERNEL_SRCS
     mm/mm_core.c
     mm/mm.c
     mm/mm_buddy.c
+    mm/mm_tlsf.c
+    mm/mm_slub.c
     mm/mm_node.c
     mm/mm_page.c
     sched/sched.c
