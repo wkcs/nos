@@ -145,27 +145,35 @@ struct nlk_vfs_ctx {
 int nlk_cap_vfs_init(struct nlk_node *node, struct nlk_vfs_ctx *ctx);
 
 /* 0x0100: Keyboard (Multi-Form-Factor, 6KRO/NKRO, Analog/RT & Integrated Lighting) */
-#define NLK_KB_MAX_LAYERS           4U
+#ifndef NLK_KB_MAX_LAYERS
+#define NLK_KB_MAX_LAYERS           8U
+#endif
 #define NLK_KB_MAX_KEYS             128U
 
 typedef void (*nlk_kb_report_cb_t)(const struct nlk_kb_hid_report *report, void *priv);
 typedef void (*nlk_kb_nkro_cb_t)(const struct nlk_kb_nkro_report *report, void *priv);
-typedef void (*nlk_kb_action_cb_t)(uint8_t layer, uint8_t key_index,
-                                   uint8_t key_code, uint8_t action,
-                                   void *priv);
 typedef void (*nlk_kb_light_cb_t)(const struct nlk_kb_light_cfg *cfg,
                                   const struct nlk_kb_light_sync_beacon *beacon,
                                   uint8_t indicators, void *priv);
+typedef void (*nlk_kb_zone_light_cb_t)(uint8_t zone_id,
+                                       const struct nlk_kb_zone_light_cfg *cfg,
+                                       void *priv);
 typedef void (*nlk_kb_light_frame_cb_t)(uint16_t start_led, uint16_t led_count,
                                         const uint8_t *rgb_data, uint16_t len, void *priv);
+typedef int (*nlk_kb_layout_change_cb_t)(uint8_t new_layout_id, void *priv);
+typedef int (*nlk_kb_param_change_cb_t)(const struct nlk_kb_params *params, void *priv);
+typedef int (*nlk_kb_profile_save_cb_t)(uint8_t slot_id, void *priv);
+typedef int (*nlk_kb_profile_load_cb_t)(uint8_t slot_id, void *priv);
+typedef int (*nlk_kb_profile_info_cb_t)(uint8_t *active_slot, uint8_t *saved_mask, void *priv);
 
 struct nlk_keyboard_ctx {
     struct nlk_kb_desc              desc;
     uint8_t                         active_layer;
+    uint8_t                         default_layer;
     uint8_t                         indicator_leds;
     uint8_t                         module_key_offset[8];
     uint8_t                         keymap[NLK_KB_MAX_LAYERS][NLK_KB_MAX_KEYS];
-    uint8_t                         action_map[NLK_KB_MAX_LAYERS][NLK_KB_MAX_KEYS];
+    struct nlk_kb_key_action_chain  action_chains[NLK_KB_MAX_LAYERS][NLK_KB_MAX_KEYS];
     uint8_t                         key_state[NLK_KB_MAX_KEYS];
     uint8_t                         active_code[NLK_KB_MAX_KEYS];
     struct nlk_kb_hid_report        last_report;
@@ -173,11 +181,53 @@ struct nlk_keyboard_ctx {
     struct nlk_kb_analog_cfg        analog_cfg;
     struct nlk_kb_light_cfg         light_cfg;
     struct nlk_kb_light_sync_beacon last_light_beacon;
+
+    /* Multi-layout management */
+    uint8_t                         layout_count;
+    uint8_t                         active_layout_id;
+    struct nlk_kb_layout_info       layouts[NLK_KB_MAX_LAYOUTS];
+    nlk_kb_layout_change_cb_t       layout_cb;
+    void                           *layout_priv;
+
+    /* Multi-zone lighting */
+    uint8_t                         light_zone_count;
+    struct nlk_kb_light_zone_desc   light_zones[NLK_KB_MAX_LIGHT_ZONES];
+    struct nlk_kb_zone_light_cfg    zone_cfgs[NLK_KB_MAX_LIGHT_ZONES];
+    nlk_kb_zone_light_cb_t          zone_light_cb;
+    void                           *zone_light_priv;
+
+    /* Layer metadata */
+    struct nlk_kb_layer_desc        layers[NLK_KB_MAX_LAYERS];
+
+    /* Macro recording & playback */
+    uint8_t                         recording_macro_id; /* 0xFF = not recording */
+    uint32_t                        last_rec_tick;
+    struct nlk_kb_macro_info        macro_info[NLK_KB_MAX_MACROS];
+    struct nlk_kb_macro_step        macro_steps[NLK_KB_MAX_MACROS][NLK_KB_MAX_MACRO_STEPS];
+
+    /* Dynamic Action Bindings */
+    uint8_t                         action_count;
+    struct nlk_kb_action_desc       action_descs[NLK_KB_MAX_ACTIONS];
+    key_action_handler_fn_t         action_handlers[NLK_KB_MAX_ACTIONS];
+    void                           *action_handler_privs[NLK_KB_MAX_ACTIONS];
+
+    /* Keyboard runtime parameters */
+    struct nlk_kb_params            params;
+    struct nlk_kb_params            default_params;
+    nlk_kb_param_change_cb_t        param_cb;
+    void                           *param_priv;
+
+    /* Profile persistence & preset slots */
+    uint8_t                         active_profile_slot;
+    uint8_t                         saved_profiles_mask;
+    nlk_kb_profile_save_cb_t        profile_save_cb;
+    nlk_kb_profile_load_cb_t        profile_load_cb;
+    nlk_kb_profile_info_cb_t        profile_info_cb;
+    void                           *profile_priv;
+
     nlk_kb_report_cb_t              report_cb;
     nlk_kb_nkro_cb_t                nkro_cb;
     void                           *report_priv;
-    nlk_kb_action_cb_t              action_cb;
-    void                           *action_priv;
     nlk_kb_light_cb_t               light_cb;
     nlk_kb_light_frame_cb_t         light_frame_cb;
     void                           *light_priv;
@@ -190,17 +240,57 @@ int nlk_cap_keyboard_init(struct nlk_node *node, struct nlk_keyboard_ctx *ctx,
                           nlk_kb_report_cb_t report_cb, void *priv);
 int nlk_cap_keyboard_configure(struct nlk_keyboard_ctx *ctx,
                                const struct nlk_kb_desc *desc);
-int nlk_cap_keyboard_set_action_cb(struct nlk_keyboard_ctx *ctx,
-                                   nlk_kb_action_cb_t action_cb,
-                                   void *priv);
 int nlk_cap_keyboard_set_light_cb(struct nlk_keyboard_ctx *ctx,
                                   nlk_kb_light_cb_t light_cb,
                                   nlk_kb_light_frame_cb_t frame_cb,
                                   void *priv);
+int nlk_cap_keyboard_set_zone_light_cb(struct nlk_keyboard_ctx *ctx,
+                                       nlk_kb_zone_light_cb_t zone_light_cb,
+                                       void *priv);
+int nlk_cap_keyboard_set_layout_cb(struct nlk_keyboard_ctx *ctx,
+                                   nlk_kb_layout_change_cb_t layout_cb,
+                                   void *priv);
+int nlk_cap_keyboard_set_param_cb(struct nlk_keyboard_ctx *ctx,
+                                  nlk_kb_param_change_cb_t param_cb,
+                                  void *priv);
+int nlk_cap_keyboard_register_layout(struct nlk_keyboard_ctx *ctx,
+                                     const struct nlk_kb_layout_info *layout);
+int nlk_cap_keyboard_register_light_zone(struct nlk_keyboard_ctx *ctx,
+                                         const struct nlk_kb_light_zone_desc *zone,
+                                         const struct nlk_kb_zone_light_cfg *initial_cfg);
+int nlk_cap_keyboard_set_layer_desc(struct nlk_keyboard_ctx *ctx, uint8_t layer,
+                                    const char *name, uint8_t flags);
+int nlk_cap_keyboard_register_action(struct nlk_keyboard_ctx *ctx,
+                                     const char *name,
+                                     const char *desc,
+                                     key_action_handler_fn_t handler,
+                                     void *priv);
+int nlk_cap_keyboard_bind_key_action(struct nlk_keyboard_ctx *ctx,
+                                     uint8_t layer,
+                                     uint8_t key_index,
+                                     const char *action_name,
+                                     bool append);
+int nlk_cap_keyboard_unbind_key_action(struct nlk_keyboard_ctx *ctx,
+                                       uint8_t layer,
+                                       uint8_t key_index,
+                                       const char *action_name);
+int nlk_cap_keyboard_bind_all_keys(struct nlk_keyboard_ctx *ctx,
+                                   uint8_t layer_mask,
+                                   const char *action_name,
+                                   bool append);
+int nlk_cap_keyboard_set_macro(struct nlk_keyboard_ctx *ctx, uint8_t macro_id,
+                               const char *name,
+                               const struct nlk_kb_macro_step *steps,
+                               uint8_t step_count, uint8_t repeat_count);
+int nlk_cap_keyboard_record_macro_step(struct nlk_keyboard_ctx *ctx,
+                                       uint8_t type, uint8_t key_code,
+                                       uint16_t delay_ms);
+int nlk_cap_keyboard_set_params(struct nlk_keyboard_ctx *ctx,
+                                const struct nlk_kb_params *params);
 int nlk_cap_keyboard_set_module_offset(struct nlk_keyboard_ctx *ctx,
                                        uint8_t module_id, uint8_t key_offset);
 int nlk_cap_keyboard_load_layout(struct nlk_keyboard_ctx *ctx, uint8_t layer,
-                                 const uint8_t *key_codes, const uint8_t *actions,
+                                 const uint8_t *key_codes,
                                  uint8_t count);
 int nlk_cap_keyboard_update_local_keys(struct nlk_keyboard_ctx *ctx,
                                        const uint32_t *raw_bitmap,
@@ -212,6 +302,11 @@ int nlk_cap_keyboard_report_switches(struct nlk_keyboard_ctx *ctx,
                                      uint8_t count);
 int nlk_cap_keyboard_broadcast_light_beacon(struct nlk_keyboard_ctx *ctx,
                                             uint32_t master_frame_tick);
+int nlk_cap_keyboard_set_profile_cbs(struct nlk_keyboard_ctx *ctx,
+                                     nlk_kb_profile_save_cb_t save_cb,
+                                     nlk_kb_profile_load_cb_t load_cb,
+                                     nlk_kb_profile_info_cb_t info_cb,
+                                     void *priv);
 
 /* 0x0101: Rotary Encoder Capability */
 typedef void (*nlk_enc_event_cb_t)(const struct nlk_encoder_event *evt, void *priv);

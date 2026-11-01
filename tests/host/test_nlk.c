@@ -318,6 +318,69 @@ static void mock_reboot_cb(uint32_t boot_flag, void *priv)
     }
 }
 
+static int g_test_action_called = 0;
+static int mock_test_action_handler(const struct key_action_context *ctx, void *priv)
+{
+    (void)ctx;
+    (void)priv;
+    g_test_action_called++;
+    return KEY_ACTION_PASS; /* 未返回按键值，验证不冲掉原始按键值 */
+}
+
+static int mock_remap_b_handler(const struct key_action_context *ctx, void *priv)
+{
+    (void)ctx;
+    (void)priv;
+    return 0x05; /* 改键动作，输出 HID KC_B (0x05) */
+}
+
+static int mock_drop_handler(const struct key_action_context *ctx, void *priv)
+{
+    (void)ctx;
+    (void)priv;
+    return KEY_ACTION_DROP; /* 显式拦截按键 */
+}
+
+static bool g_mock_caps_active = false;
+static int mock_caps_lock_action(const struct key_action_context *ctx, void *priv)
+{
+    struct nlk_keyboard_ctx *kb = (struct nlk_keyboard_ctx *)priv;
+    if (ctx != NULL && ctx->event_type == 1U && kb != NULL) {
+        g_mock_caps_active = !g_mock_caps_active;
+        if (g_mock_caps_active) {
+            kb->light_cfg.effect_id = NLK_KB_LIGHT_EFF_CAPS_LOCK;
+            kb->indicator_leds |= NLK_KB_IND_CAPS_LOCK;
+        } else {
+            kb->light_cfg.effect_id = NLK_KB_LIGHT_EFF_STATIC;
+            kb->indicator_leds &= (uint8_t)~NLK_KB_IND_CAPS_LOCK;
+        }
+    }
+    return KEY_ACTION_PASS;
+}
+
+static uint8_t g_test_mock_active = 0U;
+static uint8_t g_test_mock_mask = 0U;
+static int mock_test_save_cb(uint8_t slot, void *p)
+{
+    (void)p;
+    g_test_mock_mask |= (uint8_t)(1U << slot);
+    g_test_mock_active = slot;
+    return 0;
+}
+static int mock_test_load_cb(uint8_t slot, void *p)
+{
+    (void)p;
+    g_test_mock_active = slot;
+    return 0;
+}
+static int mock_test_info_cb(uint8_t *act, uint8_t *mask, void *p)
+{
+    (void)p;
+    if (act != NULL) *act = g_test_mock_active;
+    if (mask != NULL) *mask = g_test_mock_mask;
+    return 0;
+}
+
 /* Lightweight in-memory VFS stub for testing NLK_CAP_VFS */
 #define MOCK_VFS_MAX_NODES 8
 struct mock_vfs_node {
@@ -1459,8 +1522,8 @@ int main(void)
         uint16_t rlen;
 
         layer1[10] = 0x3AU; /* KC_F1 on Layer 1 key 10 */
-        assert(nlk_cap_keyboard_load_layout(&nk60_kb, 0U, layer0, NULL, 16U) == 0);
-        assert(nlk_cap_keyboard_load_layout(&nk60_kb, 1U, layer1, NULL, 16U) == 0);
+        assert(nlk_cap_keyboard_load_layout(&nk60_kb, 0U, layer0, 16U) == 0);
+        assert(nlk_cap_keyboard_load_layout(&nk60_kb, 1U, layer1, 16U) == 0);
 
         /* Host remaps Layer 0 key 10 to KC_KP_1 (0x59) via NLK_KB_OP_SET_KEYMAP */
         khdr->module_id = 0U;
@@ -1504,7 +1567,7 @@ int main(void)
             uint32_t bm[2] = { 0U, 0U };
             layer0[2] = 0x14U; /* KC_Q */
             layer0[3] = 0x1AU; /* KC_W */
-            assert(nlk_cap_keyboard_load_layout(&nk60_kb, 0U, layer0, NULL, 16U) == 0);
+            assert(nlk_cap_keyboard_load_layout(&nk60_kb, 0U, layer0, 16U) == 0);
 
             /* Press W (key 3) first */
             bm[0] = (1UL << 3U);
@@ -1831,6 +1894,476 @@ int main(void)
                                      NLK_VFS_OP_STATFS, &preq, sizeof(preq),
                                      &fsresp, &rlen, 100U) == 0);
             assert(fsresp.bsize == 4096U);
+        }
+    }
+
+    /* ----------------------------------------------------------------------
+     * 13. Test Comprehensive Keyboard Capabilities (Layouts, Zones, Macros, etc.)
+     * ---------------------------------------------------------------------- */
+    {
+        /* Reset keys to idle */
+        {
+            uint32_t zero_bm[2] = { 0U, 0U };
+            assert(nlk_cap_keyboard_update_local_keys(&nk60_kb, zero_bm, 16U) == 0);
+            assert(nk60_kb.active_layer == 0U);
+        }
+
+        /* 13a. Multiple Layout Registration and Switching (0x0BU, 0x0CU) */
+        {
+            struct nlk_kb_layout_info l1 = {
+                .layout_id   = NLK_KB_LAYOUT_STD_60_ANSI,
+                .key_count   = 61U,
+                .matrix_rows = 5U,
+                .matrix_cols = 14U,
+                .name        = "ANSI-61",
+            };
+            struct nlk_kb_layout_info l2 = {
+                .layout_id   = NLK_KB_LAYOUT_ARROW_60,
+                .key_count   = 64U,
+                .matrix_rows = 5U,
+                .matrix_cols = 14U,
+                .name        = "Arrow-64",
+            };
+            struct nlk_kb_layout_list_resp llist;
+            struct nlk_kb_set_layout_req sreq;
+            uint16_t rlen;
+
+            assert(nlk_cap_keyboard_register_layout(&nk60_kb, &l1) == 0);
+            assert(nlk_cap_keyboard_register_layout(&nk60_kb, &l2) == 0);
+
+            rlen = sizeof(llist);
+            assert(nlk_node_rpc_call(&node_host, 0x0001U, 4U,
+                                     NLK_KB_OP_GET_LAYOUT_LIST, NULL, 0U,
+                                     &llist, &rlen, 100U) == 0);
+            assert(rlen == sizeof(llist));
+            assert(llist.layout_count == 2U);
+            assert(strcmp(llist.layouts[0].name, "ANSI-61") == 0);
+            assert(llist.layouts[0].key_count == 61U);
+            assert(strcmp(llist.layouts[1].name, "Arrow-64") == 0);
+            assert(llist.layouts[1].key_count == 64U);
+
+            /* Switch layout to Arrow-64 */
+            memset(&sreq, 0, sizeof(sreq));
+            sreq.layout_id = NLK_KB_LAYOUT_ARROW_60;
+            rlen = 0U;
+            assert(nlk_node_rpc_call(&node_host, 0x0001U, 4U,
+                                     NLK_KB_OP_SET_LAYOUT, &sreq, sizeof(sreq),
+                                     NULL, &rlen, 100U) == 0);
+            assert(nk60_kb.active_layout_id == NLK_KB_LAYOUT_ARROW_60);
+
+            /* Invalid layout id rejected */
+            sreq.layout_id = 0xAAU;
+            assert(nlk_node_rpc_call(&node_host, 0x0001U, 4U,
+                                     NLK_KB_OP_SET_LAYOUT, &sreq, sizeof(sreq),
+                                     NULL, &rlen, 100U) < 0);
+        }
+
+        /* 13b. Multi-Zone Backlight Configuration (0x0DU, 0x0EU, 0x0FU) */
+        {
+            struct nlk_kb_light_zone_desc z0 = {
+                .zone_id = 0U,
+                .type = NLK_KB_LIGHT_TYPE_RGB_MATRIX,
+                .led_start = 0U,
+                .led_count = 61U,
+                .supported_effects = 0x7FU,
+                .name = "Key-RGB",
+            };
+            struct nlk_kb_light_zone_desc z1 = {
+                .zone_id = 1U,
+                .type = NLK_KB_LIGHT_TYPE_UNDERGLOW,
+                .led_start = 61U,
+                .led_count = 9U,
+                .supported_effects = 0x3FU,
+                .name = "Underglow",
+            };
+            struct nlk_kb_light_zones_resp zresp;
+            struct nlk_kb_zone_light_cfg zcfg;
+            uint8_t q_zid;
+            uint16_t rlen;
+
+            assert(nlk_cap_keyboard_register_light_zone(&nk60_kb, &z0, NULL) == 0);
+            assert(nlk_cap_keyboard_register_light_zone(&nk60_kb, &z1, NULL) == 0);
+
+            rlen = sizeof(zresp);
+            assert(nlk_node_rpc_call(&node_host, 0x0001U, 4U,
+                                     NLK_KB_OP_GET_LIGHT_ZONES, NULL, 0U,
+                                     &zresp, &rlen, 100U) == 0);
+            assert(rlen == sizeof(zresp));
+            assert(zresp.zone_count == 2U);
+            assert(strcmp(zresp.zones[0].name, "Key-RGB") == 0);
+            assert(zresp.zones[1].type == NLK_KB_LIGHT_TYPE_UNDERGLOW);
+
+            /* Configure Underglow (Zone 1) */
+            memset(&zcfg, 0, sizeof(zcfg));
+            zcfg.zone_id = 1U;
+            zcfg.enable = 1U;
+            zcfg.effect_id = NLK_KB_LIGHT_EFF_BREATH;
+            zcfg.brightness = 150U;
+            zcfg.speed = 80U;
+            zcfg.color_r = 0U;
+            zcfg.color_g = 255U;
+            zcfg.color_b = 200U;
+            rlen = 0U;
+            assert(nlk_node_rpc_call(&node_host, 0x0001U, 4U,
+                                     NLK_KB_OP_SET_ZONE_LIGHT_CFG, &zcfg, sizeof(zcfg),
+                                     NULL, &rlen, 100U) == 0);
+
+            /* Read back Zone 1 */
+            q_zid = 1U;
+            rlen = sizeof(zcfg);
+            memset(&zcfg, 0, sizeof(zcfg));
+            assert(nlk_node_rpc_call(&node_host, 0x0001U, 4U,
+                                     NLK_KB_OP_GET_ZONE_LIGHT_CFG, &q_zid, sizeof(q_zid),
+                                     &zcfg, &rlen, 100U) == 0);
+            assert(zcfg.zone_id == 1U);
+            assert(zcfg.brightness == 150U);
+            assert(zcfg.color_g == 255U);
+        }
+
+        /* 13c. Layer Configuration and Dynamic Layer Switching (0x11U, 0x12U) */
+        {
+            struct nlk_kb_layers_resp lay_resp;
+            struct nlk_kb_set_active_layer_req lreq;
+            uint16_t rlen;
+
+            assert(nlk_cap_keyboard_set_layer_desc(&nk60_kb, 0U, "Base", 0U) == 0);
+            assert(nlk_cap_keyboard_set_layer_desc(&nk60_kb, 1U, "FN", 1U) == 0);
+            assert(nlk_cap_keyboard_set_layer_desc(&nk60_kb, 2U, "PN", 1U) == 0);
+            assert(nlk_cap_keyboard_set_layer_desc(&nk60_kb, 3U, "Gaming", 2U) == 0);
+
+            rlen = sizeof(lay_resp);
+            assert(nlk_node_rpc_call(&node_host, 0x0001U, 4U,
+                                     NLK_KB_OP_GET_LAYERS, NULL, 0U,
+                                     &lay_resp, &rlen, 100U) == 0);
+            assert(rlen == sizeof(lay_resp));
+            assert(lay_resp.layer_count == 8U);
+            assert(strcmp(lay_resp.layers[0].name, "Base") == 0);
+            assert(strcmp(lay_resp.layers[3].name, "Gaming") == 0);
+
+            /* Switch active layer to Layer 3 */
+            memset(&lreq, 0, sizeof(lreq));
+            lreq.active_layer = 3U;
+            rlen = 0U;
+            assert(nlk_node_rpc_call(&node_host, 0x0001U, 4U,
+                                     NLK_KB_OP_SET_ACTIVE_LAYER, &lreq, sizeof(lreq),
+                                     NULL, &rlen, 100U) == 0);
+            assert(nk60_kb.active_layer == 3U);
+
+            /* Switch back to 0 */
+            lreq.active_layer = 0U;
+            assert(nlk_node_rpc_call(&node_host, 0x0001U, 4U,
+                                     NLK_KB_OP_SET_ACTIVE_LAYER, &lreq, sizeof(lreq),
+                                     NULL, &rlen, 100U) == 0);
+        }
+
+        /* 13d. Macro Configuration and Live Recording (0x13U, 0x14U, 0x15U, 0x16U) */
+        {
+            uint8_t mbuf[sizeof(struct nlk_kb_macro_cfg_hdr) + 2U * sizeof(struct nlk_kb_macro_step)];
+            struct nlk_kb_macro_cfg_hdr *mhdr = (struct nlk_kb_macro_cfg_hdr *)mbuf;
+            struct nlk_kb_macro_step *msteps = (struct nlk_kb_macro_step *)(mbuf + sizeof(*mhdr));
+            struct nlk_kb_macro_list_resp mlist;
+            struct nlk_kb_macro_record_req rreq;
+            uint8_t q_mid;
+            uint8_t get_buf[sizeof(struct nlk_kb_macro_cfg_hdr) + 8U * sizeof(struct nlk_kb_macro_step)];
+            uint16_t rlen;
+
+            /* Configure Macro 1 */
+            memset(mbuf, 0, sizeof(mbuf));
+            mhdr->macro_id = 1U;
+            mhdr->step_count = 2U;
+            mhdr->repeat_count = 1U;
+            strncpy(mhdr->name, "Copy-Macro", NLK_KB_MACRO_NAME_MAX - 1U);
+            msteps[0].type = NLK_KB_MACRO_ACT_KEY_DOWN;
+            msteps[0].key_code = 0xE0U; /* KC_LCTRL */
+            msteps[0].delay_ms = 10U;
+            msteps[1].type = NLK_KB_MACRO_ACT_KEY_TAP;
+            msteps[1].key_code = 0x06U; /* KC_C */
+            msteps[1].delay_ms = 20U;
+
+            rlen = 0U;
+            assert(nlk_node_rpc_call(&node_host, 0x0001U, 4U,
+                                     NLK_KB_OP_SET_MACRO, mbuf, sizeof(mbuf),
+                                     NULL, &rlen, 100U) == 0);
+
+            /* Read back Macro 1 */
+            q_mid = 1U;
+            rlen = sizeof(get_buf);
+            assert(nlk_node_rpc_call(&node_host, 0x0001U, 4U,
+                                     NLK_KB_OP_GET_MACRO, &q_mid, sizeof(q_mid),
+                                     get_buf, &rlen, 100U) == 0);
+            assert(((struct nlk_kb_macro_cfg_hdr *)get_buf)->step_count == 2U);
+            assert(strcmp(((struct nlk_kb_macro_cfg_hdr *)get_buf)->name, "Copy-Macro") == 0);
+
+            /* Live Recording: Start recording Macro 2 */
+            memset(&rreq, 0, sizeof(rreq));
+            rreq.macro_id = 2U;
+            rreq.record_cmd = 1U; /* START */
+            rlen = 0U;
+            assert(nlk_node_rpc_call(&node_host, 0x0001U, 4U,
+                                     NLK_KB_OP_RECORD_MACRO, &rreq, sizeof(rreq),
+                                     NULL, &rlen, 100U) == 0);
+            assert(nk60_kb.recording_macro_id == 2U);
+
+            /* Inject physical key press -> recorded into Macro 2 */
+            assert(nlk_cap_keyboard_record_macro_step(&nk60_kb, NLK_KB_MACRO_ACT_KEY_DOWN, 0x04U, 25U) == 0);
+            assert(nlk_cap_keyboard_record_macro_step(&nk60_kb, NLK_KB_MACRO_ACT_KEY_UP, 0x04U, 25U) == 0);
+            assert(nk60_kb.macro_info[2].step_count == 2U);
+
+            /* Stop recording */
+            rreq.record_cmd = 0U; /* STOP */
+            assert(nlk_node_rpc_call(&node_host, 0x0001U, 4U,
+                                     NLK_KB_OP_RECORD_MACRO, &rreq, sizeof(rreq),
+                                     NULL, &rlen, 100U) == 0);
+            assert(nk60_kb.recording_macro_id == 0xFFU);
+
+            /* Query macro list */
+            rlen = sizeof(mlist);
+            assert(nlk_node_rpc_call(&node_host, 0x0001U, 4U,
+                                     NLK_KB_OP_GET_MACRO_LIST, NULL, 0U,
+                                     &mlist, &rlen, 100U) == 0);
+            assert(mlist.macro_count == NLK_KB_MAX_MACROS);
+            assert(mlist.macros[1].step_count == 2U);
+            assert(mlist.macros[2].step_count == 2U);
+        }
+
+        /* 13e. Key Action Binding and Metadata Query (0x17U) */
+        {
+            struct nlk_kb_action_list_resp aresp;
+            struct nlk_kb_bind_action_req breq;
+            struct nlk_kb_get_key_actions_req greq;
+            struct nlk_kb_key_actions_resp kresp;
+            struct nlk_kb_unbind_action_req ureq;
+            uint32_t act_bm[2];
+            int prev_called;
+            uint16_t rlen;
+
+            assert(nlk_cap_keyboard_register_action(&nk60_kb, "MUTE", "Mute Audio",
+                                                   mock_test_action_handler, NULL) == 0);
+
+            rlen = sizeof(aresp);
+            assert(nlk_node_rpc_call(&node_host, 0x0001U, 4U,
+                                     NLK_KB_OP_GET_ACTIONS, NULL, 0U,
+                                     &aresp, &rlen, 100U) == 0);
+            assert(aresp.action_count >= 4U);
+            assert(strcmp(aresp.actions[aresp.action_count - 1U].name, "MUTE") == 0);
+
+            /* 13e-1. Test NLK_KB_OP_BIND_ACTION (0x24U) & NLK_KB_OP_GET_KEY_ACTIONS (0x26U) */
+            memset(&breq, 0, sizeof(breq));
+            breq.layer = 0U;
+            breq.key_index = 10U;
+            breq.append = 0U;
+            strncpy(breq.action_name, "MUTE", sizeof(breq.action_name) - 1);
+            rlen = 0U;
+            assert(nlk_node_rpc_call(&node_host, 0x0001U, 4U,
+                                     NLK_KB_OP_BIND_ACTION, &breq, sizeof(breq),
+                                     NULL, &rlen, 100U) == 0);
+
+            memset(&greq, 0, sizeof(greq));
+            greq.layer = 0U;
+            greq.key_index = 10U;
+            rlen = sizeof(kresp);
+            assert(nlk_node_rpc_call(&node_host, 0x0001U, 4U,
+                                     NLK_KB_OP_GET_KEY_ACTIONS, &greq, sizeof(greq),
+                                     &kresp, &rlen, 100U) == 0);
+            assert(kresp.action_count == 1U);
+            assert(strcmp(kresp.action_names[0], "MUTE") == 0);
+
+            /* 13e-2. Test NLK_KB_OP_UNBIND_ACTION (0x25U) */
+            memset(&ureq, 0, sizeof(ureq));
+            ureq.layer = 0U;
+            ureq.key_index = 10U;
+            strncpy(ureq.action_name, "MUTE", sizeof(ureq.action_name) - 1);
+            rlen = 0U;
+            assert(nlk_node_rpc_call(&node_host, 0x0001U, 4U,
+                                     NLK_KB_OP_UNBIND_ACTION, &ureq, sizeof(ureq),
+                                     NULL, &rlen, 100U) == 0);
+
+            rlen = sizeof(kresp);
+            assert(nlk_node_rpc_call(&node_host, 0x0001U, 4U,
+                                     NLK_KB_OP_GET_KEY_ACTIONS, &greq, sizeof(greq),
+                                     &kresp, &rlen, 100U) == 0);
+            assert(kresp.action_count == 0U);
+
+            /* 13e-3. 验证动作链三态执行语义：未返回值动作保护、多动作顺序覆盖、动作拦截 */
+            assert(nlk_cap_keyboard_register_action(&nk60_kb, "REMAP_B", "Remap to B",
+                                                   mock_remap_b_handler, NULL) == 0);
+            assert(nlk_cap_keyboard_register_action(&nk60_kb, "DROP", "Drop Key",
+                                                   mock_drop_handler, NULL) == 0);
+
+            /* 步骤 1: 绑定未返回按键值的动作 MUTE 到 key 0 (Layer 0, 默认为 KC_A = 0x04) */
+            memset(&breq, 0, sizeof(breq));
+            breq.layer = 0U;
+            breq.key_index = 0U;
+            breq.append = 0U;
+            strncpy(breq.action_name, "MUTE", sizeof(breq.action_name) - 1);
+            rlen = 0U;
+            assert(nlk_node_rpc_call(&node_host, 0x0001U, 4U,
+                                     NLK_KB_OP_BIND_ACTION, &breq, sizeof(breq),
+                                     NULL, &rlen, 100U) == 0);
+
+            prev_called = g_test_action_called;
+            act_bm[0] = (1UL << 0U);
+            act_bm[1] = 0U;
+            assert(nlk_cap_keyboard_update_local_keys(&nk60_kb, act_bm, 16U) == 0);
+            assert(g_test_action_called > prev_called); /* 动作被成功触发 */
+            assert(nk60_kb.last_report.keys[0] == 0x04U); /* 未返回键码时，原键码 0x04 保留，未被置 0! */
+
+            act_bm[0] = 0U;
+            assert(nlk_cap_keyboard_update_local_keys(&nk60_kb, act_bm, 16U) == 0);
+            assert(nk60_kb.last_report.keys[0] == 0U);
+
+            /* 步骤 2: 动作链 [MUTE (0), REMAP_B (0x05), MUTE (0)]，以最后一个有效输出为准，且后续 PASS 不覆盖 */
+            breq.append = 1U;
+            strncpy(breq.action_name, "REMAP_B", sizeof(breq.action_name) - 1);
+            rlen = 0U;
+            assert(nlk_node_rpc_call(&node_host, 0x0001U, 4U,
+                                     NLK_KB_OP_BIND_ACTION, &breq, sizeof(breq),
+                                     NULL, &rlen, 100U) == 0);
+
+            strncpy(breq.action_name, "MUTE", sizeof(breq.action_name) - 1);
+            rlen = 0U;
+            assert(nlk_node_rpc_call(&node_host, 0x0001U, 4U,
+                                     NLK_KB_OP_BIND_ACTION, &breq, sizeof(breq),
+                                     NULL, &rlen, 100U) == 0);
+
+            act_bm[0] = (1UL << 0U);
+            assert(nlk_cap_keyboard_update_local_keys(&nk60_kb, act_bm, 16U) == 0);
+            assert(nk60_kb.last_report.keys[0] == 0x05U); /* REMAP_B 输出 0x05，后续 MUTE 不覆盖 */
+
+            act_bm[0] = 0U;
+            assert(nlk_cap_keyboard_update_local_keys(&nk60_kb, act_bm, 16U) == 0);
+
+            /* 步骤 3: 绑定拦截动作 DROP 到 key 0，按键应被拦截不产生 HID 上报 */
+            breq.append = 0U;
+            strncpy(breq.action_name, "DROP", sizeof(breq.action_name) - 1);
+            rlen = 0U;
+            assert(nlk_node_rpc_call(&node_host, 0x0001U, 4U,
+                                     NLK_KB_OP_BIND_ACTION, &breq, sizeof(breq),
+                                     NULL, &rlen, 100U) == 0);
+
+            act_bm[0] = (1UL << 0U);
+            assert(nlk_cap_keyboard_update_local_keys(&nk60_kb, act_bm, 16U) == 0);
+            assert(nk60_kb.last_report.keys[0] == 0U); /* DROP 成功拦截按键，上报 0 */
+
+            act_bm[0] = 0U;
+            assert(nlk_cap_keyboard_update_local_keys(&nk60_kb, act_bm, 16U) == 0);
+
+            /* 步骤 4: 验证 caps_lock 动作触发大写锁定特殊灯效及解除 */
+            assert(nlk_cap_keyboard_register_action(&nk60_kb, "caps_lock", "Caps Lock Action",
+                                                   mock_caps_lock_action, &nk60_kb) == 0);
+            breq.append = 0U;
+            strncpy(breq.action_name, "caps_lock", sizeof(breq.action_name) - 1);
+            rlen = 0U;
+            assert(nlk_node_rpc_call(&node_host, 0x0001U, 4U,
+                                     NLK_KB_OP_BIND_ACTION, &breq, sizeof(breq),
+                                     NULL, &rlen, 100U) == 0);
+
+            /* 第一次按下：开启大写锁定，触发特殊灯效，且原键码 0x04 正常上报 */
+            act_bm[0] = (1UL << 0U);
+            assert(nlk_cap_keyboard_update_local_keys(&nk60_kb, act_bm, 16U) == 0);
+            assert(g_mock_caps_active == true);
+            assert(nk60_kb.light_cfg.effect_id == NLK_KB_LIGHT_EFF_CAPS_LOCK);
+            assert((nk60_kb.indicator_leds & NLK_KB_IND_CAPS_LOCK) != 0U);
+            assert(nk60_kb.last_report.keys[0] == 0x04U);
+
+            act_bm[0] = 0U;
+            assert(nlk_cap_keyboard_update_local_keys(&nk60_kb, act_bm, 16U) == 0);
+
+            /* 第二次按下：关闭大写锁定，恢复常规灯效 */
+            act_bm[0] = (1UL << 0U);
+            assert(nlk_cap_keyboard_update_local_keys(&nk60_kb, act_bm, 16U) == 0);
+            assert(g_mock_caps_active == false);
+            assert(nk60_kb.light_cfg.effect_id != NLK_KB_LIGHT_EFF_CAPS_LOCK);
+            assert((nk60_kb.indicator_leds & NLK_KB_IND_CAPS_LOCK) == 0U);
+
+            act_bm[0] = 0U;
+            assert(nlk_cap_keyboard_update_local_keys(&nk60_kb, act_bm, 16U) == 0);
+
+            /* 清理：解绑 key 0 的动作链 */
+            memset(&ureq, 0, sizeof(ureq));
+            ureq.layer = 0U;
+            ureq.key_index = 0U;
+            ureq.action_name[0] = '\0';
+            rlen = 0U;
+            assert(nlk_node_rpc_call(&node_host, 0x0001U, 4U,
+                                     NLK_KB_OP_UNBIND_ACTION, &ureq, sizeof(ureq),
+                                     NULL, &rlen, 100U) == 0);
+        }
+
+        /* 13f. Keyboard Parameters Configuration & Reset (0x18U, 0x19U, 0x1AU) */
+        {
+            struct nlk_kb_params params;
+            uint16_t rlen;
+
+            /* Get current params */
+            rlen = sizeof(params);
+            assert(nlk_node_rpc_call(&node_host, 0x0001U, 4U,
+                                     NLK_KB_OP_GET_PARAMS, NULL, 0U,
+                                     &params, &rlen, 100U) == 0);
+            assert(rlen == sizeof(params));
+
+            /* Update params */
+            params.debounce_ms = 15U;
+            params.poll_rate_hz = 500U;
+            params.nkro_enable = 1U;
+            params.win_lock = 1U;
+            rlen = 0U;
+            assert(nlk_node_rpc_call(&node_host, 0x0001U, 4U,
+                                     NLK_KB_OP_SET_PARAMS, &params, sizeof(params),
+                                     NULL, &rlen, 100U) == 0);
+            assert(nk60_kb.desc.debounce_ms == 15U);
+            assert(nk60_kb.desc.poll_rate_hz == 500U);
+
+            /* Reset params */
+            rlen = 0U;
+            assert(nlk_node_rpc_call(&node_host, 0x0001U, 4U,
+                                     NLK_KB_OP_RESET_PARAMS, NULL, 0U,
+                                     NULL, &rlen, 100U) == 0);
+            assert(nk60_kb.desc.debounce_ms == 5U);
+            assert(nk60_kb.desc.poll_rate_hz == 1000U);
+        }
+
+        /* 13g. Multi-Profile Storage & Preset Slots in Flash (0x1BU, 0x1CU, 0x1DU) */
+        {
+            struct nlk_kb_profile_info_resp presp;
+            struct nlk_kb_profile_slot_req sreq;
+            uint16_t rlen;
+
+            assert(nlk_cap_keyboard_set_profile_cbs(&nk60_kb, mock_test_save_cb,
+                                                   mock_test_load_cb, mock_test_info_cb, NULL) == 0);
+
+            /* Save to Slot 1 */
+            memset(&sreq, 0, sizeof(sreq));
+            sreq.slot_id = 1U;
+            rlen = 0U;
+            assert(nlk_node_rpc_call(&node_host, 0x0001U, 4U,
+                                     NLK_KB_OP_SAVE_PROFILE, &sreq, sizeof(sreq),
+                                     NULL, &rlen, 100U) == 0);
+            assert(g_test_mock_active == 1U);
+            assert((g_test_mock_mask & (1U << 1)) != 0U);
+
+            /* Save to Slot 2 */
+            sreq.slot_id = 2U;
+            assert(nlk_node_rpc_call(&node_host, 0x0001U, 4U,
+                                     NLK_KB_OP_SAVE_PROFILE, &sreq, sizeof(sreq),
+                                     NULL, &rlen, 100U) == 0);
+            assert(g_test_mock_active == 2U);
+
+            /* Query Profile Info */
+            rlen = sizeof(presp);
+            assert(nlk_node_rpc_call(&node_host, 0x0001U, 4U,
+                                     NLK_KB_OP_GET_PROFILE_INFO, NULL, 0U,
+                                     &presp, &rlen, 100U) == 0);
+            assert(presp.slot_count == NLK_KB_MAX_PROFILE_SLOTS);
+            assert(presp.active_slot == 2U);
+            assert(presp.saved_slots_mask == ((1U << 1) | (1U << 2)));
+
+            /* Load Slot 1 back */
+            sreq.slot_id = 1U;
+            assert(nlk_node_rpc_call(&node_host, 0x0001U, 4U,
+                                     NLK_KB_OP_LOAD_PROFILE, &sreq, sizeof(sreq),
+                                     NULL, &rlen, 100U) == 0);
+            assert(g_test_mock_active == 1U);
         }
     }
 
