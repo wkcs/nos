@@ -13,6 +13,7 @@
 
 #include <kernel/init.h>
 #include <nos/keyboard.h>
+#include "nk60_light_effects.h"
 
 #define NK60_KEY_NUM        61U
 #define NK60_KEY_LAYER_NUM  3U
@@ -97,7 +98,7 @@ static const struct nlk_kb_zone_light_cfg g_nk60_default_zone_cfgs[3] = {
     {
         .zone_id    = 0U,
         .enable     = 1U,
-        .effect_id  = NLK_KB_LIGHT_EFF_GRADIENT_WAVE,
+        .effect_id  = NK60_EFFECT_RAINBOW,
         .brightness = 200U,
         .speed      = 128U,
         .color_r    = 255U,
@@ -107,7 +108,7 @@ static const struct nlk_kb_zone_light_cfg g_nk60_default_zone_cfgs[3] = {
     {
         .zone_id    = 1U,
         .enable     = 1U,
-        .effect_id  = NLK_KB_LIGHT_EFF_BREATH,
+        .effect_id  = NK60_EFFECT_BREATH,
         .brightness = 180U,
         .speed      = 96U,
         .color_r    = 0U,
@@ -117,7 +118,7 @@ static const struct nlk_kb_zone_light_cfg g_nk60_default_zone_cfgs[3] = {
     {
         .zone_id    = 2U,
         .enable     = 1U,
-        .effect_id  = NLK_KB_LIGHT_EFF_STATIC,
+        .effect_id  = NK60_EFFECT_STATIC,
         .brightness = 255U,
         .speed      = 0U,
         .color_r    = 255U,
@@ -216,6 +217,9 @@ static const struct keyboard_profile g_nk60_kb_profile = {
     /* Multi-Layout Registration */
     .layout_count       = 2U,
     .layouts            = g_nk60_layouts,
+
+    .light_effect_count = (uint8_t)(sizeof(g_nk60_light_effects) / sizeof(g_nk60_light_effects[0])),
+    .light_effects      = g_nk60_light_effects,
 
     /* Multi-Zone Backlight Registration */
     .light_zone_count   = 3U,

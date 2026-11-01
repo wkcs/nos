@@ -21,6 +21,14 @@
 #include <fs/vfs.h>
 #include <nos/nlk_core.h>
 #include <nos/nlk_caps.h>
+
+/* Test fixture IDs, local to the mock keyboard. */
+enum {
+    NLK_KB_LIGHT_EFF_OFF, NLK_KB_LIGHT_EFF_STATIC, NLK_KB_LIGHT_EFF_BREATH,
+    NLK_KB_LIGHT_EFF_GRADIENT_WAVE, NLK_KB_LIGHT_EFF_REACTIVE,
+    NLK_KB_LIGHT_EFF_RIPPLE, NLK_KB_LIGHT_EFF_DIRECT_STREAM,
+    NLK_KB_LIGHT_EFF_CAPS_LOCK
+};
 #include "include/nlk_bearers.h"
 
 #include <assert.h>
@@ -32,7 +40,16 @@
 addr_t kernel_running = 1;
 addr_t disable_irq_save(void) { return 0; }
 void enable_irq_save(addr_t flags) { (void)flags; }
-void *kmalloc(size_t size, gfp_t flags) { (void)flags; return malloc(size); }
+static bool fail_next_kmalloc;
+void *kmalloc(size_t size, gfp_t flags)
+{
+    (void)flags;
+    if (fail_next_kmalloc) {
+        fail_next_kmalloc = false;
+        return NULL;
+    }
+    return malloc(size);
+}
 void kfree(void *ptr) { free(ptr); }
 int console_write_room(void) { return 0; }
 bool console_is_panic(void) { return false; }
@@ -2140,6 +2157,121 @@ int main(void)
             assert(mlist.macro_count == NLK_KB_MAX_MACROS);
             assert(mlist.macros[1].step_count == 2U);
             assert(mlist.macros[2].step_count == 2U);
+        }
+
+        /* Effects are registered by each device and discovered over NLK. */
+        {
+            struct nlk_kb_light_effect_list_resp effects;
+            struct nlk_kb_light_cfg cfg = nk60_kb.light_cfg;
+            uint16_t effect_len = sizeof(effects);
+
+            assert(nlk_cap_keyboard_register_light_effect(&nk60_kb, "custom", "Custom effect", NULL, NULL) == 0);
+            assert(nlk_cap_keyboard_register_light_effect(&nk60_kb, "custom", "Updated", NULL, NULL) == 0);
+            assert(nlk_node_rpc_call(&node_host, 0x0001U, 4U,
+                                     NLK_KB_OP_GET_LIGHT_EFFECTS, NULL, 0U,
+                                     &effects, &effect_len, 100U) == 0);
+            assert(effect_len == sizeof(effects));
+            assert(effects.effect_count == 1U);
+            assert(effects.effects[0].effect_id == 0U);
+            assert(strcmp(effects.effects[0].name, "custom") == 0);
+            assert(strcmp(effects.effects[0].desc, "Updated") == 0);
+            cfg.effect_id = 0U;
+            cfg.brightness = 123U;
+            effect_len = 0U;
+            assert(nlk_node_rpc_call(&node_host, 0x0001U, 4U,
+                                     NLK_KB_OP_SET_LIGHT_CFG, &cfg, sizeof(cfg),
+                                     NULL, &effect_len, 100U) == 0);
+            assert(nk60_kb.zone_cfgs[0].effect_id == 0U);
+            assert(nk60_kb.zone_cfgs[0].brightness == 123U);
+            assert(nlk_cap_keyboard_register_light_effect(&keypad_kb, "other", "Other", NULL, NULL) == 0);
+            assert(nlk_cap_keyboard_register_light_effect(&keypad_kb, "custom", "Custom", NULL, NULL) == 0);
+            assert(nlk_cap_keyboard_broadcast_light_beacon(&nk60_kb, 6000U) >= 0);
+            assert(keypad_kb.light_cfg.effect_id == 1U);
+
+            cfg.effect_id = 99U;
+            effect_len = 0U;
+            assert(nlk_node_rpc_call(&node_host, 0x0001U, 4U,
+                                     NLK_KB_OP_SET_LIGHT_CFG, &cfg, sizeof(cfg),
+                                     NULL, &effect_len, 100U) < 0);
+            assert(nk60_kb.light_cfg.effect_id != 99U);
+
+            /* Registration is not limited to the number that fits in one packet. */
+            for (unsigned int i = 1U; i < 25U; i++) {
+                char name[16];
+                snprintf(name, sizeof(name), "effect_%u", i);
+                assert(nlk_cap_keyboard_register_light_effect(&nk60_kb, name,
+                                                             "Extra effect", NULL, NULL) == 0);
+            }
+            assert(nk60_kb.light_effect_count == 25U);
+            assert(nlk_cap_keyboard_register_light_effect(&nk60_kb, "effect_24",
+                                                         "Updated 24", NULL, NULL) == 0);
+            assert(nk60_kb.light_effect_count == 25U);
+            {
+                struct nlk_kb_light_effect_page_req req;
+                struct nlk_kb_light_effect_page_resp page;
+                unsigned int start;
+                for (start = 0U; start < 25U; start += 6U) {
+                    req.start_index = (uint16_t)start;
+                    effect_len = sizeof(page);
+                    assert(nlk_node_rpc_call(&node_host, 0x0001U, 4U,
+                                             NLK_KB_OP_GET_LIGHT_EFFECTS_PAGE,
+                                             &req, sizeof(req), &page, &effect_len, 100U) == 0);
+                    assert(page.total_count == 25U);
+                    assert(page.count == ((25U - start < 6U) ? 25U - start : 6U));
+                    assert(page.effects[0].effect_id == start);
+                    if (start == 24U) {
+                        assert(strcmp(page.effects[0].name, "effect_24") == 0);
+                        assert(strcmp(page.effects[0].desc, "Updated 24") == 0);
+                    }
+                }
+                req.start_index = 25U;
+                effect_len = sizeof(page);
+                assert(nlk_node_rpc_call(&node_host, 0x0001U, 4U,
+                                         NLK_KB_OP_GET_LIGHT_EFFECTS_PAGE,
+                                         &req, sizeof(req), &page, &effect_len, 100U) == 0);
+                assert(page.count == 0U && page.total_count == 25U);
+                req.start_index = 26U;
+                effect_len = sizeof(page);
+                assert(nlk_node_rpc_call(&node_host, 0x0001U, 4U,
+                                         NLK_KB_OP_GET_LIGHT_EFFECTS_PAGE,
+                                         &req, sizeof(req), &page, &effect_len, 100U) < 0);
+                effect_len = sizeof(effects);
+                assert(nlk_node_rpc_call(&node_host, 0x0001U, 4U,
+                                         NLK_KB_OP_GET_LIGHT_EFFECTS, NULL, 0U,
+                                         &effects, &effect_len, 100U) == 0);
+                assert(effects.effect_count == 6U);
+            }
+            cfg.effect_id = 24U;
+            effect_len = 0U;
+            assert(nlk_node_rpc_call(&node_host, 0x0001U, 4U,
+                                     NLK_KB_OP_SET_LIGHT_CFG, &cfg, sizeof(cfg),
+                                     NULL, &effect_len, 100U) == 0);
+            assert(nk60_kb.light_cfg.effect_id == 24U);
+            assert(nlk_cap_keyboard_register_light_effect(&keypad_kb, "effect_24", "", NULL, NULL) == 0);
+            assert(nlk_cap_keyboard_broadcast_light_beacon(&nk60_kb, 7000U) >= 0);
+            assert(keypad_kb.light_cfg.effect_id == 2U);
+            fail_next_kmalloc = true;
+            assert(nlk_cap_keyboard_register_light_effect(&nk60_kb, "no_memory", "", NULL, NULL) == -ENOMEM);
+            assert(nk60_kb.light_effect_count == 25U);
+            for (unsigned int i = 25U; i < 256U; i++) {
+                char name[16];
+                snprintf(name, sizeof(name), "effect_%u", i);
+                assert(nlk_cap_keyboard_register_light_effect(&nk60_kb, name, "", NULL, NULL) == 0);
+            }
+            assert(nk60_kb.light_effect_count == 256U);
+            assert(nlk_cap_keyboard_find_light_effect(&nk60_kb, 255U) != NULL);
+            assert(nlk_cap_keyboard_register_light_effect(&nk60_kb, "overflow", "", NULL, NULL) == -ENOSPC);
+            assert(nlk_cap_keyboard_register_light_effect(&nk60_kb, "effect_24", "Again", NULL, NULL) == 0);
+            {
+                struct nlk_kb_light_effect_page_req req = { .start_index = 255U };
+                struct nlk_kb_light_effect_page_resp page;
+                effect_len = sizeof(page);
+                assert(nlk_node_rpc_call(&node_host, 0x0001U, 4U,
+                                         NLK_KB_OP_GET_LIGHT_EFFECTS_PAGE,
+                                         &req, sizeof(req), &page, &effect_len, 100U) == 0);
+                assert(page.total_count == 256U && page.count == 1U);
+                assert(page.effects[0].effect_id == 255U);
+            }
         }
 
         /* 13e. Key Action Binding and Metadata Query (0x17U) */

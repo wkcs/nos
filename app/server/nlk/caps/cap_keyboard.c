@@ -7,6 +7,7 @@
  */
 
 #include <nos/nlk_caps.h>
+#include <kernel/mm.h>
 #include <uapi/nos/errno.h>
 #include <string.h>
 
@@ -314,7 +315,21 @@ static int kb_on_rpc(struct nlk_node *node, struct nlk_capability *cap,
         if (req == NULL || req_len < sizeof(ctx->light_cfg)) {
             return -EINVAL;
         }
+        if (ctx->light_effect_count != 0U &&
+            ((const struct nlk_kb_light_cfg *)req)->effect_id >= ctx->light_effect_count) {
+            return -EINVAL;
+        }
         memcpy(&ctx->light_cfg, req, sizeof(ctx->light_cfg));
+        if (ctx->light_zone_count > 0U) {
+            struct nlk_kb_zone_light_cfg *zone = &ctx->zone_cfgs[0];
+            zone->enable = ctx->light_cfg.enable;
+            zone->effect_id = ctx->light_cfg.effect_id;
+            zone->brightness = ctx->light_cfg.brightness;
+            zone->speed = ctx->light_cfg.speed;
+            zone->color_r = ctx->light_cfg.color_r;
+            zone->color_g = ctx->light_cfg.color_g;
+            zone->color_b = ctx->light_cfg.color_b;
+        }
         if (ctx->light_cb != NULL) {
             ctx->light_cb(&ctx->light_cfg, NULL, ctx->indicator_leds, ctx->light_priv);
         }
@@ -403,6 +418,51 @@ static int kb_on_rpc(struct nlk_node *node, struct nlk_capability *cap,
         return 0;
     }
 
+    case NLK_KB_OP_GET_LIGHT_EFFECTS: {
+        struct nlk_kb_light_effect_list_resp *effects = resp;
+        const struct nlk_kb_effect_entry *entry;
+        uint16_t i;
+        uint16_t count = ctx->light_effect_count;
+        if (effects == NULL) {
+            return -EINVAL;
+        }
+        if (count > NLK_KB_LIGHT_EFFECTS_PER_PAGE) {
+            count = NLK_KB_LIGHT_EFFECTS_PER_PAGE;
+        }
+        memset(effects, 0, sizeof(*effects));
+        effects->effect_count = (uint8_t)count;
+        entry = ctx->light_effects;
+        for (i = 0U; i < count && entry != NULL; i++, entry = entry->next) {
+            effects->effects[i] = entry->info;
+        }
+        *resp_len = sizeof(*effects);
+        return 0;
+    }
+
+    case NLK_KB_OP_GET_LIGHT_EFFECTS_PAGE: {
+        const struct nlk_kb_light_effect_page_req *page_req = req;
+        struct nlk_kb_light_effect_page_resp *page = resp;
+        const struct nlk_kb_effect_entry *entry;
+        uint16_t i;
+
+        if (page_req == NULL || req_len < sizeof(*page_req) || page == NULL ||
+            page_req->start_index > ctx->light_effect_count) {
+            return -EINVAL;
+        }
+        memset(page, 0, sizeof(*page));
+        page->total_count = ctx->light_effect_count;
+        entry = ctx->light_effects;
+        for (i = 0U; i < page_req->start_index && entry != NULL; i++) {
+            entry = entry->next;
+        }
+        while (entry != NULL && page->count < NLK_KB_LIGHT_EFFECTS_PER_PAGE) {
+            page->effects[page->count++] = entry->info;
+            entry = entry->next;
+        }
+        *resp_len = sizeof(*page);
+        return 0;
+    }
+
     case NLK_KB_OP_GET_LIGHT_ZONES: {
         struct nlk_kb_light_zones_resp *zresp = (struct nlk_kb_light_zones_resp *)resp;
         if (resp == NULL) {
@@ -440,6 +500,9 @@ static int kb_on_rpc(struct nlk_node *node, struct nlk_capability *cap,
             return -EINVAL;
         }
         if (zcfg->zone_id >= NLK_KB_MAX_LIGHT_ZONES) {
+            return -EINVAL;
+        }
+        if (ctx->light_effect_count != 0U && zcfg->effect_id >= ctx->light_effect_count) {
             return -EINVAL;
         }
         ctx->zone_cfgs[zcfg->zone_id] = *zcfg;
@@ -865,7 +928,19 @@ static int kb_on_event(struct nlk_node *node, struct nlk_capability *cap,
             return -EINVAL;
         }
         memcpy(&ctx->last_light_beacon, evt, sizeof(ctx->last_light_beacon));
-        ctx->light_cfg.effect_id = ctx->last_light_beacon.effect_id;
+        if (ctx->light_effect_count == 0U) {
+            ctx->light_cfg.effect_id = ctx->last_light_beacon.effect_id;
+        } else if (evt_len >= sizeof(struct nlk_kb_named_light_sync_beacon)) {
+            const struct nlk_kb_named_light_sync_beacon *named = evt;
+            const struct nlk_kb_effect_entry *entry;
+            for (entry = ctx->light_effects; entry != NULL; entry = entry->next) {
+                if (strncmp(named->effect_name, entry->info.name,
+                            NLK_KB_LIGHT_EFFECT_NAME_MAX) == 0) {
+                    ctx->light_cfg.effect_id = entry->info.effect_id;
+                    break;
+                }
+            }
+        }
         ctx->light_cfg.speed = ctx->last_light_beacon.speed;
         ctx->light_cfg.brightness = ctx->last_light_beacon.brightness;
         if (ctx->light_cb != NULL) {
@@ -1102,7 +1177,7 @@ int nlk_cap_keyboard_init(struct nlk_node *node, struct nlk_keyboard_ctx *ctx,
 
     ctx->light_cfg.enable = 1U;
     ctx->light_cfg.zone_mask = NLK_KB_LIGHT_ZONE_ALL;
-    ctx->light_cfg.effect_id = NLK_KB_LIGHT_EFF_GRADIENT_WAVE;
+    ctx->light_cfg.effect_id = 0U;
     ctx->light_cfg.brightness = 200U;
     ctx->light_cfg.speed = 128U;
 
@@ -1199,6 +1274,72 @@ int nlk_cap_keyboard_register_layout(struct nlk_keyboard_ctx *ctx,
         ctx->params.active_layout_id = layout->layout_id;
     }
     ctx->layout_count++;
+    return 0;
+}
+
+const struct nlk_kb_effect_entry *nlk_cap_keyboard_find_light_effect(
+    const struct nlk_keyboard_ctx *ctx, uint8_t effect_id)
+{
+    const struct nlk_kb_effect_entry *entry;
+
+    if (ctx == NULL) {
+        return NULL;
+    }
+    for (entry = ctx->light_effects; entry != NULL; entry = entry->next) {
+        if (entry->info.effect_id == effect_id) {
+            return entry;
+        }
+    }
+    return NULL;
+}
+
+int nlk_cap_keyboard_register_light_effect(struct nlk_keyboard_ctx *ctx,
+                                           const char *name, const char *desc,
+                                           nlk_kb_effect_render_fn_t handler, void *priv)
+{
+    struct nlk_kb_effect_entry *entry;
+
+    if (ctx == NULL || name == NULL || name[0] == '\0' ||
+        strlen(name) >= NLK_KB_LIGHT_EFFECT_NAME_MAX) {
+        return -EINVAL;
+    }
+    for (entry = ctx->light_effects; entry != NULL; entry = entry->next) {
+        if (strcmp(entry->info.name, name) == 0) {
+            break;
+        }
+    }
+    if (entry == NULL) {
+        if (ctx->light_effect_count >= 256U) {
+            return -ENOSPC; /* effect_id is an 8-bit wire field */
+        }
+        entry = kmalloc(sizeof(*entry), GFP_KERNEL);
+        if (entry == NULL) {
+            return -ENOMEM;
+        }
+        memset(entry, 0, sizeof(*entry));
+        entry->info.effect_id = (uint8_t)ctx->light_effect_count;
+        strcpy(entry->info.name, name);
+        if (desc != NULL) {
+            strncpy(entry->info.desc, desc, NLK_KB_LIGHT_EFFECT_DESC_MAX - 1U);
+            entry->info.desc[NLK_KB_LIGHT_EFFECT_DESC_MAX - 1U] = '\0';
+        }
+        entry->render = handler;
+        entry->priv = priv;
+        if (ctx->light_effects_tail != NULL) {
+            ctx->light_effects_tail->next = entry;
+        } else {
+            ctx->light_effects = entry;
+        }
+        ctx->light_effects_tail = entry;
+        ctx->light_effect_count++;
+        return 0;
+    }
+    if (desc != NULL) {
+        strncpy(entry->info.desc, desc, NLK_KB_LIGHT_EFFECT_DESC_MAX - 1U);
+        entry->info.desc[NLK_KB_LIGHT_EFFECT_DESC_MAX - 1U] = '\0';
+    }
+    entry->render = handler;
+    entry->priv = priv;
     return 0;
 }
 
@@ -1617,22 +1758,32 @@ int nlk_cap_keyboard_report_switches(struct nlk_keyboard_ctx *ctx,
 int nlk_cap_keyboard_broadcast_light_beacon(struct nlk_keyboard_ctx *ctx,
                                             uint32_t master_frame_tick)
 {
-    struct nlk_kb_light_sync_beacon beacon;
+    struct nlk_kb_named_light_sync_beacon named;
+    uint16_t len = sizeof(named.beacon);
 
     if (ctx == NULL || ctx->node == NULL) {
         return -EINVAL;
     }
-    beacon.master_frame_tick = master_frame_tick;
-    beacon.effect_id = ctx->light_cfg.effect_id;
-    beacon.speed = ctx->light_cfg.speed;
-    beacon.brightness = ctx->light_cfg.brightness;
-    beacon.hue_offset = (uint8_t)(master_frame_tick & 0xFFU);
-    ctx->last_light_beacon = beacon;
+    memset(&named, 0, sizeof(named));
+    named.beacon.master_frame_tick = master_frame_tick;
+    named.beacon.effect_id = ctx->light_cfg.effect_id;
+    named.beacon.speed = ctx->light_cfg.speed;
+    named.beacon.brightness = ctx->light_cfg.brightness;
+    named.beacon.hue_offset = (uint8_t)(master_frame_tick & 0xFFU);
+    ctx->last_light_beacon = named.beacon;
+    {
+        const struct nlk_kb_effect_entry *entry =
+            nlk_cap_keyboard_find_light_effect(ctx, ctx->light_cfg.effect_id);
+        if (entry != NULL) {
+            memcpy(named.effect_name, entry->info.name, sizeof(named.effect_name));
+            len = sizeof(named);
+        }
+    }
 
     return nlk_node_send_event(ctx->node, NLK_ADDR_BROADCAST,
                                NLK_CAP_ID_BROADCAST,
                                NLK_KB_EVT_LIGHT_SYNC_BEACON,
-                               &beacon, sizeof(beacon), false);
+                               &named, len, false);
 }
 
 int nlk_cap_keyboard_set_profile_cbs(struct nlk_keyboard_ctx *ctx,
