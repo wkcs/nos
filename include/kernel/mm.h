@@ -209,5 +209,21 @@ __mem struct mm_node mm_node_##__name = { \
     __mm_node_register(__start, __end, NODE_RESERVE, __name)
 #define mm_node_register(__start, __end, __name) \
     __mm_node_register(__start, __end, NODE_NORMAL, __name)
+#define mm_tlsf_node_register(__start, __end, __name) \
+__mem struct mm_node mm_node_##__name = { \
+    .name = #__name, \
+    .start = __start, \
+    .end = __end, \
+    .type = NODE_NORMAL, \
+    .algo = MM_NODE_ALGO_TLSF, \
+}
+#define mm_buddy_node_register(__start, __end, __name) \
+__mem struct mm_node mm_node_##__name = { \
+    .name = #__name, \
+    .start = __start, \
+    .end = __end, \
+    .type = NODE_NORMAL, \
+    .algo = MM_NODE_ALGO_BUDDY, \
+}
 
 #endif /* __NOS_MEM_H__ */

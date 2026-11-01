@@ -52,3 +52,34 @@ size_t mm_tlsf_free_size(struct mm_tlsf_pool *pool);
 size_t mm_tlsf_used_size(struct mm_tlsf_pool *pool);
 size_t mm_tlsf_total_size(struct mm_tlsf_pool *pool);
 size_t mm_tlsf_max_free_block(struct mm_tlsf_pool *pool);
+
+#ifndef GFP_KERNEL
+#define GFP_KERNEL 1
+#define GFP_ZERO   (1 << 1)
+#endif
+
+struct kmem_cache {
+    const char *name;
+    size_t obj_size;
+    size_t slot_size;
+    size_t align;
+    u32 objs_per_slab;
+    u32 flags;
+    u32 active_objs;
+    u32 total_slabs;
+    struct list_head partial;
+    struct list_head full;
+    spinlock_t lock;
+    struct list_head node;
+};
+
+addr_t alloc_page(gfp_t flag);
+int free_page(addr_t addr);
+int mm_slub_init(void);
+struct kmem_cache *kmem_cache_create(const char *name, size_t size, size_t align, u32 flags);
+void *kmem_cache_alloc(struct kmem_cache *cache, gfp_t flag);
+int kmem_cache_free(struct kmem_cache *cache, void *obj);
+void kmem_cache_destroy(struct kmem_cache *cache);
+void *mm_slub_kmalloc(size_t size, gfp_t flag);
+int mm_slub_kfree(void *ptr);
+size_t mm_slub_obj_size(const void *ptr);
