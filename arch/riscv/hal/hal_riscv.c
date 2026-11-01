@@ -6,6 +6,7 @@
  */
 
 #include <nos/hal_arch.h>
+#include <nos/mm.h>
 #include <uapi/nos/errno.h>
 #include <asm/init.h>
 
@@ -25,11 +26,6 @@ struct nos_arch_context {
     uintptr_t s[12];
     uintptr_t sepc;
     uintptr_t sstatus;
-};
-
-struct nos_vm_space {
-    uintptr_t root_pt_phys;
-    uint16_t  asid;
 };
 
 void hal_arch_early_init(void)
@@ -126,20 +122,12 @@ void hal_irq_ack(uint32_t irq)
 
 int hal_vm_space_init(struct nos_vm_space *space)
 {
-    if (space == NULL) {
-        return -EINVAL;
-    }
-    space->root_pt_phys = 0U;
-    space->asid = 0U;
-    return 0;
+    return nos_vmm_space_init(space);
 }
 
 void hal_vm_space_destroy(struct nos_vm_space *space)
 {
-    if (space != NULL) {
-        space->root_pt_phys = 0U;
-        space->asid = 0U;
-    }
+    nos_vmm_space_destroy(space);
 }
 
 int hal_vm_map(struct nos_vm_space *space,
@@ -148,21 +136,12 @@ int hal_vm_map(struct nos_vm_space *space,
                size_t size,
                uint32_t prot_flags)
 {
-    (void)space;
-    (void)prot_flags;
-    if ((vaddr & 0xFFFUL) != 0UL || (paddr & 0xFFFUL) != 0UL || size == 0U) {
-        return -EINVAL;
-    }
-    return 0;
+    return nos_vmm_map_pages(space, vaddr, paddr, size, prot_flags);
 }
 
 int hal_vm_unmap(struct nos_vm_space *space, uintptr_t vaddr, size_t size)
 {
-    (void)space;
-    if ((vaddr & 0xFFFUL) != 0UL || size == 0U) {
-        return -EINVAL;
-    }
-    return 0;
+    return nos_vmm_unmap_pages(space, vaddr, size);
 }
 
 void hal_vm_switch(struct nos_vm_space *next_space)

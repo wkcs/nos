@@ -10,6 +10,7 @@ set(KERNEL_SRCS
     mm/mm_tlsf.c
     mm/mm_slub.c
     mm/vmm_mpu.c
+    mm/vmm_mmu.c
     mm/mm_node.c
     mm/mm_page.c
     sched/sched.c
