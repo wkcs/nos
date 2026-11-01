@@ -97,11 +97,45 @@ config SMP
 	help
 	  启用多核 SMP 支持。
 
+config NR_CPUS
+	int "Maximum number of CPUs"
+	default 4 if SMP
+	default 1
+	range 1 8
+	help
+	  系统支持的最大 CPU 核心数。单核模式下固定为 1。
+
+config SCHED_FAIR
+	bool "Enable CFS/EEVDF Fair Scheduling Class (SCHED_NORMAL)"
+	default y
+	help
+	  启用基于虚拟运行时间 (vruntime) 与 Nice 权重的公平调度类，与实时调度类并存。
+
 config SCHED_CPULOAD
 	bool "Track task CPU load statistics"
-	default n
+	default y
 	help
 	  启用任务 CPU 负载统计。
+
+config KALLSYMS
+	bool "Enable kernel symbol table lookup (kallsyms)"
+	default y
+	help
+	  启用内核符号表查找，用于栈回溯、WCHAN 显示与异常现场解析。
+
+config STACK_BACKTRACE
+	bool "Enable cross-task stack backtrace and crash unwinder"
+	default y
+	help
+	  启用零堆分配的双模栈回溯器（支持 Frame Pointer 与栈代码地址扫描）。
+
+config BACKTRACE_MAX_DEPTH
+	int "Maximum stack backtrace frame depth"
+	depends on STACK_BACKTRACE
+	default 12
+	range 4 32
+	help
+	  栈回溯最大帧深度。
 
 config PAGE_SIZE
 	int "Page size"
