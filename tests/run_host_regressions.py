@@ -62,6 +62,7 @@ TESTS = [
     ("run_task_stack_layout_test.py",),
     ("run_sched_multi_policy_test.py",),
     ("run_sched_load_dump_test.py",),
+    ("run_timer_test.py",),
     ("run_vfs_fd_lifetime_test.py",),
     ("run_vfs_fd_position_test.py",),
     ("run_ramfs_concurrency_test.py",),
