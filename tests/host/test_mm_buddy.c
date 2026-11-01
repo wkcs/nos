@@ -69,7 +69,46 @@ int main(void)
         assert(__free_pages(second, 1) == 0);
         assert(__free_pages(first, 1) == 0);
         assert(__alloc_pages(&node.buddy, 0, 2) == first);
+        assert(__free_pages(first, 2) == 0);
     }
+    for (u32 i = 0; i < CONFIG_MAX_ORDER; i++) pthread_mutex_destroy(&node.buddy.info[i].lock);
+
+    /* Test 4: Unaligned buddy_page_index=1 with 4 usable pages (page_num=5) forms Order-2 block
+     * and only links the head page into info[2].list (O(1) head-page invariant).
+     */
+    node.page_num = 5;
+    node.buddy_page_index = 1;
+    node.free_num = 4;
+    for (u32 i = 0; i < node.page_num; i++) {
+        pages[i].private = -1;
+        pages[i].use_cnt = (i < node.buddy_page_index) ? 1 : 0;
+        INIT_LIST_HEAD(&pages[i].list);
+    }
+    assert(mm_buddy_init(&node.buddy) == 0);
+    assert(node.buddy.info[2].free_num == 1);
+    assert(!list_empty(&pages[1].list));
+    assert(list_empty(&pages[2].list));
+    assert(list_empty(&pages[3].list));
+    assert(list_empty(&pages[4].list));
+    first = __alloc_pages(&node.buddy, 0, 2);
+    assert(first == node.start + 1 * CONFIG_PAGE_SIZE);
+    assert(node.free_num == 0);
+    assert(__free_pages(first, 2) == 0);
+    assert(node.free_num == 4);
+
+    /* Test 5: __alloc_pages_exact(3 pages) returns trailing 4th page immediately to Order-0 */
+    first = __alloc_pages_exact(&node.buddy, 3 * CONFIG_PAGE_SIZE, 0);
+    assert(first == node.start + 1 * CONFIG_PAGE_SIZE);
+    assert(node.free_num == 1);
+    second = __alloc_pages(&node.buddy, 0, 0);
+    assert(second == node.start + 4 * CONFIG_PAGE_SIZE);
+    assert(node.free_num == 0);
+    assert(__free_pages(second, 0) == 0);
+    assert(__free_pages_exact(first, 3 * CONFIG_PAGE_SIZE) == 0);
+    assert(node.free_num == 4);
+    assert(node.buddy.info[2].free_num == 1);
+    for (u32 i = 0; i < CONFIG_MAX_ORDER; i++) pthread_mutex_destroy(&node.buddy.info[i].lock);
+
     free(memory);
     return 0;
 }

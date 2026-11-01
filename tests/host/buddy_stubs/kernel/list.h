@@ -4,6 +4,8 @@
 struct list_head { struct list_head *next, *prev; };
 #define LIST_HEAD(n) struct list_head n = { &(n), &(n) }
 #define INIT_LIST_HEAD(h) ((h)->next = (h)->prev = (h))
+static inline int list_empty(const struct list_head *h) { return h->next == h; }
+static inline void list_add(struct list_head *e, struct list_head *h) { e->next = h->next; e->prev = h; h->next->prev = e; h->next = e; }
 static inline void list_add_tail(struct list_head *e, struct list_head *h) { e->next = h; e->prev = h->prev; h->prev->next = e; h->prev = e; }
 static inline void list_del_init(struct list_head *e) { e->prev->next = e->next; e->next->prev = e->prev; INIT_LIST_HEAD(e); }
 #define list_entry(p,t,m) ((t *)((char *)(p) - offsetof(t,m)))
