@@ -110,7 +110,7 @@ static struct task_struct *get_next_task(void)
 
     if (list_empty(&ready_task_list[highest_ready_priority])) {
         spin_unlock_irq(&ready_list_lock);
-        panic("Scheduler error: highest priority (%u) ready list is empty!\r\n", highest_ready_priority);
+        panic("Scheduler error: highest priority (%u) ready list is empty!\n", highest_ready_priority);
         return NULL;
     }
 
@@ -180,7 +180,7 @@ void switch_task(void)
         spin_lock_irq(&to_task->lock);
         if (to_task->status != TASK_READY && to_task->status != TASK_RUNING) {
             BUG_ON(true);
-            pr_err("%s task status=%d\r\n", to_task->name, to_task->status);
+            pr_err("%s task status=%d\n", to_task->name, to_task->status);
         }
         spin_lock_irq(&from_task->lock);
         if (from_task->status == TASK_RUNING) {
@@ -208,7 +208,7 @@ void switch_task(void)
 void add_task_to_ready_list_lock(struct task_struct *task)
 {
     if (task == NULL) {
-        pr_err("task is NULL\r\n");
+        pr_err("task is NULL\n");
         return;
     }
 
@@ -227,7 +227,7 @@ void add_task_to_ready_list_lock(struct task_struct *task)
 void add_task_to_ready_list(struct task_struct *task)
 {
     if (task == NULL) {
-        pr_err("task is NULL\r\n");
+        pr_err("task is NULL\n");
         return;
     }
 
@@ -254,13 +254,13 @@ void add_task_to_ready_list(struct task_struct *task)
 void del_task_to_ready_list_lock(struct task_struct *task)
 {
     if (task == NULL) {
-        pr_err("task is NULL\r\n");
+        pr_err("task is NULL\n");
         return;
     }
 
     if ((task->list_lock != &ready_list_lock) ||
         (task->status != TASK_READY && task->status != TASK_RUNING)) {
-        pr_err("%s is not ready task, status=%u\r\n", task->name, task->status);
+        pr_err("%s is not ready task, status=%u\n", task->name, task->status);
         return;
     }
     if (list_empty(&(task->list))) {
@@ -287,7 +287,7 @@ void del_task_to_ready_list_lock(struct task_struct *task)
 void del_task_to_ready_list(struct task_struct *task)
 {
     if (task == NULL) {
-        pr_err("task is NULL\r\n");
+        pr_err("task is NULL\n");
         return;
     }
 
@@ -295,7 +295,7 @@ void del_task_to_ready_list(struct task_struct *task)
     if ((task->list_lock != &ready_list_lock) ||
         (task->status != TASK_READY && task->status != TASK_RUNING)) {
         spin_unlock_irq(&task->lock);
-        pr_err("%s is not ready task, status=%u\r\n", task->name, task->status);
+        pr_err("%s is not ready task, status=%u\n", task->name, task->status);
         return;
     }
     spin_unlock_irq(&task->lock);

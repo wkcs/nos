@@ -203,7 +203,7 @@ int vfs_init(void) {
 
   ret = init_ramfs();
   if (ret) {
-    pr_err("VFS: Failed to register ramfs\r\n");
+    pr_err("VFS: Failed to register ramfs\n");
     return ret;
   }
 
@@ -211,7 +211,7 @@ int vfs_init(void) {
   extern int init_fatfs(void);
   ret = init_fatfs();
   if (ret) {
-    pr_err("VFS: Failed to register fatfs\r\n");
+    pr_err("VFS: Failed to register fatfs\n");
     return ret;
   }
 #endif
@@ -220,7 +220,7 @@ int vfs_init(void) {
   extern int init_procfs(void);
   ret = init_procfs();
   if (ret) {
-    pr_err("VFS: Failed to register procfs\r\n");
+    pr_err("VFS: Failed to register procfs\n");
     return ret;
   }
 #endif
@@ -229,7 +229,7 @@ int vfs_init(void) {
   extern int init_sysfs(void);
   ret = init_sysfs();
   if (ret) {
-    pr_err("VFS: Failed to register sysfs\r\n");
+    pr_err("VFS: Failed to register sysfs\n");
     return ret;
   }
 #endif
@@ -249,7 +249,7 @@ int register_filesystem(struct file_system_type *fs) {
   if (!fs)
     return -EINVAL;
     
-  pr_info("VFS: Registering %s at %p\r\n", fs->name, fs);
+  pr_info("VFS: Registering %s at %p\n", fs->name, fs);
 
   if (fs->next)
     return -EBUSY;
@@ -324,7 +324,7 @@ struct dentry *vfs_mount(const char *fs_name, int flags, const char *dev_name,
   struct file_system_type *type;
   struct dentry *mnt_root;
 
-  pr_info("VFS: vfs_mount lookup %s\r\n", fs_name);
+  pr_info("VFS: vfs_mount lookup %s\n", fs_name);
   
   // Simple lookup for now
   struct file_system_type **p;
@@ -334,11 +334,11 @@ struct dentry *vfs_mount(const char *fs_name, int flags, const char *dev_name,
   spin_unlock(&file_systems_lock);
 
   if (!type) {
-      pr_info("VFS: vfs_mount fs type not found\r\n");
+      pr_info("VFS: vfs_mount fs type not found\n");
       return NULL;
   }
   
-  pr_info("VFS: found type %s at %p, calling mount %p\r\n", type->name, type, type->mount);
+  pr_info("VFS: found type %s at %p, calling mount %p\n", type->name, type, type->mount);
 
   mnt_root = type->mount(type, flags, dev_name, data);
   if (!mnt_root)
@@ -1283,25 +1283,25 @@ void vfs_test(void) {
   char buf[32];
   int ret;
 
-  pr_info("VFS: Starting verification...\r\n");
+  pr_info("VFS: Starting verification...\n");
 
   /* 1. Initialize VFS (and RamFS registration) */
   // Assuming init_ramfs() is called externally or we call it here
   extern int init_ramfs(void);
   ret = init_ramfs();
   if (ret) {
-    pr_info("VFS: init_ramfs failed: %d\r\n", ret);
+    pr_info("VFS: init_ramfs failed: %d\n", ret);
     return;
   }
 
   /* 2. Mount RamFS */
   root = vfs_mount("ramfs", 0, NULL, NULL);
   if (!root) {
-    pr_info("VFS: vfs_mount failed\r\n");
+    pr_info("VFS: vfs_mount failed\n");
     return;
   }
   root_inode = root->d_inode;
-  pr_info("VFS: Mounted ramfs at root. Inode: %p\r\n", root_inode);
+  pr_info("VFS: Mounted ramfs at root. Inode: %p\n", root_inode);
 
   /* 3. Create a file (simulate open O_CREAT) */
   // For now, we manually create inode/dentry as we don't have full path lookup
@@ -1315,11 +1315,11 @@ void vfs_test(void) {
   // Simulate lookup/create in root
   ret = root_inode->i_op->create(root_inode, file_dentry, S_IFREG | 0644);
   if (ret) {
-    pr_info("VFS: Create file failed: %d\r\n", ret);
+    pr_info("VFS: Create file failed: %d\n", ret);
     return;
   }
   file_inode = file_dentry->d_inode;
-  pr_info("VFS: Created file inode: %p\r\n", file_inode);
+  pr_info("VFS: Created file inode: %p\n", file_inode);
 
   /* 4. Write to file */
   // Create a file object
@@ -1331,18 +1331,18 @@ void vfs_test(void) {
 
   char *msg = "Hello VFS from NOS!";
   ret = file_inode->i_fop->write(f, msg, strlen(msg), &f->f_pos);
-  pr_info("VFS: Wrote %d bytes: %s\r\n", ret, msg);
+  pr_info("VFS: Wrote %d bytes: %s\n", ret, msg);
 
   /* 5. Read from file */
   f->f_pos = 0; // Reset pos
   memset(buf, 0, sizeof(buf));
   ret = file_inode->i_fop->read(f, buf, sizeof(buf), &f->f_pos);
-  pr_info("VFS: Read %d bytes: %s\r\n", ret, buf);
+  pr_info("VFS: Read %d bytes: %s\n", ret, buf);
 
   if (strcmp(msg, buf) == 0) {
-    pr_info("VFS: Verification SUCCEEDED!\r\n");
+    pr_info("VFS: Verification SUCCEEDED!\n");
   } else {
-    pr_info("VFS: Verification FAILED!\r\n");
+    pr_info("VFS: Verification FAILED!\n");
   }
 
   kfree(f);

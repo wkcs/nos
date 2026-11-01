@@ -73,16 +73,16 @@ static void rgb_test_task_entry(void* parameter)
         rt->ds_dev = device_find_by_name("display-server");
         if (rt->ds_dev == NULL) {
             i++;
-            pr_err("%s device not found, retry=%d\r\n", "display-server", i);
+            pr_err("%s device not found, retry=%d\n", "display-server", i);
             sleep(1);
             continue;
         } else {
-            pr_info("%s device found\r\n", "display-server");
+            pr_info("%s device found\n", "display-server");
             break;
         }
     }
     if (i >= 100) {
-        pr_err("%s device not found, exit\r\n", "display-server");
+        pr_err("%s device not found, exit\n", "display-server");
         return;
     }
 
@@ -101,13 +101,13 @@ static int rgb_test_init(void)
 
     rt = kmalloc(sizeof(struct rgb_test), GFP_KERNEL);
     if (rt == NULL) {
-        pr_err("alloc rgb_test buf error\r\n");
+        pr_err("alloc rgb_test buf error\n");
         return -ENOMEM;
     }
 
     rt->task = task_create("rgb_test", rgb_test_task_entry, rt, 20, 1024, 10, NULL);
     if (rt->task == NULL) {
-        pr_fatal("creat rgb_test task err\r\n");
+        pr_fatal("creat rgb_test task err\n");
         return -EINVAL;
     }
     task_ready(rt->task);

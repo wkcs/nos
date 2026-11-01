@@ -24,27 +24,27 @@ int main(void)
 
     /* 2. 初始化串口 1 (115200 8N1) */
     uart1_init();
-    uart_puts("\r\n========================================\r\n");
-    uart_puts("[BL] NK60-V2 Bootloader v1.0.0 Booting...\r\n");
+    uart_puts("\n========================================\n");
+    uart_puts("[BL] NK60-V2 Bootloader v1.0.0 Booting...\n");
 
     /* 3. 检查启动标志与按键状态 */
     uint32_t bkp_val = backup_read_flag();
     bool stay_in_bl = false;
 
     if (bkp_val == (BOOT_FLAG_MAGIC | BOOT_BOOTLOADER)) {
-        uart_puts("[BL] Stay in BL: Explicit RPC reboot flag detected\r\n");
+        uart_puts("[BL] Stay in BL: Explicit RPC reboot flag detected\n");
         stay_in_bl = true;
     } else if (key_scan_recovery_pressed()) {
-        uart_puts("[BL] Stay in BL: Emergency recovery keys detected\r\n");
+        uart_puts("[BL] Stay in BL: Emergency recovery keys detected\n");
         stay_in_bl = true;
     } else if (!flash_is_kernel_valid()) {
-        uart_puts("[BL] Stay in BL: Kernel vector table invalid\r\n");
+        uart_puts("[BL] Stay in BL: Kernel vector table invalid\n");
         stay_in_bl = true;
     }
 
     /* 4. 如果无需停留在 Bootloader，直接跳转引导内核 */
     if (!stay_in_bl) {
-        uart_puts("[BL] Kernel valid, booting application...\r\n");
+        uart_puts("[BL] Kernel valid, booting application...\n");
         flash_jump_to_app(NK60_KERNEL_FLASH_BASE);
     }
 
@@ -58,8 +58,8 @@ int main(void)
 
     /* 启动 ST 官方 USB Device 协议栈 */
     usb_bsp_init();
-    uart_puts("[BL] Official ST USB Stack initialized (WinUSB 0x0EFF:0x0001)\r\n");
-    uart_puts("[BL] Ready for NLK RPC & Flash commands.\r\n");
+    uart_puts("[BL] Official ST USB Stack initialized (WinUSB 0x0EFF:0x0001)\n");
+    uart_puts("[BL] Ready for NLK RPC & Flash commands.\n");
 
     /* 6. 主服务循环 */
     while (1) {

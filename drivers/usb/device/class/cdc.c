@@ -242,7 +242,7 @@ static void _vcom_reset_state(ufunction_t func)
     struct vcom* data;
 
     if (func == NULL) {
-        pr_err("func is NULL\r\n");
+        pr_err("func is NULL\n");
         return;
     }
 
@@ -264,13 +264,13 @@ static int _ep_in_handler(ufunction_t func, size_t size)
     size_t request_size;
 
     if (func == NULL) {
-        pr_err("func is NULL\r\n");
+        pr_err("func is NULL\n");
         return -EINVAL;
     }
 
     data = (struct vcom*)func->user_data;
     request_size = data->ep_in->request.size;
-    pr_info("_ep_in_handler %d\r\n", request_size);
+    pr_info("_ep_in_handler %d\n", request_size);
     if ((request_size != 0) && ((request_size % EP_MAXPACKET(data->ep_in)) == 0)) {
         data->ep_in->request.buffer = NULL;
         data->ep_in->request.size = 0;
@@ -298,11 +298,11 @@ static int _ep_out_handler(ufunction_t func, size_t size)
     struct vcom *data;
 
     if (func == NULL) {
-        pr_err("func is NULL\r\n");
+        pr_err("func is NULL\n");
         return -EINVAL;
     }
 
-    pr_info("_ep_out_handler %d\r\n", size);
+    pr_info("_ep_out_handler %d\n", size);
 
     data = (struct vcom*)func->user_data;
     kfifo_in(&data->rx_fifo, data->ep_out->buffer, size);
@@ -318,11 +318,11 @@ static int _ep_out_handler(ufunction_t func, size_t size)
 static int _ep_cmd_handler(ufunction_t func, size_t size)
 {
     if (func == NULL) {
-        pr_err("func is NULL\r\n");
+        pr_err("func is NULL\n");
         return -EINVAL;
     }
 
-    pr_info("_ep_cmd_handler\r\n");
+    pr_info("_ep_cmd_handler\n");
 
     return 0;
 }
@@ -341,15 +341,15 @@ static int _cdc_get_line_coding(udevice_t device, ureq_t setup)
     uint16_t size;
 
     if (device == NULL) {
-        pr_err("device is NULL\r\n");
+        pr_err("device is NULL\n");
         return -EINVAL;
     }
     if (setup == NULL) {
-        pr_err("setup is NULL\r\n");
+        pr_err("setup is NULL\n");
         return -EINVAL;
     }
 
-    pr_info("_cdc_get_line_coding\r\n");
+    pr_info("_cdc_get_line_coding\n");
 
     data.dwDTERate = 115200;
     data.bCharFormat = 0;
@@ -364,7 +364,7 @@ static int _cdc_get_line_coding(udevice_t device, ureq_t setup)
 
 static int _cdc_set_line_coding_callback(udevice_t device, size_t size)
 {
-    pr_info("_cdc_set_line_coding_callback\r\n");
+    pr_info("_cdc_set_line_coding_callback\n");
 
     dcd_ep0_send_status(device->dcd);
 
@@ -382,15 +382,15 @@ static int _cdc_set_line_coding_callback(udevice_t device, size_t size)
 static int _cdc_set_line_coding(udevice_t device, ureq_t setup)
 {
     if (device == NULL) {
-        pr_err("device is NULL\r\n");
+        pr_err("device is NULL\n");
         return -EINVAL;
     }
     if (setup == NULL) {
-        pr_err("setup is NULL\r\n");
+        pr_err("setup is NULL\n");
         return -EINVAL;
     }
 
-    pr_info("_cdc_set_line_coding\r\n");
+    pr_info("_cdc_set_line_coding\n");
 
     usbd_ep0_read(device, (void*)&line_coding, sizeof(struct ucdc_line_coding),
         _cdc_set_line_coding_callback);
@@ -411,15 +411,15 @@ static int _interface_handler(ufunction_t func, ureq_t setup)
     struct vcom *data;
 
     if (func == NULL) {
-        pr_err("func is NULL\r\n");
+        pr_err("func is NULL\n");
         return -EINVAL;
     }
     if (func->device == NULL) {
-        pr_err("func->device is NULL\r\n");
+        pr_err("func->device is NULL\n");
         return -EINVAL;
     }
     if (setup == NULL) {
-        pr_err("setup is NULL\r\n");
+        pr_err("setup is NULL\n");
         return -EINVAL;
     }
 
@@ -450,7 +450,7 @@ static int _interface_handler(ufunction_t func, ureq_t setup)
     case CDC_SEND_BREAK:
         break;
     default:
-        pr_err("unknown cdc request\r\n",setup->request_type);
+        pr_err("unknown cdc request\n",setup->request_type);
         return -EINVAL;
     }
 
@@ -469,18 +469,18 @@ static int _function_enable(ufunction_t func)
     struct vcom *data;
 
     if (func == NULL) {
-        pr_err("func is NULL\r\n");
+        pr_err("func is NULL\n");
         return -EINVAL;
     }
 
-    pr_info("cdc function enable\r\n");
+    pr_info("cdc function enable\n");
 
     _vcom_reset_state(func);
 
     data = (struct vcom*)func->user_data;
     data->ep_out->buffer = kmalloc(CDC_RX_BUFSIZE, GFP_KERNEL);
     if(data->ep_out->buffer == NULL) {
-        pr_err("alloc ep_out->buffer failed\r\n");
+        pr_err("alloc ep_out->buffer failed\n");
         return -EINVAL;
     }
 
@@ -505,11 +505,11 @@ static int _function_disable(ufunction_t func)
     struct vcom *data;
 
     if (func == NULL) {
-        pr_err("func is NULL\r\n");
+        pr_err("func is NULL\n");
         return -EINVAL;
     }
 
-    pr_info("cdc function disable\r\n");
+    pr_info("cdc function disable\n");
 
     _vcom_reset_state(func);
 
@@ -561,7 +561,7 @@ ufunction_t usbd_function_cdc_create(udevice_t device)
 
     /* parameter check */
     if (device == NULL) {
-        pr_err("device is NULL\r\n");
+        pr_err("device is NULL\n");
         return NULL;
     }
 
@@ -583,7 +583,7 @@ ufunction_t usbd_function_cdc_create(udevice_t device)
     /* allocate memory for cdc vcom data */
     data = (struct vcom*)kmalloc(sizeof(struct vcom), GFP_KERNEL);
     if (data == NULL) {
-        pr_err("no memory for vcom\r\n");
+        pr_err("no memory for vcom\n");
         return NULL;
     }
     memset(data, 0, sizeof(struct vcom));
@@ -652,9 +652,9 @@ static void vcom_tx_task_entry(void* parameter)
 
     while (1) {
         sem_get(&data->tx_ready);
-        pr_err("mask:%u\r\n", data->mask);
+        pr_err("mask:%u\n", data->mask);
         while(kfifo_used(&data->tx_fifo) > 0) {
-            pr_info("used: %u\r\n", kfifo_used(&data->tx_fifo));
+            pr_info("used: %u\n", kfifo_used(&data->tx_fifo));
             rc = kfifo_out(&data->tx_fifo, ch, CDC_BULKIN_MAXSIZE);
             if (rc <= 0)
                 continue;
@@ -664,7 +664,7 @@ static void vcom_tx_task_entry(void* parameter)
             usbd_io_request(func->device, data->ep_in, &data->ep_in->request);
 
             if (sem_get_timeout(&data->wait, msec_to_tick(VCOM_TX_TIMEOUT)) != 0) {
-                pr_info("vcom tx timeout\r\n");
+                pr_info("vcom tx timeout\n");
             }
         }
     }
@@ -679,12 +679,12 @@ static void usb_vcom_init(struct ufunction *func)
     data->mask = 0x2030;
     rc = kfifo_init(&data->rx_fifo, data->rx_fifo_buf, CDC_RX_BUFSIZE, 1);
     if (rc < 0) {
-        pr_info("cdc rx fifo init error, rc=%d\r\n", rc);
+        pr_info("cdc rx fifo init error, rc=%d\n", rc);
         return;
     }
     rc = kfifo_init(&data->tx_fifo, data->tx_fifo_buf, CDC_TX_BUFSIZE, 1);
     if (rc < 0) {
-        pr_info("cdc tx fifo init error, rc=%d\r\n", rc);
+        pr_info("cdc tx fifo init error, rc=%d\n", rc);
         return;
     }
 
@@ -693,10 +693,10 @@ static void usb_vcom_init(struct ufunction *func)
 
     data->cdc_task = task_create("vcom", vcom_tx_task_entry, (void *)func, 5, 1024, 5, NULL);
     if (data->cdc_task == NULL) {
-        pr_err("cdc task creat err\r\n");
+        pr_err("cdc task creat err\n");
         return;
     } else {
-        pr_info("cdc task creat ok\r\n");
+        pr_info("cdc task creat ok\n");
     }
     task_ready(data->cdc_task);
 }
@@ -709,6 +709,6 @@ int usbd_vcom_class_register(void)
 {
     INIT_LIST_HEAD(&vcom_class.list);
     usbd_class_register(&vcom_class);
-    pr_info("cdc register ok\r\n");
+    pr_info("cdc register ok\n");
     return 0;
 }

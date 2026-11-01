@@ -35,94 +35,94 @@ static void fastfs_test_task_entry(void* parameter)
 {
     //在外部SPI Flash挂载文件系统，文件系统挂载时会对SPI设备初始化
 	res_sd = f_mount(&fs,"0:",1);
-	
-/*----------------------- 格式化测试 ---------------------------*/  
+
+/*----------------------- 格式化测试 ---------------------------*/
 	/* 如果没有文件系统就格式化创建创建文件系统 */
 	if(res_sd == FR_NO_FILESYSTEM)
 	{
-		pr_info("》SD卡还没有文件系统，即将进行格式化...\r\n");
+		pr_info("》SD卡还没有文件系统，即将进行格式化...\n");
         /* 格式化 */
-		res_sd=f_mkfs("0:",0,0);							
-		
+		res_sd=f_mkfs("0:",0,0);
+
 		if(res_sd == FR_OK)
 		{
-			pr_info("》SD卡已成功格式化文件系统。\r\n");
+			pr_info("》SD卡已成功格式化文件系统。\n");
             /* 格式化后，先取消挂载 */
-			res_sd = f_mount(NULL,"0:",1);			
-            /* 重新挂载	*/			
+			res_sd = f_mount(NULL,"0:",1);
+            /* 重新挂载	*/
 			res_sd = f_mount(&fs,"0:",1);
 		}
 		else
 		{
-			pr_info("《《格式化失败。》》res_sd =%d\r\n",res_sd);
+			pr_info("《《格式化失败。》》res_sd =%d\n",res_sd);
 			while(1);
 		}
 	}
   else if(res_sd!=FR_OK)
   {
-    pr_info("！！SD卡挂载文件系统失败。(%d)\r\n",res_sd);
-    pr_info("！！可能原因：SD卡初始化不成功。\r\n");
+    pr_info("！！SD卡挂载文件系统失败。(%d)\n",res_sd);
+    pr_info("！！可能原因：SD卡初始化不成功。\n");
 		while(1);
   }
   else
   {
-    pr_info("》文件系统挂载成功，可以进行读写测试\r\n");
+    pr_info("》文件系统挂载成功，可以进行读写测试\n");
   }
-  
+
 /*----------------------- 文件系统测试：写测试 -----------------------------*/
 	/* 打开文件，如果文件不存在则创建它 */
-	pr_info("\r\n****** 即将进行文件写入测试... ******\r\n");	
+	pr_info("\n****** 即将进行文件写入测试... ******\n");
 	res_sd = f_open(&fnew, "0:FatFs读写测试文件.txt",FA_CREATE_ALWAYS | FA_WRITE );
 	if ( res_sd == FR_OK )
 	{
-		pr_info("》打开/创建FatFs读写测试文件.txt文件成功，向文件写入数据。\r\n");
+		pr_info("》打开/创建FatFs读写测试文件.txt文件成功，向文件写入数据。\n");
         /* 将指定存储区内容写入到文件内 */
         res_sd=f_write(&fnew,WriteBuffer,sizeof(WriteBuffer),&fnum);
         /* 实测SPI_SD驱动下写入大于512字节的数据在SD卡里打开会显示乱码，如需写入大量数据使用f_write_co替代上面f_write即可 */
 		//res_sd=f_write_co(&fnew,WriteBuffer,sizeof(WriteBuffer),&fnum);
     if(res_sd==FR_OK)
     {
-      pr_info("》文件写入成功，写入字节数据：%d\r\n",fnum);
-      pr_info("》向文件写入的数据为：\r\n%s\r\n",WriteBuffer);
+      pr_info("》文件写入成功，写入字节数据：%d\n",fnum);
+      pr_info("》向文件写入的数据为：\n%s\n",WriteBuffer);
     }
     else
     {
-      pr_info("！！文件写入失败：(%d)\r\n",res_sd);
-    }    
+      pr_info("！！文件写入失败：(%d)\n",res_sd);
+    }
 	/* 不再读写，关闭文件 */
     f_close(&fnew);
 	}
 	else
-	{	
-		pr_info("！！打开/创建文件失败。\r\n");
+	{
+		pr_info("！！打开/创建文件失败。\n");
 	}
-	
+
 /*------------------- 文件系统测试：读测试 ------------------------------------*/
-	pr_info("****** 即将进行文件读取测试... ******\r\n");
-	res_sd = f_open(&fnew, "0:FatFs读写测试文件.txt", FA_OPEN_EXISTING | FA_READ); 	 
+	pr_info("****** 即将进行文件读取测试... ******\n");
+	res_sd = f_open(&fnew, "0:FatFs读写测试文件.txt", FA_OPEN_EXISTING | FA_READ);
 	if(res_sd == FR_OK)
 	{
-		pr_info("》打开文件成功。\r\n");
+		pr_info("》打开文件成功。\n");
 		res_sd = f_read(&fnew, ReadBuffer, sizeof(ReadBuffer), &fnum);
         /* 实测SPI_SD驱动下读取大于512字节的数据在SD卡里打开会显示乱码，如需读取大量数据使用f_read_co替代上面f_read即可 */
         //res_sd = f_read_co(&fnew, ReadBuffer, sizeof(ReadBuffer), &fnum);
     if(res_sd==FR_OK)
     {
-      pr_info("》文件读取成功,读到字节数据：%d\r\n",fnum);
-      pr_info("》读取得的文件数据为：\r\n%s \r\n", ReadBuffer);	
+      pr_info("》文件读取成功,读到字节数据：%d\n",fnum);
+      pr_info("》读取得的文件数据为：\n%s \n", ReadBuffer);
     }
     else
     {
-      pr_info("！！文件读取失败：(%d)\r\n",res_sd);
-    }		
+      pr_info("！！文件读取失败：(%d)\n",res_sd);
+    }
 	}
 	else
 	{
-		pr_info("！！打开文件失败。\r\n");
+		pr_info("！！打开文件失败。\n");
 	}
 	/* 不再读写，关闭文件 */
-	f_close(&fnew);	
-  
+	f_close(&fnew);
+
 	/* 不再使用文件系统，取消挂载文件系统 */
 	f_mount(NULL,"0:",1);
 }
@@ -133,7 +133,7 @@ static int fastfs_test_init(void)
 
     task = task_create("fastfs_test", fastfs_test_task_entry, NULL, 15, 2048, 10, NULL);
     if (task == NULL) {
-        pr_fatal("creat fastfs_test task err\r\n");
+        pr_fatal("creat fastfs_test task err\n");
         BUG_ON(true);
         return -EINVAL;
     }

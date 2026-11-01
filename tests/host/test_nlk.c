@@ -1332,7 +1332,7 @@ int main(void)
 
         /* NK60 shell writes response to its TTY -> Host receives NLK_SHELL_STREAM_STDOUT */
         nk60_shell.cap.cap_id = 2U; /* Route to Host cap_shell_sink (ID 2) */
-        assert(nos_tty_write(sh_tty, (const unsigned char *)"NOS 1.0 NLK\r\n", 13U) == 13);
+        assert(nos_tty_write(sh_tty, (const unsigned char *)"NOS 1.0 NLK\n", 12U) == 12);
 #ifdef NOS_NLK_SHELL_TX_QUEUE
         assert(host_cap.shell_stdout[0] == '\0');
         assert(nlk_cap_shell_flush_pending(&nk60_shell) > 0);
@@ -1341,6 +1341,22 @@ int main(void)
 #endif
         nk60_shell.cap.cap_id = 3U;
         assert(strcmp(host_cap.shell_stdout, "NOS 1.0 NLK\r\n") == 0);
+        {
+            uint16_t old_count = nk60_shell.tx_count;
+            uint16_t head = nk60_shell.tx_head;
+
+            nk60_shell.tx_count = CONFIG_NLK_SHELL_TX_BUF_SIZE - 1U;
+            assert(nos_tty_write(sh_tty, (const unsigned char *)"\n", 1U) == -EAGAIN);
+            assert(nk60_shell.tx_head == head);
+            nk60_shell.tx_count = old_count;
+            nk60_shell.non_interactive = true;
+            assert(nos_tty_write(sh_tty, (const unsigned char *)"\n", 1U) == 1);
+            assert(nk60_shell.tx_count == old_count + 1U);
+            assert(nk60_shell.tx_buf[head] == '\n');
+            nk60_shell.tx_head = head;
+            nk60_shell.tx_count = old_count;
+            nk60_shell.non_interactive = false;
+        }
         {
             struct nlk_bearer *up = node_nk60.bearers[0];
             const struct nlk_bearer_ops *original = up->ops;

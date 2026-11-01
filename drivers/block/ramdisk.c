@@ -125,7 +125,7 @@ static int ramdisk_smoke(void)
 
     dev = device_get_binding("ramdisk0");
     if (!device_is_ready(dev)) {
-        pr_err("ramdisk smoke: device unavailable\r\n");
+        pr_err("ramdisk smoke: device unavailable\n");
         return -ENODEV;
     }
 
@@ -138,18 +138,18 @@ static int ramdisk_smoke(void)
         sector_size != RAMDISK_SECTOR_SIZE || sector_count == 0 ||
         block_write(dev, 1, write_buf, 1) ||
         block_read(dev, 1, read_buf, 1)) {
-        pr_err("ramdisk smoke: I/O failed\r\n");
+        pr_err("ramdisk smoke: I/O failed\n");
         return -EIO;
     }
 
     for (i = 0; i < RAMDISK_SECTOR_SIZE; i++) {
         if (read_buf[i] != write_buf[i]) {
-            pr_err("ramdisk smoke: data mismatch\r\n");
+            pr_err("ramdisk smoke: data mismatch\n");
             return -EIO;
         }
     }
 
-    pr_info("ramdisk smoke OK\r\n");
+    pr_info("ramdisk smoke OK\n");
     return 0;
 }
 

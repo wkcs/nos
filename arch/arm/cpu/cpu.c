@@ -16,7 +16,7 @@ void arch_dump_stack(void)
     /* 获取当前的FP (在Cortex-M上通常是r7) */
     __asm__ volatile("mov %0, r7" : "=r"(fp));
     
-    pr_info("Call Trace:\r\n");
+    pr_info("Call Trace:\n");
     
     /* 
      * ARM AAPCS calling convention with -mapcs-frame:
@@ -41,12 +41,12 @@ void arch_dump_stack(void)
         
         /* 打印调用信息，格式：[<地址>] 符号名+偏移/总大小 [模块名] */
         /* 注意：Thumb指令集地址最低位为1，查找符号时需要屏蔽 */
-        print_symbol(" [<0x%08lx>] %s\r\n", lr & ~1UL);
+        print_symbol(" [<0x%08lx>] %s\n", lr & ~1UL);
         
         /* 移动到上一帧 */
         fp = (unsigned long *)fp[0];
         
         depth++;
     }
-    pr_info("\r\n");
+    pr_info("\n");
 }

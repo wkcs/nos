@@ -22,11 +22,11 @@ static int null_device_verify(void)
 
     dev = device_get_binding("null");
     if (device_is_ready(dev)) {
-        pr_info("device null ready\r\n");
+        pr_info("device null ready\n");
         return 0;
     }
 
-    pr_err("device null not ready\r\n");
+    pr_err("device null not ready\n");
     return -ENODEV;
 }
 

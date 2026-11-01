@@ -14,6 +14,7 @@
 
 #define NOS_UART_BULK_API 1
 #define NOS_UART_STATS_API 1
+#define NOS_UART_TEXT_RECORD_API 1
 
 struct uart_stats {
     uint32_t rx_dropped;
@@ -31,6 +32,9 @@ struct uart_driver_api {
     int (*write_recordv)(const struct device *dev, const unsigned char *first,
                          unsigned int first_len, const unsigned char *second,
                          unsigned int second_len);
+    int (*write_text_recordv)(const struct device *dev, const unsigned char *first,
+                              unsigned int first_len, const unsigned char *second,
+                              unsigned int second_len);
     int (*write_room)(const struct device *dev);
     int (*get_stats)(const struct device *dev, struct uart_stats *stats);
     int (*read)(const struct device *dev, unsigned char *buf,
@@ -161,6 +165,20 @@ static inline int uart_write_room(const struct device *dev)
         return -ENOSYS;
     }
     return api->write_room(dev);
+}
+
+static inline int uart_write_text_recordv(const struct device *dev,
+                                         const unsigned char *first, unsigned int first_len,
+                                         const unsigned char *second, unsigned int second_len)
+{
+    const struct uart_driver_api *api;
+
+    if ((first == NULL && first_len != 0) || (second == NULL && second_len != 0) ||
+        first_len > UINT_MAX - second_len || first_len + second_len > INT_MAX) return -EINVAL;
+    if (!device_is_ready(dev)) return -ENODEV;
+    api = dev->api;
+    if (api == NULL || api->write_text_recordv == NULL) return -ENOSYS;
+    return api->write_text_recordv(dev, first, first_len, second, second_len);
 }
 
 static inline int uart_get_stats(const struct device *dev, struct uart_stats *stats)

@@ -177,7 +177,7 @@ static int ssd1106_oled_control(struct device *dev, int cmd, void *args)
         memcpy(args, &info, sizeof(struct display_dev_info));
         break;
     default:
-        pr_err("unknown cmd: %d\r\n", cmd);
+        pr_err("unknown cmd: %d\n", cmd);
         return -EINVAL;
     }
 
@@ -284,7 +284,7 @@ static int ssd1106_oled_init(void)
 
     oled = kzalloc(sizeof(struct ssd1106_oled), GFP_KERNEL);
     if (oled == NULL) {
-        pr_err("alloc ssd1106_oled buf error\r\n");
+        pr_err("alloc ssd1106_oled buf error\n");
         return -ENOMEM;
     }
 

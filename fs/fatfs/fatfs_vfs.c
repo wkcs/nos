@@ -87,14 +87,14 @@ static ssize_t fatfs_read(struct file *file, char *buf, size_t count, loff_t *pp
 
   res = f_read(fp, buf, count, &br);
   if (res != FR_OK) {
-      pr_err("FatFs read error: %d\r\n", res);
+      pr_err("FatFs read error: %d\n", res);
       return -EIO;
   }
   
   if (br > 0) {
-      pr_info("FatFs: read %d bytes\r\n", br);
+      pr_info("FatFs: read %d bytes\n", br);
   } else {
-      pr_info("FatFs: read EOF\r\n");
+      pr_info("FatFs: read EOF\n");
   }
 
   *ppos += br;
@@ -254,15 +254,15 @@ static struct dentry *fatfs_lookup(struct inode *dir, struct dentry *dentry) {
     
     if (get_fatfs_path(dentry, path, sizeof(path)) != 0) return NULL;
     
-    // pr_info("FatFs: lookup path %s\r\n", path);
+    // pr_info("FatFs: lookup path %s\n", path);
 
     res = fatfs_stat_canonical(path, dentry, &fno);
     if (res == FR_OK) {
-        // pr_info("FatFs: stat success. attrib=%x\r\n", fno.fattrib);
+        // pr_info("FatFs: stat success. attrib=%x\n", fno.fattrib);
         // Found. Create inode.
         int mode = (fno.fattrib & AM_DIR) ? (S_IFDIR | 0755) : (S_IFREG | 0644);
         
-        // pr_info("FatFs: calling make_inode\r\n");
+        // pr_info("FatFs: calling make_inode\n");
         struct inode *inode = fatfs_make_inode(dir->i_sb, mode);
         if (inode) {
             inode->i_size = fno.fsize;
@@ -271,7 +271,7 @@ static struct dentry *fatfs_lookup(struct inode *dir, struct dentry *dentry) {
             return NULL; // Success
         }
     } else {
-         // pr_info("FatFs: stat failed %d\r\n", res);
+         // pr_info("FatFs: stat failed %d\n", res);
     }
     
     return NULL; // Not found
@@ -327,7 +327,7 @@ static int fatfs_mkdir(struct inode *dir, struct dentry *dentry, int mode) {
     } else if (res == FR_EXIST) {
         return -EEXIST;
     } else {
-        pr_err("FatFs: mkdir failed: %d\r\n", res);
+        pr_err("FatFs: mkdir failed: %d\n", res);
     }
     return -EIO;
 }
@@ -575,14 +575,14 @@ static int fatfs_fill_super(struct super_block *sb, void *data, int silent) {
     // Mount "0:"
     FRESULT res = f_mount(fs, "0:", 1);
     if (res == FR_NO_FILESYSTEM) {
-        pr_info("FatFs: No filesystem found on 0:, formatting...\r\n");
+        pr_info("FatFs: No filesystem found on 0:, formatting...\n");
         // Create FAT volume
         // f_mkfs(path, sfd, au) - sfd=0 (legacy), au=0 (auto)
         // Note: Check ff.h for f_mkfs signature. It varies by version.
         // Assuming R0.11a from ff.h viewed earlier: FRESULT f_mkfs (const TCHAR* path, BYTE sfd, UINT au);
         res = f_mkfs("0:", 0, 0); 
         if (res != FR_OK) {
-             pr_err("FatFs: mkfs failed: %d\r\n", res);
+             pr_err("FatFs: mkfs failed: %d\n", res);
              (void)f_mount(NULL, "0:", 0);
              kfree(fs);
              return -EIO;
@@ -592,7 +592,7 @@ static int fatfs_fill_super(struct super_block *sb, void *data, int silent) {
     }
     
     if (res != FR_OK) {
-        pr_err("FatFs: mount failed: %d\r\n", res);
+        pr_err("FatFs: mount failed: %d\n", res);
         (void)f_mount(NULL, "0:", 0);
         kfree(fs);
         return -EIO;

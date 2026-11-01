@@ -105,7 +105,33 @@ int nlk_cap_shell_write_session(struct nlk_shell_ctx *ctx, uint32_t generation,
 static int nlk_shell_tty_write(void *context, const unsigned char *buf,
                                unsigned int len)
 {
-    return shell_write(context, 0, false, buf, len);
+    struct nlk_shell_ctx *ctx = context;
+    unsigned int copied = 0;
+    unsigned long irq_flags;
+
+    if (ctx == NULL || buf == NULL) return -EINVAL;
+    irq_flags = NLK_SHELL_LOCK(ctx);
+    if (!ctx->session_open || ctx->node == NULL) {
+        NLK_SHELL_UNLOCK(ctx, irq_flags);
+        return -ENOTCONN;
+    }
+    while (copied < len) {
+        bool expand = !ctx->non_interactive && buf[copied] == '\n' &&
+                      (copied == 0 || buf[copied - 1] != '\r');
+        unsigned int needed = expand ? 2U : 1U;
+
+        if (CONFIG_NLK_SHELL_TX_BUF_SIZE - ctx->tx_count < needed) break;
+        if (expand) {
+            ctx->tx_buf[ctx->tx_head] = '\r';
+            ctx->tx_head = (uint16_t)((ctx->tx_head + 1U) % CONFIG_NLK_SHELL_TX_BUF_SIZE);
+            ctx->tx_count++;
+        }
+        ctx->tx_buf[ctx->tx_head] = buf[copied++];
+        ctx->tx_head = (uint16_t)((ctx->tx_head + 1U) % CONFIG_NLK_SHELL_TX_BUF_SIZE);
+        ctx->tx_count++;
+    }
+    NLK_SHELL_UNLOCK(ctx, irq_flags);
+    return copied != 0U ? (int)copied : -EAGAIN;
 }
 
 static bool nlk_shell_tty_poll_session(void *context, uint32_t *generation,

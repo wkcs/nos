@@ -263,6 +263,39 @@ int main(void)
         fputs("FAIL: initialize IRQ-backed UART\n", stderr);
         return 1;
     }
+#ifdef CONFIG_CONSOLE_CRLF
+#ifdef NOS_UART_TEXT_RECORD_API
+    if (uart_write_text_recordv(dev, (const unsigned char *)"a\n", 2,
+                                (const unsigned char *)"b\n", 2) != 4) return 1;
+    run_tx_interrupts();
+    if (wire_len != 6 || memcmp(wire, "a\r\nb\r\n", 6) != 0) {
+        fputs("FAIL: text record conversion must preserve FIFO and record order\n", stderr);
+        return 1;
+    }
+    wire_len = 0;
+    if (
+#ifdef CONFIG_UART_DMA
+        uart_write_record(dev, (const unsigned char *)"ABCD", 4) != 4 ||
+#endif
+        uart_write_record(dev, (const unsigned char *)"1234567", 7) != 7 ||
+        uart_write_text_recordv(dev, (const unsigned char *)"\n", 1, NULL, 0) != -EAGAIN ||
+        kfifo_used(&uart1_data.tx_fifo) != 7) {
+        fputs("FAIL: expanded record must be rejected without a partial write\n", stderr);
+        return 1;
+    }
+    run_tx_interrupts();
+#ifdef CONFIG_UART_DMA
+    if (wire_len != 11 || memcmp(wire, "ABCD1234567", 11) != 0) return 1;
+#else
+    if (wire_len != 7 || memcmp(wire, "1234567", 7) != 0) return 1;
+#endif
+    uart1_data.tx_dropped = 0;
+    wire_len = 0;
+#else
+    fputs("FAIL: atomic UART text record API unavailable\n", stderr);
+    return 1;
+#endif
+#endif
     if (uart_write_recordv(dev, message, 1, message + 1, 2) != 3 || wire_len != 0) {
         fputs("FAIL: enqueue complete binary record\n", stderr);
         return 1;

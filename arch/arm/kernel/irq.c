@@ -34,7 +34,7 @@ void arch_irq_init(void)
     /* 设置中断优先级分组 */
     *SCB_AIRCR = SCB_AIRCR_VECTKEY | (0x03 << 8); /* 4 位抢占优先级，0 位子优先级 */
     
-    pr_info("ARM NVIC initialized\r\n");
+    pr_info("ARM NVIC initialized\n");
 }
 
 /**
@@ -44,7 +44,7 @@ void arch_irq_init(void)
 void arch_irq_enable(unsigned int irq)
 {
     if (irq >= 240) {
-        pr_err("Invalid IRQ number: %u\r\n", irq);
+        pr_err("Invalid IRQ number: %u\n", irq);
         return;
     }
     
@@ -58,7 +58,7 @@ void arch_irq_enable(unsigned int irq)
 void arch_irq_disable(unsigned int irq)
 {
     if (irq >= 240) {
-        pr_err("Invalid IRQ number: %u\r\n", irq);
+        pr_err("Invalid IRQ number: %u\n", irq);
         return;
     }
     
@@ -73,12 +73,12 @@ void arch_irq_disable(unsigned int irq)
 void arch_irq_set_priority(unsigned int irq, unsigned int priority)
 {
     if (irq >= 240) {
-        pr_err("Invalid IRQ number: %u\r\n", irq);
+        pr_err("Invalid IRQ number: %u\n", irq);
         return;
     }
     
     if (priority > 15) {
-        pr_err("Invalid priority: %u\r\n", priority);
+        pr_err("Invalid priority: %u\n", priority);
         return;
     }
     

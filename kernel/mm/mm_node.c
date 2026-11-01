@@ -45,12 +45,12 @@ static int __mm_node_early_init(struct mm_node *node)
         node->start = ALIGNED_PAGE(node->start);
         node->end = ALIGNED_PAGE_DONE(node->end);
         if (node->end < node->start) {
-            pr_err("node[%s]: too small(0x%lx-0x%lx), skip1\r\n", node->name, node->start, node->end);
+            pr_err("node[%s]: too small(0x%lx-0x%lx), skip1\n", node->name, node->start, node->end);
             return -ENOMEM;
         }
         size = node->end - node->start;
         if (size <= sizeof(struct mem_base)) {
-            pr_err("node[%s]: too small(0x%lx-0x%lx), skip2\r\n", node->name, node->start, node->end);
+            pr_err("node[%s]: too small(0x%lx-0x%lx), skip2\n", node->name, node->start, node->end);
             return -ENOMEM;
         }
     } else {
@@ -67,7 +67,7 @@ static int __mm_node_early_init(struct mm_node *node)
             buddy_page_index = page_struct_size / CONFIG_PAGE_SIZE;
         }
         if (buddy_page_index >= node->page_num) {
-            pr_err("node[%s]: too small(0x%lx-0x%lx), skip3\r\n", node->name, node->start, node->end);
+            pr_err("node[%s]: too small(0x%lx-0x%lx), skip3\n", node->name, node->start, node->end);
             return -ENOMEM;
         }
         node->buddy_page_index = buddy_page_index;
@@ -89,17 +89,17 @@ __init int mm_node_early_init(void)
 
     num = get_node_num();
     if (num == 0) {
-        pr_fatal("memory node not found\r\n");
+        pr_fatal("memory node not found\n");
         BUG_ON(true);
         return -ENODEV;
     }
-    pr_info("find %u memory node\r\n", num);
+    pr_info("find %u memory node\n", num);
     node = find_first_node();
 
     for (i = 0; i < num; i++) {
         rc = __mm_node_early_init(node);
         if (rc == 0) {
-            pr_info("node[%s]: 0x%lx-0x%lx, start_pfn=%u, page_num=%u, buddy_page_num=%u\r\n",
+            pr_info("node[%s]: 0x%lx-0x%lx, start_pfn=%u, page_num=%u, buddy_page_num=%u\n",
                     node->name, node->start, node->end, node->start_pfn, node->page_num,
                     node->page_num - node->buddy_page_index);
         }
@@ -177,7 +177,7 @@ u32 mm_get_total_page_num(void)
 
 static void __mm_node_dump(struct mm_node *node)
 {
-    pr_info("node[%s]: 0x%lx-0x%lx, start_pfn=%u, page_num=%u, buddy_page_num=%u, free_num=%u\r\n",
+    pr_info("node[%s]: 0x%lx-0x%lx, start_pfn=%u, page_num=%u, buddy_page_num=%u, free_num=%u\n",
             node->name, node->start, node->end, node->start_pfn, node->page_num,
             node->page_num - node->buddy_page_index, node->free_num);
     mm_buddy_dump_info(&node->buddy);

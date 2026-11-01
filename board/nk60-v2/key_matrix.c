@@ -183,7 +183,7 @@ static int nk60_v2_key_control(struct device *dev, int cmd, void *args)
         memcpy(args, &key->stats, sizeof(struct key_driver_stats));
         break;
     default:
-        pr_err("unknown cmd: %d\r\n", cmd);
+        pr_err("unknown cmd: %d\n", cmd);
         return -EINVAL;
     }
 
@@ -226,7 +226,7 @@ static int nk60_v2_key_init(void)
 
     key = kmalloc(sizeof(struct nk60_key), GFP_KERNEL);
     if (key == NULL) {
-        pr_err("alloc nk60_key error\r\n");
+        pr_err("alloc nk60_key error\n");
         return -ENOMEM;
     }
 

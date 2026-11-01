@@ -52,7 +52,7 @@ static int nk60_display_server_draw_info_init(struct nk60_display_server *nk60_d
     nk60_ds->draw_info = display_server_alloc_draw_area_info(nk60_ds->ds,
         0, 0, LED_WIDTH, LED_HEIGHT);
     if (nk60_ds->draw_info == NULL) {
-        pr_err("alloc draw_info buf error\r\n");
+        pr_err("alloc draw_info buf error\n");
         return -ENOMEM;
     }
     area = &nk60_ds->draw_info->area;
@@ -137,23 +137,23 @@ static void nk60_display_server_task_entry(void* parameter)
         nk60_ds->ds_dev = device_find_by_name("display-server");
         if (nk60_ds->ds_dev == NULL) {
             i++;
-            pr_err("%s device not found, retry=%d\r\n", "display-server", i);
+            pr_err("%s device not found, retry=%d\n", "display-server", i);
             sleep(1);
             continue;
         } else {
-            pr_info("%s device found\r\n", "display-server");
+            pr_info("%s device found\n", "display-server");
             break;
         }
     }
     if (i >= 100) {
-        pr_err("%s device not found, exit\r\n", "display-server");
+        pr_err("%s device not found, exit\n", "display-server");
         return;
     }
 
     nk60_ds->ds = display_dev_to_server(nk60_ds->ds_dev);
     rc = nk60_display_server_draw_info_init(nk60_ds);
     if (rc < 0) {
-        pr_err("init draw_info buf error\r\n");
+        pr_err("init draw_info buf error\n");
         return;
     }
 
@@ -169,14 +169,14 @@ static int nk60_display_server_init(void)
 
     nk60_ds = kmalloc(sizeof(struct nk60_display_server), GFP_KERNEL);
     if (nk60_ds == NULL) {
-        pr_err("alloc nk60_display_server buf error\r\n");
+        pr_err("alloc nk60_display_server buf error\n");
         return -ENOMEM;
     }
 
     nk60_ds->task = task_create("nk60_display_server",
         nk60_display_server_task_entry, nk60_ds, 20, 1024, 10, NULL);
     if (nk60_ds->task == NULL) {
-        pr_fatal("creat nk60_display_server task err\r\n");
+        pr_fatal("creat nk60_display_server task err\n");
 
         return -EINVAL;
     }

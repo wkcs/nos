@@ -34,7 +34,7 @@ static void test1_task_entry(void* parameter)
         i++;
         if (i > 10) {
             i = 0;
-            pr_info("%s: usage:%u.%02u%%, total:%u.%02u%%\r\n", current->name,
+            pr_info("%s: usage:%u.%02u%%, total:%u.%02u%%\n", current->name,
                     usage / 100, usage % 100, all_usage / 100, all_usage % 100);
         }
         mutex_unlock(&g_lock);
@@ -46,7 +46,7 @@ static int test1_task_init(void)
 {
     test1 = task_create("test1", test1_task_entry, NULL, 5, 4096, 10, NULL);
     if (test1 == NULL) {
-        pr_fatal("creat test1 task err\r\n");
+        pr_fatal("creat test1 task err\n");
         BUG_ON(true);
         return -EINVAL;
     }
@@ -66,7 +66,7 @@ static void test2_task_entry(void* parameter)
     while (1) {
         usage = task_get_cpu_usage(current) / 100;
         all_usage = get_cpu_usage() / 100;
-        // pr_info("%s: usage:%u.%02u%%, total:%u.%02u%%\r\n", current->name,
+        // pr_info("%s: usage:%u.%02u%%, total:%u.%02u%%\n", current->name,
         //        usage / 100, usage % 100, all_usage / 100, all_usage % 100);
         size = msg_q_recv(&msg_q, buf, sizeof(buf) - 1);
         if (size > 0) {
@@ -74,7 +74,7 @@ static void test2_task_entry(void* parameter)
             i++;
             if (i > 100000) {
                 i = 0;
-                pr_info("%s: recv %s, status=%d\r\n", current->name, buf, current->status);
+                pr_info("%s: recv %s, status=%d\n", current->name, buf, current->status);
             }
         }
     }
@@ -85,7 +85,7 @@ static int test2_task_init(void)
 {
     test2 = task_create("test2", test2_task_entry, NULL, 5, 4096, 10, NULL);
     if (test2 == NULL) {
-        pr_fatal("creat test2 task err\r\n");
+        pr_fatal("creat test2 task err\n");
         BUG_ON(true);
         return -EINVAL;
     }
@@ -107,7 +107,7 @@ static void test3_task_entry(void* parameter)
         i++;
         if (i > 10000) {
             i = 0;
-            pr_info("%s: usage:%u.%02u%%, total:%u.%02u%%\r\n", current->name,
+            pr_info("%s: usage:%u.%02u%%, total:%u.%02u%%\n", current->name,
                     usage / 100, usage % 100, all_usage / 100, all_usage % 100);
         }
     }
@@ -118,7 +118,7 @@ static int test3_task_init(void)
 {
     test3 = task_create("test3", test3_task_entry, NULL, 15, 4096, 10, NULL);
     if (test3 == NULL) {
-        pr_fatal("creat test3 task err\r\n");
+        pr_fatal("creat test3 task err\n");
         BUG_ON(true);
         return -EINVAL;
     }
@@ -136,7 +136,7 @@ static void test4_task_entry(void* parameter)
         sleep(3);
         usage = task_get_cpu_usage(current) / 100;
         all_usage = get_cpu_usage() / 100;
-        pr_info("%s: usage:%u.%02u%%, total:%u.%02u%%\r\n", current->name,
+        pr_info("%s: usage:%u.%02u%%, total:%u.%02u%%\n", current->name,
                 usage / 100, usage % 100, all_usage / 100, all_usage % 100);
     }
 }
@@ -146,7 +146,7 @@ static int test4_task_init(void)
 {
     test4 = task_create("test4", test4_task_entry, NULL, 2, 4096, 10, NULL);
     if (test4 == NULL) {
-        pr_fatal("creat test4 task err\r\n");
+        pr_fatal("creat test4 task err\n");
         BUG_ON(true);
         return -EINVAL;
     }
@@ -179,7 +179,7 @@ static void test5_task_entry(void* parameter)
         i++;
         if (i > 10000) {
             i = 0;
-            pr_info("%s: usage:%u.%02u%%, total:%u.%02u%%\r\n", current->name,
+            pr_info("%s: usage:%u.%02u%%, total:%u.%02u%%\n", current->name,
                     usage / 100, usage % 100, all_usage / 100, all_usage % 100);
         }
         msg_q_send(&msg_q, buf, sizeof(buf));
@@ -193,7 +193,7 @@ static int test5_task_init(void)
 {
     test5 = task_create("test5", test5_task_entry, NULL, 23, 4096, 10, NULL);
     if (test5 == NULL) {
-        pr_fatal("creat test5 task err\r\n");
+        pr_fatal("creat test5 task err\n");
         BUG_ON(true);
         return -EINVAL;
     }

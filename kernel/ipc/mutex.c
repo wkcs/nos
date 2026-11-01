@@ -20,7 +20,7 @@
 int mutex_init(struct mutex *lock)
 {
     if (lock == NULL) {
-        pr_err("mutex is NULL\r\n");
+        pr_err("mutex is NULL\n");
         return -EINVAL;
     }
 
@@ -38,7 +38,7 @@ static void __mutex_lock_locked(struct task_struct *task, struct mutex *lock)
 
     if (!list_empty(&task->list)) {
         BUG_ON(true);
-        pr_err("%s task list is not empty\r\n", task->name);
+        pr_err("%s task list is not empty\n", task->name);
         return;
     }
 
@@ -83,7 +83,7 @@ void mutex_lock(struct mutex *lock)
     if (rc < 0) {
         spin_unlock_irq(&lock->lock);
         spin_unlock_irq(&task->lock);
-        pr_err("%s task hang error, rc=%d\r\n", task->name, rc);
+        pr_err("%s task hang error, rc=%d\n", task->name, rc);
         return;
     }
     __mutex_lock_locked(task, lock);
@@ -95,7 +95,7 @@ void mutex_lock(struct mutex *lock)
     if (owner != NULL && task->current_priority < owner->current_priority) {
         rc = task_set_prio(owner, task->current_priority);
         if (rc < 0) {
-            pr_err("%s task set priority to %u error, rc=%d\r\n",
+            pr_err("%s task set priority to %u error, rc=%d\n",
                    owner->name, task->current_priority, rc);
         }
     }
@@ -129,7 +129,7 @@ void mutex_unlock(struct mutex *lock)
     }
     if (lock->owner != current) {
         spin_unlock_irq(&lock->lock);
-        pr_err("%s task is not mutex owner\r\n",
+        pr_err("%s task is not mutex owner\n",
                current != NULL ? current->name : "boot");
         return;
     }
@@ -143,7 +143,7 @@ void mutex_unlock(struct mutex *lock)
         if (owner != NULL) {
             rc = task_set_prio(owner, owner->init_priority);
             if (rc < 0) {
-                pr_err("%s task set priority to %u error, rc=%d\r\n",
+                pr_err("%s task set priority to %u error, rc=%d\n",
                        owner->name, owner->init_priority, rc);
             }
         }
@@ -160,7 +160,7 @@ void mutex_unlock(struct mutex *lock)
     if (owner != NULL) {
         rc = task_set_prio(owner, owner->init_priority);
         if (rc < 0) {
-            pr_err("%s task set priority to %u error, rc=%d\r\n",
+            pr_err("%s task set priority to %u error, rc=%d\n",
                    owner->name, owner->init_priority, rc);
         }
     }

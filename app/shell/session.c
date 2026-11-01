@@ -269,9 +269,9 @@ static void shell_session_line(struct shell_session *session,
 {
     const char *prompt;
 
-    shell_session_write(session, "\r\n", 2);
+    shell_session_write(session, "\n", 1);
     if (session->overflow) {
-        static const char error[] = "shell: line too long\r\n";
+        static const char error[] = "shell: line too long\n";
         shell_session_write(session, error, sizeof(error) - 1U);
     } else {
         if (session->text_len > 0U) {
@@ -477,7 +477,7 @@ void shell_session_feed(struct shell_session *session, unsigned char ch,
         session->after_cr = false;
         session->overflow = false;
         session->history_index = -1;
-        shell_session_write(session, "^C\r\n", 4);
+        shell_session_write(session, "^C\n", 3);
         shell_session_write(session, prompt, (unsigned int)strlen(prompt));
     } else if (ch == 0x04) { /* Ctrl+D: Delete char at cursor */
         shell_session_delete_at_cursor(session);

@@ -41,21 +41,21 @@ static void oled_test_task_entry(void* parameter)
         oled->led_dev = device_find_by_name(CONFIG_LED_DEV);
         if (oled->led_dev == NULL) {
             i++;
-            pr_err("%s device not found, retry=%d\r\n", CONFIG_LED_DEV, i);
+            pr_err("%s device not found, retry=%d\n", CONFIG_LED_DEV, i);
             sleep(1);
             continue;
         } else {
-            pr_info("%s device found\r\n", CONFIG_LED_DEV);
+            pr_info("%s device found\n", CONFIG_LED_DEV);
             break;
         }
     }
     if (i >= 100) {
-        pr_err("%s device not found, exit\r\n", CONFIG_LED_DEV);
+        pr_err("%s device not found, exit\n", CONFIG_LED_DEV);
         return;
     }
 
     oled->led_dev->ops.control(oled->led_dev, DS_CTRL_GET_DEV_INFO, &oled->dev_info);
-    pr_info("display device:[%s] %u*%u\r\n", CONFIG_LED_DEV, oled->dev_info.width, oled->dev_info.height);
+    pr_info("display device:[%s] %u*%u\n", CONFIG_LED_DEV, oled->dev_info.width, oled->dev_info.height);
     oled->led_dev->ops.control(oled->led_dev, DS_CTRL_ENABLE, NULL);
 
     oled->led_dev->ops.write(oled->led_dev, 0, &data, 1);
@@ -68,13 +68,13 @@ static int oled_test_init(void)
 
     oled = kmalloc(sizeof(struct oled_test), GFP_KERNEL);
     if (oled == NULL) {
-        pr_err("alloc oled_test buf error\r\n");
+        pr_err("alloc oled_test buf error\n");
         return -ENOMEM;
     }
 
     oled->task = task_create("oled_test", oled_test_task_entry, oled, 2, 1024, 10, NULL);
     if (oled->task == NULL) {
-        pr_fatal("creat oled_test task err\r\n");
+        pr_fatal("creat oled_test task err\n");
         BUG_ON(true);
         return -EINVAL;
     }

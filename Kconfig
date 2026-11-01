@@ -247,6 +247,13 @@ config DEFAULT_CONSOLE
 	help
 	  默认控制台设备名称。
 
+config CONSOLE_CRLF
+	bool "Translate console LF to CRLF"
+	default y
+	help
+	  串口控制台的文本输出将 LF 转换为 CRLF，适用于 minicom 等终端。
+	  关闭后保持 LF；原始 UART 和文件数据不受影响。
+
 config LOG_BUFFERED
 	bool "Buffer complete log records"
 	depends on !(ARCH_ARM64 && BOARD_QEMU_VIRT)

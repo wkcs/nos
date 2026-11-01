@@ -530,7 +530,7 @@ int _kill(int pid, int sig)
 
 void _exit(int status)
 {
-    pr_err("task exited with status %d\r\n", status);
+    pr_err("task exited with status %d\n", status);
     while (1) {
         ;
     }

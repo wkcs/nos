@@ -23,7 +23,7 @@ __init int mm_buddy_init(struct mm_buddy *buddy)
     int i;
 
     if (buddy == NULL) {
-        pr_err("%s: buddy is NULL\r\n", __func__);
+        pr_err("%s: buddy is NULL\n", __func__);
         return -EINVAL;
     }
 
@@ -128,7 +128,7 @@ static int __mm_buddy_split(struct mm_buddy *buddy, u32 order)
 static int mm_buddy_split(struct mm_buddy *buddy, u32 order)
 {
     if (buddy == NULL) {
-        pr_err("buddy is NULL\r\n");
+        pr_err("buddy is NULL\n");
         return -EINVAL;
     }
 
@@ -171,7 +171,7 @@ addr_t __alloc_pages(struct mm_buddy *buddy, gfp_t flag, u32 order)
     int rc;
 
     if (buddy == NULL) {
-        pr_err("%s: buddy is NULL\r\n", __func__);
+        pr_err("%s: buddy is NULL\n", __func__);
         return 0;
     }
     if (order >= CONFIG_MAX_ORDER) {
@@ -196,7 +196,7 @@ addr_t __alloc_pages(struct mm_buddy *buddy, gfp_t flag, u32 order)
 addr_t __alloc_page(struct mm_buddy *buddy, gfp_t flag)
 {
     if (buddy == NULL) {
-        pr_err("%s: buddy is NULL\r\n", __func__);
+        pr_err("%s: buddy is NULL\n", __func__);
         return 0;
     }
     return __alloc_pages(buddy, flag, 0);
@@ -211,12 +211,12 @@ int __free_pages(addr_t addr, u32 order)
     addr_t pfn;
 
     if (order >= CONFIG_MAX_ORDER) {
-        pr_err("order(=%u) is too big\r\n", order);
+        pr_err("order(=%u) is too big\n", order);
         return -EINVAL;
     }
     order_num = 1U << order;
     if (node == NULL) {
-        pr_err("addr(=0x%lx) is not in memory node\r\n", addr);
+        pr_err("addr(=0x%lx) is not in memory node\n", addr);
         return -EINVAL;
     }
     pages = (struct page *)node->start;
@@ -268,7 +268,7 @@ void mm_buddy_dump_info(struct mm_buddy *buddy)
     u32 i, num;
 
     if (buddy == NULL) {
-        pr_err("%s: buddy is NULL\r\n", __func__);
+        pr_err("%s: buddy is NULL\n", __func__);
         return;
     }
     node = container_of(buddy, struct mm_node, buddy);
@@ -279,5 +279,5 @@ void mm_buddy_dump_info(struct mm_buddy *buddy)
         pr_info_no_tag("%u->%u, ", i, buddy->info[i].free_num);
         num += buddy->info[i].free_num * (1 << i);
     }
-    pr_info_no_tag("page_num=%u\r\n", num);
+    pr_info_no_tag("page_num=%u\n", num);
 }

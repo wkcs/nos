@@ -26,11 +26,11 @@ __init int mm_init(void)
     list_for_each_entry (node, &g_node_list, list) {
         rc = mm_node_init(node);
         if (rc < 0) {
-            pr_err("mm node init, error, rc=%d\r\n", rc);
+            pr_err("mm node init, error, rc=%d\n", rc);
             continue;
         }
     }
-    pr_info("memory: %u/%u\r\n", mm_get_total_page_num(), mm_get_free_page_num());
+    pr_info("memory: %u/%u\n", mm_get_total_page_num(), mm_get_free_page_num());
 
     return 0;
 }
@@ -40,7 +40,7 @@ static void mm_deamon_task_entry(void* parameter)
 {
     while (1) {
         sleep(2);
-        pr_info("memory: %u/%u, totle: %u, free: %u\r\n",
+        pr_info("memory: %u/%u, totle: %u, free: %u\n",
                 mm_get_total_page_num(), mm_get_free_page_num(),
                 mm_get_total_page_num() * CONFIG_PAGE_SIZE,
                 mm_get_free_page_num() * CONFIG_PAGE_SIZE + mm_block_free_size());

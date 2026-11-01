@@ -522,6 +522,6 @@ int usbd_winusb_class_register(void)
 {
     INIT_LIST_HEAD(&winusb_class.list);
     usbd_class_register(&winusb_class);
-    pr_info("winusb register ok\r\n");
+    pr_info("winusb register ok\n");
     return 0;
 }

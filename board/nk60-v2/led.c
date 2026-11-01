@@ -115,7 +115,7 @@ static ssize_t nk60_v2_led_buf_write(struct device *dev, addr_t pos, const void 
     int i, index;
 
     if (size != LED_WIDTH * LED_HEIGHT * DS_COLOR_DATA_MAX) {
-        pr_err("data size error\r\n");
+        pr_err("data size error\n");
         return -EINVAL;
     }
 
@@ -163,7 +163,7 @@ static int nk60_v2_led_control(struct device *dev, int cmd, void *args)
         memcpy(args, &info, sizeof(struct display_dev_info));
         break;
     default:
-        pr_err("unknown cmd: %d\r\n", cmd);
+        pr_err("unknown cmd: %d\n", cmd);
         return -EINVAL;
     }
 
@@ -279,7 +279,7 @@ static int nk60_v2_led_init(void)
 
     led = kmalloc(sizeof(struct nk60_led), GFP_KERNEL);
     if (led == NULL) {
-        pr_err("alloc led buf error\r\n");
+        pr_err("alloc led buf error\n");
         return -ENOMEM;
     }
     g_led = led;

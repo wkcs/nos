@@ -386,18 +386,6 @@ static int shell_printf(const char *fmt, ...) {
   if ((size_t)len >= sizeof(buf)) {
     len = sizeof(buf) - 1;
   }
-  {
-    struct nshell *shell = nshell_current();
-    if (shell != NULL && (shell->output_file != NULL || shell->pipe_output != NULL)) {
-      int read_pos, write_pos = 0;
-      for (read_pos = 0; read_pos < len; read_pos++) {
-        if (buf[read_pos] == '\r' && read_pos + 1 < len && buf[read_pos + 1] == '\n')
-          continue;
-        buf[write_pos++] = buf[read_pos];
-      }
-      len = write_pos;
-    }
-  }
   return nshell_write(buf, len);
 }
 
@@ -416,20 +404,14 @@ static int shell_error(const char *fmt, ...)
     if ((size_t)len >= sizeof(buf)) len = sizeof(buf) - 1;
     if (shell->error_file != NULL || shell->error_pipe != NULL) {
         struct file *file = shell->error_file;
-        int read_pos, write_pos = 0, total = 0;
-        for (read_pos = 0; read_pos < len; read_pos++) {
-            if (buf[read_pos] == '\r' && read_pos + 1 < len && buf[read_pos + 1] == '\n') {
-                continue;
-            }
-            buf[write_pos++] = buf[read_pos];
-        }
+        int total = 0;
         if (file == NULL) {
-            int rc = shell_stream_pipe_write(shell->error_pipe, buf, (size_t)write_pos);
+            int rc = shell_stream_pipe_write(shell->error_pipe, buf, (size_t)len);
             if (rc < 0) shell->output_error = rc;
             return rc;
         }
-        while (total < write_pos) {
-            int rc = file->f_op->write(file, buf + total, (size_t)(write_pos - total), &file->f_pos);
+        while (total < len) {
+            int rc = file->f_op->write(file, buf + total, (size_t)(len - total), &file->f_pos);
             if (rc <= 0) {
                 shell->output_error = rc < 0 ? rc : -EIO;
                 return total != 0 ? total : shell->output_error;
@@ -626,7 +608,7 @@ static int cmd_export(int argc, char *argv[])
                 if (*p == '\'') nshell_write("'\\''", 4);
                 else nshell_write(p, 1);
             }
-            nshell_write("'\r\n", 3);
+            nshell_write("'\n", 2);
         }
         return 0;
     }
@@ -636,7 +618,7 @@ static int cmd_export(int argc, char *argv[])
         const char *value = equals != NULL ? equals + 1 : variable_lookup(shell, argv[i], len);
         int rc = variable_set(shell, argv[i], len, value != NULL ? value : "", true);
         if (rc != 0) {
-            shell_error("export: %s: invalid name or out of memory\r\n", argv[i]);
+            shell_error("export: %s: invalid name or out of memory\n", argv[i]);
             status = 1;
         }
     }
@@ -655,7 +637,7 @@ static int cmd_unset(int argc, char *argv[])
         size_t len = strlen(argv[i]);
         struct shell_variable **slot;
         if (!variable_name_valid(argv[i], len)) {
-            shell_error("unset: %s: invalid name\r\n", argv[i]);
+            shell_error("unset: %s: invalid name\n", argv[i]);
             status = 1;
             continue;
         }
@@ -677,7 +659,7 @@ static void alias_print(const struct shell_variable *var)
         if (*p == '\'') nshell_write("'\\''", 4);
         else nshell_write(p, 1);
     }
-    nshell_write("'\r\n", 3);
+    nshell_write("'\n", 2);
 }
 
 static int cmd_alias(int argc, char *argv[])
@@ -692,7 +674,7 @@ static int cmd_alias(int argc, char *argv[])
         for (; *opt != '\0'; opt++) {
             if (*opt == 'p') print_all = true;
             else {
-                shell_error("alias: invalid option -- '%c'\r\n", *opt);
+                shell_error("alias: invalid option -- '%c'\n", *opt);
                 return 1;
             }
         }
@@ -707,7 +689,7 @@ static int cmd_alias(int argc, char *argv[])
         const char *equals = strchr(argv[i], '=');
         if (equals != NULL) {
             if (alias_set(shell, argv[i], (size_t)(equals - argv[i]), equals + 1) != 0) {
-                shell_error("alias: %s: invalid alias name\r\n", argv[i]);
+                shell_error("alias: %s: invalid alias name\n", argv[i]);
                 status = 1;
             }
         } else {
@@ -716,7 +698,7 @@ static int cmd_alias(int argc, char *argv[])
             if (var != NULL) {
                 alias_print(var);
             } else {
-                shell_error("alias: %s: not found\r\n", argv[i]);
+                shell_error("alias: %s: not found\n", argv[i]);
                 status = 1;
             }
         }
@@ -736,7 +718,7 @@ static int cmd_unalias(int argc, char *argv[])
         for (; *opt != '\0'; opt++) {
             if (*opt == 'a') remove_all = true;
             else {
-                shell_error("unalias: invalid option -- '%c'\r\n", *opt);
+                shell_error("unalias: invalid option -- '%c'\n", *opt);
                 return 1;
             }
         }
@@ -747,14 +729,14 @@ static int cmd_unalias(int argc, char *argv[])
         return 0;
     }
     if (first == argc) {
-        shell_error("unalias: usage: unalias [-a] name [name ...]\r\n");
+        shell_error("unalias: usage: unalias [-a] name [name ...]\n");
         return 1;
     }
     for (i = first; i < argc; i++) {
         struct shell_variable **slot =
             variable_list_slot(&shell->aliases, argv[i], strlen(argv[i]));
         if (*slot == NULL) {
-            shell_error("unalias: %s: not found\r\n", argv[i]);
+            shell_error("unalias: %s: not found\n", argv[i]);
             status = 1;
         } else {
             struct shell_variable *dead = *slot;
@@ -772,13 +754,13 @@ static int cmd_printenv(int argc, char *argv[])
 
     if (first < argc && strcmp(argv[first], "--") == 0) first++;
     else if (first < argc && argv[first][0] == '-' && argv[first][1] != '\0') {
-        shell_error("printenv: invalid option: %s\r\n", argv[first]);
+        shell_error("printenv: invalid option: %s\n", argv[first]);
         return 1;
     }
     if (first == argc) {
         struct shell_variable *var;
         for (var = shell->variables; var != NULL; var = var->next) {
-            if (var->exported) shell_printf("%s=%s\r\n", var->name, var->value);
+            if (var->exported) shell_printf("%s=%s\n", var->name, var->value);
         }
         return 0;
     }
@@ -789,7 +771,7 @@ static int cmd_printenv(int argc, char *argv[])
             continue;
         }
         var = *variable_slot(shell, argv[i], strlen(argv[i]));
-        if (var != NULL && var->exported) shell_printf("%s\r\n", var->value);
+        if (var != NULL && var->exported) shell_printf("%s\n", var->value);
         else status = 1;
     }
     return status;
@@ -828,7 +810,7 @@ static int cmd_env(int argc, char *argv[])
                 struct shell_variable **slot;
                 if (*name == '\0') {
                     if (++first >= argc) {
-                        shell_error("env: option requires an argument -- 'u'\r\n");
+                        shell_error("env: option requires an argument -- 'u'\n");
                         status = 1;
                         goto out;
                     }
@@ -836,7 +818,7 @@ static int cmd_env(int argc, char *argv[])
                 }
                 len = strlen(name);
                 if (!variable_name_valid(name, len)) {
-                    shell_error("env: cannot unset '%s': invalid name\r\n", name);
+                    shell_error("env: cannot unset '%s': invalid name\n", name);
                     status = 1;
                     goto out;
                 }
@@ -848,7 +830,7 @@ static int cmd_env(int argc, char *argv[])
                 }
                 break;
             } else {
-                shell_error("env: invalid option -- '%c'\r\n", *option);
+                shell_error("env: invalid option -- '%c'\n", *option);
                 status = 1;
                 goto out;
             }
@@ -860,7 +842,7 @@ static int cmd_env(int argc, char *argv[])
         if (equals == NULL) break;
         if (variable_set(shell, argv[first], (size_t)(equals - argv[first]),
                          equals + 1, true) != 0) {
-            shell_error("env: invalid assignment '%s'\r\n", argv[first]);
+            shell_error("env: invalid assignment '%s'\n", argv[first]);
             status = 1;
             goto out;
         }
@@ -868,12 +850,12 @@ static int cmd_env(int argc, char *argv[])
     }
     if (first == argc) {
         for (var = shell->variables; var != NULL; var = var->next) {
-            if (var->exported) shell_printf("%s=%s\r\n", var->name, var->value);
+            if (var->exported) shell_printf("%s=%s\n", var->name, var->value);
         }
     } else {
         const struct shell_cmd *curr = nshell_find_builtin(argv[first]);
         if (curr == NULL) {
-            shell_error("env: '%s': command not found\r\n", argv[first]);
+            shell_error("env: '%s': command not found\n", argv[first]);
             status = 127;
         } else {
             status = curr->func(argc - first, argv + first);
@@ -894,7 +876,7 @@ static int cmd_help(int argc, char *argv[]) {
 
 static int cmd_log(int argc, char *argv[]) {
   if (argc < 2) {
-    shell_error("Usage: log <on|off|stats|test [msg]>\r\n");
+    shell_error("Usage: log <on|off|stats|test [msg]>\n");
     return -EINVAL;
   }
 
@@ -902,22 +884,22 @@ static int cmd_log(int argc, char *argv[]) {
     struct kernel_log_stats stats;
 
     kernel_log_get_stats(&stats);
-    shell_printf("log: dropped=%u truncated=%u high_water=%u\r\n",
+    shell_printf("log: dropped=%u truncated=%u high_water=%u\n",
                  stats.dropped_records, stats.truncated_records, stats.high_water);
   } else if (strcmp(argv[1], "on") == 0) {
     set_log_enabled(true);
-    shell_printf("Kernel log enabled\r\n");
+    shell_printf("Kernel log enabled\n");
   } else if (strcmp(argv[1], "off") == 0) {
     set_log_enabled(false);
-    shell_printf("Kernel log disabled\r\n");
+    shell_printf("Kernel log disabled\n");
   } else if (strcmp(argv[1], "test") == 0) {
     const char *msg = (argc >= 3) ? argv[2] : "nlk_live_log_test";
-    pr_info("NLK log test info: %s\r\n", msg);
-    pr_warning("NLK log test warning: %s\r\n", msg);
-    pr_err("NLK log test error: %s\r\n", msg);
-    shell_printf("Emitted 3 kernel log records (%s)\r\n", msg);
+    pr_info("NLK log test info: %s\n", msg);
+    pr_warning("NLK log test warning: %s\n", msg);
+    pr_err("NLK log test error: %s\n", msg);
+    shell_printf("Emitted 3 kernel log records (%s)\n", msg);
   } else {
-    shell_error("Unknown option: %s\r\n", argv[1]);
+    shell_error("Unknown option: %s\n", argv[1]);
     return -EINVAL;
   }
   return 0;
@@ -927,7 +909,7 @@ static int cmd_ver(int argc, char *argv[]) {
   u64 ticks = cpu_run_ticks();
   (void)argc;
   (void)argv;
-  shell_printf("NOS Kernel %u.%u.%u (uptime=%u.%03us)\r\n",
+  shell_printf("NOS Kernel %u.%u.%u (uptime=%u.%03us)\n",
                (unsigned int)((CONFIG_VERSION_CODE >> 16) & 0xFFU),
                (unsigned int)((CONFIG_VERSION_CODE >> 8) & 0xFFU),
                (unsigned int)(CONFIG_VERSION_CODE & 0xFFU),
@@ -965,14 +947,14 @@ static int cmd_uname(int argc, char *argv[])
             else if (*opt == 'p') flags |= UNAME_P;
             else if (*opt == 'o') flags |= UNAME_O;
             else {
-                shell_error("uname: invalid option -- '%c'\r\n", *opt);
+                shell_error("uname: invalid option -- '%c'\n", *opt);
                 return 1;
             }
         }
         first++;
     }
     if (first < argc) {
-        shell_error("uname: extra operand '%s'\r\n", argv[first]);
+        shell_error("uname: extra operand '%s'\n", argv[first]);
         return 1;
     }
     if (flags == 0U) flags = UNAME_S;
@@ -989,7 +971,7 @@ static int cmd_uname(int argc, char *argv[])
     if (flags & UNAME_M) { shell_printf("%s%s", sep ? " " : "", CONFIG_ARCH); sep = true; }
     if (flags & UNAME_P) { shell_printf("%s%s", sep ? " " : "", CONFIG_CPU_TYPE); sep = true; }
     if (flags & UNAME_O) shell_printf("%sNOS", sep ? " " : "");
-    shell_printf("\r\n");
+    shell_printf("\n");
     return 0;
 }
 
@@ -1007,18 +989,18 @@ static int cmd_uptime(int argc, char *argv[])
         for (; *opt != '\0'; opt++) {
             if (*opt == 'p') pretty = true;
             else {
-                shell_error("uptime: invalid option -- '%c'\r\n", *opt);
+                shell_error("uptime: invalid option -- '%c'\n", *opt);
                 return 1;
             }
         }
         first++;
     }
     if (first < argc) {
-        shell_error("uptime: extra operand '%s'\r\n", argv[first]);
+        shell_error("uptime: extra operand '%s'\n", argv[first]);
         return 1;
     }
-    if (pretty) shell_printf("up %u minutes, %u seconds\r\n", secs / 60U, secs % 60U);
-    else shell_printf("up %u.%03us\r\n", secs, ms);
+    if (pretty) shell_printf("up %u minutes, %u seconds\n", secs / 60U, secs % 60U);
+    else shell_printf("up %u.%03us\n", secs, ms);
     return 0;
 }
 
@@ -1043,29 +1025,29 @@ static int cmd_free(int argc, char *argv[])
             else if (*opt == 'k') { bytes = false; human = false; }
             else if (*opt == 'h') { human = true; bytes = false; }
             else {
-                shell_error("free: invalid option -- '%c'\r\n", *opt);
+                shell_error("free: invalid option -- '%c'\n", *opt);
                 return 1;
             }
         }
         first++;
     }
     if (first < argc) {
-        shell_error("free: extra operand '%s'\r\n", argv[first]);
+        shell_error("free: extra operand '%s'\n", argv[first]);
         return 1;
     }
-    shell_printf("              total        used        free\r\n");
+    shell_printf("              total        used        free\n");
     if (human) {
-        shell_printf("Mem:      %8uK   %8uK   %8uK\r\n",
+        shell_printf("Mem:      %8uK   %8uK   %8uK\n",
                      mem_total / 1024U, mem_used / 1024U, mem_free / 1024U);
-        shell_printf("Heap:     %8uB   %8uB   %8uB\r\n",
+        shell_printf("Heap:     %8uB   %8uB   %8uB\n",
                      heap_total, heap_used, heap_free);
     } else if (bytes) {
-        shell_printf("Mem:      %9u   %9u   %9u\r\n", mem_total, mem_used, mem_free);
-        shell_printf("Heap:     %9u   %9u   %9u\r\n", heap_total, heap_used, heap_free);
+        shell_printf("Mem:      %9u   %9u   %9u\n", mem_total, mem_used, mem_free);
+        shell_printf("Heap:     %9u   %9u   %9u\n", heap_total, heap_used, heap_free);
     } else {
-        shell_printf("Mem:      %9u   %9u   %9u\r\n",
+        shell_printf("Mem:      %9u   %9u   %9u\n",
                      mem_total / 1024U, mem_used / 1024U, mem_free / 1024U);
-        shell_printf("Heap:     %9u   %9u   %9u\r\n",
+        shell_printf("Heap:     %9u   %9u   %9u\n",
                      heap_total / 1024U, heap_used / 1024U, heap_free / 1024U);
     }
     return 0;
@@ -1093,11 +1075,7 @@ static int cmd_echo(int argc, char *argv[])
         nshell_write(argv[i], strlen(argv[i]));
     }
     if (newline) {
-        if (nshell_current()->output_file != NULL || nshell_current()->pipe_output != NULL) {
-            nshell_write("\n", 1);
-        } else {
-            nshell_write("\r\n", 2);
-        }
+        nshell_write("\n", 1);
     }
     return 0;
 }
@@ -1114,18 +1092,18 @@ static int cmd_printf(int argc, char *argv[])
     int rc;
     int first = argc > 1 && strcmp(argv[1], "--") == 0 ? 2 : 1;
     if (argc <= first) {
-        shell_error("printf: missing format\r\n");
+        shell_error("printf: missing format\n");
         return 1;
     }
     buffer = kmalloc(512, GFP_KERNEL);
     if (buffer == NULL) {
-        shell_error("printf: out of memory\r\n");
+        shell_error("printf: out of memory\n");
         return 1;
     }
     rc = shell_printf_execute(argv[first], argc - first - 1, argv + first + 1,
                               printf_write, NULL, buffer, 512);
     kfree(buffer);
-    if (rc != 0) shell_error("printf: invalid format, argument or output error\r\n");
+    if (rc != 0) shell_error("printf: invalid format, argument or output error\n");
     return rc;
 }
 
@@ -1150,7 +1128,7 @@ static int cmd_sleep(int argc, char *argv[])
 
     if (first < argc && strcmp(argv[first], "--") == 0) first++;
     if (first == argc) {
-        shell_error("sleep: missing operand\r\n");
+        shell_error("sleep: missing operand\n");
         return 1;
     }
     for (i = first; i < argc; i++) {
@@ -1158,7 +1136,7 @@ static int cmd_sleep(int argc, char *argv[])
         u64 whole = 0, frac_ms = 0, mult = 1000U;
         unsigned int frac_scale = 100U;
         if (*s < '0' || *s > '9') {
-            shell_error("sleep: invalid time interval '%s'\r\n", argv[i]);
+            shell_error("sleep: invalid time interval '%s'\n", argv[i]);
             return 1;
         }
         while (*s >= '0' && *s <= '9') {
@@ -1167,7 +1145,7 @@ static int cmd_sleep(int argc, char *argv[])
         if (*s == '.') {
             s++;
             if (*s < '0' || *s > '9') {
-                shell_error("sleep: invalid time interval '%s'\r\n", argv[i]);
+                shell_error("sleep: invalid time interval '%s'\n", argv[i]);
                 return 1;
             }
             while (*s >= '0' && *s <= '9') {
@@ -1185,7 +1163,7 @@ static int cmd_sleep(int argc, char *argv[])
             mult = 60000U;
             frac_ms *= 60U;
         } else if (*s != '\0' && strcmp(s, "s") != 0) {
-            shell_error("sleep: invalid time interval '%s'\r\n", argv[i]);
+            shell_error("sleep: invalid time interval '%s'\n", argv[i]);
             return 1;
         }
         total_ms += whole * mult + frac_ms;
@@ -1203,11 +1181,11 @@ static int cmd_exit(int argc, char *argv[])
     if (shell == NULL) return 1;
     if (first < argc && strcmp(argv[first], "--") == 0) first++;
     if (argc - first > 1) {
-        shell_error("%s: too many arguments\r\n", argv[0]);
+        shell_error("%s: too many arguments\n", argv[0]);
         return 1;
     }
     if (strcmp(argv[0], "return") == 0 && shell->script_depth == 0U) {
-        shell_error("return: can only return from a script\r\n");
+        shell_error("return: can only return from a script\n");
         return 1;
     }
     if (first == argc) {
@@ -1217,7 +1195,7 @@ static int cmd_exit(int argc, char *argv[])
         bool neg = false;
         if (*s == '+' || *s == '-') neg = *s++ == '-';
         if (*s == '\0' || head_number(s, &parsed) != 0) {
-            shell_error("%s: %s: numeric argument required\r\n", argv[0], argv[first]);
+            shell_error("%s: %s: numeric argument required\n", argv[0], argv[first]);
             code = 2;
         } else {
             code = (int)((neg ? -(int64_t)parsed : (int64_t)parsed) & 0xFF);
@@ -1248,13 +1226,13 @@ static int cmd_test(int argc, char *argv[])
     int result;
     if (strcmp(argv[0], "[") == 0) {
         if (argc < 2 || strcmp(argv[argc - 1], "]") != 0) {
-            shell_error("[: missing ]\r\n");
+            shell_error("[: missing ]\n");
             return 2;
         }
         argc--;
     }
     result = shell_test_expression(argc - 1, argv + 1, test_file_flags, NULL);
-    if (result == 2) shell_error("%s: invalid expression\r\n", argv[0]);
+    if (result == 2) shell_error("%s: invalid expression\n", argv[0]);
     return result;
 }
 
@@ -1275,12 +1253,12 @@ static int cmd_history(int argc, char *argv[])
         return 0;
     }
     if (argc != 1) {
-        shell_error("history: usage: history [-c]\r\n");
+        shell_error("history: usage: history [-c]\n");
         return -EINVAL;
     }
     for (i = 0; i < shell_session_history_count(&shell->session); i++) {
         const char *entry = shell_session_history_get(&shell->session, i);
-        if (entry != NULL) shell_printf("%4u  %s\r\n", i + 1, entry);
+        if (entry != NULL) shell_printf("%4u  %s\n", i + 1, entry);
     }
     return 0;
 }
@@ -1299,7 +1277,7 @@ static void ls_print_entry(const char *name, struct inode *inode, bool long_form
     unsigned int i;
 
     if (!long_format || inode == NULL) {
-        shell_printf("%s\r\n", name);
+        shell_printf("%s\n", name);
         return;
     }
     if (S_ISDIR(inode->i_mode)) {
@@ -1310,7 +1288,7 @@ static void ls_print_entry(const char *name, struct inode *inode, bool long_form
             mode[i + 1] = bits[i];
         }
     }
-    shell_printf("%s %u %u %u %llu %s\r\n", mode, inode->i_nlink,
+    shell_printf("%s %u %u %u %llu %s\n", mode, inode->i_nlink,
                  inode->i_uid, inode->i_gid,
                  (unsigned long long)inode->i_size, name);
 }
@@ -1326,14 +1304,14 @@ static int cmd_stat(int argc, char *argv[])
         for (; *opt != '\0'; opt++) {
             if (*opt == 't') terse = true;
             else {
-                shell_error("stat: invalid option -- '%c'\r\n", *opt);
+                shell_error("stat: invalid option -- '%c'\n", *opt);
                 return 1;
             }
         }
         first++;
     }
     if (first == argc) {
-        shell_error("stat: missing operand\r\n");
+        shell_error("stat: missing operand\n");
         return 1;
     }
     shell_init_cwd();
@@ -1346,7 +1324,7 @@ static int cmd_stat(int argc, char *argv[])
         unsigned int b;
 
         if (inode == NULL || (len > 0 && argv[i][len - 1] == '/' && !S_ISDIR(inode->i_mode))) {
-            shell_error("stat: cannot stat '%s'\r\n", argv[i]);
+            shell_error("stat: cannot stat '%s'\n", argv[i]);
             status = 1;
             continue;
         }
@@ -1355,17 +1333,17 @@ static int cmd_stat(int argc, char *argv[])
             if (inode->i_mode & (0400U >> b)) mode[b + 1] = bits[b];
         }
         if (terse) {
-            shell_printf("%s %llu %04o %s %u %u %u %llu\r\n",
+            shell_printf("%s %llu %04o %s %u %u %u %llu\n",
                          argv[i], (unsigned long long)inode->i_size,
                          (unsigned int)(inode->i_mode & 07777U),
                          S_ISDIR(inode->i_mode) ? "directory" : "regular",
                          inode->i_nlink, inode->i_uid, inode->i_gid,
                          (unsigned long long)inode->i_ino);
         } else {
-            shell_printf("  File: %s\r\n"
-                         "  Size: %-12llu Type: %s\r\n"
-                         "  Mode: (%04o/%s) Inode: %-8llu Links: %u\r\n"
-                         "Access: (Uid: %4u   Gid: %4u)\r\n",
+            shell_printf("  File: %s\n"
+                         "  Size: %-12llu Type: %s\n"
+                         "  Mode: (%04o/%s) Inode: %-8llu Links: %u\n"
+                         "Access: (Uid: %4u   Gid: %4u)\n",
                          argv[i], (unsigned long long)inode->i_size,
                          S_ISDIR(inode->i_mode) ? "directory" : "regular file",
                          (unsigned int)(inode->i_mode & 07777U), mode,
@@ -1409,7 +1387,7 @@ static int ls_directory(const char *path, struct dentry *target,
     int res;
 
     if (inode->i_fop == NULL || inode->i_fop->readdir == NULL) {
-        shell_error("ls: cannot read directory '%s'\r\n", path);
+        shell_error("ls: cannot read directory '%s'\n", path);
         return -ENOTDIR;
     }
     file = kzalloc(sizeof(*file), GFP_KERNEL);
@@ -1427,7 +1405,7 @@ static int ls_directory(const char *path, struct dentry *target,
             file->f_op->release(inode, file);
         }
     } else {
-        shell_error("ls: cannot open '%s'\r\n", path);
+        shell_error("ls: cannot open '%s'\n", path);
     }
     kfree(file);
     return res;
@@ -1457,7 +1435,7 @@ static int cmd_ls(int argc, char *argv[])
                 } else if (*option == 'l') {
                     ctx.long_format = true;
                 } else {
-                    shell_error("ls: unsupported option '%s'\r\n", argv[i]);
+                    shell_error("ls: unsupported option '%s'\n", argv[i]);
                     return 1;
                 }
             }
@@ -1473,7 +1451,7 @@ static int cmd_ls(int argc, char *argv[])
     for (i = 0; i < count; i++) {
         targets[i] = resolve_path(paths[i]);
         if (targets[i] == NULL || targets[i]->d_inode == NULL) {
-            shell_error("ls: cannot access '%s'\r\n", paths[i]);
+            shell_error("ls: cannot access '%s'\n", paths[i]);
             targets[i] = NULL;
             status = 1;
         } else if (!S_ISDIR(targets[i]->d_inode->i_mode)) {
@@ -1486,10 +1464,10 @@ static int cmd_ls(int argc, char *argv[])
             continue;
         }
         if (printed) {
-            shell_printf("\r\n");
+            shell_printf("\n");
         }
         if (count > 1) {
-            shell_printf("%s:\r\n", paths[i]);
+            shell_printf("%s:\n", paths[i]);
         }
         if (ls_directory(paths[i], targets[i], &ctx) < 0) {
             status = 1;
@@ -1506,16 +1484,16 @@ static int cmd_pwd(int argc, char *argv[])
     for (i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--") == 0 && i + 1 == argc) break;
         if (strcmp(argv[i], "-L") != 0 && strcmp(argv[i], "-P") != 0) {
-            shell_error("pwd: invalid option: %s\r\n", argv[i]);
+            shell_error("pwd: invalid option: %s\n", argv[i]);
             return 1;
         }
     }
     shell_getcwd(buf, sizeof(buf));
     if (buf[0] == '\0') {
-        shell_error("pwd: path too long\r\n");
+        shell_error("pwd: path too long\n");
         return 1;
     }
-    shell_printf("%s\r\n", buf);
+    shell_printf("%s\n", buf);
     return 0;
 }
 
@@ -1541,14 +1519,14 @@ static int cmd_cd(int argc, char *argv[])
         if (strcmp(argv[first], "-L") == 0 || strcmp(argv[first], "-P") == 0) {
             first++;
         } else if (argv[first][0] == '-' && argv[first][1] != '\0') {
-            shell_error("cd: invalid option: %s\r\n", argv[first]);
+            shell_error("cd: invalid option: %s\n", argv[first]);
             return 1;
         } else {
             break;
         }
     }
     if (argc - first > 1) {
-        shell_error("cd: too many arguments\r\n");
+        shell_error("cd: too many arguments\n");
         return 1;
     }
     path = first == argc ? variable_lookup(shell, "HOME", 4) : argv[first];
@@ -1557,12 +1535,12 @@ static int cmd_cd(int argc, char *argv[])
         print_path = true;
     }
     if (path == NULL) {
-        shell_error("cd: %s not set\r\n", print_path ? "OLDPWD" : "HOME");
+        shell_error("cd: %s not set\n", print_path ? "OLDPWD" : "HOME");
         return 1;
     }
     dentry = resolve_path(path);
     if (dentry == NULL || dentry->d_inode == NULL || !S_ISDIR(dentry->d_inode->i_mode)) {
-        shell_error("cd: %s: No such directory\r\n", path);
+        shell_error("cd: %s: No such directory\n", path);
         return 1;
     }
     paths = kmalloc(2 * (SHELL_SESSION_INPUT_MAX + 1), GFP_KERNEL);
@@ -1572,13 +1550,13 @@ static int cmd_cd(int argc, char *argv[])
     shell_getcwd(old_path, SHELL_SESSION_INPUT_MAX + 1);
     shell_dentry_path(dentry, new_path, SHELL_SESSION_INPUT_MAX + 1);
     if (old_path[0] == '\0' || new_path[0] == '\0') {
-        shell_error("cd: path too long\r\n");
+        shell_error("cd: path too long\n");
         kfree(paths);
         return 1;
     }
     new_ref = shell_cwd_open(dentry);
     if (new_ref == NULL) {
-        shell_error("cd: cannot open directory: %s\r\n", path);
+        shell_error("cd: cannot open directory: %s\n", path);
         kfree(paths);
         return 1;
     }
@@ -1588,7 +1566,7 @@ static int cmd_cd(int argc, char *argv[])
         if (rc != 0) variable_restore(shell, saved, 1, false);
     }
     if (rc != 0) {
-        shell_error("cd: out of memory\r\n");
+        shell_error("cd: out of memory\n");
         shell_cwd_put(new_ref);
         kfree(paths);
         return 1;
@@ -1598,7 +1576,7 @@ static int cmd_cd(int argc, char *argv[])
     shell_cwd = dentry;
     shell_cwd_put(shell->cwd_ref);
     shell->cwd_ref = new_ref;
-    if (print_path) shell_printf("%s\r\n", new_path);
+    if (print_path) shell_printf("%s\n", new_path);
     kfree(paths);
     return 0;
 }
@@ -1663,14 +1641,14 @@ static int cmd_mkdir(int argc, char *argv[])
             break;
         }
         if (strcmp(argv[first], "-p") != 0) {
-            shell_error("mkdir: unsupported option '%s'\r\n", argv[first]);
+            shell_error("mkdir: unsupported option '%s'\n", argv[first]);
             return -EINVAL;
         }
         parents = true;
         first++;
     }
     if (first == argc) {
-        shell_error("mkdir: missing operand\r\n");
+        shell_error("mkdir: missing operand\n");
         return -EINVAL;
     }
     shell_init_cwd();
@@ -1724,7 +1702,7 @@ static int cmd_mkdir(int argc, char *argv[])
             continue;
         }
 error:
-        shell_error("mkdir: cannot create '%s': error %d\r\n", argv[i], rc);
+        shell_error("mkdir: cannot create '%s': error %d\n", argv[i], rc);
         status = rc;
     }
     kfree(path);
@@ -1743,12 +1721,12 @@ static int cmd_rmdir(int argc, char *argv[])
         if (strcmp(option, "-") == 0) { first++; break; }
         for (; *option != '\0'; option++) {
             if (*option == 'p') parents = true;
-            else { shell_error("rmdir: invalid option: %s\r\n", argv[first]); return 1; }
+            else { shell_error("rmdir: invalid option: %s\n", argv[first]); return 1; }
         }
         first++;
     }
     if (first == argc) {
-        shell_error("rmdir: missing operand\r\n");
+        shell_error("rmdir: missing operand\n");
         return 1;
     }
     shell_init_cwd();
@@ -1789,7 +1767,7 @@ static int cmd_rmdir(int argc, char *argv[])
         }
         if (rc == 0) continue;
 error:
-        shell_error("rmdir: cannot remove '%s': error %d\r\n", argv[i], rc);
+        shell_error("rmdir: cannot remove '%s': error %d\n", argv[i], rc);
         status = 1;
     }
     kfree(path);
@@ -1828,14 +1806,14 @@ static int cmd_touch(int argc, char *argv[])
         for (; *option != '\0'; option++) {
             if (*option == 'c') no_create = true;
             else if (*option != 'a' && *option != 'm') {
-                shell_error("touch: invalid option: %s\r\n", argv[first]);
+                shell_error("touch: invalid option: %s\n", argv[first]);
                 return 1;
             }
         }
         first++;
     }
     if (first == argc) {
-        shell_error("touch: missing file operand\r\n");
+        shell_error("touch: missing file operand\n");
         return 1;
     }
     shell_init_cwd();
@@ -1866,7 +1844,7 @@ static int cmd_touch(int argc, char *argv[])
         }
         if (rc == 0) continue;
 error:
-        shell_error("touch: cannot touch '%s': error %d\r\n", argv[i], rc);
+        shell_error("touch: cannot touch '%s': error %d\n", argv[i], rc);
         status = 1;
     }
     kfree(path);
@@ -1970,7 +1948,7 @@ static int rm_path(char *path, bool recursive, bool directories, bool force, boo
         }
         rc = parent != NULL ? vfs_remove_entry(parent, name, is_dir) : -ENOENT;
         if (rc != 0) return rc;
-        if (verbose) shell_printf("removed '%s'\r\n", path);
+        if (verbose) shell_printf("removed '%s'\n", path);
         if (strlen(path) == base_len) return 0;
         *strrchr(path, '/') = '\0';
     }
@@ -1990,13 +1968,13 @@ static int cmd_rm(int argc, char *argv[])
             else if (*option == 'd') directories = true;
             else if (*option == 'f') force = true;
             else if (*option == 'v') verbose = true;
-            else { shell_error("rm: invalid option: %s\r\n", argv[first]); return 1; }
+            else { shell_error("rm: invalid option: %s\n", argv[first]); return 1; }
         }
         first++;
     }
     if (first == argc) {
         if (force) return 0;
-        shell_error("rm: missing operand\r\n");
+        shell_error("rm: missing operand\n");
         return 1;
     }
     shell_init_cwd();
@@ -2011,7 +1989,7 @@ static int cmd_rm(int argc, char *argv[])
             rc = rm_path(path, recursive, directories, force, verbose);
         }
         if (rc != 0) {
-            shell_error("rm: cannot remove '%s': error %d\r\n", argv[i], rc);
+            shell_error("rm: cannot remove '%s': error %d\n", argv[i], rc);
             status = 1;
         }
     }
@@ -2074,13 +2052,13 @@ static int cat_file(const char *path)
 
   dentry = resolve_path(path);
   if (!dentry || !dentry->d_inode) {
-    shell_error("cat: %s: not found\r\n", path);
+    shell_error("cat: %s: not found\n", path);
     return -1;
   }
 
   f = kzalloc(sizeof(struct file), GFP_KERNEL);
   if (!f) {
-    shell_error("cat: out of memory\r\n");
+    shell_error("cat: out of memory\n");
     return -ENOMEM;
   }
   f->f_inode = dentry->d_inode;
@@ -2090,7 +2068,7 @@ static int cat_file(const char *path)
   f->f_path.mnt = NULL;
 
   if (!f->f_op || !f->f_op->read) {
-    shell_error("cat: %s: no read operation\r\n", path);
+    shell_error("cat: %s: no read operation\n", path);
     kfree(f);
     return -1;
   }
@@ -2098,7 +2076,7 @@ static int cat_file(const char *path)
   if (f->f_op->open) {
       ret = f->f_op->open(dentry->d_inode, f);
       if (ret != 0) {
-          shell_error("cat: open failed %d\r\n", ret);
+          shell_error("cat: open failed %d\n", ret);
           kfree(f);
           return ret;
       }
@@ -2127,7 +2105,7 @@ static int cmd_cat(int argc, char *argv[])
         }
         while (*option != '\0') {
             if (*option++ != 'u') {
-                shell_error("cat: invalid option: %s\r\n", argv[first]);
+                shell_error("cat: invalid option: %s\n", argv[first]);
                 return 1;
             }
         }
@@ -2150,17 +2128,17 @@ static int cmd_path_part(int argc, char *argv[], bool basename)
     size_t length;
     if (first < argc && strcmp(argv[first], "--") == 0) first++;
     else if (first < argc && argv[first][0] == '-' && argv[first][1] != '\0') {
-        shell_error("%s: invalid option: %s\r\n", argv[0], argv[first]);
+        shell_error("%s: invalid option: %s\n", argv[0], argv[first]);
         return 1;
     }
     if (argc - first < 1 || argc - first > (basename ? 2 : 1)) {
-        shell_error("%s: invalid operands\r\n", argv[0]);
+        shell_error("%s: invalid operands\n", argv[0]);
         return 1;
     }
     part = basename ? shell_path_basename(argv[first], argc - first == 2 ? argv[first + 1] : NULL, &length) :
                       shell_path_dirname(argv[first], &length);
     if (nshell_write(part, (int)length) != (int)length) return 1;
-    return shell_printf("\r\n") < 0 ? 1 : 0;
+    return shell_printf("\n") < 0 ? 1 : 0;
 }
 
 static int cmd_basename(int argc, char *argv[])
@@ -2262,7 +2240,7 @@ static void wc_print(const struct wc_counts *counts, bool lines, bool words,
     }
     if (bytes) shell_printf("%s%llu", separator ? " " : "", counts->bytes);
     if (name != NULL) shell_printf(" %s", name);
-    shell_printf("\r\n");
+    shell_printf("\n");
 }
 
 static int cmd_wc(int argc, char *argv[])
@@ -2284,7 +2262,7 @@ static int cmd_wc(int argc, char *argv[])
             else if (*option == 'w') words = true;
             else if (*option == 'c') bytes = true;
             else {
-                shell_error("wc: invalid option -- '%c'\r\n", *option);
+                shell_error("wc: invalid option -- '%c'\n", *option);
                 return -EINVAL;
             }
             option++;
@@ -2303,7 +2281,7 @@ static int cmd_wc(int argc, char *argv[])
         struct wc_counts counts;
         int rc = strcmp(argv[i], "-") == 0 ? wc_count(NULL, &counts) : wc_file(argv[i], &counts);
         if (rc < 0) {
-            shell_error("wc: %s: error %d\r\n", argv[i], rc);
+            shell_error("wc: %s: error %d\n", argv[i], rc);
             status = rc;
             continue;
         }
@@ -2334,8 +2312,8 @@ static int head_stream(struct file *file, u64 limit, bool bytes)
 
 static void head_header(const char *name, bool *printed)
 {
-    if (*printed) shell_printf("\r\n");
-    shell_printf("==> %s <==\r\n", name);
+    if (*printed) shell_printf("\n");
+    shell_printf("==> %s <==\n", name);
     *printed = true;
 }
 
@@ -2402,11 +2380,11 @@ static int cmd_head(int argc, char *argv[])
             bytes = false;
             number = option;
         } else {
-            shell_error("head: invalid option: %s\r\n", argv[first]);
+            shell_error("head: invalid option: %s\n", argv[first]);
             return 1;
         }
         if (*number == '\0' || head_number(number, &limit) != 0) {
-            shell_error("head: invalid count\r\n");
+            shell_error("head: invalid count\n");
             return 1;
         }
         first++;
@@ -2421,7 +2399,7 @@ static int cmd_head(int argc, char *argv[])
             rc = head_file(argv[i], limit, bytes, argc - first > 1, &printed);
         }
         if (rc < 0) {
-            shell_error("head: %s: error %d\r\n", argv[i], rc);
+            shell_error("head: %s: error %d\n", argv[i], rc);
             status = 1;
         }
     }
@@ -2550,13 +2528,13 @@ static int cmd_tail(int argc, char *argv[])
             bytes = false;
             number = option;
         } else {
-            shell_error("tail: invalid option: %s\r\n", argv[first]);
+            shell_error("tail: invalid option: %s\n", argv[first]);
             return 1;
         }
         from_start = *number == '+';
         if (*number == '+' || *number == '-') number++;
         if (*number == '\0' || head_number(number, &limit) != 0) {
-            shell_error("tail: invalid count\r\n");
+            shell_error("tail: invalid count\n");
             return 1;
         }
         first++;
@@ -2571,7 +2549,7 @@ static int cmd_tail(int argc, char *argv[])
             rc = tail_file(argv[i], limit, bytes, from_start, argc - first > 1, &printed);
         }
         if (rc < 0) {
-            shell_error("tail: %s: error %d\r\n", argv[i], rc);
+            shell_error("tail: %s: error %d\n", argv[i], rc);
             status = 1;
         }
     }
@@ -2672,7 +2650,7 @@ static int grep_stream(struct file *file, const char *name,
     }
     if (options->count_only) {
         if (options->show_filename && name != NULL) shell_printf("%s:", name);
-        shell_printf("%llu\r\n", matches);
+        shell_printf("%llu\n", matches);
     }
     if (matches != 0) *matched = true;
 out:
@@ -2723,29 +2701,29 @@ static int cmd_grep(int argc, char *argv[])
             else if (*option == 'c') options.count_only = true;
             else if (*option == 'h') no_filename = true;
             else {
-                shell_error("grep: invalid option -- '%c'\r\n", *option);
+                shell_error("grep: invalid option -- '%c'\n", *option);
                 return 2;
             }
             option++;
         }
         first++;
     }
-    if (first == argc) { shell_error("grep: missing pattern\r\n"); return 2; }
+    if (first == argc) { shell_error("grep: missing pattern\n"); return 2; }
     options.pattern = argv[first++];
     if (!fixed && strpbrk(options.pattern, ".*[\\^$") != NULL) {
-        shell_error("grep: regular expressions are not supported; use -F for literal patterns\r\n");
+        shell_error("grep: regular expressions are not supported; use -F for literal patterns\n");
         return 2;
     }
     options.show_filename = !no_filename && argc - first > 1;
     if (first == argc) {
         int rc = grep_stream(NULL, NULL, &options, &matched);
-        if (rc < 0) { shell_error("grep: input error %d\r\n", rc); return 2; }
+        if (rc < 0) { shell_error("grep: input error %d\n", rc); return 2; }
     }
     for (i = first; i < argc; i++) {
         int rc = strcmp(argv[i], "-") == 0 ?
                  grep_stream(NULL, "(standard input)", &options, &matched) :
                  grep_file(argv[i], &options, &matched);
-        if (rc < 0) { shell_error("grep: %s: error %d\r\n", argv[i], rc); error = true; }
+        if (rc < 0) { shell_error("grep: %s: error %d\n", argv[i], rc); error = true; }
     }
     return error ? 2 : matched ? 0 : 1;
 }
@@ -2876,14 +2854,14 @@ static int cmd_sort(int argc, char *argv[])
                 opts.output_path = opt + 1;
                 if (*opts.output_path == '\0') {
                     if (++first >= argc) {
-                        shell_error("sort: option requires an argument -- 'o'\r\n");
+                        shell_error("sort: option requires an argument -- 'o'\n");
                         return 1;
                     }
                     opts.output_path = argv[first];
                 }
                 break;
             } else {
-                shell_error("sort: invalid option -- '%c'\r\n", *opt);
+                shell_error("sort: invalid option -- '%c'\n", *opt);
                 return 1;
             }
             opt++;
@@ -2893,7 +2871,7 @@ static int cmd_sort(int argc, char *argv[])
     shell_init_cwd();
     if (first == argc) {
         rc = sort_append_stream(NULL, &data, &used, &cap);
-        if (rc < 0) { shell_error("sort: input error %d\r\n", rc); goto out; }
+        if (rc < 0) { shell_error("sort: input error %d\n", rc); goto out; }
     } else {
         int k;
         for (k = first; k < argc; k++) {
@@ -2901,7 +2879,7 @@ static int cmd_sort(int argc, char *argv[])
                  sort_append_stream(NULL, &data, &used, &cap) :
                  sort_append_file(argv[k], &data, &used, &cap);
             if (rc < 0) {
-                shell_error("sort: %s: error %d\r\n", argv[k], rc);
+                shell_error("sort: %s: error %d\n", argv[k], rc);
                 goto out;
             }
         }
@@ -2935,7 +2913,7 @@ static int cmd_sort(int argc, char *argv[])
     if (opts.output_path != NULL) {
         rc = nshell_open_output(nshell_current(), opts.output_path, false, &out_file);
         if (rc < 0) {
-            shell_error("sort: %s: error %d\r\n", opts.output_path, rc);
+            shell_error("sort: %s: error %d\n", opts.output_path, rc);
             goto out;
         }
     }
@@ -2950,7 +2928,7 @@ static int cmd_sort(int argc, char *argv[])
                 break;
             }
         } else if ((len != 0U && nshell_write(lines[i], (int)len) != (int)len) ||
-                   shell_printf("\r\n") < 0) {
+                   shell_printf("\n") < 0) {
             rc = -EIO;
             break;
         }
@@ -2997,7 +2975,7 @@ static int uniq_emit(const char *line, size_t len, u64 count,
     }
     if ((plen > 0 && nshell_write(prefix, plen) != plen) ||
         (len > 0U && nshell_write(line, (int)len) != (int)len) ||
-        shell_printf("\r\n") < 0)
+        shell_printf("\n") < 0)
         return -EIO;
     return 0;
 }
@@ -3022,26 +3000,26 @@ static int cmd_uniq(int argc, char *argv[])
             else if (*opt == 'u') opts.unique = true;
             else if (*opt == 'i') opts.ignore_case = true;
             else {
-                shell_error("uniq: invalid option -- '%c'\r\n", *opt);
+                shell_error("uniq: invalid option -- '%c'\n", *opt);
                 return 1;
             }
         }
         first++;
     }
     if (argc - first > 2) {
-        shell_error("uniq: extra operand '%s'\r\n", argv[first + 2]);
+        shell_error("uniq: extra operand '%s'\n", argv[first + 2]);
         return 1;
     }
     shell_init_cwd();
     if (first < argc && strcmp(argv[first], "-") != 0) {
         struct dentry *entry = resolve_path(argv[first]);
         if (entry == NULL || entry->d_inode == NULL) {
-            shell_error("uniq: %s: No such file or directory\r\n", argv[first]);
+            shell_error("uniq: %s: No such file or directory\n", argv[first]);
             return 1;
         }
         if (S_ISDIR(entry->d_inode->i_mode) || entry->d_inode->i_fop == NULL ||
             entry->d_inode->i_fop->read == NULL) {
-            shell_error("uniq: %s: cannot read\r\n", argv[first]);
+            shell_error("uniq: %s: cannot read\n", argv[first]);
             return 1;
         }
         in_file.f_inode = entry->d_inode;
@@ -3049,7 +3027,7 @@ static int cmd_uniq(int argc, char *argv[])
         in_file.f_path.dentry = entry;
         in_file.f_flags = O_RDONLY;
         if (in_file.f_op->open != NULL && in_file.f_op->open(in_file.f_inode, &in_file) != 0) {
-            shell_error("uniq: %s: open failed\r\n", argv[first]);
+            shell_error("uniq: %s: open failed\n", argv[first]);
             return 1;
         }
         in_opened = true;
@@ -3057,7 +3035,7 @@ static int cmd_uniq(int argc, char *argv[])
     }
     if (first + 1 < argc && strcmp(argv[first + 1], "-") != 0) {
         if (nshell_open_output(nshell_current(), argv[first + 1], false, &out_file) < 0) {
-            shell_error("uniq: %s: cannot open output\r\n", argv[first + 1]);
+            shell_error("uniq: %s: cannot open output\n", argv[first + 1]);
             rc = -EIO;
             goto out;
         }
@@ -3205,12 +3183,12 @@ static int cut_process_line(const char *line, size_t len, const struct cut_optio
                 nshell_write(line + i, 1) != 1)
                 return -EIO;
         }
-        return shell_printf("\r\n") < 0 ? -EIO : 0;
+        return shell_printf("\n") < 0 ? -EIO : 0;
     }
     if (memchr(line, (unsigned char)opts->delim, len) == NULL) {
         if (opts->suppress) return 0;
         if (len > 0U && nshell_write(line, (int)len) != (int)len) return -EIO;
-        return shell_printf("\r\n") < 0 ? -EIO : 0;
+        return shell_printf("\n") < 0 ? -EIO : 0;
     }
     {
         unsigned int field = 1U;
@@ -3230,7 +3208,7 @@ static int cut_process_line(const char *line, size_t len, const struct cut_optio
             }
         }
     }
-    return shell_printf("\r\n") < 0 ? -EIO : 0;
+    return shell_printf("\n") < 0 ? -EIO : 0;
 }
 
 static int cut_stream(struct file *file, const struct cut_options *opts)
@@ -3310,13 +3288,13 @@ static int cmd_cut(int argc, char *argv[])
             if (*opt == 'b' || *opt == 'c' || *opt == 'f') {
                 const char *arg = opt + 1;
                 if (opts.mode != '\0') {
-                    shell_error("cut: only one type of list may be specified\r\n");
+                    shell_error("cut: only one type of list may be specified\n");
                     return 1;
                 }
                 opts.mode = *opt;
                 if (*arg == '\0') {
                     if (++first >= argc) {
-                        shell_error("cut: option requires an argument\r\n");
+                        shell_error("cut: option requires an argument\n");
                         return 1;
                     }
                     arg = argv[first];
@@ -3327,13 +3305,13 @@ static int cmd_cut(int argc, char *argv[])
                 const char *arg = opt + 1;
                 if (*arg == '\0') {
                     if (++first >= argc) {
-                        shell_error("cut: option requires an argument -- 'd'\r\n");
+                        shell_error("cut: option requires an argument -- 'd'\n");
                         return 1;
                     }
                     arg = argv[first];
                 }
                 if (arg[0] == '\0' || arg[1] != '\0') {
-                    shell_error("cut: the delimiter must be a single character\r\n");
+                    shell_error("cut: the delimiter must be a single character\n");
                     return 1;
                 }
                 opts.delim = arg[0];
@@ -3342,7 +3320,7 @@ static int cmd_cut(int argc, char *argv[])
             } else if (*opt == 's') {
                 opts.suppress = true;
             } else if (*opt != 'n') {
-                shell_error("cut: invalid option -- '%c'\r\n", *opt);
+                shell_error("cut: invalid option -- '%c'\n", *opt);
                 return 1;
             }
             opt++;
@@ -3351,7 +3329,7 @@ static int cmd_cut(int argc, char *argv[])
     }
     if (opts.mode == '\0' || !cut_list_valid(opts.list) ||
         (opts.mode != 'f' && (opts.has_delim || opts.suppress))) {
-        shell_error("cut: invalid options or list\r\n");
+        shell_error("cut: invalid options or list\n");
         return 1;
     }
     shell_init_cwd();
@@ -3360,7 +3338,7 @@ static int cmd_cut(int argc, char *argv[])
         int rc = strcmp(argv[i], "-") == 0 ?
                  cut_stream(NULL, &opts) : cut_file(argv[i], &opts);
         if (rc < 0) {
-            shell_error("cut: %s: error %d\r\n", argv[i], rc);
+            shell_error("cut: %s: error %d\n", argv[i], rc);
             status = 1;
         }
     }
@@ -3480,7 +3458,7 @@ static int cmd_tr(int argc, char *argv[])
             else if (*opt == 's') squeeze = true;
             else if (*opt == 'c' || *opt == 'C') complement = true;
             else if (*opt != 't') {
-                shell_error("tr: invalid option -- '%c'\r\n", *opt);
+                shell_error("tr: invalid option -- '%c'\n", *opt);
                 return 1;
             }
         }
@@ -3490,7 +3468,7 @@ static int cmd_tr(int argc, char *argv[])
         (delete_chars && !squeeze && argc - first != 1) ||
         (delete_chars && squeeze && argc - first != 2) ||
         (!delete_chars && !squeeze && argc - first != 2)) {
-        shell_error("tr: invalid operands\r\n");
+        shell_error("tr: invalid operands\n");
         return 1;
     }
     ws = kzalloc(sizeof(*ws), GFP_KERNEL);
@@ -3564,7 +3542,7 @@ static int cmd_tr(int argc, char *argv[])
     else if (out_len > 0 && nshell_write(ws->out, out_len) != out_len) rc = 1;
 out:
     kfree(ws);
-    if (rc != 0) shell_error("tr: execution failed\r\n");
+    if (rc != 0) shell_error("tr: execution failed\n");
     return rc;
 }
 
@@ -3579,7 +3557,7 @@ static int cmd_mount(int argc, char *argv[]) {
       for (i = 0; i < count; i++) {
           struct vfs_mount_entry entry;
           if (vfs_get_mount_entry(i, &entry) == 0) {
-              shell_printf("%s on %s type %s (rw)\r\n",
+              shell_printf("%s on %s type %s (rw)\n",
                            entry.dev_name ? entry.dev_name : "none",
                            entry.mount_path ? entry.mount_path : "/",
                            entry.fs_name ? entry.fs_name : "unknown");
@@ -3588,7 +3566,7 @@ static int cmd_mount(int argc, char *argv[]) {
       return 0;
   }
   if (argc < 2) {
-      shell_error("Usage: mount [-t type] device dir\r\n");
+      shell_error("Usage: mount [-t type] device dir\n");
       return -EINVAL;
   }
   
@@ -3606,48 +3584,48 @@ static int cmd_mount(int argc, char *argv[]) {
   
   if (!fs_type || !dev || !dir) {
       if (fs_type && dev && !dir) {
-           shell_error("Usage: mount -t <type> <dev> <dir>\r\n");
+           shell_error("Usage: mount -t <type> <dev> <dir>\n");
            return -1;
       }
-      shell_error("Missing arguments\r\n");
+      shell_error("Missing arguments\n");
       return -1;
   }
   
   // 1. Resolve target directory dentry (the mount point)
-  shell_printf("mount: resolving path %s\r\n", dir);
+  shell_printf("mount: resolving path %s\n", dir);
   struct dentry *target = resolve_path(dir);
   if (!target) {
-      shell_error("mount: mount point %s does not exist\r\n", dir);
+      shell_error("mount: mount point %s does not exist\n", dir);
       return -1;
   }
   
   if (!target->d_inode || !S_ISDIR(target->d_inode->i_mode)) {
-       shell_error("mount: mount point %s is not a directory\r\n", dir);
+       shell_error("mount: mount point %s is not a directory\n", dir);
        return -1;
   }
   
-  shell_printf("mount: calling vfs_mount for %s\r\n", fs_type);
+  shell_printf("mount: calling vfs_mount for %s\n", fs_type);
   // 2. Call vfs_mount to get the new root
   struct dentry *mnt_root = vfs_mount(fs_type, 0, dev, NULL);
   if (!mnt_root) {
-      shell_error("mount: mounting failed (type=%s)\r\n", fs_type);
+      shell_error("mount: mounting failed (type=%s)\n", fs_type);
       return -1;
   }
   
   // 3. Register bind mount
   if (vfs_bind_mount(target, mnt_root) != 0) {
-      shell_error("mount: failed to register bind mount\r\n");
+      shell_error("mount: failed to register bind mount\n");
       return -1;
   }
   
-  shell_printf("Mounted %s on %s type %s\r\n", dev, dir, fs_type);
+  shell_printf("Mounted %s on %s type %s\n", dev, dir, fs_type);
   
   return 0;
 }
 
 static void df_print_mount(const struct vfs_mount_entry *entry)
 {
-    shell_printf("%-12s %-8s %s\r\n",
+    shell_printf("%-12s %-8s %s\n",
                  entry->dev_name ? entry->dev_name : "none",
                  entry->fs_name ? entry->fs_name : "unknown",
                  entry->mount_path ? entry->mount_path : "/");
@@ -3662,7 +3640,7 @@ static int cmd_df(int argc, char *argv[])
         if (strcmp(opt, "-") == 0) { first++; break; }
         for (; *opt != '\0'; opt++) {
             if (*opt != 'h' && *opt != 'k' && *opt != 'T' && *opt != 'P') {
-                shell_error("df: invalid option -- '%c'\r\n", *opt);
+                shell_error("df: invalid option -- '%c'\n", *opt);
                 return 1;
             }
         }
@@ -3670,7 +3648,7 @@ static int cmd_df(int argc, char *argv[])
     }
     shell_init_cwd();
     count = vfs_get_mount_count();
-    shell_printf("Filesystem   Type     Mounted on\r\n");
+    shell_printf("Filesystem   Type     Mounted on\n");
     if (first == argc) {
         for (i = 0; i < count; i++) {
             struct vfs_mount_entry entry;
@@ -3684,7 +3662,7 @@ static int cmd_df(int argc, char *argv[])
         struct vfs_mount_entry matched = {0};
         bool found = false;
         if (target == NULL || target->d_inode == NULL) {
-            shell_error("df: %s: No such file or directory\r\n", argv[i]);
+            shell_error("df: %s: No such file or directory\n", argv[i]);
             status = 1;
             continue;
         }
@@ -3776,7 +3754,7 @@ static int cmd_kill(int argc, char *argv[])
         size_t k;
         first++;
         if (first == argc) {
-            shell_printf("HUP INT QUIT KILL TERM CONT STOP\r\n");
+            shell_printf("HUP INT QUIT KILL TERM CONT STOP\n");
             return 0;
         }
         for (i = first; i < argc; i++) {
@@ -3787,12 +3765,12 @@ static int cmd_kill(int argc, char *argv[])
             s = head_number(argv[i], &num) == 0 ? (int)num : kill_parse_signal(argv[i]);
             for (k = 0; k < sizeof(kill_signals) / sizeof(kill_signals[0]); k++) {
                 if (kill_signals[k].num == s) {
-                    shell_printf("%s\r\n", kill_signals[k].name);
+                    shell_printf("%s\n", kill_signals[k].name);
                     break;
                 }
             }
             if (k == sizeof(kill_signals) / sizeof(kill_signals[0])) {
-                shell_error("kill: %s: invalid signal specification\r\n", argv[i]);
+                shell_error("kill: %s: invalid signal specification\n", argv[i]);
                 status = 1;
             }
         }
@@ -3803,7 +3781,7 @@ static int cmd_kill(int argc, char *argv[])
         if (strcmp(opt, "-") == 0) { first++; break; }
         if (strcmp(opt, "s") == 0 || strcmp(opt, "n") == 0) {
             if (++first >= argc) {
-                shell_error("kill: -%s: option requires an argument\r\n", opt);
+                shell_error("kill: -%s: option requires an argument\n", opt);
                 return 1;
             }
             sig = kill_parse_signal(argv[first]);
@@ -3811,32 +3789,32 @@ static int cmd_kill(int argc, char *argv[])
             sig = kill_parse_signal(opt);
         }
         if (sig < 0) {
-            shell_error("kill: %s: invalid signal specification\r\n", argv[first]);
+            shell_error("kill: %s: invalid signal specification\n", argv[first]);
             return 1;
         }
         first++;
     }
     if (first == argc) {
-        shell_error("kill: usage: kill [-s sigspec | -sigspec] pid ...\r\n");
+        shell_error("kill: usage: kill [-s sigspec | -sigspec] pid ...\n");
         return 1;
     }
     for (i = first; i < argc; i++) {
         u64 pid_val = 0;
         struct task_struct *task;
         if (head_number(argv[i], &pid_val) != 0) {
-            shell_error("kill: %s: arguments must be process IDs\r\n", argv[i]);
+            shell_error("kill: %s: arguments must be process IDs\n", argv[i]);
             status = 1;
             continue;
         }
         task = task_find_by_pid((pid_t)pid_val);
         if (task == NULL || task->status == TASK_CLOSE) {
-            shell_error("kill: (%s) - No such process\r\n", argv[i]);
+            shell_error("kill: (%s) - No such process\n", argv[i]);
             status = 1;
             continue;
         }
         if (sig == 0) continue;
         if (kill_task_protected(task)) {
-            shell_error("kill: (%s) - Operation not permitted\r\n", argv[i]);
+            shell_error("kill: (%s) - Operation not permitted\n", argv[i]);
             status = 1;
             continue;
         }
@@ -3856,11 +3834,11 @@ static int lsdev_print_one(struct device *dev, void *arg)
     bool *long_fmt = arg;
     const char *name = dev->name != NULL ? dev->name : "unnamed";
     if (*long_fmt) {
-        shell_printf("%-16s %-6s %4u %4d\r\n",
+        shell_printf("%-16s %-6s %4u %4d\n",
                      name, dev->ready ? "ready" : "down",
                      (unsigned int)dev->ref_count, dev->init_res);
     } else {
-        shell_printf("%-16s ready=%u ref=%u init_res=%d\r\n",
+        shell_printf("%-16s ready=%u ref=%u init_res=%d\n",
                      name, (unsigned int)dev->ready,
                      (unsigned int)dev->ref_count, dev->init_res);
     }
@@ -3878,13 +3856,13 @@ static int cmd_lsdev(int argc, char *argv[])
         for (; *opt != '\0'; opt++) {
             if (*opt == 'l') long_fmt = true;
             else {
-                shell_error("lsdev: invalid option -- '%c'\r\n", *opt);
+                shell_error("lsdev: invalid option -- '%c'\n", *opt);
                 return 1;
             }
         }
         first++;
     }
-    if (long_fmt) shell_printf("DEVICE           STATE   REF INIT\r\n");
+    if (long_fmt) shell_printf("DEVICE           STATE   REF INIT\n");
     if (first == argc) {
         (void)device_foreach(lsdev_print_one, &long_fmt);
         return 0;
@@ -3892,7 +3870,7 @@ static int cmd_lsdev(int argc, char *argv[])
     for (i = first; i < argc; i++) {
         struct device *dev = device_find_by_name(argv[i]);
         if (dev == NULL) {
-            shell_error("lsdev: %s: device not found\r\n", argv[i]);
+            shell_error("lsdev: %s: device not found\n", argv[i]);
             status = 1;
         } else {
             (void)lsdev_print_one(dev, &long_fmt);
@@ -3909,24 +3887,24 @@ static int cmd_nlk(int argc, char *argv[])
 
     (void)argc;
     (void)argv;
-    shell_printf("NLK Node: %s (addr=0x%04x, parent=0x%04x, up_port=%u)\r\n",
+    shell_printf("NLK Node: %s (addr=0x%04x, parent=0x%04x, up_port=%u)\n",
                  node->desc.name, node->addr, node->parent_addr, node->upstream_port);
-    shell_printf("Stats: rx=%u tx=%u fwd=%u drop=%u\r\n",
+    shell_printf("Stats: rx=%u tx=%u fwd=%u drop=%u\n",
                  node->rx_packets, node->tx_packets,
                  node->forwarded_packets, node->dropped_packets);
-    shell_printf("Capabilities (%u):\r\n", node->cap_count);
+    shell_printf("Capabilities (%u):\n", node->cap_count);
     for (i = 0; i < node->cap_count; i++) {
         struct nlk_capability *cap = node->caps[i];
         if (cap != NULL) {
-            shell_printf("  [%u] type=0x%04x ver=0x%02x modes=0x%02x %s\r\n",
+            shell_printf("  [%u] type=0x%04x ver=0x%02x modes=0x%02x %s\n",
                          cap->cap_id, cap->cap_type, cap->cap_ver,
                          cap->sup_modes, cap->name ? cap->name : "");
         }
     }
-    shell_printf("Cascaded Children (%u direct):\r\n", node->desc.attached_children);
+    shell_printf("Cascaded Children (%u direct):\n", node->desc.attached_children);
     for (i = 0; i < CONFIG_NLK_MAX_CHILDREN; i++) {
         if (node->children[i].online) {
-            shell_printf("  addr=0x%04x parent=0x%04x port=%u class=0x%04x caps=%u\r\n",
+            shell_printf("  addr=0x%04x parent=0x%04x port=%u class=0x%04x caps=%u\n",
                          node->children[i].node_addr,
                          node->children[i].parent_addr,
                          node->children[i].port_id,
@@ -4107,7 +4085,7 @@ static int cmd_tee(int argc, char *argv[])
         for (; *option != '\0'; option++) {
             if (*option == 'a') append = true;
             else if (*option != 'i') {
-                shell_error("tee: invalid option: %s\r\n", argv[first]);
+                shell_error("tee: invalid option: %s\n", argv[first]);
                 return 1;
             }
         }
@@ -4121,7 +4099,7 @@ static int cmd_tee(int argc, char *argv[])
         for (i = 0; i < count; i++) {
             int rc = nshell_open_output(shell, argv[first + i], append, &files[i]);
             if (rc != 0) {
-                shell_error("tee: %s: error %d\r\n", argv[first + i], rc);
+                shell_error("tee: %s: error %d\n", argv[first + i], rc);
                 status = 1;
             }
         }
@@ -4140,7 +4118,7 @@ static int cmd_tee(int argc, char *argv[])
                 int rc = files[i]->f_op->write(files[i], buf + written,
                                                (size_t)(n - written), &files[i]->f_pos);
                 if (rc <= 0) {
-                    shell_error("tee: %s: write error\r\n", argv[first + i]);
+                    shell_error("tee: %s: write error\n", argv[first + i]);
                     (void)nshell_close_output(&files[i]);
                     status = 1;
                     break;
@@ -4219,7 +4197,7 @@ static int cp_one(struct nshell *shell, const char *source, const char *destinat
         }
     }
     rc = n < 0 ? n : 0;
-    if (rc == 0 && verbose) shell_printf("'%s' -> '%s'\r\n", source, target);
+    if (rc == 0 && verbose) shell_printf("'%s' -> '%s'\n", source, target);
 out:
     if (nshell_close_output(&output) != 0 && rc == 0) rc = -EIO;
     if (nshell_close_output(&input) != 0 && rc == 0) rc = -EIO;
@@ -4308,7 +4286,7 @@ static int mv_copy_tree(char *source, char *target, char *scratch, char *buffer,
     }
     if (!target_exists) {
         rc = vfs_make_dir(target_parent, target_name, source_entry->d_inode->i_mode & 0777, NULL);
-        if (rc == 0 && verbose) shell_printf("'%s' -> '%s'\r\n", source, target);
+        if (rc == 0 && verbose) shell_printf("'%s' -> '%s'\n", source, target);
     } else rc = 0;
     if (rc != 0) return rc;
     rc = mv_push_dir(&top, source_entry, strlen(source), strlen(target));
@@ -4350,7 +4328,7 @@ static int mv_copy_tree(char *source, char *target, char *scratch, char *buffer,
                 struct dentry *dst_child = resolve_path(target);
                 if (dst_child != NULL && dst_child->d_inode != NULL && S_ISDIR(dst_child->d_inode->i_mode))
                     rc = 0;
-            } else if (rc == 0 && verbose) shell_printf("'%s' -> '%s'\r\n", source, target);
+            } else if (rc == 0 && verbose) shell_printf("'%s' -> '%s'\n", source, target);
             if (rc == 0) rc = mv_push_dir(&top, entry, strlen(source), strlen(target));
         } else if (S_ISREG(entry->d_inode->i_mode)) {
             rc = cp_one(nshell_current(), source, target, false, no_clobber, verbose,
@@ -4426,28 +4404,28 @@ static int cmd_find(int argc, char *argv[])
     while (path_end < argc && argv[path_end][0] != '-') path_end++;
     for (i = path_end; i < argc; i++) {
         if (strcmp(argv[i], "-name") == 0) {
-            if (++i >= argc) { shell_error("find: missing argument to '-name'\r\n"); return 1; }
+            if (++i >= argc) { shell_error("find: missing argument to '-name'\n"); return 1; }
             opts.name = argv[i];
         } else if (strcmp(argv[i], "-type") == 0) {
             if (++i >= argc || (strcmp(argv[i], "f") != 0 && strcmp(argv[i], "d") != 0)) {
-                shell_error("find: invalid argument to '-type'\r\n");
+                shell_error("find: invalid argument to '-type'\n");
                 return 1;
             }
             opts.type = argv[i][0];
         } else if (strcmp(argv[i], "-maxdepth") == 0) {
             if (++i >= argc || head_number(argv[i], &opts.maxdepth) != 0) {
-                shell_error("find: invalid argument to '-maxdepth'\r\n");
+                shell_error("find: invalid argument to '-maxdepth'\n");
                 return 1;
             }
         } else if (strcmp(argv[i], "-mindepth") == 0) {
             if (++i >= argc || head_number(argv[i], &opts.mindepth) != 0) {
-                shell_error("find: invalid argument to '-mindepth'\r\n");
+                shell_error("find: invalid argument to '-mindepth'\n");
                 return 1;
             }
         } else if (strcmp(argv[i], "-empty") == 0) {
             opts.empty = true;
         } else if (strcmp(argv[i], "-print") != 0) {
-            shell_error("find: unknown predicate '%s'\r\n", argv[i]);
+            shell_error("find: unknown predicate '%s'\n", argv[i]);
             return 1;
         }
     }
@@ -4469,7 +4447,7 @@ static int cmd_find(int argc, char *argv[])
         u64 depth = 0;
 
         if (len == 0 || len > SHELL_SESSION_INPUT_MAX) {
-            shell_error("find: '%s': invalid path\r\n", start_path);
+            shell_error("find: '%s': invalid path\n", start_path);
             status = 1;
             continue;
         }
@@ -4478,13 +4456,13 @@ static int cmd_find(int argc, char *argv[])
         root_entry = resolve_path(path);
         if (root_entry == NULL || root_entry->d_inode == NULL ||
             (start_path[strlen(start_path) - 1] == '/' && !S_ISDIR(root_entry->d_inode->i_mode))) {
-            shell_error("find: '%s': No such file or directory\r\n", start_path);
+            shell_error("find: '%s': No such file or directory\n", start_path);
             status = 1;
             continue;
         }
         if (opts.mindepth == 0U && opts.maxdepth >= 0U &&
             find_matches_root(path, root_entry, &opts))
-            shell_printf("%s\r\n", path);
+            shell_printf("%s\n", path);
         if (S_ISDIR(root_entry->d_inode->i_mode) && opts.maxdepth > 0U) {
             if (mv_push_dir(&top, root_entry, len, 0) != 0) {
                 status = 1;
@@ -4519,7 +4497,7 @@ static int cmd_find(int argc, char *argv[])
                 continue;
             }
             if (depth >= opts.mindepth && find_matches(child.name, entry, &opts))
-                shell_printf("%s\r\n", path);
+                shell_printf("%s\n", path);
             if (S_ISDIR(entry->d_inode->i_mode) && depth < opts.maxdepth) {
                 if (mv_push_dir(&top, entry, strlen(path), 0) == 0) {
                     depth++;
@@ -4557,19 +4535,19 @@ static int cmd_cp(int argc, char *argv[])
             else if (*option == 'n') no_clobber = true;
             else if (*option == 'f') no_clobber = false;
             else if (*option == 'v') verbose = true;
-            else { shell_error("cp: invalid option: %s\r\n", argv[first]); return 1; }
+            else { shell_error("cp: invalid option: %s\n", argv[first]); return 1; }
         }
         first++;
     }
     if (argc - first < 2) {
-        shell_error("cp: missing operand\r\n");
+        shell_error("cp: missing operand\n");
         return 1;
     }
     shell_init_cwd();
     destination = resolve_path(argv[argc - 1]);
     directory = destination != NULL && destination->d_inode != NULL && S_ISDIR(destination->d_inode->i_mode);
     if (argc - first > 2 && !directory) {
-        shell_error("cp: destination is not a directory\r\n");
+        shell_error("cp: destination is not a directory\n");
         return 1;
     }
     workspace = kmalloc(sizeof(*workspace), GFP_KERNEL);
@@ -4620,7 +4598,7 @@ static int cmd_cp(int argc, char *argv[])
         }
         if (rc == 0) continue;
 error:
-        shell_error("cp: %s: cannot copy (error %d)\r\n", argv[i], rc);
+        shell_error("cp: %s: cannot copy (error %d)\n", argv[i], rc);
         status = 1;
     }
     kfree(workspace);
@@ -4640,19 +4618,19 @@ static int cmd_mv(int argc, char *argv[])
         for (; *option != '\0'; option++) {
             if (*option == 'n') no_clobber = true;
             else if (*option == 'f') no_clobber = false;
-            else { shell_error("mv: invalid option: %s\r\n", argv[first]); return 1; }
+            else { shell_error("mv: invalid option: %s\n", argv[first]); return 1; }
         }
         first++;
     }
     if (argc - first < 2) {
-        shell_error("mv: missing operand\r\n");
+        shell_error("mv: missing operand\n");
         return 1;
     }
     shell_init_cwd();
     destination = resolve_path(argv[argc - 1]);
     directory = destination != NULL && destination->d_inode != NULL && S_ISDIR(destination->d_inode->i_mode);
     if (argc - first > 2 && !directory) {
-        shell_error("mv: destination is not a directory\r\n");
+        shell_error("mv: destination is not a directory\n");
         return 1;
     }
     workspace = kmalloc(sizeof(*workspace), GFP_KERNEL);
@@ -4700,7 +4678,7 @@ static int cmd_mv(int argc, char *argv[])
                 char backup[FS_NAME_LEN];
                 rc = shell_move_replace(old_parent, old_name, new_parent, new_name, backup);
                 if (backup[0] != '\0')
-                    shell_error("mv: previous target for '%s' remains as '%s' in its directory\r\n",
+                    shell_error("mv: previous target for '%s' remains as '%s' in its directory\n",
                                 workspace->target_path, backup);
             }
         }
@@ -4722,7 +4700,7 @@ static int cmd_mv(int argc, char *argv[])
         }
         if (rc == 0) continue;
 error:
-        shell_error("mv: cannot move '%s': error %d\r\n", argv[i], rc);
+        shell_error("mv: cannot move '%s': error %d\n", argv[i], rc);
         status = 1;
     }
     kfree(workspace);
@@ -4755,7 +4733,7 @@ static int cmd_type(int argc, char *argv[])
         for (; *opt != '\0'; opt++) {
             if (*opt == 't') type_only = true;
             else {
-                shell_error("type: invalid option -- '%c'\r\n", *opt);
+                shell_error("type: invalid option -- '%c'\n", *opt);
                 return 1;
             }
         }
@@ -4767,13 +4745,13 @@ static int cmd_type(int argc, char *argv[])
             *variable_list_slot(&shell->aliases, argv[i], strlen(argv[i]));
         const struct shell_cmd *cmd = nshell_find_builtin(argv[i]);
         if (alias != NULL) {
-            if (type_only) shell_printf("alias\r\n");
-            else shell_printf("%s is aliased to '%s'\r\n", argv[i], alias->value);
+            if (type_only) shell_printf("alias\n");
+            else shell_printf("%s is aliased to '%s'\n", argv[i], alias->value);
         } else if (cmd != NULL) {
-            if (type_only) shell_printf("builtin\r\n");
-            else shell_printf("%s is a shell builtin\r\n", argv[i]);
+            if (type_only) shell_printf("builtin\n");
+            else shell_printf("%s is a shell builtin\n", argv[i]);
         } else {
-            if (!type_only) shell_error("type: %s: not found\r\n", argv[i]);
+            if (!type_only) shell_error("type: %s: not found\n", argv[i]);
             status = 1;
         }
     }
@@ -4792,7 +4770,7 @@ static int cmd_which(int argc, char *argv[])
         for (; *opt != '\0'; opt++) {
             if (*opt == 'a') all = true;
             else {
-                shell_error("which: invalid option -- '%c'\r\n", *opt);
+                shell_error("which: invalid option -- '%c'\n", *opt);
                 return 1;
             }
         }
@@ -4804,13 +4782,13 @@ static int cmd_which(int argc, char *argv[])
             *variable_list_slot(&shell->aliases, argv[i], strlen(argv[i]));
         const struct shell_cmd *cmd = nshell_find_builtin(argv[i]);
         if (alias == NULL && cmd == NULL) {
-            shell_error("which: no %s\r\n", argv[i]);
+            shell_error("which: no %s\n", argv[i]);
             status = 1;
             continue;
         }
         if (alias != NULL) alias_print(alias);
         if (cmd != NULL && (alias == NULL || all))
-            shell_printf("%s\r\n", cmd->name);
+            shell_printf("%s\n", cmd->name);
     }
     return status;
 }
@@ -4828,7 +4806,7 @@ static int cmd_command(int argc, char *argv[])
             if (*opt == 'v') { mode_v = true; mode_V = false; }
             else if (*opt == 'V') { mode_V = true; mode_v = false; }
             else if (*opt != 'p') {
-                shell_error("command: invalid option -- '%c'\r\n", *opt);
+                shell_error("command: invalid option -- '%c'\n", *opt);
                 return 2;
             }
         }
@@ -4842,12 +4820,12 @@ static int cmd_command(int argc, char *argv[])
             const struct shell_cmd *cmd = nshell_find_builtin(argv[i]);
             if (alias != NULL) {
                 if (mode_v) alias_print(alias);
-                else shell_printf("%s is aliased to '%s'\r\n", argv[i], alias->value);
+                else shell_printf("%s is aliased to '%s'\n", argv[i], alias->value);
             } else if (cmd != NULL) {
-                if (mode_v) shell_printf("%s\r\n", cmd->name);
-                else shell_printf("%s is a shell builtin\r\n", argv[i]);
+                if (mode_v) shell_printf("%s\n", cmd->name);
+                else shell_printf("%s is a shell builtin\n", argv[i]);
             } else {
-                if (mode_V) shell_error("command: %s: not found\r\n", argv[i]);
+                if (mode_V) shell_error("command: %s: not found\n", argv[i]);
                 status = 1;
             }
         }
@@ -4856,7 +4834,7 @@ static int cmd_command(int argc, char *argv[])
     {
         const struct shell_cmd *cmd = nshell_find_builtin(argv[first]);
         if (cmd == NULL) {
-            shell_error("command: %s: not found\r\n", argv[first]);
+            shell_error("command: %s: not found\n", argv[first]);
             return 127;
         }
         return cmd->func(argc - first, argv + first);
@@ -4881,7 +4859,7 @@ static int cmd_eval(int argc, char *argv[])
     for (i = first; i < argc; i++) {
         size_t len = strlen(argv[i]);
         if (used + (i > first ? 1U : 0U) + len > SHELL_SESSION_INPUT_MAX) {
-            shell_error("eval: command too long\r\n");
+            shell_error("eval: command too long\n");
             kfree(frame);
             return 1;
         }
@@ -4944,14 +4922,14 @@ static int cmd_read(int argc, char *argv[])
                     prompt = opt + 1;
                 } else {
                     if (++first >= argc) {
-                        shell_error("read: -p: option requires an argument\r\n");
+                        shell_error("read: -p: option requires an argument\n");
                         return 2;
                     }
                     prompt = argv[first];
                 }
                 break;
             } else {
-                shell_error("read: invalid option -- '%c'\r\n", *opt);
+                shell_error("read: invalid option -- '%c'\n", *opt);
                 return 2;
             }
         }
@@ -4959,7 +4937,7 @@ static int cmd_read(int argc, char *argv[])
     }
     for (i = first; i < argc; i++) {
         if (!variable_name_valid(argv[i], strlen(argv[i]))) {
-            shell_error("read: '%s': not a valid identifier\r\n", argv[i]);
+            shell_error("read: '%s': not a valid identifier\n", argv[i]);
             return 1;
         }
     }
@@ -5052,7 +5030,7 @@ static size_t seq_num_width(int64_t v)
 
 static int cmd_seq(int argc, char *argv[])
 {
-    const char *sep = "\r\n";
+    const char *sep = "\n";
     bool equal_width = false;
     int64_t first_val = 1, step_val = 1, last_val = 1, cur;
     size_t width = 0;
@@ -5072,14 +5050,14 @@ static int cmd_seq(int argc, char *argv[])
                     sep = opt + 1;
                 } else {
                     if (++first >= argc) {
-                        shell_error("seq: option requires an argument -- 's'\r\n");
+                        shell_error("seq: option requires an argument -- 's'\n");
                         return 1;
                     }
                     sep = argv[first];
                 }
                 break;
             } else {
-                shell_error("seq: invalid option -- '%c'\r\n", *opt);
+                shell_error("seq: invalid option -- '%c'\n", *opt);
                 return 1;
             }
         }
@@ -5087,7 +5065,7 @@ static int cmd_seq(int argc, char *argv[])
     }
     rem = argc - first;
     if (rem < 1 || rem > 3) {
-        shell_error("seq: invalid operand count\r\n");
+        shell_error("seq: invalid operand count\n");
         return 1;
     }
     if (rem == 1) {
@@ -5101,7 +5079,7 @@ static int cmd_seq(int argc, char *argv[])
             seq_parse_i64(argv[first + 2], &last_val) != 0) goto bad_num;
     }
     if (step_val == 0) {
-        shell_error("seq: zero increment\r\n");
+        shell_error("seq: zero increment\n");
         return 1;
     }
     if (equal_width) {
@@ -5125,10 +5103,10 @@ static int cmd_seq(int argc, char *argv[])
         }
         while (n > 0U) shell_printf("%c", num_buf[--n]);
     }
-    if (any) shell_printf("\r\n");
+    if (any) shell_printf("\n");
     return 0;
 bad_num:
-    shell_error("seq: invalid integer argument\r\n");
+    shell_error("seq: invalid integer argument\n");
     return 1;
 }
 
@@ -5148,7 +5126,7 @@ static int xargs_run_batch(struct nshell *shell, const struct shell_cmd *cmd,
     if (trace) {
         for (i = 0; i < total_argc; i++)
             shell_error("%s%s", i > 0 ? " " : "", ws->exec_argv[i]);
-        shell_error("\r\n");
+        shell_error("\n");
     }
     shell->input_file = NULL;
     shell->pipe_input = NULL;
@@ -5186,12 +5164,12 @@ static int cmd_xargs(int argc, char *argv[])
                 const char *arg = opt[1] != '\0' ? opt + 1 :
                                   (++first < argc ? argv[first] : NULL);
                 if (arg == NULL || head_number(arg, &max_args) != 0 || max_args == 0U) {
-                    shell_error("xargs: invalid number for -n\r\n");
+                    shell_error("xargs: invalid number for -n\n");
                     return 1;
                 }
                 break;
             } else {
-                shell_error("xargs: invalid option -- '%c'\r\n", *opt);
+                shell_error("xargs: invalid option -- '%c'\n", *opt);
                 return 1;
             }
         }
@@ -5209,7 +5187,7 @@ static int cmd_xargs(int argc, char *argv[])
         max_args = (u64)(MAX_ARGS - base_argc);
     cmd = nshell_find_builtin(ws->exec_argv[0]);
     if (cmd == NULL) {
-        shell_error("xargs: %s: No such command\r\n", ws->exec_argv[0]);
+        shell_error("xargs: %s: No such command\n", ws->exec_argv[0]);
         kfree(ws);
         return 127;
     }
@@ -5314,12 +5292,12 @@ static int cmd_chmod(int argc, char *argv[])
 
     if (first < argc && strcmp(argv[first], "--") == 0) first++;
     if (argc - first < 2) {
-        shell_error("chmod: missing operand\r\n");
+        shell_error("chmod: missing operand\n");
         return 1;
     }
     mode_str = argv[first++];
     if (chmod_apply_mode(mode_str, 0644U, &dummy) != 0) {
-        shell_error("chmod: invalid mode: '%s'\r\n", mode_str);
+        shell_error("chmod: invalid mode: '%s'\n", mode_str);
         return 1;
     }
     shell_init_cwd();
@@ -5327,14 +5305,14 @@ static int cmd_chmod(int argc, char *argv[])
         struct dentry *entry = resolve_path(argv[i]);
         unsigned int new_mode = 0;
         if (entry == NULL || entry->d_inode == NULL) {
-            shell_error("chmod: %s: No such file or directory\r\n", argv[i]);
+            shell_error("chmod: %s: No such file or directory\n", argv[i]);
             status = 1;
             continue;
         }
         if (entry->d_sb != NULL && entry->d_sb->s_type != NULL &&
             (strcmp(entry->d_sb->s_type->name, "procfs") == 0 ||
              strcmp(entry->d_sb->s_type->name, "sysfs") == 0)) {
-            shell_error("chmod: %s: Read-only file system\r\n", argv[i]);
+            shell_error("chmod: %s: Read-only file system\n", argv[i]);
             status = 1;
             continue;
         }
@@ -5373,26 +5351,26 @@ static int cmd_cmp(int argc, char *argv[])
             if (*opt == 's') { silent = true; verbose = false; }
             else if (*opt == 'l') { verbose = true; silent = false; }
             else {
-                shell_error("cmp: invalid option -- '%c'\r\n", *opt);
+                shell_error("cmp: invalid option -- '%c'\n", *opt);
                 return 2;
             }
         }
         first++;
     }
     if (argc - first < 1 || argc - first > 2) {
-        shell_error("cmp: missing or extra operand\r\n");
+        shell_error("cmp: missing or extra operand\n");
         return 2;
     }
     p1 = argv[first];
     p2 = (argc - first == 2) ? argv[first + 1] : "-";
     shell_init_cwd();
     if (strcmp(p1, "-") != 0 && nshell_open_input(shell, p1, &f1) != 0) {
-        if (!silent) shell_error("cmp: %s: No such file or directory\r\n", p1);
+        if (!silent) shell_error("cmp: %s: No such file or directory\n", p1);
         return 2;
     }
     if (strcmp(p2, "-") != 0 && nshell_open_input(shell, p2, &f2) != 0) {
         (void)nshell_close_output(&f1);
-        if (!silent) shell_error("cmp: %s: No such file or directory\r\n", p2);
+        if (!silent) shell_error("cmp: %s: No such file or directory\n", p2);
         return 2;
     }
     for (;;) {
@@ -5402,7 +5380,7 @@ static int cmd_cmp(int argc, char *argv[])
         if (r1 < 0 || r2 < 0) { status = 2; break; }
         if (r1 == 0 && r2 == 0) break;
         if (r1 == 0 || r2 == 0) {
-            if (!silent) shell_error("cmp: EOF on %s\r\n", r1 == 0 ? p1 : p2);
+            if (!silent) shell_error("cmp: EOF on %s\n", r1 == 0 ? p1 : p2);
             status = 1;
             break;
         }
@@ -5411,10 +5389,10 @@ static int cmd_cmp(int argc, char *argv[])
             status = 1;
             if (silent) break;
             if (verbose) {
-                shell_printf("%llu %03o %03o\r\n",
+                shell_printf("%llu %03o %03o\n",
                              (unsigned long long)byte_no, (unsigned int)b1, (unsigned int)b2);
             } else {
-                shell_printf("%s %s differ: byte %llu, line %llu\r\n",
+                shell_printf("%s %s differ: byte %llu, line %llu\n",
                              p1, p2, (unsigned long long)byte_no, (unsigned long long)line_no);
                 break;
             }
@@ -5440,7 +5418,7 @@ static void hexdump_emit_line(u64 offset, const unsigned char *row, size_t count
         unsigned char c = row[i];
         shell_printf("%c", (c >= 0x20U && c <= 0x7eU) ? (char)c : '.');
     }
-    shell_printf("|\r\n");
+    shell_printf("|\n");
 }
 
 static int cmd_hexdump(int argc, char *argv[])
@@ -5465,14 +5443,14 @@ static int cmd_hexdump(int argc, char *argv[])
                                   (++first < argc ? argv[first] : NULL);
                 u64 val = 0;
                 if (arg == NULL || head_number(arg, &val) != 0) {
-                    shell_error("%s: invalid argument for -%c\r\n", argv[0], flag);
+                    shell_error("%s: invalid argument for -%c\n", argv[0], flag);
                     return 1;
                 }
                 if (flag == 'n') limit = val;
                 else skip = val;
                 break;
             } else {
-                shell_error("%s: invalid option -- '%c'\r\n", argv[0], *opt);
+                shell_error("%s: invalid option -- '%c'\n", argv[0], *opt);
                 return 1;
             }
         }
@@ -5491,7 +5469,7 @@ static int cmd_hexdump(int argc, char *argv[])
         unsigned char b;
         int rc;
         if (strcmp(files[i], "-") != 0 && nshell_open_input(shell, files[i], &f) != 0) {
-            shell_error("%s: %s: No such file or directory\r\n", argv[0], files[i]);
+            shell_error("%s: %s: No such file or directory\n", argv[0], files[i]);
             status = 1;
             continue;
         }
@@ -5513,7 +5491,7 @@ static int cmd_hexdump(int argc, char *argv[])
     if (row_used > 0U)
         hexdump_emit_line(skip + total - row_used, row, row_used);
     if (total > 0U)
-        shell_printf("%08llx\r\n", (unsigned long long)(skip + total));
+        shell_printf("%08llx\n", (unsigned long long)(skip + total));
     return status;
 }
 
@@ -5536,18 +5514,18 @@ static noinline int nshell_run_script(struct nshell *shell, const char *path,
     int status = 0;
 
     if (shell->script_depth >= 3U) {
-        shell_error("shell: maximum script depth exceeded\r\n");
+        shell_error("shell: maximum script depth exceeded\n");
         return 1;
     }
     if (inline_cmd == NULL) {
         int rc = nshell_open_input(shell, path, &file);
         if (rc != 0) {
-            shell_error("%s: %s: cannot open (error %d)\r\n",
+            shell_error("%s: %s: cannot open (error %d)\n",
                         script_name != NULL ? script_name : "sh", path, rc);
             return 127;
         }
     } else if (strlen(inline_cmd) > SHELL_SESSION_INPUT_MAX) {
-        shell_error("sh: command string too long\r\n");
+        shell_error("sh: command string too long\n");
         return 1;
     }
     frame = kmalloc(sizeof(*frame), GFP_KERNEL);
@@ -5583,7 +5561,7 @@ static noinline int nshell_run_script(struct nshell *shell, const char *path,
                 if (c == '\r') continue;
                 if (c == '\n') {
                     if (overflow) {
-                        shell_error("%s: line too long\r\n", path);
+                        shell_error("%s: line too long\n", path);
                         shell->last_status = 1;
                         overflow = false;
                     } else {
@@ -5602,10 +5580,10 @@ static noinline int nshell_run_script(struct nshell *shell, const char *path,
             }
         }
         if (n < 0) {
-            shell_error("%s: read error %d\r\n", path, n);
+            shell_error("%s: read error %d\n", path, n);
             shell->last_status = 1;
         } else if (overflow) {
-            shell_error("%s: line too long\r\n", path);
+            shell_error("%s: line too long\n", path);
             shell->last_status = 1;
         } else if (used > 0U) {
             frame->line[used] = '\0';
@@ -5634,7 +5612,7 @@ static int cmd_source(int argc, char *argv[])
     int first = 1;
     if (first < argc && strcmp(argv[first], "--") == 0) first++;
     if (first == argc) {
-        shell_error("%s: filename argument required\r\n", argv[0]);
+        shell_error("%s: filename argument required\n", argv[0]);
         return 2;
     }
     shell_init_cwd();
@@ -5663,7 +5641,7 @@ static int cmd_sh(int argc, char *argv[])
             if (*opt == 'e') errexit = true;
             else if (*opt == 'c') use_cmd = true;
             else {
-                shell_error("sh: invalid option -- '%c'\r\n", *opt);
+                shell_error("sh: invalid option -- '%c'\n", *opt);
                 return 2;
             }
         }
@@ -5672,12 +5650,12 @@ static int cmd_sh(int argc, char *argv[])
     }
     if (use_cmd) {
         if (first >= argc) {
-            shell_error("sh: -c: option requires an argument\r\n");
+            shell_error("sh: -c: option requires an argument\n");
             return 2;
         }
         cmd_str = argv[first++];
     } else if (first >= argc) {
-        shell_error("sh: missing script operand\r\n");
+        shell_error("sh: missing script operand\n");
         return 2;
     }
     shell_init_cwd();
@@ -5822,7 +5800,7 @@ cleanup:
     }
     /* The cleanup callback signals only after the task stack has been freed. */
     for (i = 0; i < pending; i++) sem_get(&group->done);
-    shell_error("shell: cannot start pipeline\r\n");
+    shell_error("shell: cannot start pipeline\n");
 out:
     if (pipes != NULL) kfree(pipes);
     if (stages != NULL) kfree(stages);
@@ -5951,14 +5929,14 @@ static void nshell_exec_cmd(struct nshell *shell)
 
     workspace = kmalloc(sizeof(*workspace), GFP_KERNEL);
     if (workspace == NULL) {
-        shell_printf("shell: out of memory\r\n");
+        shell_printf("shell: out of memory\n");
         shell->last_status = 1;
         return;
     }
     redir = &workspace->u.redir;
     count = shell_split_commands(shell->session.input, workspace->commands, 16);
     if (count < 0) {
-        shell_printf("shell: syntax error or too many arguments\r\n");
+        shell_printf("shell: syntax error or too many arguments\n");
         shell->last_status = 2;
         kfree(workspace);
         return;
@@ -5966,7 +5944,7 @@ static void nshell_exec_cmd(struct nshell *shell)
     for (i = 0; i < count; i++) {
         strcpy(workspace->check, workspace->commands[i].text);
         if (shell_parse_redirect(workspace->check, argv, MAX_ARGS + 1, redir) < 0) {
-            shell_printf("shell: syntax error or too many arguments\r\n");
+            shell_printf("shell: syntax error or too many arguments\n");
             shell->last_status = 2;
             kfree(workspace);
             return;
@@ -6010,7 +5988,7 @@ static void nshell_exec_cmd(struct nshell *shell)
             shell_expand_parameters(workspace->check, workspace->expanded,
                                     sizeof(workspace->expanded), pipeline_status,
                                     variable_lookup, shell) != 0) {
-            shell_error("shell: expanded command too long\r\n");
+            shell_error("shell: expanded command too long\n");
             shell->last_status = 1;
             skip_pipeline = true;
             goto next_command;
@@ -6019,7 +5997,7 @@ static void nshell_exec_cmd(struct nshell *shell)
                                            redir, (unsigned char *)workspace->check);
         shell->output_error = 0;
         if (argc < 0) {
-            shell_error("shell: invalid expanded command\r\n");
+            shell_error("shell: invalid expanded command\n");
             shell->last_status = 1;
             goto next_command;
         }
@@ -6051,7 +6029,7 @@ static void nshell_exec_cmd(struct nshell *shell)
                         int n;
                         glob = kzalloc(sizeof(*glob), GFP_KERNEL);
                         if (glob == NULL) {
-                            shell_error("shell: pathname expansion out of memory\r\n");
+                            shell_error("shell: pathname expansion out of memory\n");
                             shell->last_status = 1;
                             goto next_command;
                         }
@@ -6059,7 +6037,7 @@ static void nshell_exec_cmd(struct nshell *shell)
                     }
                     rc = shell_glob_expand(cwd, argv[j], quoted, &glob->results[j]);
                     if (rc != 0) {
-                        shell_error("shell: pathname expansion failed (%d)\r\n", rc);
+                        shell_error("shell: pathname expansion failed (%d)\n", rc);
                         shell->last_status = 1;
                         goto next_command;
                     }
@@ -6099,7 +6077,7 @@ static void nshell_exec_cmd(struct nshell *shell)
                 rc = input_stream ? nshell_open_input(shell, path, &new_file) :
                                     nshell_open_output(shell, path, op->append, &new_file);
                 if (rc < 0) {
-                    shell_error("shell: %s: cannot redirect (error %d)\r\n", path, rc);
+                    shell_error("shell: %s: cannot redirect (error %d)\n", path, rc);
                     shell->last_status = 1;
                     (void)nshell_restore_streams(shell, saved_input, saved_output,
                                                  saved_error, saved_error_pipe);
@@ -6158,7 +6136,7 @@ static void nshell_exec_cmd(struct nshell *shell)
                     }
                 }
                 if (rc != 0) {
-                    shell_error("shell: assignment failed\r\n");
+                    shell_error("shell: assignment failed\n");
                     shell->last_status = 1;
                     assignment_error = true;
                     break;
@@ -6172,7 +6150,7 @@ static void nshell_exec_cmd(struct nshell *shell)
                 shell->last_status = curr->func(argc - assignments, argv + assignments);
         }
         if (!assignment_only && !assignment_error && curr == NULL) {
-            shell_error("%s: command not found\r\n", argv[assignments]);
+            shell_error("%s: command not found\n", argv[assignments]);
             shell->last_status = 127;
         }
         variable_restore(shell, workspace->saved, saved_count,
@@ -6188,13 +6166,13 @@ next_command:
         }
         if (shell->output_error != 0) {
             int error = shell->output_error;
-            shell_error("shell: output error %d\r\n", error);
+            shell_error("shell: output error %d\n", error);
             shell->last_status = 1;
             skip_pipeline = true;
         }
         continue;
 glob_overflow:
-        shell_error("shell: too many expanded arguments\r\n");
+        shell_error("shell: too many expanded arguments\n");
         shell->last_status = 1;
         goto next_command;
     }
@@ -6273,7 +6251,7 @@ static int cmd_reboot(int argc, char *argv[])
     enum boot_flag mode = BOOT_NORMAL;
 
     if (argc > 2) {
-        shell_error("Usage: reboot [normal|bootloader|recovery]\r\n");
+        shell_error("Usage: reboot [normal|bootloader|recovery]\n");
         return 1;
     }
     if (argc == 2) {
@@ -6284,12 +6262,12 @@ static int cmd_reboot(int argc, char *argv[])
         } else if (strcmp(argv[1], "recovery") == 0) {
             mode = BOOT_RECOVERY;
         } else {
-            shell_error("reboot: unknown mode '%s' (expected normal, bootloader, recovery)\r\n",
+            shell_error("reboot: unknown mode '%s' (expected normal, bootloader, recovery)\n",
                         argv[1]);
             return 1;
         }
     }
-    shell_printf("Rebooting (%s)...\r\n",
+    shell_printf("Rebooting (%s)...\n",
                  mode == BOOT_BOOTLOADER ? "bootloader" :
                  (mode == BOOT_RECOVERY ? "recovery" : "normal"));
     msleep(50);
@@ -6385,12 +6363,12 @@ static void nshell_print_commands(void)
 {
     size_t i;
 
-    shell_printf("Available commands:\r\n");
+    shell_printf("Available commands:\n");
     for (i = 0U; i < sizeof(builtin_cmds) / sizeof(builtin_cmds[0]); i++) {
         const struct shell_cmd *cmd = &builtin_cmds[i];
         if (cmd->desc == NULL)
             continue;
-        shell_printf("  %-10s - %s\r\n", cmd->name, cmd->desc);
+        shell_printf("  %-10s - %s\n", cmd->name, cmd->desc);
     }
 }
 
@@ -6477,11 +6455,11 @@ static void nshell_complete(struct shell_session *session, void *context)
         } else if (ws->matches > 1U) {
             if (ws->common_len > ws->name_len)
                 complete_apply(session, ws, tok_start, cursor, 0U, '\0');
-            shell_printf("\r\n");
+            shell_printf("\n");
             ws->list_mode = true;
             ws->matches = 0U;
             complete_scan_commands(shell, ws);
-            shell_printf("\r\n");
+            shell_printf("\n");
             shell_session_redraw(session);
         }
         goto out;
@@ -6523,11 +6501,11 @@ static void nshell_complete(struct shell_session *session, void *context)
     } else if (ws->matches > 1U) {
         if (ws->common_len > ws->name_len)
             complete_apply(session, ws, tok_start, cursor, dir_prefix_len, '\0');
-        shell_printf("\r\n");
+        shell_printf("\n");
         ws->list_mode = true;
         ws->matches = 0U;
         complete_scan_dir(dir_entry, ws);
-        shell_printf("\r\n");
+        shell_printf("\n");
         shell_session_redraw(session);
     }
 out:
@@ -6606,16 +6584,16 @@ static void nshell_task_entry(void *parameter)
             if (shell->show_banner) {
                 shell->show_banner = false;
                 shell_printf("\033[1;36m");
-                shell_printf("  _   _  ___  ____  \r\n");
-                shell_printf(" | \\ | |/ _ \\/ ___| \r\n");
-                shell_printf(" |  \\| | | | \\___ \\ \r\n");
-                shell_printf(" | |\\  | |_| |___) |\r\n");
-                shell_printf(" |_| \\_|\\___/|____/ \r\n");
+                shell_printf("  _   _  ___  ____  \n");
+                shell_printf(" | \\ | |/ _ \\/ ___| \n");
+                shell_printf(" |  \\| | | | \\___ \\ \n");
+                shell_printf(" | |\\  | |_| |___) |\n");
+                shell_printf(" |_| \\_|\\___/|____/ \n");
                 shell_printf("\033[0m");
-                shell_printf("Welcome to NOS Shell\r\n");
+                shell_printf("Welcome to NOS Shell\n");
                 shell_printf(SHELL_PROMPT);
             } else {
-                shell_printf("\r\n" SHELL_PROMPT);
+                shell_printf("\n" SHELL_PROMPT);
             }
         }
 

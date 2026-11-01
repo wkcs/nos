@@ -102,7 +102,7 @@ static ssize_t rgb_matrix_buf_write(struct device *dev, addr_t pos, const void *
     struct rgb_matrix *led = dev->priv;
 
     if (size != LED_BUF_SZIE) {
-        pr_err("data size error\r\n");
+        pr_err("data size error\n");
         return -EINVAL;
     }
 
@@ -134,7 +134,7 @@ static int rgb_matrix_control(struct device *dev, int cmd, void *args)
         memcpy(args, &info, sizeof(struct display_dev_info));
         break;
     default:
-        pr_err("unknown cmd: %d\r\n", cmd);
+        pr_err("unknown cmd: %d\n", cmd);
         return -EINVAL;
     }
 
@@ -188,7 +188,7 @@ static int rgb_matrix_init(void)
 
     led = kmalloc(sizeof(struct rgb_matrix), GFP_KERNEL);
     if (led == NULL) {
-        pr_err("alloc rgb_matrix buf error\r\n");
+        pr_err("alloc rgb_matrix buf error\n");
         return -ENOMEM;
     }
 
@@ -207,7 +207,7 @@ static int rgb_matrix_init(void)
 
     led->task = task_create("rgb-matrix", rgb_matrix_task_entry, led, 10, 512, 10, NULL);
     if (led->task == NULL) {
-        pr_fatal("creat rgb_matrix task err\r\n");
+        pr_fatal("creat rgb_matrix task err\n");
         BUG_ON(true);
         return -EINVAL;
     }

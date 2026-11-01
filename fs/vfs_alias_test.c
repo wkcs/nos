@@ -152,10 +152,10 @@ static int vfs_alias_test(void)
             strcmp((const char *)file->f_path.dentry->d_parent->d_name.name, "pin-test") != 0 ||
             nos_close(fd) != 0 || vfs_fd_put(file) != 0 || root->d_refs != root_refs) goto failed;
     }
-    pr_info("vfs fat alias OK\r\n");
+    pr_info("vfs fat alias OK\n");
     return 0;
 failed:
-    pr_err("vfs fat alias FAILED\r\n");
+    pr_err("vfs fat alias FAILED\n");
     return -EIO;
 }
 SYS_INIT(vfs_alias_test, INIT_LEVEL_APPLICATION);

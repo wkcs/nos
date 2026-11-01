@@ -373,13 +373,13 @@ static void dump_data(uint8_t *data, size_t size)
     size_t i;
     for (i = 0; i < size; i++)
     {
-        pr_info("%02x\r\n", *data++);
+        pr_info("%02x\n", *data++);
     }
 }
 static void dump_report(struct hid_report * report)
 {
-    pr_info("HID Recived:\r\n");
-    pr_info("Report ID %02x\r\n", report->report_id);
+    pr_info("HID Recived:\n");
+    pr_info("Report ID %02x\n", report->report_id);
     dump_data(report->report,report->size);
 }
 
@@ -417,11 +417,11 @@ static int _ep_in_handler(ufunction_t func, __always_unused size_t size)
 
 static int _hid_set_report_callback(udevice_t device, size_t size)
 {
-    pr_info("_hid_set_report_callback\r\n");
+    pr_info("_hid_set_report_callback\n");
 
     if(size != 0)
     {
-        pr_info("get data\r\n");
+        pr_info("get data\n");
     }
 
     dcd_ep0_send_status(device->dcd);
@@ -509,7 +509,7 @@ static int _function_enable(ufunction_t func)
 
     data = (struct hid_s *) func->user_data;
 
-    pr_info("hid function enable\r\n");
+    pr_info("hid function enable\n");
 //
 //    _vcom_reset_state(func);
 //
@@ -539,7 +539,7 @@ static int _function_disable(ufunction_t func)
 
     data = (struct hid_s *) func->user_data;
 
-    pr_info("hid function disable\r\n");
+    pr_info("hid function disable\n");
 
     if(data->ep_out->buffer != NULL)
     {
@@ -630,10 +630,10 @@ static void usb_hid_init(struct ufunction *func)
 
     hid_task = task_create("hidd", hid_task_entry, (void *)hiddev, 5, 1024, 5, NULL);
     if (hid_task == NULL) {
-        pr_err("hid task creat err\r\n");
+        pr_err("hid task creat err\n");
         return;
     } else {
-        pr_info("hid task creat ok\r\n");
+        pr_info("hid task creat ok\n");
     }
     msg_q_init(&hiddev->hid_mq);
     task_ready(hid_task);
@@ -673,7 +673,7 @@ ufunction_t usbd_function_hid_create(udevice_t device)
 
     /* create an interface object */
     hid_intf = usbd_interface_new(device, _interface_handler);
-    pr_info("hid_intf->intf_num = %d\r\n", hid_intf->intf_num);
+    pr_info("hid_intf->intf_num = %d\n", hid_intf->intf_num);
 
     /* create an alternate setting object */
     hid_setting = usbd_altsetting_new(sizeof(struct uhid_comm_descriptor));
@@ -713,6 +713,6 @@ int usbd_hid_class_register(void)
 {
     INIT_LIST_HEAD(&hid_class.list);
     usbd_class_register(&hid_class);
-    pr_info("hid register ok\r\n");
+    pr_info("hid register ok\n");
     return 0;
 }

@@ -26,7 +26,7 @@ void panic(const char *fmt, ...) {
   va_start(args, fmt);
   vprintk(fmt, args);
   va_end(args);
-  console_write("\r\n", 2);
+  console_write("\n", 1);
 
   dump_stack();
 

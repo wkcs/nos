@@ -24,16 +24,16 @@ static void pipe_test_complete(void)
         if (fat_a == NULL || fat_b == NULL) {
             if (fat_a != NULL) task_del(fat_a);
             if (fat_b != NULL) task_del(fat_b);
-            pr_err("shell stream pipe FAILED\r\n");
+            pr_err("shell stream pipe FAILED\n");
             return;
         }
         task_ready(fat_a);
         task_ready(fat_b);
     } else if (done == 5U) {
         if (__atomic_load_n(&test_failed, __ATOMIC_RELAXED))
-            pr_err("shell stream pipe FAILED\r\n");
+            pr_err("shell stream pipe FAILED\n");
         else
-            pr_info("shell stream pipe OK\r\n");
+            pr_info("shell stream pipe OK\n");
     }
 }
 
@@ -78,7 +78,7 @@ static void pipe_test_fatfs(void *context)
     pipe_test_complete();
     return;
 failed:
-    pr_err("fatfs concurrency %s failed at %s index %d fd %d\r\n", path, step, i, fd);
+    pr_err("fatfs concurrency %s failed at %s index %d fd %d\n", path, step, i, fd);
     __atomic_store_n(&test_failed, 1U, __ATOMIC_RELAXED);
     pipe_test_complete();
 }
@@ -89,13 +89,13 @@ static void pipe_test_file_stack(void *context)
     (void)context;
     fd = nos_open("/tmp/pipe-stack", O_CREAT | O_WRONLY);
     if (fd < 0) {
-        pr_err("pipe stack file open failed: %d\r\n", fd);
+        pr_err("pipe stack file open failed: %d\n", fd);
         __atomic_store_n(&test_failed, 1U, __ATOMIC_RELAXED);
     } else {
         nos_close(fd);
     }
     if (task_stack_max_used(task_current()) == 0) {
-        pr_err("pipe stack file task overflow\r\n");
+        pr_err("pipe stack file task overflow\n");
         __atomic_store_n(&test_failed, 1U, __ATOMIC_RELAXED);
     }
 }
@@ -166,7 +166,7 @@ static int pipe_test_start(void)
         if (writer != NULL) task_del(writer);
         if (reader != NULL) task_del(reader);
         if (file != NULL) task_del(file);
-        pr_err("shell stream pipe FAILED\r\n");
+        pr_err("shell stream pipe FAILED\n");
         return -ENOMEM;
     }
     task_ready(writer);

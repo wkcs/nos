@@ -26,7 +26,7 @@ void *kmalloc(u32 size, gfp_t flag)
 {
     void *buf;
     buf = __kalloc(size, flag, 0);
-    //pr_info("region:0x%08lx - 0x%08lx\r\n", (addr_t)buf, (addr_t)buf + size);
+    //pr_info("region:0x%08lx - 0x%08lx\n", (addr_t)buf, (addr_t)buf + size);
     return buf;
 }
 
@@ -55,12 +55,12 @@ void *krealloc(void *ptr, u32 size, gfp_t flag)
 
     block = find_block(ptr);
     if (block == NULL) {
-        pr_err("no memblock found for 0x%lx\r\n", (addr_t)ptr);
+        pr_err("no memblock found for 0x%lx\n", (addr_t)ptr);
         return NULL;
     }
     base = find_base(block, ptr);
     if (base == NULL) {
-        pr_err("no mem_base found for 0x%lx in memblock\r\n", (addr_t)ptr);
+        pr_err("no mem_base found for 0x%lx in memblock\n", (addr_t)ptr);
         return NULL;
     }
 

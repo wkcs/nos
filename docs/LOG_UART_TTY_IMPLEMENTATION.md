@@ -23,9 +23,10 @@ Shell 中 `log on`、`log off` 控制普通日志，`log stats` 查看 `dropped`
 | `CONFIG_LOG_BUFFERED` | 开启固定大小的完整记录队列；ARM64 QEMU virt 的轮询阶段关闭。 |
 | `CONFIG_LOG_FIFO_BUF_SIZE` | 日志队列字节数，必须是 2 的幂，并能容纳一条最大消息及 8 B 记录头。 |
 | `CONFIG_LOG_MESSAGE_SIZE` | 每次调用的格式化空间，包含结尾 NUL；WL-001 默认 128 B，其他 ARM 默认 256 B。 |
+| `CONFIG_CONSOLE_CRLF` | 默认开启：UART 控制台将文本 LF 转为 CRLF，适合 minicom 等终端；关闭后输出 LF。原始 UART 接口不转换。 |
 | `CONFIG_LOG_COMPILE_LEVEL` | 编译期最低等级；低于此等级的调用及参数求值会被移除。 |
 | `CONFIG_DEFAULT_LOG_LEVEL` | 运行时最低等级，包含该等级：0=ALL、1=DEBUG、2=INFO、3=WARNING、4=ERROR、5=FATAL、6=OFF。 |
-| `CONFIG_UART_RX_BUFFER_SIZE` / `CONFIG_UART_TX_BUFFER_SIZE` | STM32 接收和发送队列字节数，必须是 2 的幂；发送队列必须容纳一条最大日志。 |
+| `CONFIG_UART_RX_BUFFER_SIZE` / `CONFIG_UART_TX_BUFFER_SIZE` | STM32 接收和发送队列字节数，必须是 2 的幂；开启 CRLF 时发送队列至少为 `2 * (CONFIG_LOG_MESSAGE_SIZE - 1)`。 |
 | `CONFIG_UART_BAUD_RATE` | console UART 波特率，默认 115200。 |
 | `CONFIG_UART_DMA` | STM32 硬件板的 DMA 发送；QEMU STM32 板禁止此配置。 |
 | `CONFIG_UART_DMA_BUFFER_SIZE` / `CONFIG_UART_DMA_STOP_TIMEOUT` | DMA 中转区大小及等待通道停止的最大循环次数。 |
@@ -35,6 +36,10 @@ Shell 中 `log on`、`log off` 控制普通日志，`log stats` 查看 `dropped`
 | `CONFIG_SHELL_STACK_SIZE` / `CONFIG_SHELL_OUTPUT_SIZE` | Shell 任务栈及有界格式化缓冲大小。 |
 
 `NOS_TTY_ICRNL` 将 canonical 输入回车转换为换行；`NOS_TTY_ECHO_CRLF` 只控制回显换行，不改变普通二进制写入。回显是尽力输出，当前接口不是 POSIX `termios`。需要使用 console TTY 的内核调用方可通过 `nos_console_tty()` 获取实例，然后使用 `nos_tty_set_mode()`；不要对由现有 Shell 读取的实例同时启用 canonical/echo。
+
+日志和 Shell 内部文本使用 LF，输出到 UART console 时按 `CONFIG_CONSOLE_CRLF` 转换。Shell 的管道和文件重定向保留 LF；NLK 交互终端输出 CRLF，非交互执行输出 LF。回车键输入与输出转换独立处理。该设置由设备配置决定，并不检测 minicom；终端自身如果也开启 LF 转 CRLF，应避免重复转换。需要传输二进制数据时使用原始 `uart_write()`，而不是 console TTY 文本输出。Bootloader 的文本输出默认使用 CRLF，其原始 `uart_write()` 不转换。
+
+日志以整条记录提交；转换后的最大长度需要两倍空间。STM32 默认 TX 队列因此在 WL-001 上从 128 B 增至 256 B，在其他 STM32 默认配置从 256 B 增至 512 B。转换直接写入 TX 队列，不使用整条展开记录的临时栈缓冲。
 
 ## 20 KiB WL-001 的静态预算
 

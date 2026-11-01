@@ -253,7 +253,7 @@ static int bl_kernel_commit(void)
 
     g_bl_flash.active = false;
     rgb_set_solid(0U, 255U, 0U); /* 绿灯成功 */
-    uart_puts("[BL] Kernel flashed to internal Flash OK\r\n");
+    uart_puts("[BL] Kernel flashed to internal Flash OK\n");
     return 0;
 }
 
