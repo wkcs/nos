@@ -11,16 +11,13 @@
 #include <asm/mmu.h>
 #include <asm/task.h>
 #include <kernel/cpu.h>
+#include <nos/mm.h>
 
 /* NVIC ICPR register for acknowledging/clearing pending external interrupts */
 #define ARM_NVIC_ICPR_BASE ((volatile uint32_t *)0xE000E280UL)
 
 struct nos_arch_context {
     uintptr_t sp;
-};
-
-struct nos_vm_space {
-    uint32_t mpu_region_mask;
 };
 
 void hal_arch_early_init(void)
@@ -91,17 +88,12 @@ void hal_irq_ack(uint32_t irq)
 
 int hal_vm_space_init(struct nos_vm_space *space)
 {
-    if (space != NULL) {
-        space->mpu_region_mask = 0U;
-    }
-    return 0;
+    return nos_mpu_space_init(space);
 }
 
 void hal_vm_space_destroy(struct nos_vm_space *space)
 {
-    if (space != NULL) {
-        space->mpu_region_mask = 0U;
-    }
+    nos_mpu_space_destroy(space);
 }
 
 int hal_vm_map(struct nos_vm_space *space,
@@ -110,7 +102,9 @@ int hal_vm_map(struct nos_vm_space *space,
                size_t size,
                uint32_t prot_flags)
 {
-    (void)space;
+    if (space != NULL) {
+        return nos_mpu_map(space, vaddr, paddr, size, prot_flags);
+    }
     return arch_map_page((unsigned long)vaddr,
                          (unsigned long)paddr,
                          (unsigned long)size,
@@ -119,13 +113,15 @@ int hal_vm_map(struct nos_vm_space *space,
 
 int hal_vm_unmap(struct nos_vm_space *space, uintptr_t vaddr, size_t size)
 {
-    (void)space;
+    if (space != NULL) {
+        return nos_mpu_unmap(space, vaddr, size);
+    }
     return arch_unmap_page((unsigned long)vaddr, (unsigned long)size);
 }
 
 void hal_vm_switch(struct nos_vm_space *next_space)
 {
-    (void)next_space;
+    arch_mpu_switch(next_space);
 }
 
 void hal_timer_init(uint32_t hz)

@@ -16,6 +16,8 @@
 #include <kernel/spinlock.h>
 #include <kernel/init.h>
 #include <kernel/printk.h>
+#include <nos/hal_arch.h>
+#include <nos/mm.h>
 #include <string.h>
 
 static struct task_struct *g_current_task;
@@ -88,6 +90,10 @@ void sch_start(void)
     to_task->sys_cycle = g_sys_cycle;
     to_task->save_sys_cycle = 0;
     g_current_task = to_task;
+#ifdef CONFIG_MPU
+    arch_mpu_init();
+#endif
+    hal_vm_switch(&to_task->vm_space);
     context_switch_to((addr_t)&to_task->sp);
 
     /* never come back */
@@ -190,6 +196,7 @@ void switch_task(void)
         to_task->status = TASK_RUNING;
         spin_unlock_irq(&from_task->lock);
         spin_unlock_irq(&to_task->lock);
+        hal_vm_switch(&to_task->vm_space);
         context_switch((addr_t)&from_task->sp, (addr_t)&to_task->sp);
         g_current_task = to_task;
         spin_unlock_irq(&g_switch_lock);

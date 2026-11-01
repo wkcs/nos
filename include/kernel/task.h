@@ -17,6 +17,7 @@
 #include <asm/task.h>
 #include <uapi/nos/ipc.h>
 #include <nos/cap.h>
+#include <nos/mm.h>
 
 enum task_status {
     TASK_RUNING = 0x01,
@@ -70,6 +71,7 @@ struct task_struct {
 
     /* Microkernel Capability Table & Synchronous/Async IPC State */
     struct nos_cap_table cap_table;
+    struct nos_vm_space  vm_space;
     struct nos_ipc_msg   ipc_msg;
     struct task_struct  *ipc_partner;
     uint8_t              ipc_state;
