@@ -18,6 +18,11 @@
 #include <kernel/unwind.h>
 #include <nos/sched.h>
 
+/* Mock BPE token table: 0x80 -> "wo", 0x81 -> (0x80, 'r') -> "wor" */
+const unsigned char kallsyms_token_table[256] = {
+    'w', 'o', 0x80U, 'r', 0U
+};
+
 /* Mock sorted kernel symbol table */
 const struct kallsym_entry kallsyms_table[] = {
     { 0x08001000UL, "sched_init" },
@@ -25,8 +30,8 @@ const struct kallsym_entry kallsyms_table[] = {
     { 0x08001180UL, "mutex_lock" },
     { 0x08001240UL, "sem_get" },
     { 0x08001300UL, "task_sleep" },
-    { 0x08001400UL, "worker_step" },
-    { 0x08001500UL, "worker_main" },
+    { 0x08001400UL, "\x81" "ker_step" },
+    { 0x08001500UL, "\x81" "ker_main" },
     { 0UL, NULL }
 };
 const unsigned int kallsyms_num = 7U;

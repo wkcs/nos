@@ -12,6 +12,64 @@
 #include <lib/vsprintf.h>
 #include <string.h>
 
+__attribute__((weak)) const unsigned char kallsyms_token_table[256] = { 0 };
+
+static void kallsyms_expand_token(unsigned char tok, char *out,
+                                  size_t max_len, size_t *pos)
+{
+    unsigned char idx;
+    unsigned char a;
+    unsigned char b;
+
+    if (tok < 0x80U) {
+        if (*pos + 1U < max_len) {
+            out[*pos] = (char)tok;
+            (*pos)++;
+        }
+        return;
+    }
+
+    idx = (unsigned char)(tok - 0x80U);
+    a = kallsyms_token_table[(size_t)idx * 2U];
+    b = kallsyms_token_table[(size_t)idx * 2U + 1U];
+    if (a == 0U && b == 0U) {
+        return;
+    }
+    kallsyms_expand_token(a, out, max_len, pos);
+    kallsyms_expand_token(b, out, max_len, pos);
+}
+
+static const char *kallsyms_decompress_name(const char *raw_name, char *namebuf)
+{
+    static char s_name_buf[64];
+    char *out = (namebuf != NULL) ? namebuf : s_name_buf;
+    const unsigned char *p = (const unsigned char *)raw_name;
+    bool has_token = false;
+    size_t pos = 0U;
+
+    if (raw_name == NULL) {
+        return NULL;
+    }
+    while (*p != 0U) {
+        if (*p >= 0x80U) {
+            has_token = true;
+            break;
+        }
+        p++;
+    }
+    if (!has_token) {
+        return raw_name;
+    }
+
+    p = (const unsigned char *)raw_name;
+    while (*p != 0U && pos + 1U < sizeof(s_name_buf)) {
+        kallsyms_expand_token(*p, out, sizeof(s_name_buf), &pos);
+        p++;
+    }
+    out[pos] = '\0';
+    return out;
+}
+
 const char *kallsyms_lookup(unsigned long addr, unsigned long *symbolsize,
                             unsigned long *offset, char **modname, char *namebuf)
 {
@@ -22,8 +80,6 @@ const char *kallsyms_lookup(unsigned long addr, unsigned long *symbolsize,
     unsigned long best_addr;
     unsigned long size;
     unsigned long off;
-
-    (void)namebuf;
 
     if (kallsyms_num == 0U) {
         return NULL;
@@ -76,7 +132,7 @@ const char *kallsyms_lookup(unsigned long addr, unsigned long *symbolsize,
         *modname = NULL;
     }
 
-    return kallsyms_table[best_idx].name;
+    return kallsyms_decompress_name(kallsyms_table[best_idx].name, namebuf);
 }
 
 void print_symbol(const char *fmt, unsigned long addr)
