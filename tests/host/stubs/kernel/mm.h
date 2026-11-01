@@ -3,6 +3,7 @@
 #define NOS_TEST_MM_H
 #include <stddef.h>
 #include <kernel/kernel.h>
+#define GFP_KERNEL 1U
 void *kmalloc(size_t size, gfp_t flags);
 void kfree(void *ptr);
 #endif

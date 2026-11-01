@@ -638,6 +638,8 @@ enum nlk_kb_opcode {
     NLK_KB_OP_BIND_ACTION           = 0x24U,
     NLK_KB_OP_UNBIND_ACTION         = 0x25U,
     NLK_KB_OP_GET_KEY_ACTIONS       = 0x26U,
+    NLK_KB_OP_GET_LIGHT_EFFECTS     = 0x27U,
+    NLK_KB_OP_GET_LIGHT_EFFECTS_PAGE = 0x28U,
     NLK_KB_EVT_SWITCH_DELTA         = 0x20U,
     NLK_KB_EVT_HID_REPORT           = 0x21U,
     NLK_KB_EVT_LIGHT_SYNC_BEACON    = 0x22U,
@@ -689,18 +691,6 @@ enum nlk_kb_switch_type {
 #define NLK_KB_IND_SCROLL_LOCK          (1U << 2)
 #define NLK_KB_IND_COMPOSE              (1U << 3)
 #define NLK_KB_IND_KANA                 (1U << 4)
-
-/* Keyboard Lighting Effects (bound to NLK_CAP_KEYBOARD) */
-enum nlk_kb_light_effect {
-    NLK_KB_LIGHT_EFF_OFF            = 0U,
-    NLK_KB_LIGHT_EFF_STATIC         = 1U,
-    NLK_KB_LIGHT_EFF_BREATH         = 2U,
-    NLK_KB_LIGHT_EFF_GRADIENT_WAVE  = 3U,
-    NLK_KB_LIGHT_EFF_REACTIVE       = 4U,
-    NLK_KB_LIGHT_EFF_RIPPLE         = 5U,
-    NLK_KB_LIGHT_EFF_DIRECT_STREAM  = 6U,
-    NLK_KB_LIGHT_EFF_CAPS_LOCK      = 7U, /* 大写锁定专用指示灯效 */
-};
 
 #define NLK_KB_LIGHT_ZONE_KEYS          (1U << 0)
 #define NLK_KB_LIGHT_ZONE_UNDERGLOW     (1U << 1)
@@ -776,7 +766,7 @@ struct nlk_kb_analog_cfg {
 struct nlk_kb_light_cfg {
     uint8_t  enable;
     uint8_t  zone_mask;         /* NLK_KB_LIGHT_ZONE_* */
-    uint8_t  effect_id;         /* enum nlk_kb_light_effect */
+    uint8_t  effect_id;         /* Device-local registered effect ID */
     uint8_t  brightness;        /* 0..255 */
     uint8_t  speed;             /* 0..255 */
     uint8_t  color_r;
@@ -789,12 +779,22 @@ struct nlk_kb_light_frame_hdr {
     uint16_t led_count;
 } __attribute__((packed));
 
+#define NLK_KB_LIGHT_EFFECTS_PER_PAGE   6U
+#define NLK_KB_LIGHT_EFFECT_NAME_MAX    16U
+#define NLK_KB_LIGHT_EFFECT_DESC_MAX    20U
+
 struct nlk_kb_light_sync_beacon {
     uint32_t master_frame_tick;
     uint8_t  effect_id;
     uint8_t  speed;
     uint8_t  brightness;
     uint8_t  hue_offset;
+} __attribute__((packed));
+
+/* Optional suffix lets peers translate IDs through their own registries. */
+struct nlk_kb_named_light_sync_beacon {
+    struct nlk_kb_light_sync_beacon beacon;
+    char effect_name[NLK_KB_LIGHT_EFFECT_NAME_MAX];
 } __attribute__((packed));
 
 /* =========================================================================
@@ -872,7 +872,7 @@ struct nlk_kb_light_zones_resp {
 struct nlk_kb_zone_light_cfg {
     uint8_t  zone_id;              /* Target zone ID */
     uint8_t  enable;               /* Zone enable switch */
-    uint8_t  effect_id;            /* enum nlk_kb_light_effect */
+    uint8_t  effect_id;            /* Device-local registered effect ID */
     uint8_t  brightness;           /* 0..255 */
     uint8_t  speed;                /* 0..255 */
     uint8_t  color_r;              /* RGB Red */
@@ -949,6 +949,32 @@ struct nlk_kb_macro_record_req {
     uint8_t  macro_id;             /* Target macro ID to record */
     uint8_t  record_cmd;           /* 0 = STOP, 1 = START, 2 = CLEAR */
     uint16_t reserved;
+} __attribute__((packed));
+
+/* Lighting effect metadata */
+struct nlk_kb_light_effect_desc {
+    uint8_t effect_id;
+    uint8_t reserved[3];
+    char name[NLK_KB_LIGHT_EFFECT_NAME_MAX];
+    char desc[NLK_KB_LIGHT_EFFECT_DESC_MAX];
+} __attribute__((packed));
+
+struct nlk_kb_light_effect_list_resp {
+    uint8_t effect_count;
+    uint8_t reserved[3];
+    struct nlk_kb_light_effect_desc effects[NLK_KB_LIGHT_EFFECTS_PER_PAGE];
+} __attribute__((packed));
+
+/* Each page fits in the NLK payload; total_count reflects the registry. */
+struct nlk_kb_light_effect_page_req {
+    uint16_t start_index;
+} __attribute__((packed));
+
+struct nlk_kb_light_effect_page_resp {
+    uint16_t total_count;
+    uint8_t count;
+    uint8_t reserved;
+    struct nlk_kb_light_effect_desc effects[NLK_KB_LIGHT_EFFECTS_PER_PAGE];
 } __attribute__((packed));
 
 /* Key Action Binding & Metadata */
@@ -1208,6 +1234,10 @@ _Static_assert(sizeof(struct nlk_vfs_dirent_wire) == 16, "nlk_vfs_dirent_wire mu
 _Static_assert(sizeof(struct nlk_log_wire_hdr) == 8, "nlk_log_wire_hdr must be 8 bytes");
 _Static_assert(sizeof(struct nlk_disp_status_sync) == 28, "nlk_disp_status_sync must be 28 bytes");
 _Static_assert(sizeof(struct nlk_kb_desc) == 20, "nlk_kb_desc must be 20 bytes");
+_Static_assert(sizeof(struct nlk_kb_light_effect_desc) == 40, "light effect descriptor size");
+_Static_assert(sizeof(struct nlk_kb_light_effect_page_resp) == 244, "light effect page size");
+_Static_assert(sizeof(struct nlk_kb_light_effect_list_resp) == 244, "light effect list size");
+_Static_assert(sizeof(struct nlk_kb_named_light_sync_beacon) == 24, "named light beacon size");
 _Static_assert(sizeof(struct nlk_kb_light_cfg) == 8, "nlk_kb_light_cfg must be 8 bytes");
 _Static_assert(sizeof(struct nlk_kb_light_sync_beacon) == 8, "nlk_kb_light_sync_beacon must be 8 bytes");
 _Static_assert(sizeof(struct nlk_kb_analog_cfg) == 8, "nlk_kb_analog_cfg must be 8 bytes");

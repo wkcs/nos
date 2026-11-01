@@ -34,15 +34,6 @@ struct nk60_display_server {
     struct ds_draw_info *draw_info;
 };
 
-#define GRADATION_DATA_MAX 24
-static u8 g_gradation_rgb_data[GRADATION_DATA_MAX][DS_COLOR_DATA_MAX] = {
-    {0, 230, 18}, {97, 235, 0}, {152, 243, 0}, {200, 252, 0}, {251, 255, 0},
-    {219, 207, 0}, {195, 143, 31}, {172, 34, 56}, {153, 0, 68}, {155, 0, 107},
-    {158, 0, 150}, {160, 0, 193}, {160, 0, 233}, {134, 0, 209}, {104, 0, 183},
-    {71, 0, 157}, {32, 29, 136}, {25, 96, 134}, {7, 146, 131}, {0, 190, 129},
-    {0, 228, 127}, {0, 229, 106}, {0, 229, 79}, {0, 230, 51}
-};
-
 static int nk60_display_server_draw_info_init(struct nk60_display_server *nk60_ds)
 {
     struct ds_draw_area *area;
@@ -69,61 +60,35 @@ static int nk60_display_server_draw_info_init(struct nk60_display_server *nk60_d
 
 static void nk60_display_server_data_update(struct nk60_display_server *nk60_ds)
 {
-    struct ds_draw_area *area;
-    struct ds_data *data;
+    struct nlk_kb_light_cfg cfg;
+    struct ds_draw_area *area = &nk60_ds->draw_info->area;
+    static uint32_t phase;
+    uint8_t rgb[3];
     int i;
-    static int index = GRADATION_DATA_MAX;
-    int tmp_index;
-    bool caps_active = keyboard_server_is_caps_lock_active();
 
-    area = &nk60_ds->draw_info->area;
-
-    if (caps_active) {
-        /* 大写锁定特殊灯效：
-         * 1. CapsLock 键 (第 3 行第 1 列，索引 28) 保持纯白高亮 (255, 255, 255) 指示
-         * 2. 全键盘其他按键呈现动态冰蓝呼吸灯效 (40 ~ 255)
-         */
-        static int breath_val = 60;
-        static int breath_dir = 5;
-
-        breath_val += breath_dir;
-        if (breath_val >= 255) {
-            breath_val = 255;
-            breath_dir = -5;
-        } else if (breath_val <= 40) {
-            breath_val = 40;
-            breath_dir = 5;
-        }
-
-        for (i = 0; i < LED_WIDTH * LED_HEIGHT; i++) {
-            data = &area->data[i];
-            if (i == 28) {
-                /* CapsLock 键纯白高亮指示 */
-                data->data[DS_COLOR_R] = 255;
-                data->data[DS_COLOR_G] = 255;
-                data->data[DS_COLOR_B] = 255;
-            } else {
-                /* 其他按键冰蓝呼吸效果 */
-                data->data[DS_COLOR_R] = 0;
-                data->data[DS_COLOR_G] = (uint8_t)(breath_val / 2);
-                data->data[DS_COLOR_B] = (uint8_t)breath_val;
-            }
-        }
-    } else {
-        /* 常规彩虹波浪流光渐变 */
-        index--;
-        if (index < 0) {
-            index = GRADATION_DATA_MAX - 1;
-        }
-
-        for (i = 0; i < LED_WIDTH * LED_HEIGHT; i++) {
-            tmp_index = (index + (i % LED_WIDTH)) % GRADATION_DATA_MAX;
-            data = &area->data[i];
-            data->data[DS_COLOR_R] = g_gradation_rgb_data[tmp_index][DS_COLOR_R];
-            data->data[DS_COLOR_G] = g_gradation_rgb_data[tmp_index][DS_COLOR_G];
-            data->data[DS_COLOR_B] = g_gradation_rgb_data[tmp_index][DS_COLOR_B];
-        }
+    if (keyboard_server_get_light_state(&cfg, NULL) < 0) {
+        return;
     }
+    phase += (uint32_t)cfg.speed + 1U;
+    mutex_lock(&nk60_ds->draw_info->lock);
+    for (i = 0; i < LED_WIDTH * LED_HEIGHT; i++) {
+        struct ds_data *data = &area->data[i];
+        if (keyboard_server_render_light((uint8_t)(i % LED_WIDTH),
+                                         (uint8_t)(i / LED_WIDTH), phase, rgb) < 0) {
+            rgb[0] = 0U;
+            rgb[1] = 0U;
+            rgb[2] = 0U;
+        }
+        if (keyboard_server_is_caps_lock_active() && i == 28) {
+            rgb[0] = 255U;
+            rgb[1] = 255U;
+            rgb[2] = 255U;
+        }
+        data->data[DS_COLOR_R] = rgb[0];
+        data->data[DS_COLOR_G] = rgb[1];
+        data->data[DS_COLOR_B] = rgb[2];
+    }
+    mutex_unlock(&nk60_ds->draw_info->lock);
 }
 
 static void nk60_display_server_task_entry(void* parameter)

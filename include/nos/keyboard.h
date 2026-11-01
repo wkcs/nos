@@ -398,6 +398,12 @@ struct keyboard_profile_layout {
     const uint8_t            *default_keymap;     /* Flattened [layer_count][key_count] */
 };
 
+struct keyboard_light_effect {
+    const char *name;
+    const char *desc;
+    nlk_kb_effect_render_fn_t render;
+};
+
 /* Keyboard Profile (Default Keymap/Action Layout managed by Keyboard Server) */
 struct keyboard_profile {
     const char                               *name;
@@ -423,6 +429,10 @@ struct keyboard_profile {
     /* Multi-Layout Registration */
     uint8_t                               layout_count;
     const struct keyboard_profile_layout *layouts;
+
+    /* Keep registration order stable: profiles persist these device-local IDs. */
+    uint8_t                               light_effect_count;
+    const struct keyboard_light_effect   *light_effects;
 
     /* Multi-Zone Backlight Registration */
     uint8_t                               light_zone_count;
@@ -460,6 +470,8 @@ enum ks_ctrl_cmd {
 };
 
 bool keyboard_server_is_caps_lock_active(void);
+int keyboard_server_render_light(uint8_t x, uint8_t y, uint32_t phase,
+                                 uint8_t rgb[3]);
 int keyboard_server_get_light_state(struct nlk_kb_light_cfg *cfg, uint8_t *indicators);
 
 /* Persistent Storage Format for Flash Filesystem */

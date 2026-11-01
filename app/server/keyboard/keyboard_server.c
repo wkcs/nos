@@ -57,7 +57,6 @@ struct keyboard_server {
     struct mutex            lock;
     bool                    enable;
     bool                    caps_lock_active;
-    struct nlk_kb_light_cfg saved_light_cfg;
     uint8_t                 active_slot_id;
     uint8_t                 saved_slots_mask;
     uint32_t                raw_prev[KS_MAX_KEY_WORDS];
@@ -188,7 +187,7 @@ static int ks_apply_layout_id(struct keyboard_server *ks, uint8_t layout_id)
 int keyboard_config_save_profile(uint8_t slot_id)
 {
     struct keyboard_server *ks = g_keyboard_server;
-    struct keyboard_stored_profile stored;
+    struct keyboard_stored_profile *stored;
     char path[48];
     char active_path[48];
     int fd;
@@ -198,31 +197,37 @@ int keyboard_config_save_profile(uint8_t slot_id)
         return -EINVAL;
     }
 
-    memset(&stored, 0, sizeof(stored));
-    stored.magic = KS_CONFIG_MAGIC;
-    stored.version = KS_CONFIG_VERSION;
-    stored.slot_id = slot_id;
-    stored.key_count = ks->profile.key_count;
-    stored.layer_count = ks->profile.layer_count;
-    stored.active_layout_id = ks->kb_cap.active_layout_id;
-    stored.params = ks->kb_cap.params;
-    stored.light = ks->kb_cap.light_cfg;
-    memcpy(stored.zone_cfgs, ks->kb_cap.zone_cfgs, sizeof(stored.zone_cfgs));
-    memcpy(stored.keymap, ks->kb_cap.keymap, sizeof(stored.keymap));
-    memcpy(stored.action_chains, ks->kb_cap.action_chains, sizeof(stored.action_chains));
+    stored = kmalloc(sizeof(*stored), GFP_KERNEL);
+    if (stored == NULL) {
+        return -ENOMEM;
+    }
+    memset(stored, 0, sizeof(*stored));
+    stored->magic = KS_CONFIG_MAGIC;
+    stored->version = KS_CONFIG_VERSION;
+    stored->slot_id = slot_id;
+    stored->key_count = ks->profile.key_count;
+    stored->layer_count = ks->profile.layer_count;
+    stored->active_layout_id = ks->kb_cap.active_layout_id;
+    stored->params = ks->kb_cap.params;
+    stored->light = ks->kb_cap.light_cfg;
+    memcpy(stored->zone_cfgs, ks->kb_cap.zone_cfgs, sizeof(stored->zone_cfgs));
+    memcpy(stored->keymap, ks->kb_cap.keymap, sizeof(stored->keymap));
+    memcpy(stored->action_chains, ks->kb_cap.action_chains, sizeof(stored->action_chains));
 
-    stored.crc32 = nlk_crc32(0U, &stored, offsetof(struct keyboard_stored_profile, crc32));
+    stored->crc32 = nlk_crc32(0U, stored, offsetof(struct keyboard_stored_profile, crc32));
 
     ks_make_profile_path(slot_id, path, sizeof(path));
     fd = nos_open(path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
     if (fd < 0) {
         pr_err("failed to open %s for saving: %d\n", path, fd);
+        kfree(stored);
         return fd;
     }
-    ret = nos_write(fd, &stored, sizeof(stored));
+    ret = nos_write(fd, stored, sizeof(*stored));
     nos_close(fd);
+    kfree(stored);
 
-    if (ret != (ssize_t)sizeof(stored)) {
+    if (ret != (ssize_t)sizeof(*stored)) {
         pr_err("failed to write %s: written=%ld\n", path, (long)ret);
         return -EIO;
     }
@@ -246,7 +251,7 @@ int keyboard_config_save_profile(uint8_t slot_id)
 int keyboard_config_load_profile(uint8_t slot_id)
 {
     struct keyboard_server *ks = g_keyboard_server;
-    struct keyboard_stored_profile stored;
+    struct keyboard_stored_profile *stored;
     char path[48];
     int fd;
     ssize_t ret;
@@ -256,43 +261,63 @@ int keyboard_config_load_profile(uint8_t slot_id)
         return -EINVAL;
     }
 
+    stored = kmalloc(sizeof(*stored), GFP_KERNEL);
+    if (stored == NULL) {
+        return -ENOMEM;
+    }
     ks_make_profile_path(slot_id, path, sizeof(path));
     fd = nos_open(path, O_RDONLY, 0);
     if (fd < 0) {
+        kfree(stored);
         return fd;
     }
-    ret = nos_read(fd, &stored, sizeof(stored));
+    ret = nos_read(fd, stored, sizeof(*stored));
     nos_close(fd);
 
-    if (ret != (ssize_t)sizeof(stored)) {
+    if (ret != (ssize_t)sizeof(*stored)) {
+        kfree(stored);
         return -EIO;
     }
-    if (stored.magic != KS_CONFIG_MAGIC || stored.version != KS_CONFIG_VERSION) {
+    if (stored->magic != KS_CONFIG_MAGIC || stored->version != KS_CONFIG_VERSION) {
         pr_err("corrupted profile magic/version in %s\n", path);
+        kfree(stored);
         return -EINVAL;
     }
-    calc_crc = nlk_crc32(0U, &stored, offsetof(struct keyboard_stored_profile, crc32));
-    if (calc_crc != stored.crc32) {
+    calc_crc = nlk_crc32(0U, stored, offsetof(struct keyboard_stored_profile, crc32));
+    if (calc_crc != stored->crc32) {
         pr_err("CRC mismatch in %s: calc=0x%08x, stored=0x%08x\n", path,
-               (unsigned int)calc_crc, (unsigned int)stored.crc32);
+               (unsigned int)calc_crc, (unsigned int)stored->crc32);
+        kfree(stored);
         return -EIO;
     }
 
+    /* Old profiles may reference effects this firmware no longer provides. */
+    if (ks->kb_cap.light_effect_count > 0U) {
+        uint8_t zone;
+        if (stored->light.effect_id >= ks->kb_cap.light_effect_count) {
+            stored->light.effect_id = ks->kb_cap.light_cfg.effect_id;
+        }
+        for (zone = 0U; zone < NLK_KB_MAX_LIGHT_ZONES; zone++) {
+            if (stored->zone_cfgs[zone].effect_id >= ks->kb_cap.light_effect_count) {
+                stored->zone_cfgs[zone].effect_id = ks->kb_cap.zone_cfgs[zone].effect_id;
+            }
+        }
+    }
     mutex_lock(&ks->lock);
-    memcpy(ks->kb_cap.keymap, stored.keymap, sizeof(stored.keymap));
-    memcpy(ks->kb_cap.action_chains, stored.action_chains, sizeof(stored.action_chains));
-    ks->kb_cap.light_cfg = stored.light;
-    memcpy(ks->kb_cap.zone_cfgs, stored.zone_cfgs, sizeof(stored.zone_cfgs));
-    (void)nlk_cap_keyboard_set_params(&ks->kb_cap, &stored.params);
+    memcpy(ks->kb_cap.keymap, stored->keymap, sizeof(stored->keymap));
+    memcpy(ks->kb_cap.action_chains, stored->action_chains, sizeof(stored->action_chains));
+    ks->kb_cap.light_cfg = stored->light;
+    memcpy(ks->kb_cap.zone_cfgs, stored->zone_cfgs, sizeof(stored->zone_cfgs));
+    (void)nlk_cap_keyboard_set_params(&ks->kb_cap, &stored->params);
 
-    if (stored.active_layout_id != 0U && stored.active_layout_id != ks->kb_cap.active_layout_id) {
-        (void)ks_apply_layout_id(ks, stored.active_layout_id);
+    if (stored->active_layout_id != 0U && stored->active_layout_id != ks->kb_cap.active_layout_id) {
+        (void)ks_apply_layout_id(ks, stored->active_layout_id);
     }
     mutex_unlock(&ks->lock);
 
     if (ks->key_dev != NULL && ks->key_dev->ops.control != NULL) {
-        uint16_t deb = stored.params.debounce_ms;
-        uint16_t poll = stored.params.poll_rate_hz;
+        uint16_t deb = stored->params.debounce_ms;
+        uint16_t poll = stored->params.poll_rate_hz;
         if (deb > 0U) {
             (void)ks->key_dev->ops.control(ks->key_dev, KEY_CTRL_SET_DEBOUNCE, &deb);
         }
@@ -305,9 +330,11 @@ int keyboard_config_load_profile(uint8_t slot_id)
         ks->ds_dev = device_find_by_name("display-server");
     }
     if (ks->ds_dev != NULL && ks->ds_dev->ops.control != NULL) {
-        int cmd = (stored.light.enable != 0U) ? DS_CTRL_ENABLE : DS_CTRL_DISABLE;
+        int cmd = (stored->light.enable != 0U) ? DS_CTRL_ENABLE : DS_CTRL_DISABLE;
         (void)ks->ds_dev->ops.control(ks->ds_dev, cmd, NULL);
     }
+
+    kfree(stored);
 
     ks->active_slot_id = slot_id;
     ks->saved_slots_mask |= (uint8_t)(1U << slot_id);
@@ -371,6 +398,30 @@ int keyboard_server_get_light_state(struct nlk_kb_light_cfg *cfg, uint8_t *indic
     return 0;
 }
 
+int keyboard_server_render_light(uint8_t x, uint8_t y, uint32_t phase,
+                                 uint8_t rgb[3])
+{
+    struct nlk_keyboard_ctx *kb;
+    const struct nlk_kb_effect_entry *entry;
+    uint8_t effect;
+    uint8_t i;
+
+    if (g_keyboard_server == NULL || rgb == NULL) {
+        return -ENODEV;
+    }
+    kb = &g_keyboard_server->kb_cap;
+    effect = kb->light_cfg.effect_id;
+    entry = nlk_cap_keyboard_find_light_effect(kb, effect);
+    if (entry == NULL || entry->render == NULL) {
+        return -EINVAL;
+    }
+    entry->render(&kb->light_cfg, x, y, phase, rgb, entry->priv);
+    for (i = 0U; i < 3U; i++) {
+        rgb[i] = (uint8_t)(((uint16_t)rgb[i] * kb->light_cfg.brightness) / 255U);
+    }
+    return 0;
+}
+
 static int ks_on_profile_save(uint8_t slot_id, void *priv)
 {
     (void)priv;
@@ -422,8 +473,7 @@ static void ks_on_zone_light_cfg(uint8_t zone_id,
                                  void *priv)
 {
     struct keyboard_server *ks = (struct keyboard_server *)priv;
-    (void)zone_id;
-    if (ks != NULL && cfg != NULL) {
+    if (ks != NULL && cfg != NULL && zone_id == 0U) {
         if (ks->ds_dev == NULL) {
             ks->ds_dev = device_find_by_name("display-server");
         }
@@ -492,19 +542,8 @@ static int ks_action_caps_lock(const struct key_action_context *ctx, void *priv)
         pr_info("Action caps_lock: active=%d\n", ks->caps_lock_active ? 1 : 0);
 
         if (ks->caps_lock_active) {
-            /* 开启大写锁定：保存当前灯效配置，切换为大写锁定特殊指示灯效 */
-            ks->saved_light_cfg = ks->kb_cap.light_cfg;
-            ks->kb_cap.light_cfg.enable = 1U;
-            ks->kb_cap.light_cfg.effect_id = NLK_KB_LIGHT_EFF_CAPS_LOCK;
-            ks->kb_cap.light_cfg.brightness = 255U;
-            ks->kb_cap.light_cfg.speed = 5U;
-            ks->kb_cap.light_cfg.color_r = 255U;
-            ks->kb_cap.light_cfg.color_g = 255U;
-            ks->kb_cap.light_cfg.color_b = 255U;
             ks->kb_cap.indicator_leds |= NLK_KB_IND_CAPS_LOCK;
         } else {
-            /* 关闭大写锁定：恢复之前的正常灯效配置 */
-            ks->kb_cap.light_cfg = ks->saved_light_cfg;
             ks->kb_cap.indicator_leds &= (uint8_t)~NLK_KB_IND_CAPS_LOCK;
         }
 
@@ -604,6 +643,18 @@ static void ks_register_nlk_capability(struct keyboard_server *ks)
         }
     }
 
+    if (ks->profile.light_effects != NULL) {
+        for (i = 0U; i < ks->profile.light_effect_count; i++) {
+            const struct keyboard_light_effect *effect = &ks->profile.light_effects[i];
+            int rc = nlk_cap_keyboard_register_light_effect(&ks->kb_cap, effect->name,
+                                                            effect->desc, effect->render, ks);
+            if (rc < 0) {
+                pr_err("cannot register light effect %s: %d\n", effect->name, rc);
+                break;
+            }
+        }
+    }
+
     /* Register light zones */
     if (ks->profile.light_zone_count > 0U && ks->profile.light_zones != NULL) {
         for (i = 0U; i < ks->profile.light_zone_count; i++) {
@@ -614,6 +665,17 @@ static void ks_register_nlk_capability(struct keyboard_server *ks)
                                                        &ks->profile.light_zones[i],
                                                        icfg);
         }
+    }
+
+    if (ks->profile.light_zone_count > 0U && ks->profile.default_zone_cfgs != NULL) {
+        const struct nlk_kb_zone_light_cfg *cfg = &ks->profile.default_zone_cfgs[0];
+        ks->kb_cap.light_cfg.enable = cfg->enable;
+        ks->kb_cap.light_cfg.effect_id = cfg->effect_id;
+        ks->kb_cap.light_cfg.brightness = cfg->brightness;
+        ks->kb_cap.light_cfg.speed = cfg->speed;
+        ks->kb_cap.light_cfg.color_r = cfg->color_r;
+        ks->kb_cap.light_cfg.color_g = cfg->color_g;
+        ks->kb_cap.light_cfg.color_b = cfg->color_b;
     }
 
     /* Register custom actions */

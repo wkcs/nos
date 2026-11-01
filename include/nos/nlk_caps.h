@@ -150,6 +150,16 @@ int nlk_cap_vfs_init(struct nlk_node *node, struct nlk_vfs_ctx *ctx);
 #endif
 #define NLK_KB_MAX_KEYS             128U
 
+typedef void (*nlk_kb_effect_render_fn_t)(const struct nlk_kb_light_cfg *cfg,
+                                          uint8_t x, uint8_t y, uint32_t phase,
+                                          uint8_t rgb[3], void *priv);
+struct nlk_kb_effect_entry {
+    struct nlk_kb_light_effect_desc info;
+    nlk_kb_effect_render_fn_t render;
+    void *priv;
+    struct nlk_kb_effect_entry *next;
+};
+
 typedef void (*nlk_kb_report_cb_t)(const struct nlk_kb_hid_report *report, void *priv);
 typedef void (*nlk_kb_nkro_cb_t)(const struct nlk_kb_nkro_report *report, void *priv);
 typedef void (*nlk_kb_light_cb_t)(const struct nlk_kb_light_cfg *cfg,
@@ -188,6 +198,11 @@ struct nlk_keyboard_ctx {
     struct nlk_kb_layout_info       layouts[NLK_KB_MAX_LAYOUTS];
     nlk_kb_layout_change_cb_t       layout_cb;
     void                           *layout_priv;
+
+    /* Device-local lighting effects */
+    uint16_t                        light_effect_count;
+    struct nlk_kb_effect_entry     *light_effects;
+    struct nlk_kb_effect_entry     *light_effects_tail;
 
     /* Multi-zone lighting */
     uint8_t                         light_zone_count;
@@ -255,6 +270,12 @@ int nlk_cap_keyboard_set_param_cb(struct nlk_keyboard_ctx *ctx,
                                   void *priv);
 int nlk_cap_keyboard_register_layout(struct nlk_keyboard_ctx *ctx,
                                      const struct nlk_kb_layout_info *layout);
+const struct nlk_kb_effect_entry *nlk_cap_keyboard_find_light_effect(
+    const struct nlk_keyboard_ctx *ctx, uint8_t effect_id);
+/* Registry entries are allocated on demand and live as long as the context. */
+int nlk_cap_keyboard_register_light_effect(struct nlk_keyboard_ctx *ctx,
+                                           const char *name, const char *desc,
+                                           nlk_kb_effect_render_fn_t handler, void *priv);
 int nlk_cap_keyboard_register_light_zone(struct nlk_keyboard_ctx *ctx,
                                          const struct nlk_kb_light_zone_desc *zone,
                                          const struct nlk_kb_zone_light_cfg *initial_cfg);
