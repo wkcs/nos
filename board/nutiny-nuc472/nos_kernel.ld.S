@@ -112,8 +112,7 @@ SECTIONS
   /* Initialized data sections goes into RAM, load LMA copy after code */
   .data : AT ( _sidata )
   {
-    . = ALIGN(4);
-    . = ALIGN(CONFIG_PAGE_SIZE);
+    . = ALIGN(8);
     __mm_sys_reserve_start = .;
     _sdata = .;        /* create a global symbol at data start */
     *(.data)           /* .data sections */
@@ -145,7 +144,11 @@ SECTIONS
   PROVIDE ( end = _ebss );
   PROVIDE ( _end = _ebss );
 
+#ifdef CONFIG_MM_TLSF
+  . = ALIGN(8);
+#else
   . = ALIGN(CONFIG_PAGE_SIZE);
+#endif
   __mm_sys_reserve_end = .;
   __mm_pool_start = .;
   __mm_pool_end = _estack - _Min_Stack_Size;

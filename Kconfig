@@ -167,6 +167,25 @@ config MPU
 	help
 	  启用硬件 MPU (ARM Cortex-M) 或 PMP (RISC-V) 内存保护单元。
 
+config MPU_STACK_GUARD
+	bool "Enable 32-byte hardware MPU task stack guard"
+	default y
+	depends on MPU
+	help
+	  使用硬件 MPU Region 5 在当前运行任务栈底设置 32 字节禁访红区，实时捕获栈溢出。
+
+config MM_TLSF
+	bool "Enable TLSF O(1) low-fragmentation allocator"
+	default y if !MMU
+	help
+	  启用 TLSF 二级位图紧凑边界标记分配器，消除页截断浪费与小内存碎片。
+
+config MM_SLUB
+	bool "Enable SLUB kmem_cache small-object allocator"
+	default y
+	help
+	  启用 Linux 风格 SLUB (kmem_cache) 小对象分配器，支持与 Buddy/TLSF 并存。
+
 config MM_DEBUG
 	bool "Memory management debugging"
 	default n

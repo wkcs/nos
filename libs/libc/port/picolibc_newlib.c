@@ -32,7 +32,7 @@
 #include <fs/fs.h>
 
 #define NOS_LIBC_STDIO_FD_OFFSET    3
-#define NOS_LIBC_SBRK_HEAP_SIZE     16384U
+#define NOS_LIBC_SBRK_HEAP_SIZE     2048U
 
 /* Newlib internal <sys/_default_fcntl.h> flag bits */
 #define NEWLIB_FAPPEND              0x0008
@@ -41,7 +41,7 @@
 #define NEWLIB_FEXCL                0x0800
 #define NEWLIB_FNONBLOCK            0x4000
 
-static uint8_t g_libc_sbrk_arena[NOS_LIBC_SBRK_HEAP_SIZE] __aligned(8);
+static uint8_t *g_libc_sbrk_arena;
 static size_t  g_libc_sbrk_offset;
 
 /* Recursive IRQ-safe lock for Newlib/Picolibc heap operations */
@@ -170,6 +170,17 @@ void *_sbrk_r(struct _reent *r, ptrdiff_t incr)
     void *prev_brk;
 
     __malloc_lock(r);
+    if (g_libc_sbrk_arena == NULL) {
+        g_libc_sbrk_arena = (uint8_t *)kmalloc(NOS_LIBC_SBRK_HEAP_SIZE, GFP_KERNEL);
+        if (g_libc_sbrk_arena == NULL) {
+            __malloc_unlock(r);
+            if (r) {
+                r->_errno = ENOMEM;
+            }
+            errno = ENOMEM;
+            return (void *)-1;
+        }
+    }
     if (incr < 0 && (size_t)(-incr) > g_libc_sbrk_offset) {
         __malloc_unlock(r);
         if (r) {
@@ -178,7 +189,7 @@ void *_sbrk_r(struct _reent *r, ptrdiff_t incr)
         errno = ENOMEM;
         return (void *)-1;
     }
-    if (incr > 0 && (g_libc_sbrk_offset + (size_t)incr) > sizeof(g_libc_sbrk_arena)) {
+    if (incr > 0 && (g_libc_sbrk_offset + (size_t)incr) > NOS_LIBC_SBRK_HEAP_SIZE) {
         __malloc_unlock(r);
         if (r) {
             r->_errno = ENOMEM;
