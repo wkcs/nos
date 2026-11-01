@@ -59,12 +59,29 @@ static void timeout(void *parameter)
     add_task_to_ready_list(task);
 }
 
-static void *alloc_task_stack(uint32_t stack_size, void **stack_base)
+static void *alloc_task_stack(uint32_t stack_size, void **stack_base, uintptr_t *out_guard_base)
 {
     char *buf;
     char *base;
     uint32_t i;
 
+    if (out_guard_base != NULL) {
+        *out_guard_base = 0U;
+    }
+#if defined(CONFIG_MPU_STACK_GUARD) && !defined(CONFIG_STACK_GROWSUP)
+    if (stack_size > UINT32_MAX - (NOS_MPU_GUARD_SIZE + 31U)) {
+        return NULL;
+    }
+    buf = kmalloc_aligned(stack_size + NOS_MPU_GUARD_SIZE, NOS_MPU_GUARD_SIZE, GFP_KERNEL);
+    if (buf == NULL) {
+        pr_err("alloc stack error\n");
+        return NULL;
+    }
+    if (out_guard_base != NULL) {
+        *out_guard_base = (uintptr_t)buf;
+    }
+    base = buf + NOS_MPU_GUARD_SIZE;
+#else
     if (stack_size > UINT32_MAX - 15U) return NULL;
     buf = kmalloc(stack_size + 15U, GFP_KERNEL);
     if (buf == NULL) {
@@ -76,6 +93,7 @@ static void *alloc_task_stack(uint32_t stack_size, void **stack_base)
     base = (char *)task_stack_base((uintptr_t)buf, stack_size, true);
 #else
     base = (char *)task_stack_base((uintptr_t)buf, stack_size, false);
+#endif
 #endif
     for (i = 0; i < stack_size; i++) base[i] = '#';
     *stack_base = base;
@@ -142,6 +160,13 @@ static int __task_create(struct task_struct *task,
                            NOS_CAP_RIGHT_ALL,
                            (uint32_t)task->pid,
                            NULL);
+    (void)nos_cap_alloc_at(&task->cap_table,
+                           NOS_CAP_SLOT_SELF_VM,
+                           NOS_CAP_VM_SPACE,
+                           &task->vm_space,
+                           NOS_CAP_RIGHT_ALL,
+                           (uint32_t)task->pid,
+                           NULL);
 
     spin_lock(&g_task_list_lock);
     list_add_tail(&task->tlist, &g_task_list);
@@ -167,6 +192,7 @@ struct task_struct *task_create(const char *name,
     pid_t pid;
     void *stack_addr;
     void *stack_base;
+    uintptr_t guard_base = 0U;
     int rc;
 
 #if CONFIG_MAX_PRIORITY < 256
@@ -183,10 +209,14 @@ struct task_struct *task_create(const char *name,
     }
 
     task->stack_size = stack_size;
-    stack_addr = alloc_task_stack(stack_size, &stack_base);
+    stack_addr = alloc_task_stack(stack_size, &stack_base, &guard_base);
     if (stack_addr == NULL) {
         pr_err("%s: alloc task stack buf error\n", name);
         goto task_stack_err;
+    }
+    (void)hal_vm_space_init(&task->vm_space);
+    if (guard_base != 0U) {
+        (void)nos_mpu_set_stack_guard(&task->vm_space, guard_base);
     }
 #ifdef CONFIG_STACK_GROWSUP
     stack_start = (addr_t *)(stack_base);
@@ -610,6 +640,7 @@ void dump_all_task(void)
 
 static void task_free(struct task_struct *task)
 {
+    hal_vm_space_destroy(&task->vm_space);
     nos_cap_table_destroy(&task->cap_table);
     pid_free(task->pid);
     free_task_stack(task->stack_alloc);

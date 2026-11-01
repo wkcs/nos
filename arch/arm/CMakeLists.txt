@@ -4,6 +4,7 @@ set(ARCH_ARM_SRCS
     kernel/switch.S
     kernel/atomic.c
     mm/mmu.c
+    mm/mpu.c
     cpu/cpu.c
     init.c
 )

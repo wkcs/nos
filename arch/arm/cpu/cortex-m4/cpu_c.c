@@ -12,6 +12,7 @@
 #include <kernel/task.h>
 #include <asm/irq.h>
 #include <asm/platform.h>
+#include <nos/mm.h>
 
 #if (defined ( __GNUC__ ) && defined ( __VFP_FP__ ) && !defined(__SOFTFP__))
 #define USE_FPU   1
@@ -127,6 +128,8 @@ void cpu_hard_fault(struct cpu_dump_type *cpu_dump_type)
 void MemManage_Handler(void)
 {
     pr_fatal("%s entry\n", __func__);
+    arch_mpu_handle_fault(0U);
+    dump_all_task();
     /* Go to infinite loop when Memory Manage exception occurs */
     reboot_to_bootloader();
 }

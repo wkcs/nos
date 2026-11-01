@@ -12,6 +12,7 @@
 #include <kernel/task.h>
 #include <asm/irq.h>
 #include <asm/platform.h>
+#include <nos/mm.h>
 
 struct cpu_reg {
     addr_t r4;
@@ -99,6 +100,8 @@ void NMI_Handler(void)
 
 void MemManage_Handler(void)
 {
+  arch_mpu_handle_fault(0U);
+  dump_all_task();
   /* Go to infinite loop when Memory Manage exception occurs */
   while (1)
   {
