@@ -3702,9 +3702,13 @@ static int cmd_ps(int argc, char *argv[])
         dump_all_task_ex(shell_printf, TASK_PS_STACK);
         return 0;
     }
+    if (strcmp(argv[1], "-t") == 0) {
+        dump_timer_to(shell_printf);
+        return 0;
+    }
     if (strcmp(argv[1], "-s") == 0) {
         if (argc < 3 || head_number(argv[2], &pid_val) != 0) {
-            shell_error("Usage: ps [-l | -w | -s <pid> | <pid>]\n");
+            shell_error("Usage: ps [-l | -w | -t | -s <pid> | <pid>]\n");
             return 1;
         }
         if (dump_task_detail((pid_t)pid_val, shell_printf, true) < 0) {
@@ -3720,7 +3724,7 @@ static int cmd_ps(int argc, char *argv[])
         }
         return 0;
     }
-    shell_error("Usage: ps [-l | -w | -s <pid> | <pid>]\n");
+    shell_error("Usage: ps [-l | -w | -t | -s <pid> | <pid>]\n");
     return 1;
 }
 
