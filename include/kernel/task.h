@@ -94,16 +94,13 @@ struct task_struct {
     /* Wait-queue / close-list node (decoupled from se.run_node) */
     struct list_head list;
     struct list_head tlist;
+    struct list_head held_mutex_list;
 
     spinlock_t lock;
     spinlock_t *list_lock;
     struct timer timer;
 
     u64 start_time;
-    u32 run_time;
-    u32 sys_cycle;
-    u32 save_run_time;
-    u32 save_sys_cycle;
 
     /* Wait channel diagnostics (for ps / procfs / dump) */
     uintptr_t   wchan_addr;
@@ -172,6 +169,7 @@ void dump_all_task_ex(int (*print_fn)(const char *fmt, ...), enum task_ps_mode m
 int dump_task_detail(pid_t pid, int (*print_fn)(const char *fmt, ...), bool include_stack);
 struct task_struct *task_find_by_pid(pid_t pid);
 int task_foreach(int (*cb)(struct task_struct *task, void *arg), void *arg);
+uint32_t task_total_count(void);
 size_t task_stack_max_used(struct task_struct *task);
 bool task_stack_is_healthy(struct task_struct *task);
 void task_get_stack_bounds(struct task_struct *task, uintptr_t *low, uintptr_t *high);

@@ -17,6 +17,7 @@
 struct mutex {
     bool locked;
     struct list_head wait_list;
+    struct list_head held_node;
     struct task_struct *owner;
     spinlock_t lock;
 };

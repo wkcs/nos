@@ -955,6 +955,16 @@ def main():
         wait_for(b"/tmp/c1 /tmp/c2 differ: byte 2, line 1\r\n", pos)
         wait_for(b"00000000  41 42 0a                                          |AB.|\r\n00000003\r\n", pos)
         wait_for(b"nos# ", pos)
+        pos = len(output)
+        proc.stdin.write(b"ps; ps -l; ps -s 1; cat /proc/loadavg /proc/stat /proc/tasks\r")
+        proc.stdin.flush()
+        wait_for(b"Tasks:", pos)
+        wait_for(b"VRUNTIME", pos)
+        wait_for(b"Call Trace (task=", pos)
+        wait_for(b"idel_task_entry+", pos)
+        wait_for(b"cpu  ", pos)
+        wait_for(b" PID PPID CPU POL PRIO STATE", pos)
+        wait_for(b"nos# ", pos)
         print("QEMU STM32 boot, help, log statistics and RX burst passed")
     finally:
         if proc.poll() is None:

@@ -177,9 +177,11 @@ int nos_endpoint_call(struct nos_endpoint *ep,
         return -EINVAL;
     }
 
+    spin_lock_irq(&client->lock);
     spin_lock_irq(&ep->lock);
     if (ep->closed) {
         spin_unlock_irq(&ep->lock);
+        spin_unlock_irq(&client->lock);
         return -EPIPE;
     }
 
@@ -201,12 +203,7 @@ int nos_endpoint_call(struct nos_endpoint *ep,
         client->ipc_state = NOS_IPC_STATE_REPLY_WAIT;
         spin_unlock_irq(&ep->lock);
 
-        /* Priority inheritance: boost server if caller has higher priority */
-        if (client->current_priority < server->current_priority) {
-            (void)task_set_prio(server, client->current_priority);
-        }
-
-        spin_lock_irq(&client->lock);
+        task_set_wchan(client, "ipc_reply", (uintptr_t)ep);
         rc = task_hang_lock(client);
         if (rc < 0) {
             spin_unlock_irq(&client->lock);
@@ -218,6 +215,11 @@ int nos_endpoint_call(struct nos_endpoint *ep,
         }
         spin_unlock_irq(&client->lock);
 
+        /* Priority inheritance: boost server if caller has higher priority */
+        if (client->current_priority < server->current_priority) {
+            (void)task_pi_boost(server, client->current_priority);
+        }
+
         task_resume(server);
         switch_task();
     } else {
@@ -225,14 +227,15 @@ int nos_endpoint_call(struct nos_endpoint *ep,
         if (timeout_ticks == NOS_IPC_TIMEOUT_NONBLOCK ||
             (NOS_IPC_TAG_FLAGS(req->tag) & NOS_IPC_FLAG_NONBLOCK)) {
             spin_unlock_irq(&ep->lock);
+            spin_unlock_irq(&client->lock);
             return -EAGAIN;
         }
 
-        spin_lock_irq(&client->lock);
+        task_set_wchan(client, "ipc_send", (uintptr_t)ep);
         rc = task_hang_lock(client);
         if (rc < 0) {
-            spin_unlock_irq(&client->lock);
             spin_unlock_irq(&ep->lock);
+            spin_unlock_irq(&client->lock);
             return rc;
         }
         client->ipc_state = NOS_IPC_STATE_SEND_WAIT;
@@ -241,8 +244,8 @@ int nos_endpoint_call(struct nos_endpoint *ep,
         if (timeout_ticks != NOS_IPC_TIMEOUT_INFINITE) {
             timer_start(&client->timer, timeout_ticks);
         }
-        spin_unlock_irq(&client->lock);
         spin_unlock_irq(&ep->lock);
+        spin_unlock_irq(&client->lock);
 
         switch_task();
     }
@@ -274,9 +277,11 @@ int nos_endpoint_recv(struct nos_endpoint *ep,
         return -EINVAL;
     }
 
+    spin_lock_irq(&server->lock);
     spin_lock_irq(&ep->lock);
     if (ep->closed) {
         spin_unlock_irq(&ep->lock);
+        spin_unlock_irq(&server->lock);
         return -EPIPE;
     }
 
@@ -292,9 +297,10 @@ int nos_endpoint_recv(struct nos_endpoint *ep,
         ipc_transfer_caps(client, server, &client->ipc_msg);
         *msg = client->ipc_msg;
         spin_unlock_irq(&ep->lock);
+        spin_unlock_irq(&server->lock);
 
         if (client->current_priority < server->current_priority) {
-            (void)task_set_prio(server, client->current_priority);
+            (void)task_pi_boost(server, client->current_priority);
         }
         if (out_caller != NULL) {
             *out_caller = client;
@@ -304,14 +310,15 @@ int nos_endpoint_recv(struct nos_endpoint *ep,
 
     if (timeout_ticks == NOS_IPC_TIMEOUT_NONBLOCK) {
         spin_unlock_irq(&ep->lock);
+        spin_unlock_irq(&server->lock);
         return -EAGAIN;
     }
 
-    spin_lock_irq(&server->lock);
+    task_set_wchan(server, "ipc_recv", (uintptr_t)ep);
     rc = task_hang_lock(server);
     if (rc < 0) {
-        spin_unlock_irq(&server->lock);
         spin_unlock_irq(&ep->lock);
+        spin_unlock_irq(&server->lock);
         return rc;
     }
     server->flag = 0;
@@ -321,8 +328,8 @@ int nos_endpoint_recv(struct nos_endpoint *ep,
     if (timeout_ticks != NOS_IPC_TIMEOUT_INFINITE) {
         timer_start(&server->timer, timeout_ticks);
     }
-    spin_unlock_irq(&server->lock);
     spin_unlock_irq(&ep->lock);
+    spin_unlock_irq(&server->lock);
 
     switch_task();
 
@@ -367,7 +374,7 @@ int nos_endpoint_reply_wait(struct nos_endpoint *ep,
 
             /* Restore server priority after completing priority-inherited RPC */
             if (server->current_priority != server->init_priority) {
-                (void)task_set_prio(server, server->init_priority);
+                (void)task_pi_unboost(server, TASK_PRIO_INVALID);
             }
 
             task_resume(target);

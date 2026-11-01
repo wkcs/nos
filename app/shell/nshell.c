@@ -3686,11 +3686,42 @@ static int cmd_df(int argc, char *argv[])
 
 extern void dump_all_task(void);
 
-static int cmd_ps(int argc, char *argv[]) {
-  (void)argc;
-  (void)argv;
-  dump_all_task_to(shell_printf);
-  return 0;
+static int cmd_ps(int argc, char *argv[])
+{
+    u64 pid_val = 0;
+
+    if (argc <= 1) {
+        dump_all_task_ex(shell_printf, TASK_PS_NORMAL);
+        return 0;
+    }
+    if (strcmp(argv[1], "-l") == 0) {
+        dump_all_task_ex(shell_printf, TASK_PS_LONG);
+        return 0;
+    }
+    if (strcmp(argv[1], "-w") == 0) {
+        dump_all_task_ex(shell_printf, TASK_PS_STACK);
+        return 0;
+    }
+    if (strcmp(argv[1], "-s") == 0) {
+        if (argc < 3 || head_number(argv[2], &pid_val) != 0) {
+            shell_error("Usage: ps [-l | -w | -s <pid> | <pid>]\n");
+            return 1;
+        }
+        if (dump_task_detail((pid_t)pid_val, shell_printf, true) < 0) {
+            shell_error("ps: (%s) - No such process\n", argv[2]);
+            return 1;
+        }
+        return 0;
+    }
+    if (head_number(argv[1], &pid_val) == 0) {
+        if (dump_task_detail((pid_t)pid_val, shell_printf, true) < 0) {
+            shell_error("ps: (%s) - No such process\n", argv[1]);
+            return 1;
+        }
+        return 0;
+    }
+    shell_error("Usage: ps [-l | -w | -s <pid> | <pid>]\n");
+    return 1;
 }
 
 struct kill_sig_entry {
@@ -3821,7 +3852,10 @@ static int cmd_kill(int argc, char *argv[])
         if (sig == 19) {
             if (task->status == TASK_READY) (void)task_hang(task);
         } else if (sig == 18) {
-            if (task->status == TASK_WAIT && task->list_lock == NULL) (void)task_resume(task);
+            if ((task->status == TASK_SUSPENDED || task->status == TASK_WAIT) &&
+                task->list_lock == NULL) {
+                (void)task_resume(task);
+            }
         } else {
             task_del(task);
         }

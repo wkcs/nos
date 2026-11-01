@@ -14,7 +14,12 @@ set(KERNEL_SRCS
     mm/mm_node.c
     mm/mm_page.c
     sched/sched.c
+    sched/sched_rt.c
+    sched/sched_fair.c
+    sched/sched_idle.c
+    sched/sched_load.c
     task/task.c
+    task/task_dump.c
     cap/cap_table.c
     ipc/mutex.c
     ipc/sem.c

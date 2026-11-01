@@ -98,8 +98,8 @@ int idel_task_init(void) {
 #define CONFIG_IDEL_TASK_STACK_SIZE 1024
 #endif
 
-  idel = task_create("idel", idel_task_entry, NULL, IDEL_TASK_PRIO,
-                     CONFIG_IDEL_TASK_STACK_SIZE, 10, NULL);
+  idel = task_create_ex("idel", idel_task_entry, NULL, SCHED_POLICY_IDLE,
+                        IDEL_TASK_PRIO, 0, 1U, CONFIG_IDEL_TASK_STACK_SIZE, 10, NULL);
   if (idel == NULL) {
     pr_fatal("creat idle task err\n");
     BUG_ON(true);
