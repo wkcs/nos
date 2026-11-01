@@ -15,6 +15,7 @@ struct kallsym_entry {
 
 extern const struct kallsym_entry kallsyms_table[];
 extern const unsigned int kallsyms_num;
+extern const unsigned char kallsyms_token_table[256];
 
 const char *kallsyms_lookup(unsigned long addr, unsigned long *symbolsize,
                            unsigned long *offset, char **modname, char *namebuf);

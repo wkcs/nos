@@ -272,8 +272,7 @@ static uint32_t calc_load(uint32_t load, uint32_t exp, uint32_t active)
 
 void sched_load_tick(struct sched_rq *rq, uint64_t now_us)
 {
-    uint32_t nr_active = 0U;
-    uint32_t active_fixed;
+    uint32_t active_fixed = 0U;
     uint64_t elapsed;
     uint32_t steps;
     uint32_t i;
@@ -286,13 +285,19 @@ void sched_load_tick(struct sched_rq *rq, uint64_t now_us)
     }
 
     for (i = 0U; i < CONFIG_NR_CPUS; i++) {
-        if (g_sched_rqs[i].online || i == 0U) {
-            nr_active += g_sched_rqs[i].nr_running +
-                         g_sched_rqs[i].nr_uninterruptible;
+        struct sched_rq *cpu_rq = &g_sched_rqs[i];
+
+        if (cpu_rq->online || i == 0U) {
+            uint32_t run_fixed = cpu_rq->nr_running * SCHED_FIXED_1;
+            uint32_t util_fixed = ((uint32_t)cpu_rq->cpu_util_avg * SCHED_FIXED_1) >>
+                                  SCHED_CAPACITY_SHIFT;
+            if (util_fixed > run_fixed) {
+                run_fixed = util_fixed;
+            }
+            active_fixed += run_fixed + cpu_rq->nr_uninterruptible * SCHED_FIXED_1;
         }
     }
 
-    active_fixed = nr_active * SCHED_FIXED_1;
     elapsed = now_us - g_last_loadavg_update_us;
     steps = (uint32_t)(elapsed / LOADAVG_PERIOD_US);
     if (steps > 12U) {
