@@ -18,14 +18,14 @@
 #include <asm/init.h>
 
 void nos_print_kernel_info(void) {
-  pr_info("Welcome to NOS:\r\n");
-  pr_info("    arch[%s]\r\n", CONFIG_ARCH);
-  pr_info("    board[%s]\r\n", CONFIG_BOARD);
-  pr_info("    build-time[%s]\r\n", CONFIG_BUILD_INFO);
-  pr_info("    cpu-type[%s]\r\n", CONFIG_CPU_TYPE);
-  pr_info("    version[%u.%u.%u]\r\n", (CONFIG_VERSION_CODE >> 16) & 0xff,
+  pr_info("Welcome to NOS:\n");
+  pr_info("    arch[%s]\n", CONFIG_ARCH);
+  pr_info("    board[%s]\n", CONFIG_BOARD);
+  pr_info("    build-time[%s]\n", CONFIG_BUILD_INFO);
+  pr_info("    cpu-type[%s]\n", CONFIG_CPU_TYPE);
+  pr_info("    version[%u.%u.%u]\n", (CONFIG_VERSION_CODE >> 16) & 0xff,
           (CONFIG_VERSION_CODE >> 8) & 0xff, CONFIG_VERSION_CODE & 0xff);
-  pr_info("    page-size[%d]\r\n", CONFIG_PAGE_SIZE);
+  pr_info("    page-size[%d]\n", CONFIG_PAGE_SIZE);
 }
 
 #include <fs/vfs.h>
@@ -58,19 +58,19 @@ int nos_start(void) {
   sys_init_run(INIT_LEVEL_POST_KERNEL);
 
   if (vfs_init()) {
-    pr_err("VFS: init failed\r\n");
+    pr_err("VFS: init failed\n");
   } else {
     /* Mount Root FS */
     struct dentry *root = vfs_mount("fatfs", 0, NULL, NULL);
     if (root) {
-        pr_info("VFS: RootFS (FatFs) mounted successfully\r\n");
+        pr_info("VFS: RootFS (FatFs) mounted successfully\n");
     } else {
-        pr_info("VFS: Failed to mount FatFs, falling back to RamFS\r\n");
+        pr_info("VFS: Failed to mount FatFs, falling back to RamFS\n");
         root = vfs_mount("ramfs", 0, NULL, NULL);
         if (root) {
-             pr_info("VFS: RootFS (RamFS) mounted successfully\r\n");
+             pr_info("VFS: RootFS (RamFS) mounted successfully\n");
         } else {
-             pr_err("VFS: Failed to mount RootFS\r\n");
+             pr_err("VFS: Failed to mount RootFS\n");
         }
     }
     if (root) {

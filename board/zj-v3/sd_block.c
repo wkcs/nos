@@ -101,11 +101,11 @@ static int zj_sd_init(void)
     if (ret == 0) ret = nos_dt_device_bind(&sd_device, node, &sd_driver);
     if (ret == 0) ret = device_register(&sd_device);
     if (ret != 0) {
-        pr_err("SD initialization failed: %d\r\n", ret);
+        pr_err("SD initialization failed: %d\n", ret);
         return ret;
     }
     sd_device.ready = 1;
-    pr_info("SD: %lu sectors registered as sd0\r\n", (unsigned long)sd_card.sector_count);
+    pr_info("SD: %lu sectors registered as sd0\n", (unsigned long)sd_card.sector_count);
     return 0;
 }
 

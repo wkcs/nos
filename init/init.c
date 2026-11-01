@@ -43,15 +43,15 @@ void task_init_call(void) {
 
   for (i = 0; i < int_task_num; i++) {
     if (init_task_info->task_init_func == NULL) {
-      pr_err("%s: init func is NULL\r\n", init_task_info->name);
+      pr_err("%s: init func is NULL\n", init_task_info->name);
       init_task_info++;
       continue;
     }
 
-    pr_info("%s: start init\r\n", init_task_info->name);
+    pr_info("%s: start init\n", init_task_info->name);
     rc = init_task_info->task_init_func();
     if (rc != 0) {
-      pr_err("%s: init error\r\n", init_task_info->name);
+      pr_err("%s: init error\n", init_task_info->name);
       init_task_info++;
       continue;
     }
@@ -60,7 +60,7 @@ void task_init_call(void) {
 }
 
 static void core_task_entry(void *parameter) {
-  pr_info("init\r\n");
+  pr_info("init\n");
   task_init_call();
 }
 
@@ -74,7 +74,7 @@ int core_task_init(void) {
   core = task_create("core", core_task_entry, NULL, CORE_TASK_PRIO,
                      CONFIG_CORE_TASK_STACK_SIZE, 10, NULL);
   if (core == NULL) {
-    pr_fatal("creat core task error\r\n");
+    pr_fatal("creat core task error\n");
     BUG_ON(true);
     return -EINVAL;
   }

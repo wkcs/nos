@@ -825,12 +825,12 @@ void *USB_ReadPacket(USB_OTG_GlobalTypeDef *USBx, uint8_t *dest, uint16_t len)
   for ( i = 0U; i < count32b; i++, dest += 4U )
   {
     if ((addr_t)dest == (addr_t)usb_task) {
-      pr_err("start=0x%08lx, len=%u\r\n", (addr_t)start, len);
+      pr_err("start=0x%08lx, len=%u\n", (addr_t)start, len);
       BUG_ON(true);
     }
 
     if (dest >= start + len) {
-      pr_err("start=0x%08lx, len=%u\r\n", (addr_t)start, len);
+      pr_err("start=0x%08lx, len=%u\n", (addr_t)start, len);
     }
     *(uint32_t *)dest = USBx_DFIFO(0U);
 

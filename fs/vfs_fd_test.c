@@ -48,8 +48,8 @@ static void test_worker(void *arg)
             if (__atomic_load_n(&seen[i], __ATOMIC_RELAXED) != 1U) failed = 1U;
         }
         if (nos_close(test_fd) != 0) failed = 1U;
-        if (failed) pr_err("vfs concurrent position FAILED\r\n");
-        else pr_info("vfs concurrent position OK\r\n");
+        if (failed) pr_err("vfs concurrent position FAILED\n");
+        else pr_info("vfs concurrent position OK\n");
     }
 }
 

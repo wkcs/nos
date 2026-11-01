@@ -152,7 +152,7 @@ static uint8_t USBD_WinUSB_Init(USBD_HandleTypeDef *pdev, uint8_t cfgidx)
 
     /* 启动首次 OUT 端点监听 */
     USBD_LL_PrepareReceive(pdev, WINUSB_EPOUT_ADDR, g_ep_rx_temp, WINUSB_DATA_FS_MAX_PACKET_SIZE);
-    uart_puts("[BL_USB] Endpoints 0x01/0x81 Opened\r\n");
+    uart_puts("[BL_USB] Endpoints 0x01/0x81 Opened\n");
     return USBD_OK;
 }
 

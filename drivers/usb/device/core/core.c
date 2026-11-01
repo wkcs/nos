@@ -49,7 +49,7 @@ static int _get_device_descriptor(struct udevice* device, ureq_t setup)
 {
     size_t size;
 
-    pr_info("_get_device_descriptor\r\n");
+    pr_info("_get_device_descriptor\n");
 
     /* device descriptor wLength should less than USB_DESC_LENGTH_DEVICE*/
     size = (setup->wLength > USB_DESC_LENGTH_DEVICE) ?
@@ -74,7 +74,7 @@ static int _get_config_descriptor(struct udevice* device, ureq_t setup)
     size_t size;
     ucfg_desc_t cfg_desc;
 
-    pr_info("_get_config_descriptor\r\n");
+    pr_info("_get_config_descriptor\n");
 
     cfg_desc = &device->curr_cfg->cfg_desc;
     size = (setup->wLength > cfg_desc->wTotalLength) ?
@@ -100,7 +100,7 @@ static int _get_string_descriptor(struct udevice* device, ureq_t setup)
     uint8_t index, i;
     uint32_t len;
 
-    pr_info("_get_string_descriptor\r\n");
+    pr_info("_get_string_descriptor\n");
 
     str_desc.type = USB_DESC_TYPE_STRING;
     index = setup->wValue & 0xFF;
@@ -112,7 +112,7 @@ static int _get_string_descriptor(struct udevice* device, ureq_t setup)
 
     if(index > USB_STRING_MAX)
     {
-        pr_err("unknown string index\r\n");
+        pr_err("unknown string index\n");
         usbd_ep0_set_stall(device);
         return -1;
     }
@@ -147,7 +147,7 @@ static int _get_string_descriptor(struct udevice* device, ureq_t setup)
 
 static int _get_qualifier_descriptor(struct udevice* device, ureq_t setup)
 {
-    pr_info("_get_qualifier_descriptor\r\n");
+    pr_info("_get_qualifier_descriptor\n");
 
     if(device->dev_qualifier && device->dcd->device_is_hs)
     {
@@ -193,14 +193,14 @@ static int _get_descriptor(struct udevice* device, ureq_t setup)
             _get_config_descriptor(device, setup);
             break;
         default:
-            pr_err("unsupported descriptor request\r\n");
+            pr_err("unsupported descriptor request\n");
             usbd_ep0_set_stall(device);
             break;
         }
     }
     else
     {
-        pr_err("request direction error\r\n");
+        pr_err("request direction error\n");
         usbd_ep0_set_stall(device);
     }
 
@@ -220,7 +220,7 @@ static int _get_interface(struct udevice* device, ureq_t setup)
     uint8_t value;
     uintf_t intf;
 
-    pr_info("_get_interface\r\n");
+    pr_info("_get_interface\n");
 
     if (device->state != USB_STATE_CONFIGURED)
     {
@@ -253,7 +253,7 @@ static int _set_interface(struct udevice* device, ureq_t setup)
     struct list_head* i;
     ualtsetting_t setting;
 
-    pr_info("_set_interface\r\n");
+    pr_info("_set_interface\n");
 
     if (device->state != USB_STATE_CONFIGURED)
     {
@@ -292,7 +292,7 @@ static int _get_config(struct udevice* device, ureq_t setup)
 {
     uint8_t value;
 
-    pr_info("_get_config\r\n");
+    pr_info("_get_config\n");
 
     if (device->state == USB_STATE_CONFIGURED)
     {
@@ -325,7 +325,7 @@ static int _set_config(struct udevice* device, ureq_t setup)
     ualtsetting_t setting;
     uep_t ep;
 
-    pr_info("_set_config\r\n");
+    pr_info("_set_config\n");
 
     if (setup->wValue > device->dev_desc.bNumConfigurations)
     {
@@ -335,7 +335,7 @@ static int _set_config(struct udevice* device, ureq_t setup)
 
     if (setup->wValue == 0)
     {
-        pr_info("address state\r\n");
+        pr_info("address state\n");
         device->state = USB_STATE_ADDRESS;
 
         goto _exit;
@@ -391,7 +391,7 @@ static int _set_address(struct udevice* device, ureq_t setup)
     /* issue status stage */
     dcd_ep0_send_status(device->dcd);
 
-    pr_info("_set_address\r\n");
+    pr_info("_set_address\n");
 
     device->state = USB_STATE_ADDRESS;
 
@@ -413,7 +413,7 @@ static int _request_interface(struct udevice* device, ureq_t setup)
     ufunction_t func;
     int ret;
 
-    pr_info("_request_interface\r\n");
+    pr_info("_request_interface\n");
 
     intf = usbd_find_interface(device, setup->wIndex & 0xFF, &func);
     if (intf != NULL)
@@ -470,7 +470,7 @@ static int _standard_request(struct udevice* device, ureq_t setup)
             _set_config(device, setup);
             break;
         default:
-            pr_err("unknown device request\r\n");
+            pr_err("unknown device request\n");
             usbd_ep0_set_stall(device);
             break;
         }
@@ -487,7 +487,7 @@ static int _standard_request(struct udevice* device, ureq_t setup)
         default:
             if (_request_interface(device, setup) != 0)
             {
-                pr_err("unknown interface request\r\n");
+                pr_err("unknown interface request\n");
                 usbd_ep0_set_stall(device);
                 return - 1;
             }
@@ -524,7 +524,7 @@ static int _standard_request(struct udevice* device, ureq_t setup)
                 {
                     req = (uio_request_t)list_entry(node, struct uio_request, list);
                     usbd_io_request(device, ep, req);
-                    pr_info("fired a request\r\n");
+                    pr_info("fired a request\n");
                 }
 
                 INIT_LIST_HEAD(&ep->request_list);
@@ -547,17 +547,17 @@ static int _standard_request(struct udevice* device, ureq_t setup)
         case USB_REQ_SYNCH_FRAME:
             break;
         default:
-            pr_err("unknown endpoint request\r\n");
+            pr_err("unknown endpoint request\n");
             usbd_ep0_set_stall(device);
             break;
         }
         break;
     case USB_REQ_TYPE_OTHER:
-        pr_err("unknown other type request\r\n");
+        pr_err("unknown other type request\n");
         usbd_ep0_set_stall(device);
         break;
     default:
-        pr_err("unknown type request\r\n");
+        pr_err("unknown type request\n");
         usbd_ep0_set_stall(device);
         break;
     }
@@ -591,7 +591,7 @@ static int _function_request(udevice_t device, ureq_t setup)
         intf = usbd_find_interface(device, setup->wIndex & 0xFF, &func);
         if(intf == NULL)
         {
-            pr_err("unkwown interface request\r\n");
+            pr_err("unkwown interface request\n");
             usbd_ep0_set_stall(device);
         }
         else
@@ -602,7 +602,7 @@ static int _function_request(udevice_t device, ureq_t setup)
     case USB_REQ_TYPE_ENDPOINT:
         break;
     default:
-        pr_err("unknown function request type\r\n");
+        pr_err("unknown function request type\n");
         usbd_ep0_set_stall(device);
         break;
     }
@@ -636,7 +636,7 @@ static int _vendor_request(udevice_t device, ureq_t setup)
 
                     usb_comp_id_desc = (uint8_t *)kmalloc(usb_comp_id_desc_size, GFP_KERNEL);
                     if (usb_comp_id_desc == NULL) {
-                        pr_err("alloc usb_comp_id_desc buf error\r\n");
+                        pr_err("alloc usb_comp_id_desc buf error\n");
                         return 0;
                     }
                     device->os_comp_id_desc->head_desc.dwLength = usb_comp_id_desc_size;
@@ -670,14 +670,14 @@ static int _vendor_request(udevice_t device, ureq_t setup)
 
 static __maybe_unused int _dump_setup_packet(ureq_t setup)
 {
-    pr_info("[\r\n");
-    pr_info("  setup_request : 0x%x\r\n",
+    pr_info("[\n");
+    pr_info("  setup_request : 0x%x\n",
                                 setup->request_type);
-    pr_info("  value         : 0x%x\r\n", setup->wValue);
-    pr_info("  length        : 0x%x\r\n", setup->wLength);
-    pr_info("  index         : 0x%x\r\n", setup->wIndex);
-    pr_info("  request       : 0x%x\r\n", setup->bRequest);
-    pr_info("]\r\n");
+    pr_info("  value         : 0x%x\n", setup->wValue);
+    pr_info("  length        : 0x%x\n", setup->wLength);
+    pr_info("  index         : 0x%x\n", setup->wIndex);
+    pr_info("  request       : 0x%x\n", setup->bRequest);
+    pr_info("]\n");
 
     return 0;
 }
@@ -706,7 +706,7 @@ static int _setup_request(udevice_t device, ureq_t setup)
         _vendor_request(device, setup);
         break;
     default:
-        pr_err("unknown setup request type\r\n");
+        pr_err("unknown setup request type\n");
         usbd_ep0_set_stall(device);
         return -1;
     }
@@ -733,7 +733,7 @@ static int _data_notify(udevice_t device, struct ep_msg* ep_msg)
 
     ep = usbd_find_endpoint(device, &func, ep_msg->ep_addr);
     if (ep == NULL) {
-        pr_err("invalid endpoint\r\n");
+        pr_err("invalid endpoint\n");
         return -1;
     }
 
@@ -892,12 +892,12 @@ udevice_t usbd_device_new(void)
 {
     udevice_t udevice;
 
-    pr_info("usbd_device_new\r\n");
+    pr_info("usbd_device_new\n");
 
     /* allocate memory for the object */
     udevice = kmalloc(sizeof(struct udevice), GFP_KERNEL);
     if (udevice == NULL) {
-        pr_err("alloc memery failed\r\n");
+        pr_err("alloc memery failed\n");
         return NULL;
     }
     memset(udevice, 0, sizeof(struct udevice));
@@ -1005,12 +1005,12 @@ uconfig_t usbd_config_new(void)
 {
     uconfig_t cfg;
 
-    pr_info("usbd_config_new\r\n");
+    pr_info("usbd_config_new\n");
 
     /* allocate memory for the object */
     cfg = kmalloc(sizeof(struct uconfig), GFP_KERNEL);
     if (cfg == NULL) {
-        pr_err("alloc memery failed\r\n");
+        pr_err("alloc memery failed\n");
         return NULL;
     }
     memset(cfg, 0, sizeof(struct uconfig));
@@ -1040,7 +1040,7 @@ uintf_t usbd_interface_new(udevice_t device, uintf_handler_t handler)
 {
     uintf_t intf;
 
-    pr_info("usbd_interface_new\r\n");
+    pr_info("usbd_interface_new\n");
 
     /* parameter check */
     // WK_ERROR(device != NULL);
@@ -1048,7 +1048,7 @@ uintf_t usbd_interface_new(udevice_t device, uintf_handler_t handler)
     /* allocate memory for the object */
     intf = (uintf_t)kmalloc(sizeof(struct uinterface), GFP_KERNEL);
     if (intf == NULL) {
-        pr_err("alloc memery failed\r\n");
+        pr_err("alloc memery failed\n");
         return NULL;
     }
     intf->intf_num = device->nr_intf;
@@ -1074,7 +1074,7 @@ ualtsetting_t usbd_altsetting_new(size_t desc_size)
 {
     ualtsetting_t setting;
 
-    pr_info("usbd_altsetting_new\r\n");
+    pr_info("usbd_altsetting_new\n");
 
     /* parameter check */
     // WK_ERROR(desc_size > 0);
@@ -1083,14 +1083,14 @@ ualtsetting_t usbd_altsetting_new(size_t desc_size)
     setting = (ualtsetting_t)kmalloc(sizeof(struct ualtsetting), GFP_KERNEL);
     if(setting == NULL)
     {
-        pr_err("alloc memery failed\r\n");
+        pr_err("alloc memery failed\n");
         return NULL;
     }
     /* allocate memory for the desc */
     setting->desc = kmalloc(desc_size, GFP_KERNEL);
     if (setting->desc == NULL)
     {
-        pr_err("alloc desc memery failed\r\n");
+        pr_err("alloc desc memery failed\n");
         kfree(setting);
         return NULL;
     }
@@ -1138,7 +1138,7 @@ ufunction_t usbd_function_new(udevice_t device, udev_desc_t dev_desc,
 {
     ufunction_t func;
 
-    pr_info("usbd_function_new\r\n");
+    pr_info("usbd_function_new\n");
 
     /* parameter check */
     // WK_ERROR(device != NULL);
@@ -1148,7 +1148,7 @@ ufunction_t usbd_function_new(udevice_t device, udev_desc_t dev_desc,
     func = (ufunction_t)kmalloc(sizeof(struct ufunction), GFP_KERNEL);
     if(func == NULL)
     {
-        pr_err("alloc memery failed\r\n");
+        pr_err("alloc memery failed\n");
         return NULL;
     }
     func->dev_desc = dev_desc;
@@ -1174,7 +1174,7 @@ uep_t usbd_endpoint_new(uep_desc_t ep_desc, udep_handler_t handler)
 {
     uep_t ep;
 
-    pr_info("usbd_endpoint_new\r\n");
+    pr_info("usbd_endpoint_new\n");
 
     /* parameter check */
     // WK_ERROR(ep_desc != NULL);
@@ -1183,7 +1183,7 @@ uep_t usbd_endpoint_new(uep_desc_t ep_desc, udep_handler_t handler)
     ep = (uep_t)kmalloc(sizeof(struct uendpoint), GFP_KERNEL);
     if(ep == NULL)
     {
-        pr_err("alloc memery failed\r\n");
+        pr_err("alloc memery failed\n");
         return NULL;
     }
     ep->ep_desc = ep_desc;
@@ -1217,7 +1217,7 @@ udevice_t usbd_find_device(udcd_t dcd)
         if(device->dcd == dcd) return device;
     }
 
-    pr_err("can't find device\r\n");
+    pr_err("can't find device\n");
     return NULL;
 }
 
@@ -1234,7 +1234,7 @@ uconfig_t usbd_find_config(udevice_t device, uint8_t value)
     struct list_head* node;
     uconfig_t cfg = NULL;
 
-    pr_info("usbd_find_config\r\n");
+    pr_info("usbd_find_config\n");
 
     /* parameter check */
     // WK_ERROR(device != NULL);
@@ -1250,7 +1250,7 @@ uconfig_t usbd_find_config(udevice_t device, uint8_t value)
         }
     }
 
-    pr_err("can't find configuration %d\r\n", value);
+    pr_err("can't find configuration %d\n", value);
     return NULL;
 }
 
@@ -1267,7 +1267,7 @@ uintf_t usbd_find_interface(udevice_t device, uint8_t value, ufunction_t *pfunc)
     ufunction_t func;
     uintf_t intf;
 
-    pr_info("usbd_find_interface\r\n");
+    pr_info("usbd_find_interface\n");
 
     /* parameter check */
     // WK_ERROR(device != NULL);
@@ -1284,7 +1284,7 @@ uintf_t usbd_find_interface(udevice_t device, uint8_t value, ufunction_t *pfunc)
         }
     }
 
-    pr_err("can't find interface %d\r\n", value);
+    pr_err("can't find interface %d\n", value);
     return NULL;
 }
 
@@ -1301,7 +1301,7 @@ ualtsetting_t usbd_find_altsetting(uintf_t intf, uint8_t value)
     struct list_head *i;
     ualtsetting_t setting;
 
-    pr_info("usbd_find_altsetting\r\n");
+    pr_info("usbd_find_altsetting\n");
 
     /* parameter check */
     // WK_ERROR(intf != NULL);
@@ -1321,7 +1321,7 @@ ualtsetting_t usbd_find_altsetting(uintf_t intf, uint8_t value)
             return setting;
     }
 
-    pr_err("can't find alternate setting %d\r\n", value);
+    pr_err("can't find alternate setting %d\n", value);
     return NULL;
 }
 
@@ -1364,7 +1364,7 @@ uep_t usbd_find_endpoint(udevice_t device, ufunction_t* pfunc, uint8_t ep_addr)
         }
     }
 
-    pr_err("can't find endpoint 0x%x\r\n", ep_addr);
+    pr_err("can't find endpoint 0x%x\n", ep_addr);
     return NULL;
 }
 
@@ -1383,7 +1383,7 @@ int usbd_device_add_config(udevice_t device, uconfig_t cfg)
     uintf_t intf;
     uep_t ep;
 
-    pr_info("usbd_device_add_config\r\n");
+    pr_info("usbd_device_add_config\n");
 
     /* parameter check */
     // WK_ERROR(device != NULL);
@@ -1409,7 +1409,7 @@ int usbd_device_add_config(udevice_t device, uconfig_t cfg)
                 ep = (uep_t)list_entry(k, struct uendpoint, list);
                 if(usbd_ep_assign(device, ep) != 0)
                 {
-                    pr_err("endpoint assign error\r\n");
+                    pr_err("endpoint assign error\n");
                 }
             }
 
@@ -1437,7 +1437,7 @@ int usbd_device_add_config(udevice_t device, uconfig_t cfg)
  */
 int usbd_config_add_function(uconfig_t cfg, ufunction_t func)
 {
-    pr_info("usbd_config_add_function\r\n");
+    pr_info("usbd_config_add_function\n");
 
     /* parameter check */
     // WK_ERROR(cfg != NULL);
@@ -1460,7 +1460,7 @@ int usbd_config_add_function(uconfig_t cfg, ufunction_t func)
 int usbd_function_add_interface(ufunction_t func, uintf_t intf)
 {
 
-    pr_info("usbd_function_add_interface\r\n");
+    pr_info("usbd_function_add_interface\n");
 
     /* parameter check */
     // WK_ERROR(func != NULL);
@@ -1482,7 +1482,7 @@ int usbd_function_add_interface(ufunction_t func, uintf_t intf)
  */
 int usbd_interface_add_altsetting(uintf_t intf, ualtsetting_t setting)
 {
-    pr_info("usbd_interface_add_altsetting\r\n");
+    pr_info("usbd_interface_add_altsetting\n");
 
     /* parameter check */
     // WK_ERROR(intf != NULL);
@@ -1506,7 +1506,7 @@ int usbd_interface_add_altsetting(uintf_t intf, ualtsetting_t setting)
  */
 int usbd_altsetting_add_endpoint(ualtsetting_t setting, uep_t ep)
 {
-    pr_info("usbd_altsetting_add_endpoint\r\n");
+    pr_info("usbd_altsetting_add_endpoint\n");
 
     /* parameter check */
     // WK_ERROR(setting != NULL);
@@ -1539,7 +1539,7 @@ int usbd_set_altsetting(uintf_t intf, uint8_t value)
 {
     ualtsetting_t setting;
 
-    pr_info("usbd_set_altsetting\r\n");
+    pr_info("usbd_set_altsetting\n");
 
     /* parameter check */
     // WK_ERROR(intf != NULL);
@@ -1565,7 +1565,7 @@ int usbd_set_config(udevice_t device, uint8_t value)
 {
     uconfig_t cfg;
 
-    pr_info("usbd_set_config\r\n");
+    pr_info("usbd_set_config\n");
 
     /* parameter check */
     // WK_ERROR(device != NULL);
@@ -1610,12 +1610,12 @@ size_t usbd_io_request(udevice_t device, uep_t ep, uio_request_t req)
             size = usbd_ep_write(device, ep, req->buffer, req->size);
             break;
         default:
-            pr_err("unknown request type\r\n");
+            pr_err("unknown request type\n");
             break;
         }
     } else {
         list_add(&req->list, &ep->request_list);
-        pr_info("suspend a request\r\n");
+        pr_info("suspend a request\n");
     }
 
     return size;
@@ -1634,9 +1634,9 @@ int usbd_set_feature(udevice_t device, uint16_t value, uint16_t index)
     // WK_ERROR(device != NULL);
 
     if (value == USB_FEATURE_DEV_REMOTE_WAKEUP) {
-        pr_info("set feature remote wakeup\r\n");
+        pr_info("set feature remote wakeup\n");
     } else if (value == USB_FEATURE_ENDPOINT_HALT) {
-        pr_info("set feature stall\r\n");
+        pr_info("set feature stall\n");
         dcd_ep_set_stall(device->dcd, (uint32_t)(index & 0xFF));
     }
 
@@ -1656,9 +1656,9 @@ int usbd_clear_feature(udevice_t device, uint16_t value, uint16_t index)
     // WK_ERROR(device != NULL);
 
     if (value == USB_FEATURE_DEV_REMOTE_WAKEUP) {
-        pr_info("clear feature remote wakeup\r\n");
+        pr_info("clear feature remote wakeup\n");
     } else if (value == USB_FEATURE_ENDPOINT_HALT) {
-        pr_info("clear feature stall\r\n");
+        pr_info("clear feature stall\n");
         dcd_ep_clear_stall(device->dcd, (uint32_t)(index & 0xFF));
     }
 
@@ -1728,7 +1728,7 @@ static int usbd_ep_assign(udevice_t device, uep_t ep)
             ep->id = &device->dcd->ep_pool[i];
             device->dcd->ep_pool[i].status = ID_ASSIGNED;
 
-            pr_info("assigned %d\r\n", device->dcd->ep_pool[i].addr);
+            pr_info("assigned %d\n", device->dcd->ep_pool[i].addr);
             return 0;
         }
         i++;
@@ -1760,7 +1760,7 @@ int usbd_ep0_setup_handler(udcd_t dcd, struct urequest *setup)
     if (setup == NULL) {
         size = dcd_ep_read(dcd, EP0_OUT_ADDR, (void*)&msg.content.setup);
         if (size != sizeof(*setup)) {
-            pr_err("read setup packet error\r\n");
+            pr_err("read setup packet error\n");
             return -1;
         }
     } else {
@@ -1986,11 +1986,11 @@ static void usbd_task_entry(__maybe_unused void* parameter)
 
         device = usbd_find_device(msg.dcd);
         if (device == NULL) {
-            pr_err("invalid usb device\r\n");
+            pr_err("invalid usb device\n");
             continue;
         }
 
-        // pr_info("message type %d\r\n", msg.type);
+        // pr_info("message type %d\n", msg.type);
 
         switch (msg.type) {
         case USB_MSG_SOF:
@@ -2008,7 +2008,7 @@ static void usbd_task_entry(__maybe_unused void* parameter)
             _ep0_out_notify(device, &msg.content.ep_msg);
             break;
         case USB_MSG_RESET:
-            pr_info("reset %d\r\n", device->state);
+            pr_info("reset %d\n", device->state);
             if (device->state == USB_STATE_ADDRESS || device->state == USB_STATE_CONFIGURED)
                 _stop_notify(device);
             device->state = USB_STATE_NOTATTACHED;
@@ -2021,7 +2021,7 @@ static void usbd_task_entry(__maybe_unused void* parameter)
             _stop_notify(device);
             break;
         default:
-            pr_err("unknown msg type %d\r\n", msg.type);
+            pr_err("unknown msg type %d\n", msg.type);
             break;
         }
     }
@@ -2040,14 +2040,14 @@ int usbd_event_signal(struct udev_msg *msg)
     int rc;
 
     if (msg == NULL) {
-        pr_err("msg is NULL\r\n");
+        pr_err("msg is NULL\n");
         return -EINVAL;
     }
 
     /* send message to usb message queue */
     rc = msg_q_send(&usb_mq, (char *)msg, sizeof(struct udev_msg));
     if (rc < 0) {
-        pr_err("usb message send failed, rc=%d\r\n", rc);
+        pr_err("usb message send failed, rc=%d\n", rc);
     }
 
     return rc;

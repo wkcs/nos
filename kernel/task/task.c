@@ -68,7 +68,7 @@ static void *alloc_task_stack(uint32_t stack_size, void **stack_base)
     if (stack_size > UINT32_MAX - 15U) return NULL;
     buf = kmalloc(stack_size + 15U, GFP_KERNEL);
     if (buf == NULL) {
-        pr_err("alloc stack error\r\n");
+        pr_err("alloc stack error\n");
         return NULL;
     }
 
@@ -148,7 +148,7 @@ static int __task_create(struct task_struct *task,
     spin_unlock(&g_task_list_lock);
     rc = timer_init(&task->timer, task->name, timeout, task);
     if (rc < 0) {
-        pr_err("%s init timer error, rc=%d\r\n", task->name, rc);
+        pr_err("%s init timer error, rc=%d\n", task->name, rc);
     }
 
     return rc;
@@ -171,21 +171,21 @@ struct task_struct *task_create(const char *name,
 
 #if CONFIG_MAX_PRIORITY < 256
     if (priority >= CONFIG_MAX_PRIORITY) {
-        pr_err("%s: Priority should be less than %d\r\n", name, CONFIG_MAX_PRIORITY);
+        pr_err("%s: Priority should be less than %d\n", name, CONFIG_MAX_PRIORITY);
         return NULL;
     }
 #endif
 
     task = kmalloc(sizeof(struct task_struct), GFP_KERNEL);
     if (task == NULL) {
-        pr_err("%s: alloc task struct buf error\r\n", name);
+        pr_err("%s: alloc task struct buf error\n", name);
         goto task_struct_err;
     }
 
     task->stack_size = stack_size;
     stack_addr = alloc_task_stack(stack_size, &stack_base);
     if (stack_addr == NULL) {
-        pr_err("%s: alloc task stack buf error\r\n", name);
+        pr_err("%s: alloc task stack buf error\n", name);
         goto task_stack_err;
     }
 #ifdef CONFIG_STACK_GROWSUP
@@ -197,7 +197,7 @@ struct task_struct *task_create(const char *name,
 
     pid = pid_alloc();
     if (!pid) {
-        pr_err("%s: alloc pid error\r\n", name);
+        pr_err("%s: alloc pid error\n", name);
         goto pid_err;
     }
 
@@ -205,7 +205,7 @@ struct task_struct *task_create(const char *name,
 
     rc = __task_create(task, name, entry, parameter, stack_start, priority, tick, clean);
     if (rc < 0) {
-        pr_err("%s: task_create error, rc=%d\r\n", name, rc);
+        pr_err("%s: task_create error, rc=%d\n", name, rc);
         goto task_create_err;
     }
 
@@ -224,12 +224,12 @@ task_struct_err:
 int task_ready(struct task_struct *task)
 {
     if (!task) {
-        pr_err("task struct is NULL\r\n");
+        pr_err("task struct is NULL\n");
         return -EINVAL;
     }
 
     if (task->status == TASK_READY || task->status == TASK_RUNING) {
-        pr_warning("%s:task is already in a ready state\r\n", task->name);
+        pr_warning("%s:task is already in a ready state\n", task->name);
         return -EINVAL;
     }
 
@@ -264,11 +264,11 @@ void task_del(struct task_struct *task)
     spinlock_t *list_lock;
 
     if (!task) {
-        pr_err("task struct is NULL\r\n");
+        pr_err("task struct is NULL\n");
         return;
     }
 
-    pr_info("del %s task\r\n", task->name);
+    pr_info("del %s task\n", task->name);
     list_lock = task->list_lock;
     spin_lock_irq(&task->lock);
     task_list_lock(spin_lock_irq, list_lock);
@@ -298,11 +298,11 @@ int task_hang(struct task_struct *task)
     spinlock_t *list_lock;
 
     if (!task) {
-        pr_err("task struct is NULL\r\n");
+        pr_err("task struct is NULL\n");
         return -EINVAL;
     }
     if (task->status != TASK_READY && task->status != TASK_RUNING) {
-        pr_err("%s task status is %d, not is TASK_READY or TASK_RUNING\r\n", task->name, task->status);
+        pr_err("%s task status is %d, not is TASK_READY or TASK_RUNING\n", task->name, task->status);
         BUG_ON(task == current);
         return -EINVAL;
     }
@@ -315,7 +315,7 @@ int task_hang(struct task_struct *task)
     if (task->status == TASK_SUSPEND) {
         task->status = TASK_WAIT;
     } else {
-        pr_err("%s task status is %d\r\n", task->name, task->status);
+        pr_err("%s task status is %d\n", task->name, task->status);
     }
     task_list_unlock(spin_unlock_irq, list_lock);
     spin_unlock_irq(&task->lock);
@@ -328,11 +328,11 @@ int task_hang_lock(struct task_struct *task)
     spinlock_t *list_lock;
 
     if (!task) {
-        pr_err("task struct is NULL\r\n");
+        pr_err("task struct is NULL\n");
         return -EINVAL;
     }
     if (task->status != TASK_READY && task->status != TASK_RUNING) {
-        pr_err("%s task status is %d, not is TASK_READY or TASK_RUNING\r\n", task->name, task->status);
+        pr_err("%s task status is %d, not is TASK_READY or TASK_RUNING\n", task->name, task->status);
         BUG_ON(task == current);
         return -EINVAL;
     }
@@ -344,7 +344,7 @@ int task_hang_lock(struct task_struct *task)
     if (task->status == TASK_SUSPEND) {
         task->status = TASK_WAIT;
     } else {
-        pr_err("%s task status is %d\r\n", task->name, task->status);
+        pr_err("%s task status is %d\n", task->name, task->status);
     }
     task_list_unlock(spin_unlock_irq, list_lock);
 
@@ -354,11 +354,11 @@ int task_hang_lock(struct task_struct *task)
 int task_resume(struct task_struct *task)
 {
     if (!task) {
-        pr_err("task struct is NULL\r\n");
+        pr_err("task struct is NULL\n");
         return -EINVAL;
     }
     if (task->status != TASK_WAIT) {
-        pr_err("task(=%s) status(=%d) is not TASK_WAIT\r\n", task->name, task->status);
+        pr_err("task(=%s) status(=%d) is not TASK_WAIT\n", task->name, task->status);
         BUG_ON(true);
         return -EINVAL;
     }
@@ -375,7 +375,7 @@ int task_sleep(u32 tick)
     int rc;
 
     if (!tick) {
-        pr_err("sleep tick is 0\r\n");
+        pr_err("sleep tick is 0\n");
         return -EINVAL;
     }
 
@@ -384,7 +384,7 @@ int task_sleep(u32 tick)
     rc = task_hang_lock(task);
     if (rc) {
         spin_unlock_irq(&task->lock);
-        pr_err("%s task hang error, rc=%d\r\n", task->name, rc);
+        pr_err("%s task hang error, rc=%d\n", task->name, rc);
         return rc;
     }
     timer_start(&task->timer, tick);
@@ -402,7 +402,7 @@ int task_set_prio(struct task_struct *task, uint8_t prio)
     spinlock_t *list_lock;
 
     if (task == NULL) {
-        pr_err("task is NULL\r\n");
+        pr_err("task is NULL\n");
         return -EINVAL;
     }
 
@@ -443,7 +443,7 @@ int task_set_prio(struct task_struct *task, uint8_t prio)
 u32 task_get_cpu_usage(struct task_struct *task)
 {
     if (task == NULL) {
-        pr_err("task is NULL\r\n");
+        pr_err("task is NULL\n");
         return 0;
     }
 
@@ -478,7 +478,7 @@ static size_t task_get_stack_max_used(struct task_struct *task)
 
     if (!task_stack_check(task))
         return 0;
-    
+
     used = task->stack_size;
 
 #ifndef CONFIG_STACK_GROWSUP
@@ -545,7 +545,7 @@ int task_foreach(int (*cb)(struct task_struct *task, void *arg), void *arg)
 static char *get_task_status_string(struct task_struct *task)
 {
     if (task == NULL) {
-        pr_err("task is NULL\r\n");
+        pr_err("task is NULL\n");
         return NULL;
     }
 
@@ -574,18 +574,18 @@ void dump_all_task_to(int (*print_fn)(const char *fmt, ...))
         dump_all_task();
         return;
     }
-    print_fn("----------------------------------------------------------------------------------------\r\n");
-    print_fn("|      task      |prio|    pid    |stack size|stack lave|stack max used| flag | status |\r\n");
+    print_fn("----------------------------------------------------------------------------------------\n");
+    print_fn("|      task      |prio|    pid    |stack size|stack lave|stack max used| flag | status |\n");
     list_for_each_entry(task_temp, &g_task_list, tlist) {
         max_used = task_get_stack_max_used(task_temp);
-        print_fn("|%16s|%4u|%11u|%10u|%10lu|%14u|%6d|%8s|%s\r\n",
+        print_fn("|%16s|%4u|%11u|%10u|%10lu|%14u|%6d|%8s|%s\n",
                  task_temp->name, task_temp->current_priority, task_temp->pid,
                  task_temp->stack_size,
                  task_temp->stack_size - ((addr_t)task_temp->stack - (addr_t)task_temp->sp),
                  max_used, task_temp->flag, get_task_status_string(task_temp),
                  max_used ? "" : "(task stack overflow)");
     }
-    print_fn("----------------------------------------------------------------------------------------\r\n");
+    print_fn("----------------------------------------------------------------------------------------\n");
 }
 
 void dump_all_task(void)
@@ -593,18 +593,18 @@ void dump_all_task(void)
     struct task_struct *task_temp;
     size_t max_used;
     //spin_lock(&g_task_list_lock);
-    pr_info("----------------------------------------------------------------------------------------\r\n");
-    pr_info("|      task      |prio|    pid    |stack size|stack lave|stack max used| flag | status |\r\n");
-    //pr_info("----------------------------------------------------------------------------------------\r\n");
+    pr_info("----------------------------------------------------------------------------------------\n");
+    pr_info("|      task      |prio|    pid    |stack size|stack lave|stack max used| flag | status |\n");
+    //pr_info("----------------------------------------------------------------------------------------\n");
     list_for_each_entry(task_temp, &g_task_list, tlist) {
         max_used = task_get_stack_max_used(task_temp);
-        pr_info("|%16s|%4u|%11u|%10u|%10lu|%14u|%6d|%8s|%s\r\n", 
-            task_temp->name, task_temp->current_priority, task_temp->pid, task_temp->stack_size, 
+        pr_info("|%16s|%4u|%11u|%10u|%10lu|%14u|%6d|%8s|%s\n",
+            task_temp->name, task_temp->current_priority, task_temp->pid, task_temp->stack_size,
             task_temp->stack_size - ((addr_t)task_temp->stack - (addr_t)task_temp->sp),
             max_used, task_temp->flag, get_task_status_string(task_temp),
             max_used ? "" : "(task stack overflow)");
     }
-    pr_info("----------------------------------------------------------------------------------------\r\n");
+    pr_info("----------------------------------------------------------------------------------------\n");
     //spin_unlock(&g_task_list_lock);
 }
 
@@ -626,7 +626,7 @@ void clean_close_task(void)
     spin_lock_irq(&g_close_list_lock);
     list_for_each_entry_safe(task, tmp, &g_close_task_list, list) {
         if (task->status != TASK_CLOSE) {
-            pr_fatal("%s task status is not close\r\n", task->name);
+            pr_fatal("%s task status is not close\n", task->name);
             list_del(&task->list);
         } else {
             list_del(&task->list);
@@ -636,7 +636,7 @@ void clean_close_task(void)
     spin_unlock_irq(&g_close_list_lock);
 
     list_for_each_entry_safe (task, tmp, &tmp_list, list) {
-        pr_info("free %s task\r\n", task->name);
+        pr_info("free %s task\n", task->name);
         task_free(task);
     }
 }

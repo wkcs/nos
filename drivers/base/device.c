@@ -18,7 +18,7 @@ static SPINLOCK(g_sys_device_list_lock);
 int device_init(struct device *dev)
 {
     if (dev == NULL) {
-        pr_err("dev is NULL\r\n");
+        pr_err("dev is NULL\n");
         return -EINVAL;
     }
 
@@ -49,13 +49,13 @@ int device_register(struct device *dev)
     struct device *dev_tmp;
 
     if (dev == NULL) {
-        pr_err("dev is NULL\r\n");
+        pr_err("dev is NULL\n");
         return -EINVAL;
     }
 
     dev_tmp = device_find_by_name(dev->name);
     if (dev_tmp != NULL) {
-        pr_err("device \"%s\" already exists\r\n", dev->name);
+        pr_err("device \"%s\" already exists\n", dev->name);
         return -EALREADY;
     }
 
@@ -69,7 +69,7 @@ int device_register(struct device *dev)
 int device_unregister(struct device *dev)
 {
     if (dev == NULL) {
-        pr_err("dev is NULL\r\n");
+        pr_err("dev is NULL\n");
         return -EINVAL;
     }
 
@@ -85,7 +85,7 @@ struct device *device_find_by_name(const char *name)
     struct device *dev;
 
     if (name == NULL) {
-        pr_err("name is NULL\r\n");
+        pr_err("name is NULL\n");
         return NULL;
     }
 

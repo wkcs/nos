@@ -61,6 +61,10 @@ _Static_assert(CONFIG_UART_TX_BUFFER_SIZE >= 2 &&
                "UART TX buffer size must be a power of two");
 _Static_assert(CONFIG_LOG_MESSAGE_SIZE <= CONFIG_UART_TX_BUFFER_SIZE + 1,
                "UART TX buffer must fit a complete log record");
+#ifdef CONFIG_CONSOLE_CRLF
+_Static_assert(2 * (CONFIG_LOG_MESSAGE_SIZE - 1) <= CONFIG_UART_TX_BUFFER_SIZE,
+               "UART TX buffer must fit an expanded console log record");
+#endif
 
 struct uart_stm32_config {
     USART_TypeDef *regs;
@@ -281,6 +285,62 @@ static int uart_stm32_write_record(const struct device *dev,
 {
     return uart_stm32_write_recordv(dev, buf, len, NULL, 0);
 }
+
+#ifdef CONFIG_CONSOLE_CRLF
+static int uart_stm32_write_text_recordv(const struct device *dev,
+                                        const unsigned char *first, unsigned int first_len,
+                                        const unsigned char *second, unsigned int second_len)
+{
+    struct uart_stm32_data *data = dev->data;
+    unsigned int total = first_len + second_len, wire_len = total, i;
+    unsigned char prev = 0;
+    addr_t flags;
+
+    for (i = 0; i < total; i++) {
+        unsigned char ch = i < first_len ? first[i] : second[i - first_len];
+        if (ch == '\n' && prev != '\r') wire_len++;
+        prev = ch;
+    }
+#ifdef CONFIG_UART_DMA
+    if (data->dma_stalled && !data->panic) return -EIO;
+#endif
+    if (!kernel_running || data->panic) {
+        prev = 0;
+        for (i = 0; i < total; i++) {
+            unsigned char ch = i < first_len ? first[i] : second[i - first_len];
+            int rc;
+            if (ch == '\n' && prev != '\r') {
+                rc = uart_stm32_poll_out(dev, '\r');
+                if (rc < 0) return i != 0 ? (int)i : rc;
+            }
+            rc = uart_stm32_poll_out(dev, ch);
+            if (rc < 0) return i != 0 ? (int)i : rc;
+            prev = ch;
+        }
+        return (int)total;
+    }
+    if (wire_len > CONFIG_UART_TX_BUFFER_SIZE) return -EMSGSIZE;
+    flags = uart_lock(data);
+    if (kfifo_unused(&data->tx_fifo) < wire_len) {
+        data->tx_dropped++;
+        uart_unlock(data, flags);
+        return -EAGAIN;
+    }
+    prev = 0;
+    for (i = 0; i < total; i++) {
+        unsigned char ch = i < first_len ? first[i] : second[i - first_len];
+        if (ch == '\n' && prev != '\r') {
+            const unsigned char cr = '\r';
+            (void)kfifo_in(&data->tx_fifo, &cr, 1);
+        }
+        (void)kfifo_in(&data->tx_fifo, &ch, 1);
+        prev = ch;
+    }
+    uart_stm32_kick_locked(dev);
+    uart_unlock(data, flags);
+    return (int)total;
+}
+#endif
 
 static int uart_stm32_write(const struct device *dev,
                             const unsigned char *buf, unsigned int len)
@@ -531,6 +591,9 @@ static const struct uart_driver_api uart_stm32_api = {
     .write = uart_stm32_write,
     .write_record = uart_stm32_write_record,
     .write_recordv = uart_stm32_write_recordv,
+#ifdef CONFIG_CONSOLE_CRLF
+    .write_text_recordv = uart_stm32_write_text_recordv,
+#endif
     .write_room = uart_stm32_write_room,
     .get_stats = uart_stm32_get_stats,
     .read = uart_stm32_read,

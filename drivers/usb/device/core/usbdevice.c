@@ -125,7 +125,7 @@ int usbd_class_register(udclass_t udclass)
 #ifndef CONFIG_USB_DEVICE_COMPOSITE
     if(!list_empty(&class_list))
     {
-        pr_info("[D/USBD] If you want to use usb composite device please define CONFIG_USB_DEVICE_COMPOSITE\r\n");
+        pr_info("[D/USBD] If you want to use usb composite device please define CONFIG_USB_DEVICE_COMPOSITE\n");
         return -1;
     }
 #endif
@@ -142,7 +142,7 @@ int usb_device_init(udcd_t udc)
 
     if(list_empty(&class_list))
     {
-        pr_info("[D/USBD] No class register on usb device\r\n");
+        pr_info("[D/USBD] No class register on usb device\n");
         return -1;
     }
 
@@ -168,7 +168,7 @@ int usb_device_init(udcd_t udc)
     }
     /* set device descriptor to the device */
 #ifdef CONFIG_USB_DEVICE_COMPOSITE
-    pr_info("composite device config\r\n");
+    pr_info("composite device config\n");
     usbd_device_set_descriptor(udevice, &compsit_desc);
     usbd_device_set_string(udevice, ustring);
     if(udevice->dcd->device_is_hs)
@@ -179,7 +179,7 @@ int usb_device_init(udcd_t udc)
     if (func != NULL)
         usbd_device_set_descriptor(udevice, func->dev_desc);
     else
-        pr_err("%s[%d]: func is NULL\r\n", __func__, __LINE__);
+        pr_err("%s[%d]: func is NULL\n", __func__, __LINE__);
 #endif
 
     /* add the configuration to the device */

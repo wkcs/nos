@@ -136,7 +136,7 @@ static int w25qxx_probe(struct device *dev)
     if (ret != 0) return ret;
     ret = w25q_flash_init(&info->flash, &nk60_flash_bus, capacity);
     if (ret != 0) return ret;
-    pr_info("w25qxx: chip id = 0x%x, capacity = %u bytes\r\n", id, capacity);
+    pr_info("w25qxx: chip id = 0x%x, capacity = %u bytes\n", id, capacity);
     return 0;
 }
 
@@ -199,15 +199,15 @@ int nk60_assets_mount_fatfs(void)
     (void)vfs_unmount(dir);
     mnt_root = vfs_mount("fatfs", 0, "nk60_v2-assets", NULL);
     if (mnt_root == NULL) {
-        pr_err("w25qxx: failed to mount FatFs on /assets\r\n");
+        pr_err("w25qxx: failed to mount FatFs on /assets\n");
         return -EIO;
     }
     if (vfs_bind_mount(dir, mnt_root) != 0) {
-        pr_err("w25qxx: failed to bind /assets mount\r\n");
+        pr_err("w25qxx: failed to bind /assets mount\n");
         return -EIO;
     }
 
-    pr_info("w25qxx: mounted wear-leveled assets FatFs at /assets (%u KB, %u spares)\r\n",
+    pr_info("w25qxx: mounted wear-leveled assets FatFs at /assets (%u KB, %u spares)\n",
             (unsigned int)(g_nk60_flash_info->assets_wl.logical_blocks * 4U),
             (unsigned int)g_nk60_flash_info->assets_wl.spare_sectors);
     return 0;

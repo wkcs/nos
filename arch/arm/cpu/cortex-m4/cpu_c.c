@@ -88,36 +88,36 @@ addr_t *stack_init(void *task_entry, void *parameter, addr_t *stack_addr, void *
 
 void NMI_Handler(void)
 {
-    pr_fatal("%s entry\r\n", __func__);
+    pr_fatal("%s entry\n", __func__);
     reboot_to_bootloader();
 }
 
 void cpu_hard_fault(struct cpu_dump_type *cpu_dump_type)
 {
-    pr_info("-------------------\r\n");
-    pr_info("r0  = 0x%08lx\r\n", cpu_dump_type->stack_frame.exception_stack_frame.r0);
-    pr_info("r1  = 0x%08lx\r\n", cpu_dump_type->stack_frame.exception_stack_frame.r1);
-    pr_info("r2  = 0x%08lx\r\n", cpu_dump_type->stack_frame.exception_stack_frame.r2);
-    pr_info("r3  = 0x%08lx\r\n", cpu_dump_type->stack_frame.exception_stack_frame.r3);
-    pr_info("r4  = 0x%08lx\r\n", cpu_dump_type->stack_frame.r4);
-    pr_info("r5  = 0x%08lx\r\n", cpu_dump_type->stack_frame.r5);
-    pr_info("r6  = 0x%08lx\r\n", cpu_dump_type->stack_frame.r6);
-    pr_info("r7  = 0x%08lx\r\n", cpu_dump_type->stack_frame.r7);
-    pr_info("r8  = 0x%08lx\r\n", cpu_dump_type->stack_frame.r8);
-    pr_info("r9  = 0x%08lx\r\n", cpu_dump_type->stack_frame.r9);
-    pr_info("r10 = 0x%08lx\r\n", cpu_dump_type->stack_frame.r10);
-    pr_info("r11 = 0x%08lx\r\n", cpu_dump_type->stack_frame.r11);
-    pr_info("r12 = 0x%08lx\r\n", cpu_dump_type->stack_frame.exception_stack_frame.r12);
-    pr_info("lr  = 0x%08lx\r\n", cpu_dump_type->stack_frame.exception_stack_frame.lr);
-    pr_info("pc  = 0x%08lx\r\n", cpu_dump_type->stack_frame.exception_stack_frame.pc);
-    pr_info("psr = 0x%08lx\r\n", cpu_dump_type->stack_frame.exception_stack_frame.psr);
-    pr_info("-------------------\r\n");
+    pr_info("-------------------\n");
+    pr_info("r0  = 0x%08lx\n", cpu_dump_type->stack_frame.exception_stack_frame.r0);
+    pr_info("r1  = 0x%08lx\n", cpu_dump_type->stack_frame.exception_stack_frame.r1);
+    pr_info("r2  = 0x%08lx\n", cpu_dump_type->stack_frame.exception_stack_frame.r2);
+    pr_info("r3  = 0x%08lx\n", cpu_dump_type->stack_frame.exception_stack_frame.r3);
+    pr_info("r4  = 0x%08lx\n", cpu_dump_type->stack_frame.r4);
+    pr_info("r5  = 0x%08lx\n", cpu_dump_type->stack_frame.r5);
+    pr_info("r6  = 0x%08lx\n", cpu_dump_type->stack_frame.r6);
+    pr_info("r7  = 0x%08lx\n", cpu_dump_type->stack_frame.r7);
+    pr_info("r8  = 0x%08lx\n", cpu_dump_type->stack_frame.r8);
+    pr_info("r9  = 0x%08lx\n", cpu_dump_type->stack_frame.r9);
+    pr_info("r10 = 0x%08lx\n", cpu_dump_type->stack_frame.r10);
+    pr_info("r11 = 0x%08lx\n", cpu_dump_type->stack_frame.r11);
+    pr_info("r12 = 0x%08lx\n", cpu_dump_type->stack_frame.exception_stack_frame.r12);
+    pr_info("lr  = 0x%08lx\n", cpu_dump_type->stack_frame.exception_stack_frame.lr);
+    pr_info("pc  = 0x%08lx\n", cpu_dump_type->stack_frame.exception_stack_frame.pc);
+    pr_info("psr = 0x%08lx\n", cpu_dump_type->stack_frame.exception_stack_frame.psr);
+    pr_info("-------------------\n");
     struct task_struct *task = current;
-    pr_info("current task is %s\r\n", task->name);
+    pr_info("current task is %s\n", task->name);
     if (cpu_dump_type->sp & 1 << 2) {
-        pr_info("cpu hard fault on task(name = %s)\r\n", task->name);
+        pr_info("cpu hard fault on task(name = %s)\n", task->name);
     } else {
-        pr_info("cpu hard fault on handler\r\n");
+        pr_info("cpu hard fault on handler\n");
     }
 
     dump_all_task();
@@ -126,7 +126,7 @@ void cpu_hard_fault(struct cpu_dump_type *cpu_dump_type)
 
 void MemManage_Handler(void)
 {
-    pr_fatal("%s entry\r\n", __func__);
+    pr_fatal("%s entry\n", __func__);
     /* Go to infinite loop when Memory Manage exception occurs */
     reboot_to_bootloader();
 }
@@ -134,27 +134,27 @@ void MemManage_Handler(void)
 
 void BusFault_Handler(void)
 {
-    pr_fatal("%s entry\r\n", __func__);
+    pr_fatal("%s entry\n", __func__);
     /* Go to infinite loop when Bus Fault exception occurs */
     reboot_to_bootloader();
 }
 
 void UsageFault_Handler(void)
 {
-    pr_fatal("%s entry\r\n", __func__);
+    pr_fatal("%s entry\n", __func__);
     /* Go to infinite loop when Usage Fault exception occurs */
     reboot_to_bootloader();
 }
 
 void SVC_Handler(void)
 {
-    pr_fatal("%s entry\r\n", __func__);
+    pr_fatal("%s entry\n", __func__);
     reboot_to_bootloader();
 }
 
 void DebugMon_Handler(void)
 {
-    pr_fatal("%s entry\r\n", __func__);
+    pr_fatal("%s entry\n", __func__);
     reboot_to_bootloader();
 }
 

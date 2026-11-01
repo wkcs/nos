@@ -723,7 +723,7 @@ void LCD_Init(void)
         }
     }
 
-    pr_info(" LCD ID:%x\r\n", lcddev.id); //打印LCD ID
+    pr_info(" LCD ID:%x\n", lcddev.id); //打印LCD ID
 
     if (lcddev.id == 0X9341)    //9341初始化
     {
@@ -2421,7 +2421,7 @@ static int tft_lcd_control(struct device *dev, int cmd, void *args)
         memcpy(args, &info, sizeof(struct display_dev_info));
         break;
     default:
-        pr_err("unknown cmd: %d\r\n", cmd);
+        pr_err("unknown cmd: %d\n", cmd);
         return -EINVAL;
     }
 
@@ -2434,7 +2434,7 @@ static int zj_tft_lcd_init(void)
 
     lcd = kmalloc(sizeof(struct tft_lcd), GFP_KERNEL);
     if (lcd == NULL) {
-        pr_err("alloc tft_lcd buf error\r\n");
+        pr_err("alloc tft_lcd buf error\n");
         return -ENOMEM;
     }
     lcd->lcd = &lcddev;

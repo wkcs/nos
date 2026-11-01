@@ -72,21 +72,21 @@ static void lcd_test_task_entry(void* parameter)
         lcd->led_dev = device_find_by_name(CONFIG_LED_DEV);
         if (lcd->led_dev == NULL) {
             i++;
-            pr_err("%s device not found, retry=%d\r\n", CONFIG_LED_DEV, i);
+            pr_err("%s device not found, retry=%d\n", CONFIG_LED_DEV, i);
             sleep(1);
             continue;
         } else {
-            pr_info("%s device found\r\n", CONFIG_LED_DEV);
+            pr_info("%s device found\n", CONFIG_LED_DEV);
             break;
         }
     }
     if (i >= 100) {
-        pr_err("%s device not found, exit\r\n", CONFIG_LED_DEV);
+        pr_err("%s device not found, exit\n", CONFIG_LED_DEV);
         return;
     }
 
     lcd->led_dev->ops.control(lcd->led_dev, DS_CTRL_GET_DEV_INFO, &lcd->dev_info);
-    pr_info("display device:[%s] %u*%u\r\n", CONFIG_LED_DEV, lcd->dev_info.width, lcd->dev_info.height);
+    pr_info("display device:[%s] %u*%u\n", CONFIG_LED_DEV, lcd->dev_info.width, lcd->dev_info.height);
     lcd->led_dev->ops.control(lcd->led_dev, DS_CTRL_ENABLE, NULL);
 
     i = 0;
@@ -106,13 +106,13 @@ static int lcd_test_init(void)
 
     lcd = kmalloc(sizeof(struct lcd_test), GFP_KERNEL);
     if (lcd == NULL) {
-        pr_err("alloc lcd_test buf error\r\n");
+        pr_err("alloc lcd_test buf error\n");
         return -ENOMEM;
     }
 
     lcd->task = task_create("lcd_test", lcd_test_task_entry, lcd, 2, 1024, 10, NULL);
     if (lcd->task == NULL) {
-        pr_fatal("creat lcd_test task err\r\n");
+        pr_fatal("creat lcd_test task err\n");
         BUG_ON(true);
         return -EINVAL;
     }

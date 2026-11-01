@@ -161,7 +161,7 @@ static int lvgl_test_init(void)
 
     task = task_create("lvgl_test", lvgl_test_task_entry, NULL, 2, 4096, 10, NULL);
     if (task == NULL) {
-        pr_fatal("creat lvgl_test task err\r\n");
+        pr_fatal("creat lvgl_test task err\n");
         return -EINVAL;
     }
     task_ready(task);

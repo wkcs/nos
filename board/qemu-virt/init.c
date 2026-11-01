@@ -15,9 +15,9 @@ __init void board_early_init(void)
 
 __init void board_init(void)
 {
-    pr_info("QEMU Virt board initializing...\r\n");
+    pr_info("QEMU Virt board initializing...\n");
     hal_arch_trap_init();
-    pr_info("QEMU Virt board initialized\r\n");
+    pr_info("QEMU Virt board initialized\n");
 }
 
 __init void board_late_init(void)

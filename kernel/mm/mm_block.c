@@ -21,7 +21,7 @@ static int memblock_init(struct memblock *block)
     struct mem_base *base;
 
     if (block == NULL) {
-        pr_err("memory block is NULL\r\n");
+        pr_err("memory block is NULL\n");
         return -EINVAL;
     }
 
@@ -327,9 +327,9 @@ void __mm_block_dump(struct memblock *block)
     int i = 0;
 
     spin_lock_irq(&block->lock);
-    pr_info("mm_block: start=0x%lx, size=%u, free=%u\r\n", block->start, block->size, block->max_alloc_cap);
+    pr_info("mm_block: start=0x%lx, size=%u, free=%u\n", block->start, block->size, block->max_alloc_cap);
     list_for_each_entry (base, &block->base, list) {
-        pr_info("mm_base[%d]: size=%u, used=%u\r\n", i, base->size, base->used);
+        pr_info("mm_base[%d]: size=%u, used=%u\n", i, base->size, base->used);
         i++;
     }
     spin_unlock_irq(&block->lock);

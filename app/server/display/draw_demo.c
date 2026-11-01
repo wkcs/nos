@@ -135,16 +135,16 @@ static void draw_demo_task_entry(void* parameter)
         dd->ds_dev = device_find_by_name("display-server");
         if (dd->ds_dev == NULL) {
             i++;
-            pr_err("%s device not found, retry=%d\r\n", "display-server", i);
+            pr_err("%s device not found, retry=%d\n", "display-server", i);
             sleep(1);
             continue;
         } else {
-            pr_info("%s device found\r\n", "display-server");
+            pr_info("%s device found\n", "display-server");
             break;
         }
     }
     if (i >= 100) {
-        pr_err("%s device not found, exit\r\n", "display-server");
+        pr_err("%s device not found, exit\n", "display-server");
         return;
     }
 
@@ -163,13 +163,13 @@ static int draw_demo_init(void)
 
     dd = kmalloc(sizeof(struct draw_demo), GFP_KERNEL);
     if (dd == NULL) {
-        pr_err("alloc draw_demo buf error\r\n");
+        pr_err("alloc draw_demo buf error\n");
         return -ENOMEM;
     }
 
     dd->task = task_create("draw_demo", draw_demo_task_entry, dd, 20, 1024, 10, NULL);
     if (dd->task == NULL) {
-        pr_fatal("creat draw_demo task err\r\n");
+        pr_fatal("creat draw_demo task err\n");
         return -EINVAL;
     }
     task_ready(dd->task);

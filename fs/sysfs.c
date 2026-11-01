@@ -192,7 +192,7 @@ static int sysfs_fill_super(struct super_block *sb, void *data, int silent) {
     struct inode *inode;
     struct dentry *root;
 
-    // pr_info("sysfs: fill_super\r\n");
+    // pr_info("sysfs: fill_super\n");
 
     sb->s_blocksize = 1024;
     sb->s_blocksize_bits = 10;

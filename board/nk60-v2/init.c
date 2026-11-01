@@ -23,7 +23,7 @@ __init void board_early_init(void)
 
 __init void board_init(void)
 {
-    pr_info("NK60 board initializing...\r\n");
+    pr_info("NK60 board initializing...\n");
 
     gpio_config(&cc_gpio[0]);
     gpio_config(&cc_gpio[1]);
@@ -33,7 +33,7 @@ __init void board_init(void)
     arch_irq_init();
     arch_mmu_init();
 
-    pr_info("NK60 board initialized\r\n");
+    pr_info("NK60 board initialized\n");
 }
 
 /**

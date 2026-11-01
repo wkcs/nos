@@ -15,7 +15,7 @@ void sys_init_run(enum init_level level)
     const struct sys_init_entry *entry;
 
     if (level >= INIT_LEVEL_COUNT) {
-        pr_err("SYS_INIT: invalid init level\r\n");
+        pr_err("SYS_INIT: invalid init level\n");
         return;
     }
 
@@ -28,14 +28,14 @@ void sys_init_run(enum init_level level)
 
         ret = entry->init();
         if (ret) {
-            pr_err("SYS_INIT: init failed (%d)\r\n", ret);
+            pr_err("SYS_INIT: init failed (%d)\n", ret);
         }
     }
 }
 
 static int sys_init_test(void)
 {
-    pr_info("sys_init ok\r\n");
+    pr_info("sys_init ok\n");
     return 0;
 }
 

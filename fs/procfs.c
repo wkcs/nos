@@ -248,7 +248,7 @@ static int procfs_readdir(struct file *file, void *dirent, filldir_t filldir) {
     struct inode *inode = file->f_inode;
     int i = 0;
     
-    // pr_info("procfs_readdir: ino=%lu pos=%lld\r\n", inode->i_ino, file->f_pos);
+    // pr_info("procfs_readdir: ino=%lu pos=%lld\n", inode->i_ino, file->f_pos);
 
     if (inode->i_ino != PROC_ROOT_INO)
         return -ENOTDIR;
@@ -256,7 +256,7 @@ static int procfs_readdir(struct file *file, void *dirent, filldir_t filldir) {
     // Iterate over static entries
     for (i = 0; proc_files[i].name != NULL; i++) {
         if (i >= file->f_pos) {
-            // pr_info("procfs_readdir: filling %s\r\n", proc_files[i].name);
+            // pr_info("procfs_readdir: filling %s\n", proc_files[i].name);
             if (filldir(dirent, proc_files[i].name, strlen(proc_files[i].name), 
                         i, proc_files[i].ino, DT_REG))
                 break;
@@ -275,7 +275,7 @@ static struct file_operations procfs_dir_ops = {
  */
 static struct dentry *procfs_lookup(struct inode *dir, struct dentry *dentry) {
     int i;
-    // pr_info("procfs_lookup: %s\r\n", dentry->d_name.name);
+    // pr_info("procfs_lookup: %s\n", dentry->d_name.name);
 
     if (dir->i_ino != PROC_ROOT_INO)
         return NULL;
@@ -299,7 +299,7 @@ static struct dentry *procfs_lookup(struct inode *dir, struct dentry *dentry) {
             }
             
             dentry->d_inode = inode;
-            // pr_info("procfs_lookup: found %s\r\n", proc_files[i].name);
+            // pr_info("procfs_lookup: found %s\n", proc_files[i].name);
             return NULL;
         }
     }
@@ -344,7 +344,7 @@ static struct dentry *procfs_mount(struct file_system_type *fs_type, int flags,
     struct super_block *sb = kzalloc(sizeof(struct super_block), GFP_KERNEL);
     if (!sb) return NULL;
     
-    // pr_info("procfs: mount called\r\n");
+    // pr_info("procfs: mount called\n");
 
     if (procfs_fill_super(sb, data, flags)) {
         kfree(sb);

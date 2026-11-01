@@ -20,7 +20,7 @@
 int sem_init(sem_t *sem, uint8_t num)
 {
     if (sem == NULL) {
-        pr_err("sem is NULL\r\n");
+        pr_err("sem is NULL\n");
         return -EINVAL;
     }
 
@@ -64,7 +64,7 @@ void sem_get(sem_t *sem)
         return;
     }
     if (task->pid == IDEL_TASK_PID) {
-        pr_fatal("idle task can't use sem\r\n");
+        pr_fatal("idle task can't use sem\n");
         return;
     }
 
@@ -80,7 +80,7 @@ void sem_get(sem_t *sem)
     if (rc < 0) {
         spin_unlock_irq(&sem->lock);
         spin_unlock_irq(&task->lock);
-        pr_err("%s task hang error, rc=%d\r\n", task->name, rc);
+        pr_err("%s task hang error, rc=%d\n", task->name, rc);
         return;
     }
     __sem_get_locked(task, sem);
@@ -106,7 +106,7 @@ int sem_get_timeout(sem_t *sem, uint32_t tick)
         return -ETIMEDOUT;
     }
     if (task->pid == IDEL_TASK_PID) {
-        pr_fatal("idle task can't use sem\r\n");
+        pr_fatal("idle task can't use sem\n");
         return -EINVAL;
     }
 
@@ -123,7 +123,7 @@ int sem_get_timeout(sem_t *sem, uint32_t tick)
     if (rc < 0) {
         spin_unlock_irq(&sem->lock);
         spin_unlock_irq(&task->lock);
-        pr_err("%s task hang error, rc=%d\r\n", task->name, rc);
+        pr_err("%s task hang error, rc=%d\n", task->name, rc);
         return rc;
     }
     __sem_get_locked(task, sem);

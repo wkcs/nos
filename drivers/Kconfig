@@ -156,12 +156,14 @@ config UART_RX_BUFFER_SIZE
 
 config UART_TX_BUFFER_SIZE
 	int "UART transmit buffer size"
+	default 256 if BOARD_WL_001 && CONSOLE_CRLF
+	default 512 if CONSOLE_CRLF
 	default 128 if BOARD_WL_001
 	default 256
 	range 16 65536
 	help
 	  USART 发送队列容量（字节），必须是 2 的幂。
-	  建议不小于单条日志的最大格式化长度。
+	  开启控制台 CRLF 转换时，至少为 2 * (日志格式化长度 - 1)。
 
 config UART_POLL_TIMEOUT
 	int "UART polling timeout iterations"

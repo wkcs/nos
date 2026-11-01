@@ -30,7 +30,7 @@ void usb_bsp_init(void)
 
     /* 3. 启动 USB 协议栈与硬件端点 */
     USBD_Start(&g_usb_device);
-    uart_puts("[BL_USB] USB Device Started, awaiting Host enumeration...\r\n");
+    uart_puts("[BL_USB] USB Device Started, awaiting Host enumeration...\n");
 }
 
 void usb_bsp_deinit(void)

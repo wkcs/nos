@@ -91,7 +91,7 @@ static void nlk_server_task_entry(void *parameter)
         int sh_rc = nshell_spawn(nlk_cap_shell_tty(nlk_cap_shell_default_ctx()),
                                  "nshell_nlk", false);
         if (sh_rc < 0) {
-            pr_err("cannot start NLK shell frontend: %d\r\n", sh_rc);
+            pr_err("cannot start NLK shell frontend: %d\n", sh_rc);
         }
     }
 #endif
@@ -101,7 +101,7 @@ static void nlk_server_task_entry(void *parameter)
     }
 #endif
 
-    pr_info("NLK server started (node=%s, addr=0x%04x, caps=%u, bearers=%u)\r\n",
+    pr_info("NLK server started (node=%s, addr=0x%04x, caps=%u, bearers=%u)\n",
             srv->node->desc.name, srv->node->addr,
             srv->node->cap_count, srv->node->bearer_count);
 
@@ -140,7 +140,7 @@ static int nlk_server_init(void)
     g_nlk_srv.task = task_create("nlk_server", nlk_server_task_entry,
                                  &g_nlk_srv, 6, 4096, 10, NULL);
     if (g_nlk_srv.task == NULL) {
-        pr_fatal("create nlk_server task failed\r\n");
+        pr_fatal("create nlk_server task failed\n");
         BUG_ON(true);
         return -EINVAL;
     }

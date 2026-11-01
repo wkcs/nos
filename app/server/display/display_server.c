@@ -41,19 +41,19 @@ struct display_server {
 int ds_set_draw_point_loc(struct display_server *ds, struct ds_draw_info *info, struct ds_draw_point *point, uint16_t x, uint16_t y)
 {
     if (info == NULL) {
-        pr_err("draw info is NULL\r\n");
+        pr_err("draw info is NULL\n");
         return -EINVAL;
     }
     if (point == NULL) {
-        pr_err("point is NULL\r\n");
+        pr_err("point is NULL\n");
         return -EINVAL;
     }
 
     if (x >= ds->dev_info.width) {
-        pr_err("x is out of range, x_max=%u\r\n", ds->dev_info.width);
+        pr_err("x is out of range, x_max=%u\n", ds->dev_info.width);
     }
     if (y >= ds->dev_info.height) {
-        pr_err("y is out of range, y_max=%u\r\n", ds->dev_info.height);
+        pr_err("y is out of range, y_max=%u\n", ds->dev_info.height);
     }
 
     mutex_lock(&info->lock);
@@ -71,7 +71,7 @@ struct ds_draw_info *display_server_alloc_draw_point_info(struct display_server 
 
     info = kmalloc(sizeof(struct ds_draw_info) + sizeof(struct ds_draw_point) * point_num, GFP_KERNEL);
     if (info == NULL) {
-        pr_err("alloc draw info failed\r\n");
+        pr_err("alloc draw info failed\n");
         return NULL;
     }
 
@@ -95,19 +95,19 @@ struct ds_draw_info *display_server_alloc_draw_area_info(struct display_server *
     struct ds_draw_info *info;
 
     if (x + width > ds->dev_info.width) {
-        pr_err("x is out of range, x=%u, x_max=%u\r\n",
+        pr_err("x is out of range, x=%u, x_max=%u\n",
                x + width, ds->dev_info.width);
         return NULL;
     }
     if (y + height > ds->dev_info.height) {
-        pr_err("y is out of range, y=%u, y_max=%u\r\n",
+        pr_err("y is out of range, y=%u, y_max=%u\n",
                y + height, ds->dev_info.height);
         return NULL;
     }
 
     info = kmalloc(sizeof(struct ds_draw_info) + sizeof(struct ds_data) * width * height, GFP_KERNEL);
     if (info == NULL) {
-        pr_err("alloc draw info failed\r\n");
+        pr_err("alloc draw info failed\n");
         return NULL;
     }
 
@@ -160,7 +160,7 @@ static int display_server_control(struct device *dev, int cmd, void *args)
         memcpy(args, &ds->dev_info, sizeof(struct display_dev_info));
         break;
     default:
-        pr_err("unknown cmd: %d\r\n", cmd);
+        pr_err("unknown cmd: %d\n", cmd);
         return -EINVAL;
     }
 
@@ -226,27 +226,27 @@ static void display_server_task_entry(void* parameter)
         ds->led_dev = device_find_by_name(CONFIG_LED_DEV);
         if (ds->led_dev == NULL) {
             i++;
-            pr_err("%s device not found, retry=%d\r\n", CONFIG_LED_DEV, i);
+            pr_err("%s device not found, retry=%d\n", CONFIG_LED_DEV, i);
             sleep(1);
             continue;
         } else {
-            pr_info("%s device found\r\n", CONFIG_LED_DEV);
+            pr_info("%s device found\n", CONFIG_LED_DEV);
             break;
         }
     }
     if (i >= 100) {
-        pr_err("%s device not found, exit\r\n", CONFIG_LED_DEV);
+        pr_err("%s device not found, exit\n", CONFIG_LED_DEV);
         return;
     }
 
     ds->led_dev->ops.control(ds->led_dev, DS_CTRL_GET_DEV_INFO, &ds->dev_info);
     ds->buf = kmalloc(ds->dev_info.width * ds->dev_info.height * DS_COLOR_DATA_MAX, GFP_KERNEL);
     if (ds->buf == NULL) {
-        pr_err("alloc display buf error\r\n");
+        pr_err("alloc display buf error\n");
         return;
     }
     memset(ds->buf, 0, ds->dev_info.width * ds->dev_info.height * DS_COLOR_DATA_MAX);
-    pr_info("display device:[%s] %u*%u\r\n", CONFIG_LED_DEV, ds->dev_info.width, ds->dev_info.height);
+    pr_info("display device:[%s] %u*%u\n", CONFIG_LED_DEV, ds->dev_info.width, ds->dev_info.height);
 
     ds->led_enable = true;
     ds->led_dev->ops.control(ds->led_dev, LED_CTRL_ENABLE, NULL);
@@ -274,7 +274,7 @@ static int display_server_init(void)
 
     ds = kmalloc(sizeof(struct display_server), GFP_KERNEL);
     if (ds == NULL) {
-        pr_err("alloc display_server buf error\r\n");
+        pr_err("alloc display_server buf error\n");
         return -ENOMEM;
     }
 
@@ -289,7 +289,7 @@ static int display_server_init(void)
 
     ds->task = task_create("display_server", display_server_task_entry, ds, 2, 1024, 10, NULL);
     if (ds->task == NULL) {
-        pr_fatal("creat display_server task err\r\n");
+        pr_fatal("creat display_server task err\n");
         BUG_ON(true);
         return -EINVAL;
     }

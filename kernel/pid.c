@@ -35,7 +35,7 @@ pid_t pid_alloc(void)
     spin_lock(&g_map.lock);
     if (list_empty(&g_map.list)) {
         spin_unlock(&g_map.lock);
-        pr_err("PID resource exhaustion\r\n");
+        pr_err("PID resource exhaustion\n");
         return 0;
     }
 
@@ -108,7 +108,7 @@ void pid_init(void)
     range = kmalloc(sizeof(struct pid_range), GFP_KERNEL);
     BUG_ON(range == NULL);
     if (range == NULL) {
-        pr_err("pid_init error\r\n");
+        pr_err("pid_init error\n");
         return;
     }
 

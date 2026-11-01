@@ -23,7 +23,7 @@ static void run_command(struct shell_session *session, void *priv)
     (void)priv;
     shell_session_write(session, "result:", 7);
     shell_session_write(session, session->input, (unsigned int)strlen(session->input));
-    shell_session_write(session, "\r\n", 2);
+    shell_session_write(session, "\n", 1);
 }
 
 int main(void)
@@ -66,10 +66,10 @@ int main(void)
     shell_session_feed(&sb, 'w', run_command, NULL);
     shell_session_feed(&sa, '\r', run_command, NULL);
     shell_session_feed(&sb, '\r', run_command, NULL);
-    assert(a.used == strlen("ve\r\nresult:ve\r\nnos# "));
-    assert(b.used == strlen("pw\r\nresult:pw\r\nnos# "));
-    assert(memcmp(a.output, "ve\r\nresult:ve\r\nnos# ", a.used) == 0);
-    assert(memcmp(b.output, "pw\r\nresult:pw\r\nnos# ", b.used) == 0);
+    assert(a.used == strlen("ve\nresult:ve\nnos# "));
+    assert(b.used == strlen("pw\nresult:pw\nnos# "));
+    assert(memcmp(a.output, "ve\nresult:ve\nnos# ", a.used) == 0);
+    assert(memcmp(b.output, "pw\nresult:pw\nnos# ", b.used) == 0);
     a.used = 0;
     for (unsigned int i = 0; i < SHELL_SESSION_INPUT_MAX + 1; i++)
         shell_session_feed(&sa, 'x', run_command, NULL);
@@ -85,7 +85,7 @@ int main(void)
     shell_session_feed(&sa, 0xbd, run_command, NULL);
     shell_session_feed(&sa, 0x7f, run_command, NULL);
     shell_session_feed(&sa, '\r', run_command, NULL);
-    assert(strstr(a.output, "result:\xe4\xbd\xa0\r\n") != NULL);
+    assert(strstr(a.output, "result:\xe4\xbd\xa0\n") != NULL);
 #else
     assert(!"shell interpreter must own editing state per session");
 #endif

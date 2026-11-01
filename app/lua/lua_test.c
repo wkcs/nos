@@ -44,7 +44,7 @@ static int lua_test_init(void)
 
     task = task_create("lua_test", lua_test_task_entry, NULL, 20, 4096, 10, NULL);
     if (task == NULL) {
-        pr_fatal("creat lua_test task err\r\n");
+        pr_fatal("creat lua_test task err\n");
         return -EINVAL;
     }
     task_ready(task);

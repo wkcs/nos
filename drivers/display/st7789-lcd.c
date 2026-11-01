@@ -168,7 +168,7 @@ static int st7789_lcd_control(struct device *dev, int cmd, void *args)
         memcpy(args, &info, sizeof(struct display_dev_info));
         break;
     default:
-        pr_err("unknown cmd: %d\r\n", cmd);
+        pr_err("unknown cmd: %d\n", cmd);
         return -EINVAL;
     }
 
@@ -319,7 +319,7 @@ static int st7789_lcd_init(void)
 
     lcd = kmalloc(sizeof(struct st7789_lcd), GFP_KERNEL);
     if (lcd == NULL) {
-        pr_err("alloc st7789_lcd buf error\r\n");
+        pr_err("alloc st7789_lcd buf error\n");
         return -ENOMEM;
     }
 

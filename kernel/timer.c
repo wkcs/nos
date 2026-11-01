@@ -22,7 +22,7 @@ int timer_init(struct timer *timer, const char *name,
                void (*timeout)(void *parameter), void *parameter)
 {
     if (timer == NULL) {
-        pr_err("timer is NULL\r\n");
+        pr_err("timer is NULL\n");
         return -EINVAL;
     }
 
@@ -45,12 +45,12 @@ struct timer *timer_creat(const char *name, void (*timeout)(void *parameter),
 
     timer = kmalloc(sizeof(struct timer), GFP_KERNEL);
     if (timer == NULL) {
-        pr_err("alloc %s timer buf error\r\n", name);
+        pr_err("alloc %s timer buf error\n", name);
         return NULL;
     }
     rc = timer_init(timer, name, timeout, parameter);
     if (rc < 0) {
-        pr_err("%s timer init error, rc=%d\r\n", name, rc);
+        pr_err("%s timer init error, rc=%d\n", name, rc);
         kfree(timer);
         return NULL;
     }
@@ -61,7 +61,7 @@ struct timer *timer_creat(const char *name, void (*timeout)(void *parameter),
 int timer_remove(struct timer *timer)
 {
     if (timer == NULL) {
-        pr_err("timer is NULL\r\n");
+        pr_err("timer is NULL\n");
         return -EINVAL;
     }
 
@@ -99,17 +99,17 @@ int timer_start(struct timer *timer, u32 tick)
     int rc;
 
     if (timer == NULL) {
-        pr_err("timer is NULL\r\n");
+        pr_err("timer is NULL\n");
         return -EINVAL;
     }
     if (tick == 0) {
-        pr_err("%s timer set tick to 0\r\n", timer->name);
+        pr_err("%s timer set tick to 0\n", timer->name);
         return -EINVAL;
     }
 
     rc = timer_remove(timer);
     if (rc < 0) {
-        pr_err("remove %s timer error, rc=%d\r\n", timer->name, rc);
+        pr_err("remove %s timer error, rc=%d\n", timer->name, rc);
         return rc;
     }
     spin_lock_irq(&timer->lock);
@@ -150,7 +150,7 @@ int timer_start(struct timer *timer, u32 tick)
 int timer_stop(struct timer *timer)
 {
     if (timer == NULL) {
-        pr_err("timer is NULL\r\n");
+        pr_err("timer is NULL\n");
         return -EINVAL;
     }
     return timer_remove(timer);
@@ -203,6 +203,6 @@ void dump_timer(void)
     struct timer *timer;
 
     list_for_each_entry (timer, &g_sys_timer_list, list) {
-        pr_info("timer[%s]: lave_ticks=%u\r\n", timer->name, get_lave_tick(timer));
+        pr_info("timer[%s]: lave_ticks=%u\n", timer->name, get_lave_tick(timer));
     }
 }

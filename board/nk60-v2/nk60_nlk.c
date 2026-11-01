@@ -125,7 +125,7 @@ static int nk60_bl_write(uint32_t offset, const uint8_t *data,
                 msp, reset_pc,
                 NK60_BOOTLOADER_FLASH_BASE,
                 NK60_BOOTLOADER_FLASH_BASE + NK60_BOOTLOADER_MAX_BIN)) {
-            pr_err("Invalid Bootloader vectors (MSP=0x%08x, PC=0x%08x)\r\n",
+            pr_err("Invalid Bootloader vectors (MSP=0x%08x, PC=0x%08x)\n",
                    (unsigned int)msp, (unsigned int)reset_pc);
             return -EBADMSG;
         }
@@ -180,12 +180,12 @@ static int nk60_bl_commit(uint32_t total_size, uint32_t expected_crc32, void *pr
     calc_crc = nlk_crc32(0U, (const void *)(uintptr_t)NK60_BOOTLOADER_FLASH_BASE,
                          total_size);
     if (expected_crc32 != 0UL && calc_crc != expected_crc32) {
-        pr_err("Sector 0 bootloader CRC mismatch: calc=0x%08x != exp=0x%08x\r\n",
+        pr_err("Sector 0 bootloader CRC mismatch: calc=0x%08x != exp=0x%08x\n",
                (unsigned int)calc_crc, (unsigned int)expected_crc32);
         return -EBADMSG;
     }
 
-    pr_info("NK60 Sector 0 bootloader flashed directly OK (size=%u, crc=0x%08x)\r\n",
+    pr_info("NK60 Sector 0 bootloader flashed directly OK (size=%u, crc=0x%08x)\n",
             (unsigned int)total_size, (unsigned int)calc_crc);
     return 0;
 }
@@ -270,13 +270,13 @@ static int nk60_assets_commit(uint32_t total_size, uint32_t expected_crc32, void
     }
 
     if (expected_crc32 != 0UL && readback_crc != expected_crc32) {
-        pr_err("W25QXX assets CRC mismatch: calc=0x%08x != exp=0x%08x\r\n",
+        pr_err("W25QXX assets CRC mismatch: calc=0x%08x != exp=0x%08x\n",
                (unsigned int)readback_crc, (unsigned int)expected_crc32);
         return -EBADMSG;
     }
 
     (void)nk60_assets_reload();
-    pr_info("NK60 assets partition commit OK (size=%u, crc=0x%08x)\r\n",
+    pr_info("NK60 assets partition commit OK (size=%u, crc=0x%08x)\n",
             (unsigned int)total_size, (unsigned int)readback_crc);
     return 0;
 }
@@ -297,7 +297,7 @@ static void nk60_on_reboot(uint32_t boot_flag, void *priv)
         return;
     }
     brd->pending_reboot_flag = boot_flag;
-    pr_info("NK60 scheduling reboot (boot_flag=%u) after NLK ACK...\r\n",
+    pr_info("NK60 scheduling reboot (boot_flag=%u) after NLK ACK...\n",
             (unsigned int)boot_flag);
     timer_start(&brd->reboot_timer, msec_to_tick(50));
 }
@@ -388,7 +388,7 @@ static int nk60_nlk_board_setup(struct nlk_node *node)
     /* 3. 挂载上行 WinUSB Bearer */
     for (i = 0; i < 20; i++) {
         if (nlk_winusb_bearer_init(node, &brd->winusb_bearer, 0U) == 0) {
-            pr_info("NK60 WinUSB bearer attached on port 0\r\n");
+            pr_info("NK60 WinUSB bearer attached on port 0\n");
             break;
         }
         msleep(50);

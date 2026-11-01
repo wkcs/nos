@@ -177,7 +177,7 @@ static int ks_apply_layout_id(struct keyboard_server *ks, uint8_t layout_id)
                 }
                 (void)nlk_cap_keyboard_load_layout(&ks->kb_cap, l, kmap, kcnt);
             }
-            pr_info("Keyboard layout switched to id=%u (%s)\r\n",
+            pr_info("Keyboard layout switched to id=%u (%s)\n",
                     layout_id, playout->info.name);
             return 0;
         }
@@ -216,14 +216,14 @@ int keyboard_config_save_profile(uint8_t slot_id)
     ks_make_profile_path(slot_id, path, sizeof(path));
     fd = nos_open(path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
     if (fd < 0) {
-        pr_err("failed to open %s for saving: %d\r\n", path, fd);
+        pr_err("failed to open %s for saving: %d\n", path, fd);
         return fd;
     }
     ret = nos_write(fd, &stored, sizeof(stored));
     nos_close(fd);
 
     if (ret != (ssize_t)sizeof(stored)) {
-        pr_err("failed to write %s: written=%ld\r\n", path, (long)ret);
+        pr_err("failed to write %s: written=%ld\n", path, (long)ret);
         return -EIO;
     }
 
@@ -239,7 +239,7 @@ int keyboard_config_save_profile(uint8_t slot_id)
     ks->kb_cap.active_profile_slot = slot_id;
     ks->kb_cap.saved_profiles_mask = ks->saved_slots_mask;
 
-    pr_info("Profile slot %u saved to Flash (%s)\r\n", slot_id, path);
+    pr_info("Profile slot %u saved to Flash (%s)\n", slot_id, path);
     return 0;
 }
 
@@ -268,12 +268,12 @@ int keyboard_config_load_profile(uint8_t slot_id)
         return -EIO;
     }
     if (stored.magic != KS_CONFIG_MAGIC || stored.version != KS_CONFIG_VERSION) {
-        pr_err("corrupted profile magic/version in %s\r\n", path);
+        pr_err("corrupted profile magic/version in %s\n", path);
         return -EINVAL;
     }
     calc_crc = nlk_crc32(0U, &stored, offsetof(struct keyboard_stored_profile, crc32));
     if (calc_crc != stored.crc32) {
-        pr_err("CRC mismatch in %s: calc=0x%08x, stored=0x%08x\r\n", path,
+        pr_err("CRC mismatch in %s: calc=0x%08x, stored=0x%08x\n", path,
                (unsigned int)calc_crc, (unsigned int)stored.crc32);
         return -EIO;
     }
@@ -314,7 +314,7 @@ int keyboard_config_load_profile(uint8_t slot_id)
     ks->kb_cap.active_profile_slot = slot_id;
     ks->kb_cap.saved_profiles_mask = ks->saved_slots_mask;
 
-    pr_info("Profile slot %u loaded from Flash filesystem\r\n", slot_id);
+    pr_info("Profile slot %u loaded from Flash filesystem\n", slot_id);
     return 0;
 }
 
@@ -458,7 +458,7 @@ static int ks_action_key_light(const struct key_action_context *ctx, void *priv)
     struct keyboard_server *ks = (struct keyboard_server *)priv;
 
     if (ks != NULL && ctx != NULL && ctx->event_type == 1U) {
-        pr_info("Action key_light: key_index=%u, code=0x%02x\r\n",
+        pr_info("Action key_light: key_index=%u, code=0x%02x\n",
                 ctx->key_index, ctx->key_code);
     }
     return KEY_ACTION_PASS; /* 未返回按键值，保持原有按键值 */
@@ -469,7 +469,7 @@ static int ks_action_profile_next(const struct key_action_context *ctx, void *pr
     (void)priv;
     if (ctx != NULL && ctx->event_type == 1U) {
         uint8_t next_slot = (uint8_t)((keyboard_config_get_active_slot() + 1U) % KS_PROFILE_MAX_SLOTS);
-        pr_info("Action: switch to next Profile slot %u\r\n", next_slot);
+        pr_info("Action: switch to next Profile slot %u\n", next_slot);
         (void)keyboard_config_switch_profile(next_slot);
     }
     return KEY_ACTION_DROP; /* 显式拦截按键 */
@@ -489,7 +489,7 @@ static int ks_action_caps_lock(const struct key_action_context *ctx, void *priv)
         last_caps_tick = now;
 
         ks->caps_lock_active = !ks->caps_lock_active;
-        pr_info("Action caps_lock: active=%d\r\n", ks->caps_lock_active ? 1 : 0);
+        pr_info("Action caps_lock: active=%d\n", ks->caps_lock_active ? 1 : 0);
 
         if (ks->caps_lock_active) {
             /* 开启大写锁定：保存当前灯效配置，切换为大写锁定特殊指示灯效 */
@@ -801,7 +801,7 @@ static int keyboard_server_control(struct device *dev, int cmd, void *args)
         *(uint8_t *)args = ks->kb_cap.indicator_leds;
         break;
     default:
-        pr_err("unknown cmd: %d\r\n", cmd);
+        pr_err("unknown cmd: %d\n", cmd);
         return -EINVAL;
     }
 
@@ -820,21 +820,21 @@ static void keyboard_server_task_entry(void *parameter)
     for (i = 0; i < 100; i++) {
         ks->key_dev = device_find_by_name(CONFIG_KEY_DEV);
         if (ks->key_dev == NULL) {
-            pr_err("%s device not found, retry=%d\r\n", CONFIG_KEY_DEV, i + 1);
+            pr_err("%s device not found, retry=%d\n", CONFIG_KEY_DEV, i + 1);
             sleep(1);
             continue;
         }
-        pr_info("%s device found\r\n", CONFIG_KEY_DEV);
+        pr_info("%s device found\n", CONFIG_KEY_DEV);
         break;
     }
     if (ks->key_dev == NULL) {
-        pr_err("%s device not found, exit\r\n", CONFIG_KEY_DEV);
+        pr_err("%s device not found, exit\n", CONFIG_KEY_DEV);
         return;
     }
 
     ks->key_dev->ops.control(ks->key_dev, KEY_CTRL_GET_DEV_INFO, &ks->dev_info);
     if (ks->dev_info.key_count == 0U || ks->dev_info.key_count > KEY_MAX_NUM) {
-        pr_err("invalid key_count=%u\r\n", ks->dev_info.key_count);
+        pr_err("invalid key_count=%u\n", ks->dev_info.key_count);
         return;
     }
 
@@ -864,7 +864,7 @@ static void keyboard_server_task_entry(void *parameter)
     ks->key_dev->ops.control(ks->key_dev, KEY_CTRL_ENABLE, NULL);
     device_register(&ks->ks_dev);
 
-    pr_info("keyboard device:[%s] %u*%u (%u keys, %u layers, cap_id=%u)\r\n",
+    pr_info("keyboard device:[%s] %u*%u (%u keys, %u layers, cap_id=%u)\n",
             CONFIG_KEY_DEV, ks->profile.rows, ks->profile.cols,
             ks->profile.key_count, ks->profile.layer_count,
             ks->kb_cap.cap.cap_id);
@@ -902,7 +902,7 @@ static void keyboard_server_task_entry(void *parameter)
                                 if (base_kc >= KC_1 && base_kc <= KC_4) {
                                     uint8_t target_slot = (uint8_t)(base_kc - KC_1);
                                     if (target_slot != ks->active_slot_id) {
-                                        pr_info("Combo HotKey: FN + %u -> Switch to Profile Slot %u\r\n",
+                                        pr_info("Combo HotKey: FN + %u -> Switch to Profile Slot %u\n",
                                                 (unsigned int)(target_slot + 1U), (unsigned int)target_slot);
                                         (void)keyboard_config_switch_profile(target_slot);
                                     }
@@ -962,7 +962,7 @@ static int keyboard_server_init(void)
 
     ks = kmalloc(sizeof(struct keyboard_server), GFP_KERNEL);
     if (ks == NULL) {
-        pr_err("alloc keyboard_server buf error\r\n");
+        pr_err("alloc keyboard_server buf error\n");
         return -ENOMEM;
     }
     memset(ks, 0, sizeof(*ks));
@@ -978,7 +978,7 @@ static int keyboard_server_init(void)
     ks->task = task_create("keyboard_server", keyboard_server_task_entry,
                            ks, 3, 2048, 10, NULL);
     if (ks->task == NULL) {
-        pr_fatal("create keyboard_server task err\r\n");
+        pr_fatal("create keyboard_server task err\n");
         BUG_ON(true);
         return -EINVAL;
     }
