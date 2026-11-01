@@ -640,6 +640,13 @@ enum nlk_kb_opcode {
     NLK_KB_OP_GET_KEY_ACTIONS       = 0x26U,
     NLK_KB_OP_GET_LIGHT_EFFECTS     = 0x27U,
     NLK_KB_OP_GET_LIGHT_EFFECTS_PAGE = 0x28U,
+    NLK_KB_OP_CONFIG_FILES_INFO     = 0x29U,
+    NLK_KB_OP_CONFIG_FILES_LIST     = 0x2AU,
+    NLK_KB_OP_CONFIG_FILES_SAVE     = 0x2BU,
+    NLK_KB_OP_CONFIG_FILES_LOAD     = 0x2CU,
+    NLK_KB_OP_CONFIG_FILES_DELETE   = 0x2DU,
+    NLK_KB_OP_MACRO_CONTROL         = 0x2EU,
+    NLK_KB_OP_MACRO_STATUS          = 0x2FU,
     NLK_KB_EVT_SWITCH_DELTA         = 0x20U,
     NLK_KB_EVT_HID_REPORT           = 0x21U,
     NLK_KB_EVT_LIGHT_SYNC_BEACON    = 0x22U,
@@ -907,6 +914,9 @@ struct nlk_kb_set_active_layer_req {
 #define NLK_KB_MAX_MACROS               8U
 #define NLK_KB_MAX_MACRO_STEPS          32U
 #define NLK_KB_MACRO_NAME_MAX           16U
+/* Bind action "macro_play" to a key using BASE + macro slot as its keycode. */
+#define NLK_KB_MACRO_KEYCODE_BASE       0xF0U
+#define NLK_KB_MACRO_FLAG_RECORD_OVERFLOW 0x01U
 
 enum nlk_kb_macro_action_type {
     NLK_KB_MACRO_ACT_NONE           = 0U,
@@ -919,7 +929,7 @@ enum nlk_kb_macro_action_type {
 struct nlk_kb_macro_step {
     uint8_t  type;                 /* enum nlk_kb_macro_action_type */
     uint8_t  key_code;             /* KC_* HID keycode */
-    uint16_t delay_ms;             /* Delay or duration in milliseconds */
+    uint16_t delay_ms;             /* Milliseconds to wait before this action */
 } __attribute__((packed));
 
 struct nlk_kb_macro_info {
@@ -949,6 +959,21 @@ struct nlk_kb_macro_record_req {
     uint8_t  macro_id;             /* Target macro ID to record */
     uint8_t  record_cmd;           /* 0 = STOP, 1 = START, 2 = CLEAR */
     uint16_t reserved;
+} __attribute__((packed));
+
+#define NLK_KB_MACRO_STOP 0U
+#define NLK_KB_MACRO_PLAY 1U
+struct nlk_kb_macro_control_req {
+    uint8_t command;
+    uint8_t macro_id;
+} __attribute__((packed));
+struct nlk_kb_macro_status_resp {
+    uint8_t playing;
+    uint8_t macro_id;
+    uint8_t step_index;
+    uint8_t repeats_left;
+    uint8_t recording_macro_id;
+    uint8_t reserved[3];
 } __attribute__((packed));
 
 /* Lighting effect metadata */
@@ -1089,6 +1114,48 @@ struct nlk_kb_profile_info_resp {
 struct nlk_kb_profile_slot_req {
     uint8_t  slot_id;              /* Target profile slot ID */
     uint8_t  reserved[3];
+} __attribute__((packed));
+
+/* Named configuration objects; file count is not limited by the protocol. */
+#define NLK_KB_CONFIG_ID_SIZE       24U
+#define NLK_KB_CONFIG_NAME_SIZE     32U
+#define NLK_KB_CONFIG_HARDWARE_SIZE 24U
+enum nlk_kb_config_kind {
+    NLK_KB_CONFIG_KEYBOARD = 1U,
+    NLK_KB_CONFIG_LIGHT = 2U,
+    NLK_KB_CONFIG_MACRO = 3U,
+};
+struct nlk_kb_config_files_info {
+    uint16_t version;
+    uint8_t key_count;
+    uint8_t layer_count;
+    uint8_t macro_slots;
+    uint8_t macro_steps;
+    uint8_t light_zones;
+    uint8_t reserved;
+    char hardware[NLK_KB_CONFIG_HARDWARE_SIZE];
+    char active_keyboard[NLK_KB_CONFIG_ID_SIZE];
+    char active_light[NLK_KB_CONFIG_ID_SIZE];
+} __attribute__((packed));
+struct nlk_kb_config_file_req {
+    uint8_t kind;
+    uint8_t macro_id;
+    uint8_t reserved[2];
+    char id[NLK_KB_CONFIG_ID_SIZE];
+    char name[NLK_KB_CONFIG_NAME_SIZE];
+} __attribute__((packed));
+struct nlk_kb_config_list_req {
+    uint8_t kind;
+    uint8_t reserved[3];
+    uint32_t cursor;
+} __attribute__((packed));
+struct nlk_kb_config_list_resp {
+    uint32_t next_cursor;
+    uint32_t size;
+    uint8_t eof;
+    uint8_t reserved[3];
+    char id[NLK_KB_CONFIG_ID_SIZE];
+    char name[NLK_KB_CONFIG_NAME_SIZE];
 } __attribute__((packed));
 
 /* =========================================================================

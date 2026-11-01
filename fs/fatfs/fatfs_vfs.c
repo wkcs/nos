@@ -124,13 +124,14 @@ static ssize_t fatfs_write(struct file *file, const char *buf, size_t count, lof
 
 static int fatfs_release(struct inode *inode, struct file *file) {
     FIL *fp = (FIL *)file->private_data;
+    FRESULT res = FR_OK;
     if (fp) {
-        f_close(fp);
+        res = f_close(fp);
         kfree(fp);
         file->private_data = NULL;
         vfs_dentry_put(file->f_path.dentry);
     }
-    return 0;
+    return res == FR_OK ? 0 : -EIO;
 }
 
 static int fatfs_readdir(struct file *file, void *dirent, filldir_t filldir) {

@@ -6,6 +6,7 @@
 set(NOS_ARCH_FLAGS "")
 set(NOS_FP_FLAGS "")
 set(NOS_GLOBAL_DEFINES "")
+set(NOS_OPTIMIZATION_FLAG -O2)
 
 set(_NOS_ARCH_FLAGS_FILE "${CMAKE_SOURCE_DIR}/arch/${CONFIG_ARCH}/compiler_flags.cmake")
 if(NOT EXISTS "${_NOS_ARCH_FLAGS_FILE}")
@@ -13,11 +14,16 @@ if(NOT EXISTS "${_NOS_ARCH_FLAGS_FILE}")
 endif()
 include("${_NOS_ARCH_FLAGS_FILE}")
 
+set(_NOS_BOARD_FLAGS_FILE "${CMAKE_SOURCE_DIR}/board/${CONFIG_BOARD}/compiler_flags.cmake")
+if(DEFINED CONFIG_BOARD AND EXISTS "${_NOS_BOARD_FLAGS_FILE}")
+    include("${_NOS_BOARD_FLAGS_FILE}")
+endif()
+
 # Base C and ASM compilation flags
 set(NOS_COMMON_FLAGS
     ${NOS_ARCH_FLAGS}
     ${NOS_FP_FLAGS}
-    -O2
+    ${NOS_OPTIMIZATION_FLAG}
     -g3
     -fmessage-length=0
     -fsigned-char

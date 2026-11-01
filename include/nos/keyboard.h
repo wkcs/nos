@@ -407,6 +407,7 @@ struct keyboard_light_effect {
 /* Keyboard Profile (Default Keymap/Action Layout managed by Keyboard Server) */
 struct keyboard_profile {
     const char                               *name;
+    const char                               *hardware_id;       /* Stable model/revision/layout ID */
     uint8_t                                   rows;
     uint8_t                                   cols;
     uint8_t                                   key_count;
