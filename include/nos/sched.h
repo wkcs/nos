@@ -58,7 +58,7 @@ struct rt_rq {
     uint8_t          prio_tbl[32];
 #endif
     uint32_t         nr_running;
-    uint8_t          highest_prio;
+    uint16_t         highest_prio;
 };
 
 struct fair_rq {
