@@ -11,3 +11,44 @@ int free_pages(addr_t addr, u32 order);
 struct memblock *find_block(void *addr);
 struct mem_base *find_base(struct memblock *block, void *addr);
 void *krealloc(void *ptr, u32 size, gfp_t flag);
+
+#define MM_TLSF_MAGIC          0x544C5346U
+#define MM_TLSF_ALIGN          8U
+#define MM_TLSF_MIN_BLOCK_SIZE 16U
+#define MM_TLSF_FL_SHIFT       4U
+#define MM_TLSF_FL_MAX         24U
+#define MM_TLSF_FL_COUNT       (MM_TLSF_FL_MAX - MM_TLSF_FL_SHIFT + 1U)
+#define MM_TLSF_SL_LOG2        3U
+#define MM_TLSF_SL_COUNT       (1U << MM_TLSF_SL_LOG2)
+
+struct mm_tlsf_block {
+    struct mm_tlsf_block *prev_phys;
+    size_t size_flags;
+    pid_t pid;
+    u32 magic;
+} __attribute__((aligned(8)));
+
+struct mm_tlsf_pool {
+    addr_t start;
+    addr_t end;
+    size_t total_size;
+    size_t used_size;
+    u32 fl_bitmap;
+    u32 sl_bitmap[MM_TLSF_FL_COUNT];
+    struct mm_tlsf_block *blocks[MM_TLSF_FL_COUNT][MM_TLSF_SL_COUNT];
+    struct mm_tlsf_block *first_block;
+    spinlock_t lock;
+    bool initialized;
+};
+
+int mm_tlsf_init(struct mm_tlsf_pool *pool, addr_t start, size_t size);
+void *mm_tlsf_alloc(struct mm_tlsf_pool *pool, size_t size, size_t align, pid_t pid);
+int mm_tlsf_free(struct mm_tlsf_pool *pool, void *ptr);
+void *mm_tlsf_realloc(struct mm_tlsf_pool *pool, void *ptr, size_t new_size, pid_t pid);
+int mm_tlsf_free_by_pid(struct mm_tlsf_pool *pool, pid_t pid);
+size_t mm_tlsf_block_size(const void *ptr);
+bool mm_tlsf_owns(const struct mm_tlsf_pool *pool, const void *ptr);
+size_t mm_tlsf_free_size(struct mm_tlsf_pool *pool);
+size_t mm_tlsf_used_size(struct mm_tlsf_pool *pool);
+size_t mm_tlsf_total_size(struct mm_tlsf_pool *pool);
+size_t mm_tlsf_max_free_block(struct mm_tlsf_pool *pool);
