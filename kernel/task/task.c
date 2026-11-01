@@ -161,7 +161,7 @@ static int __task_create(struct task_struct *task,
                            (uint32_t)task->pid,
                            NULL);
     (void)nos_cap_alloc_at(&task->cap_table,
-                           NOS_CAP_SLOT_SELF_VM,
+                           NOS_CAP_SLOT_SELF_VMS,
                            NOS_CAP_VM_SPACE,
                            &task->vm_space,
                            NOS_CAP_RIGHT_ALL,
