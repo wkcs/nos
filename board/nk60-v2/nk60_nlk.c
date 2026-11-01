@@ -106,6 +106,7 @@ static int nk60_bl_write(uint32_t offset, const uint8_t *data,
                          uint32_t len, void *priv)
 {
     uint32_t i;
+    uint32_t saved_mpu_ctrl;
     addr_t irq_flags;
     int rc = 0;
 
@@ -132,6 +133,10 @@ static int nk60_bl_write(uint32_t offset, const uint8_t *data,
     }
 
     irq_flags = disable_irq_save();
+    saved_mpu_ctrl = MPU->CTRL;
+    MPU->CTRL = 0UL;
+    __DSB();
+    __ISB();
     if ((FLASH->CR & FLASH_CR_LOCK) != 0UL) {
         FLASH->KEYR = STM32_FLASH_KEY1;
         FLASH->KEYR = STM32_FLASH_KEY2;
@@ -159,6 +164,9 @@ static int nk60_bl_write(uint32_t offset, const uint8_t *data,
     }
 
     FLASH->CR |= FLASH_CR_LOCK;
+    MPU->CTRL = saved_mpu_ctrl;
+    __DSB();
+    __ISB();
     enable_irq_save(irq_flags);
     return rc;
 }
