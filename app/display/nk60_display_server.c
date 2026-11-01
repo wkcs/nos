@@ -79,7 +79,7 @@ static void nk60_display_server_data_update(struct nk60_display_server *nk60_ds)
             rgb[1] = 0U;
             rgb[2] = 0U;
         }
-        if (keyboard_server_is_caps_lock_active() && i == 28) {
+        if (cfg.enable != 0U && keyboard_server_is_caps_lock_active() && i == 28) {
             rgb[0] = 255U;
             rgb[1] = 255U;
             rgb[2] = 255U;

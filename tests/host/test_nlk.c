@@ -21,6 +21,7 @@
 #include <fs/vfs.h>
 #include <nos/nlk_core.h>
 #include <nos/nlk_caps.h>
+#include <nos/keyboard_config.h>
 
 /* Test fixture IDs, local to the mock keyboard. */
 enum {
@@ -41,6 +42,18 @@ addr_t kernel_running = 1;
 addr_t disable_irq_save(void) { return 0; }
 void enable_irq_save(addr_t flags) { (void)flags; }
 static bool fail_next_kmalloc;
+static bool saw_macro_key;
+static bool saw_macro_modified_key;
+static struct nlk_kb_hid_report macro_reports[32];
+static unsigned int macro_report_count;
+static void capture_macro_report(const struct nlk_kb_hid_report *report, void *priv)
+{
+    (void)priv;
+    if (macro_report_count < 32U) macro_reports[macro_report_count++] = *report;
+    if (report->keys[0] == 4U) saw_macro_key = true;
+    if (report->keys[0] == 4U && (report->modifiers & 1U) != 0U) saw_macro_modified_key = true;
+}
+static unsigned int outstanding_kmalloc;
 void *kmalloc(size_t size, gfp_t flags)
 {
     (void)flags;
@@ -48,9 +61,20 @@ void *kmalloc(size_t size, gfp_t flags)
         fail_next_kmalloc = false;
         return NULL;
     }
-    return malloc(size);
+    void *ptr = malloc(size);
+    if (ptr != NULL) {
+        outstanding_kmalloc++;
+    }
+    return ptr;
 }
-void kfree(void *ptr) { free(ptr); }
+void kfree(void *ptr)
+{
+    if (ptr != NULL) {
+        assert(outstanding_kmalloc > 0U);
+        outstanding_kmalloc--;
+        free(ptr);
+    }
+}
 int console_write_room(void) { return 0; }
 bool console_is_panic(void) { return false; }
 int console_write(const char *buf, int len) { (void)buf; return len; }
@@ -398,14 +422,21 @@ static int mock_test_info_cb(uint8_t *act, uint8_t *mask, void *p)
     return 0;
 }
 
+static int mock_config_files_cb(uint8_t op, const void *req, uint16_t req_len,
+                                void *resp, uint16_t *resp_len, void *priv)
+{
+    return keyboard_config_file_rpc(priv, "NK60-v2", "/profiles", op,
+                                    req, req_len, resp, resp_len);
+}
+
 /* Lightweight in-memory VFS stub for testing NLK_CAP_VFS */
-#define MOCK_VFS_MAX_NODES 8
+#define MOCK_VFS_MAX_NODES 32
 struct mock_vfs_node {
     bool          used;
     bool          is_dir;
     char          path[128];
     char          name[32];
-    uint8_t       data[512];
+    uint8_t       data[1024];
     size_t        size;
     struct inode  inode;
     struct dentry dentry;
@@ -415,6 +446,8 @@ static struct mock_vfs_node g_vfs_nodes[MOCK_VFS_MAX_NODES];
 static struct super_block   g_vfs_sb = { .s_blocksize = 4096UL };
 static int                  g_vfs_fd_node[8] = { -1, -1, -1, -1, -1, -1, -1, -1 };
 static loff_t               g_vfs_fd_pos[8];
+static bool                 g_vfs_fail_selection_write;
+static bool                 g_vfs_fail_close;
 
 static int mock_vfs_dir_readdir(struct file *file, void *dirent, filldir_t filldir)
 {
@@ -586,13 +619,14 @@ int nos_close(int fd)
 {
     if (fd < 0 || fd >= 8 || g_vfs_fd_node[fd] < 0) return -EBADF;
     g_vfs_fd_node[fd] = -1;
-    return 0;
+    return g_vfs_fail_close ? -EIO : 0;
 }
 
 loff_t nos_lseek(int fd, loff_t offset, int whence)
 {
     if (fd < 0 || fd >= 8 || g_vfs_fd_node[fd] < 0) return -EBADF;
     if (whence == SEEK_SET) g_vfs_fd_pos[fd] = offset;
+    if (whence == SEEK_END) g_vfs_fd_pos[fd] = (loff_t)g_vfs_nodes[g_vfs_fd_node[fd]].size + offset;
     return g_vfs_fd_pos[fd];
 }
 
@@ -615,6 +649,7 @@ ssize_t nos_write(int fd, const void *buf, size_t count)
     struct mock_vfs_node *n;
     if (fd < 0 || fd >= 8 || g_vfs_fd_node[fd] < 0) return -EBADF;
     n = &g_vfs_nodes[g_vfs_fd_node[fd]];
+    if (g_vfs_fail_selection_write && strstr(n->path, "/active.") != NULL) return -ENOSPC;
     if ((size_t)g_vfs_fd_pos[fd] + count > sizeof(n->data)) return -ENOSPC;
     memcpy(n->data + g_vfs_fd_pos[fd], buf, count);
     g_vfs_fd_pos[fd] += (loff_t)count;
@@ -935,6 +970,327 @@ int main(void)
     assert(nlk_node_register_cap(&node_host, &host_cap.cap_kb_sink) == 3);
 
     /* NK60 capabilities (IDs 1..6): Flash, Log, Shell, Keyboard, Encoder, VFS */
+    {
+        struct nlk_keyboard_ctx kb;
+        struct nlk_kb_macro_step steps[] = {
+            { NLK_KB_MACRO_ACT_KEY_DOWN, 0xE0U, 5U },
+            { NLK_KB_MACRO_ACT_KEY_TAP, 4U, 20U },
+            { NLK_KB_MACRO_ACT_KEY_UP, 0xE0U, 10U },
+        };
+        assert(nlk_cap_keyboard_init_sized(NULL, &kb, 1U, 2U, 2U, 1U,
+                                           capture_macro_report, NULL) == 0);
+        assert(nlk_cap_keyboard_set_macro(&kb, 1U, "Timed", steps, 3U, 1U) == 0);
+        macro_report_count = 0U;
+        {
+            struct nlk_kb_macro_control_req req = { NLK_KB_MACRO_PLAY, 1U };
+            struct nlk_kb_macro_status_resp status;
+            struct nlk_pkt_hdr hdr = { .cmd_op = NLK_KB_OP_MACRO_CONTROL };
+            uint16_t resp_len = 0U;
+            assert(nlk_cap_keyboard_tick(&kb, 100U) == 0);
+            assert(kb.cap.ops->on_rpc(NULL, &kb.cap, &hdr, &req, sizeof(req), NULL, &resp_len) == 0);
+            hdr.cmd_op = NLK_KB_OP_MACRO_STATUS;
+            assert(kb.cap.ops->on_rpc(NULL, &kb.cap, &hdr, NULL, 0U, &status, &resp_len) == 0);
+            assert(status.playing == 1U && status.macro_id == 1U);
+        }
+        assert(nlk_cap_keyboard_macro_start(&kb, 1U, 100U) == -EBUSY);
+        assert(nlk_cap_keyboard_tick(&kb, 104U) == 0 && macro_report_count == 0U);
+        assert(nlk_cap_keyboard_tick(&kb, 105U) == 0 && macro_reports[0].modifiers == 1U);
+        assert(nlk_cap_keyboard_tick(&kb, 124U) == 0 && macro_report_count == 1U);
+        assert(nlk_cap_keyboard_tick(&kb, 125U) == 0 && macro_reports[1].keys[0] == 4U);
+        assert(macro_reports[1].modifiers == 1U);
+        assert(nlk_cap_keyboard_tick(&kb, 126U) == 0 && macro_reports[2].keys[0] == 0U);
+        assert(macro_reports[2].modifiers == 1U);
+        assert(nlk_cap_keyboard_tick(&kb, 136U) == 0 && macro_reports[3].modifiers == 0U);
+        assert(nlk_cap_keyboard_macro_start(&kb, 1U, 200U) == 0);
+        assert(nlk_cap_keyboard_tick(&kb, 205U) == 0);
+        assert(nlk_cap_keyboard_macro_cancel(&kb) == 0);
+        assert(macro_reports[macro_report_count - 1U].modifiers == 0U);
+        {
+            struct nlk_kb_macro_step tap = { NLK_KB_MACRO_ACT_KEY_TAP, 4U, 0U };
+            uint32_t physical = 2U;
+            kb.keymap[0][1] = 5U;
+            assert(nlk_cap_keyboard_update_local_keys(&kb, &physical, 2U) == 0);
+            assert(nlk_cap_keyboard_set_macro(&kb, 1U, "Repeat", &tap, 1U, 2U) == 0);
+            macro_report_count = 0U;
+            assert(nlk_cap_keyboard_macro_start(&kb, 1U, 0xFFFFFFFEU) == 0);
+            assert(nlk_cap_keyboard_tick(&kb, 0xFFFFFFFEU) == 0);
+            assert(macro_reports[0].keys[0] == 5U && macro_reports[0].keys[1] == 4U);
+            assert(nlk_cap_keyboard_tick(&kb, 0xFFFFFFFFU) == 0);
+            assert(nlk_cap_keyboard_tick(&kb, 0U) == 0);
+            assert(nlk_cap_keyboard_tick(&kb, 1U) == 0);
+            assert(kb.macro_playing == 0U);
+            assert(macro_reports[macro_report_count - 1U].keys[0] == 5U);
+        }
+        nlk_cap_keyboard_deinit(&kb);
+    }
+    {
+        struct nlk_keyboard_ctx kb;
+        struct nlk_kb_macro_record_req req = { .macro_id = 0U, .record_cmd = 1U };
+        struct nlk_pkt_hdr hdr = { .cmd_op = NLK_KB_OP_RECORD_MACRO };
+        uint32_t bitmap = 1U;
+        uint16_t resp_len = 0U;
+        assert(nlk_cap_keyboard_init_sized(NULL, &kb, 1U, 1U, 1U, 1U, NULL, NULL) == 0);
+        kb.keymap[0][0] = 4U;
+        assert(nlk_cap_keyboard_tick(&kb, 1000U) == 0);
+        assert(kb.cap.ops->on_rpc(NULL, &kb.cap, &hdr, &req, sizeof(req), NULL, &resp_len) == 0);
+        assert(nlk_cap_keyboard_tick(&kb, 1030U) == 0);
+        assert(nlk_cap_keyboard_update_local_keys(&kb, &bitmap, 1U) == 0);
+        bitmap = 0U;
+        assert(nlk_cap_keyboard_tick(&kb, 1090U) == 0);
+        assert(nlk_cap_keyboard_update_local_keys(&kb, &bitmap, 1U) == 0);
+        assert(kb.macro_info[0].step_count == 2U);
+        assert(kb.macro_steps[0][0].delay_ms == 30U);
+        assert(kb.macro_steps[0][1].delay_ms == 60U);
+        bitmap = 1U;
+        assert(nlk_cap_keyboard_tick(&kb, 71100U) == 0);
+        assert(nlk_cap_keyboard_update_local_keys(&kb, &bitmap, 1U) == 0);
+        assert(kb.macro_info[0].step_count == 4U);
+        assert(kb.macro_steps[0][2].type == NLK_KB_MACRO_ACT_DELAY_MS);
+        assert(kb.macro_steps[0][2].delay_ms == UINT16_MAX);
+        assert(kb.macro_steps[0][3].delay_ms == 4475U);
+        nlk_cap_keyboard_deinit(&kb);
+    }
+    {
+        struct nlk_keyboard_ctx sized;
+        struct nlk_kb_desc too_large;
+        unsigned int allocations_before = outstanding_kmalloc;
+        struct nlk_pkt_hdr hdr = {0};
+        struct {
+            struct nlk_kb_switch_event_hdr hdr;
+            struct nlk_kb_switch_item item;
+        } event = {0};
+
+        fail_next_kmalloc = true;
+        assert(nlk_cap_keyboard_init_sized(NULL, &sized, 5U, 14U, 61U, 3U,
+                                           NULL, NULL) == -ENOMEM);
+        assert(outstanding_kmalloc == allocations_before);
+        assert(nlk_cap_keyboard_init_sized(NULL, &sized, 5U, 14U, 61U, 3U,
+                                           NULL, NULL) == 0);
+        assert(sized.desc.key_count == 61U && sized.desc.layer_count == 3U);
+        assert(sized.keymap[1] - sized.keymap[0] == 61);
+        assert(sized.action_chains[1] - sized.action_chains[0] == 61);
+        too_large = sized.desc;
+        too_large.key_count++;
+        assert(nlk_cap_keyboard_configure(&sized, &too_large) == -EINVAL);
+        too_large = sized.desc;
+        too_large.layer_count++;
+        assert(nlk_cap_keyboard_configure(&sized, &too_large) == -EINVAL);
+        hdr.cmd_op = NLK_KB_EVT_SWITCH_DELTA;
+        event.hdr.active_layer = 7U;
+        event.hdr.event_count = 1U;
+        event.item.state = 1U;
+        event.item.key_code = 4U;
+        assert(sized.cap.ops->on_event(NULL, &sized.cap, &hdr, &event, sizeof(event)) == 0);
+        assert(nlk_cap_keyboard_register_light_effect(&sized, "test", "test", NULL, NULL) == 0);
+        nlk_cap_keyboard_deinit(&sized);
+        assert(outstanding_kmalloc == allocations_before);
+    }
+    {
+        struct nlk_keyboard_ctx src, dst;
+        struct nlk_kb_macro_step step = { NLK_KB_MACRO_ACT_KEY_TAP, 4U, 10U };
+        uint8_t buf[2048];
+        size_t len, measured;
+
+        assert(nlk_cap_keyboard_init_sized(NULL, &src, 1U, 3U, 3U, 2U, NULL, NULL) == 0);
+        assert(nlk_cap_keyboard_init_sized(NULL, &dst, 1U, 3U, 3U, 2U, NULL, NULL) == 0);
+        src.keymap[1][2] = 42U;
+        src.analog_cfg.actuation_01mm = 31U;
+        assert(nlk_cap_keyboard_bind_key_action(&src, 1U, 2U, "macro_play", false) == 0);
+        assert(nlk_cap_keyboard_set_macro(&src, 2U, "Copy", &step, 1U, 2U) == 0);
+        assert(keyboard_config_encode(&src, "NK60-v2", "Work", KEYBOARD_CONFIG_KEYBOARD,
+                                      0U, NULL, 0U, &measured) == 0);
+        assert(keyboard_config_encode(&src, "NK60-v2", "Work", KEYBOARD_CONFIG_KEYBOARD,
+                                      0U, buf, sizeof(buf), &len) == 0);
+        assert(measured == len);
+        assert(keyboard_config_decode(&dst, "other", KEYBOARD_CONFIG_KEYBOARD,
+                                      0U, buf, len) < 0);
+        assert(dst.keymap[1][2] == 0U);
+        assert(keyboard_config_decode(&dst, "NK60-v2", KEYBOARD_CONFIG_KEYBOARD,
+                                      0U, buf, len) == 0);
+        assert(dst.keymap[1][2] == 42U);
+        assert(dst.analog_cfg.actuation_01mm == 31U);
+        assert(dst.action_chains[1][2].count == 1U);
+        assert(dst.macro_info[2].step_count == 1U && dst.macro_steps[2][0].key_code == 4U);
+        {
+            struct keyboard_config_header *header = (struct keyboard_config_header *)buf;
+            struct nlk_kb_params *params = (struct nlk_kb_params *)(buf + sizeof(*header));
+            params->default_layer = 7U;
+            header->checksum = 0U;
+            header->checksum = nlk_crc32(0U, buf, len);
+            dst.keymap[1][2] = 9U;
+            assert(keyboard_config_decode(&dst, "NK60-v2", KEYBOARD_CONFIG_KEYBOARD,
+                                          0U, buf, len) < 0);
+            assert(dst.keymap[1][2] == 9U);
+            params->default_layer = 0U;
+            params->active_layout_id = 0xFEU;
+            header->checksum = 0U;
+            header->checksum = nlk_crc32(0U, buf, len);
+            assert(keyboard_config_decode(&dst, "NK60-v2", KEYBOARD_CONFIG_KEYBOARD,
+                                          0U, buf, len) < 0);
+            assert(dst.keymap[1][2] == 9U);
+            params->active_layout_id = src.active_layout_id;
+            header->checksum = 0U;
+            header->checksum = nlk_crc32(0U, buf, len);
+        }
+        buf[len - 1U] ^= 1U;
+        dst.keymap[1][2] = 7U;
+        assert(keyboard_config_decode(&dst, "NK60-v2", KEYBOARD_CONFIG_KEYBOARD,
+                                      0U, buf, len) < 0);
+        assert(dst.keymap[1][2] == 7U);
+        assert(keyboard_config_encode(&src, "NK60-v2", "Copy macro", KEYBOARD_CONFIG_MACRO,
+                                      2U, buf, sizeof(buf), &len) == 0);
+        assert(keyboard_config_decode(&dst, "NK60-v2", KEYBOARD_CONFIG_MACRO,
+                                      1U, buf, len) == 0);
+        assert(dst.macro_info[1].step_count == 1U && dst.macro_steps[1][0].key_code == 4U);
+        {
+            uint32_t pressed = 1U;
+            saw_macro_key = false;
+            dst.report_cb = capture_macro_report;
+            dst.keymap[0][0] = NLK_KB_MACRO_KEYCODE_BASE + 1U;
+            assert(nlk_cap_keyboard_bind_key_action(&dst, 0U, 0U, "macro_play", false) == 0);
+            assert(nlk_cap_keyboard_update_local_keys(&dst, &pressed, 1U) == 0);
+            assert(nlk_cap_keyboard_tick(&dst, 10U) == 0);
+            assert(nlk_cap_keyboard_tick(&dst, 11U) == 0);
+            assert(saw_macro_key);
+            assert(nlk_cap_keyboard_macro_cancel(&dst) == 0);
+            {
+                struct nlk_kb_macro_step chord[] = {
+                    { NLK_KB_MACRO_ACT_KEY_DOWN, 0xE0U, 0U },
+                    { NLK_KB_MACRO_ACT_KEY_TAP, 4U, 0U },
+                    { NLK_KB_MACRO_ACT_KEY_UP, 0xE0U, 0U },
+                };
+                pressed = 0U;
+                assert(nlk_cap_keyboard_update_local_keys(&dst, &pressed, 1U) == 0);
+                assert(nlk_cap_keyboard_set_macro(&dst, 1U, "Chord", chord, 3U, 1U) == 0);
+                saw_macro_modified_key = false;
+                pressed = 1U;
+                assert(nlk_cap_keyboard_update_local_keys(&dst, &pressed, 1U) == 0);
+                assert(nlk_cap_keyboard_tick(&dst, 11U) == 0);
+                assert(nlk_cap_keyboard_tick(&dst, 12U) == 0);
+                assert(nlk_cap_keyboard_tick(&dst, 13U) == 0);
+                assert(nlk_cap_keyboard_tick(&dst, 14U) == 0);
+                assert(saw_macro_modified_key);
+                /* Pressing the macro key again while playing cancels playback and releases held keys */
+                pressed = 0U;
+                assert(nlk_cap_keyboard_update_local_keys(&dst, &pressed, 1U) == 0);
+                assert(nlk_cap_keyboard_set_macro(&dst, 1U, "Loop", chord, 3U, 50U) == 0);
+                pressed = 1U;
+                assert(nlk_cap_keyboard_update_local_keys(&dst, &pressed, 1U) == 0);
+                assert(dst.macro_playing == 1U);
+                assert(nlk_cap_keyboard_tick(&dst, 14U) == 0);
+                assert(dst.macro_modifiers != 0U);
+                pressed = 0U;
+                assert(nlk_cap_keyboard_update_local_keys(&dst, &pressed, 1U) == 0);
+                pressed = 1U;
+                assert(nlk_cap_keyboard_update_local_keys(&dst, &pressed, 1U) == 0);
+                assert(dst.macro_playing == 0U && dst.macro_modifiers == 0U);
+            }
+        }
+        assert(nlk_cap_keyboard_register_light_effect(&src, "off", "", NULL, NULL) == 0);
+        assert(nlk_cap_keyboard_register_light_effect(&src, "rainbow", "", NULL, NULL) == 0);
+        assert(nlk_cap_keyboard_register_light_effect(&dst, "rainbow", "", NULL, NULL) == 0);
+        assert(nlk_cap_keyboard_register_light_effect(&dst, "off", "", NULL, NULL) == 0);
+        {
+            struct nlk_kb_light_zone_desc zone = {0};
+            assert(nlk_cap_keyboard_register_light_zone(&src, &zone, NULL) == 0);
+            assert(nlk_cap_keyboard_register_light_zone(&dst, &zone, NULL) == 0);
+            src.zone_cfgs[0].effect_id = 1U;
+            src.zone_cfgs[0].brightness = 77U;
+        }
+        src.light_cfg.effect_id = 1U;
+        src.light_cfg.brightness = 53U;
+        assert(keyboard_config_encode(&src, "NK60-v2", "Evening", KEYBOARD_CONFIG_LIGHT,
+                                      0U, buf, sizeof(buf), &len) == 0);
+        assert(keyboard_config_decode(&dst, "NK60-v2", KEYBOARD_CONFIG_LIGHT,
+                                      0U, buf, len) == 0);
+        assert(dst.light_cfg.effect_id == 0U && dst.light_cfg.brightness == 53U);
+        assert(dst.zone_cfgs[0].effect_id == 0U && dst.zone_cfgs[0].brightness == 77U);
+        nlk_cap_keyboard_deinit(&src);
+        nlk_cap_keyboard_deinit(&dst);
+    }
+    {
+        struct nlk_keyboard_ctx kb;
+        struct keyboard_config_file_info info;
+        struct nlk_kb_config_file_req req = {0};
+        struct nlk_kb_config_list_req list = {0};
+        struct nlk_kb_config_list_resp page;
+        struct nlk_pkt_hdr hdr = {0};
+        uint16_t resp_len = 0U;
+        uint32_t cursor = 0U;
+        unsigned int found = 0U;
+        char id[16];
+        int i;
+
+        mock_vfs_init();
+        assert(nos_mkdir("/profiles", 0755) == 0);
+        assert(nlk_cap_keyboard_init_sized(NULL, &kb, 1U, 3U, 3U, 2U, NULL, NULL) == 0);
+        for (i = 0; i < 6; i++) {
+            snprintf(id, sizeof(id), "profile%d", i);
+            kb.keymap[0][0] = (uint8_t)(10 + i);
+            assert(keyboard_config_file_save(&kb, "NK60-v2", "/profiles", id, id,
+                                             KEYBOARD_CONFIG_KEYBOARD, 0U) == 0);
+        }
+        assert(keyboard_config_file_save(&kb, "NK60-v2", "/profiles", "profile0", "duplicate",
+                                         KEYBOARD_CONFIG_KEYBOARD, 0U) == -EEXIST);
+        g_vfs_fail_close = true;
+        assert(keyboard_config_file_save(&kb, "NK60-v2", "/profiles", "badclose", "badclose",
+                                         KEYBOARD_CONFIG_KEYBOARD, 0U) < 0);
+        g_vfs_fail_close = false;
+        assert(vfs_lookup_path(NULL, "/profiles/config/badclose.nkc") == NULL);
+        assert(vfs_lookup_path(NULL, "/profiles/config/profile0.nkc") != NULL);
+        while (keyboard_config_file_next("/profiles", "NK60-v2", KEYBOARD_CONFIG_KEYBOARD,
+                                         &cursor, &info) == 1) {
+            found++;
+        }
+        assert(found == 6U);
+        kb.keymap[0][0] = 0U;
+        assert(keyboard_config_file_load(&kb, "NK60-v2", "/profiles", "profile3",
+                                         KEYBOARD_CONFIG_KEYBOARD, 0U) == 0);
+        assert(kb.keymap[0][0] == 13U);
+        assert(keyboard_config_file_load(&kb, "wrong", "/profiles", "profile3",
+                                         KEYBOARD_CONFIG_KEYBOARD, 0U) < 0);
+        assert(nlk_cap_keyboard_set_config_files_cb(&kb, mock_config_files_cb, &kb) == 0);
+        hdr.cmd_op = NLK_KB_OP_CONFIG_FILES_SAVE;
+        req.kind = NLK_KB_CONFIG_KEYBOARD;
+        strcpy(req.id, "via_nlk");
+        strcpy(req.name, "Via NLK");
+        assert(kb.cap.ops->on_rpc(NULL, &kb.cap, &hdr, &req, sizeof(req), NULL, &resp_len) == 0);
+        kb.keymap[0][0] = 55U;
+        assert(keyboard_config_file_restore(&kb, "NK60-v2", "/profiles",
+                                            KEYBOARD_CONFIG_KEYBOARD) == 0);
+        assert(kb.keymap[0][0] == 13U);
+        hdr.cmd_op = NLK_KB_OP_CONFIG_FILES_LOAD;
+        strcpy(req.id, "profile1");
+        g_vfs_fail_selection_write = true;
+        assert(kb.cap.ops->on_rpc(NULL, &kb.cap, &hdr, &req, sizeof(req), NULL, &resp_len) < 0);
+        g_vfs_fail_selection_write = false;
+        assert(kb.keymap[0][0] == 13U);
+        kb.keymap[0][0] = 0U;
+        assert(keyboard_config_file_restore(&kb, "NK60-v2", "/profiles",
+                                            KEYBOARD_CONFIG_KEYBOARD) == 0);
+        assert(kb.keymap[0][0] == 13U);
+        {
+            uint8_t kreq[sizeof(struct nlk_kb_keymap_hdr) + sizeof(struct nlk_kb_keymap_entry)] = {0};
+            struct nlk_kb_keymap_hdr *khdr = (struct nlk_kb_keymap_hdr *)kreq;
+            struct nlk_kb_keymap_entry *kent = (struct nlk_kb_keymap_entry *)(kreq + sizeof(*khdr));
+            khdr->layer = 0U;
+            khdr->start_index = 0U;
+            khdr->count = 1U;
+            kent->key_code = 88U;
+            hdr.cmd_op = NLK_KB_OP_SET_KEYMAP;
+            assert(kb.cap.ops->on_rpc(NULL, &kb.cap, &hdr, kreq, sizeof(kreq), NULL, &resp_len) == 0);
+            assert(vfs_lookup_path(NULL, "/profiles/active.nkc") != NULL);
+            kb.keymap[0][0] = 0U;
+            assert(keyboard_config_file_restore(&kb, "NK60-v2", "/profiles",
+                                                KEYBOARD_CONFIG_ACTIVE) == 0);
+            assert(kb.keymap[0][0] == 88U);
+        }
+        hdr.cmd_op = NLK_KB_OP_CONFIG_FILES_LIST;
+        list.kind = NLK_KB_CONFIG_KEYBOARD;
+        assert(kb.cap.ops->on_rpc(NULL, &kb.cap, &hdr, &list, sizeof(list), &page, &resp_len) == 0);
+        assert(resp_len == sizeof(page) && page.eof == 0U && page.id[0] != '\0');
+        nlk_cap_keyboard_deinit(&kb);
+    }
     assert(nlk_cap_flash_init(&node_nk60, &nk60_flash_cap,
                               (uint8_t)BOOT_NORMAL, 0x00020100UL) == 1);
     assert(nlk_cap_flash_register_part(&nk60_flash_cap, &nk60_parts[0]) == 0);

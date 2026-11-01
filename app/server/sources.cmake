@@ -10,7 +10,8 @@ if(CONFIG_DISPLAY_SERVER)
 endif()
 
 if(CONFIG_KEYBOARD)
-    list(APPEND APP_SRCS server/keyboard/keyboard_server.c)
+    list(APPEND APP_SRCS server/keyboard/keyboard_server.c server/keyboard/keyboard_config.c
+                         server/keyboard/keyboard_config_store.c)
     if(NOT (CONFIG_NLK_SERVER OR CONFIG_NDK_SERVER))
         list(APPEND APP_SRCS
             server/nlk/core/nlk_frame.c

@@ -44,7 +44,7 @@ static const struct key_action_default_binding g_nk60_default_action_bindings[] 
     { 2U, 47U, "light_toggle" }, /* Layer 2 Key 47: 背光开关动作 */
 };
 
-static const struct keyboard_profile_layout g_nk60_layouts[2] = {
+static const struct keyboard_profile_layout g_nk60_layouts[] = {
     {
         .info = {
             .layout_id   = NLK_KB_LAYOUT_STD_60_ANSI,
@@ -55,46 +55,20 @@ static const struct keyboard_profile_layout g_nk60_layouts[2] = {
         },
         .default_keymap     = &g_nk60_def_key_code_layout[0][0],
     },
-    {
-        .info = {
-            .layout_id   = NLK_KB_LAYOUT_ARROW_60,
-            .key_count   = 64U,
-            .matrix_rows = 5U,
-            .matrix_cols = 14U,
-            .name        = "Arrow-64",
-        },
-        .default_keymap     = &g_nk60_def_key_code_layout[0][0],
-    },
 };
 
-static const struct nlk_kb_light_zone_desc g_nk60_light_zones[3] = {
+static const struct nlk_kb_light_zone_desc g_nk60_light_zones[] = {
     {
         .zone_id           = 0U,
         .type              = NLK_KB_LIGHT_TYPE_RGB_MATRIX,
         .led_start         = 0U,
         .led_count         = 61U,
-        .supported_effects = 0x7FU,
+        .supported_effects = 0x0FU,
         .name              = "Key-RGB",
-    },
-    {
-        .zone_id           = 1U,
-        .type              = NLK_KB_LIGHT_TYPE_UNDERGLOW,
-        .led_start         = 61U,
-        .led_count         = 9U,
-        .supported_effects = 0x3FU,
-        .name              = "Underglow",
-    },
-    {
-        .zone_id           = 2U,
-        .type              = NLK_KB_LIGHT_TYPE_INDICATOR,
-        .led_start         = 70U,
-        .led_count         = 3U,
-        .supported_effects = 0x03U,
-        .name              = "Indicators",
     },
 };
 
-static const struct nlk_kb_zone_light_cfg g_nk60_default_zone_cfgs[3] = {
+static const struct nlk_kb_zone_light_cfg g_nk60_default_zone_cfgs[] = {
     {
         .zone_id    = 0U,
         .enable     = 1U,
@@ -104,26 +78,6 @@ static const struct nlk_kb_zone_light_cfg g_nk60_default_zone_cfgs[3] = {
         .color_r    = 255U,
         .color_g    = 128U,
         .color_b    = 0U,
-    },
-    {
-        .zone_id    = 1U,
-        .enable     = 1U,
-        .effect_id  = NK60_EFFECT_BREATH,
-        .brightness = 180U,
-        .speed      = 96U,
-        .color_r    = 0U,
-        .color_g    = 200U,
-        .color_b    = 255U,
-    },
-    {
-        .zone_id    = 2U,
-        .enable     = 1U,
-        .effect_id  = NK60_EFFECT_STATIC,
-        .brightness = 255U,
-        .speed      = 0U,
-        .color_r    = 255U,
-        .color_g    = 255U,
-        .color_b    = 255U,
     },
 };
 
@@ -175,7 +129,7 @@ static const struct nlk_kb_action_desc g_nk60_actions[6] = {
 static const struct nlk_kb_macro_info g_nk60_default_macro_info[1] = {
     {
         .macro_id     = 0U,
-        .step_count   = 2U,
+        .step_count   = 3U,
         .repeat_count = 1U,
         .flags        = 0U,
         .name         = "Quick-Paste",
@@ -186,11 +140,13 @@ static const struct nlk_kb_macro_step g_nk60_default_macro_steps[1][NLK_KB_MAX_M
     {
         { .type = NLK_KB_MACRO_ACT_KEY_DOWN, .key_code = KC_LCTRL, .delay_ms = 10U },
         { .type = NLK_KB_MACRO_ACT_KEY_TAP,  .key_code = KC_V,     .delay_ms = 20U },
+        { .type = NLK_KB_MACRO_ACT_KEY_UP,   .key_code = KC_LCTRL, .delay_ms = 10U },
     },
 };
 
 static const struct keyboard_profile g_nk60_kb_profile = {
     .name               = "NK60-V2",
+    .hardware_id        = "NK60-V2-ANSI61-v1",
     .rows               = 5U,
     .cols               = 14U,
     .key_count          = NK60_KEY_NUM,
@@ -199,13 +155,13 @@ static const struct keyboard_profile g_nk60_kb_profile = {
     .switch_type        = NLK_KB_SW_MECH,
     .kb_flags           = NLK_KB_FLAG_6KRO | NLK_KB_FLAG_NKRO |
                           NLK_KB_FLAG_MEDIA_KEYS | NLK_KB_FLAG_MODULAR_HUB |
-                          NLK_KB_FLAG_LIGHT_RGB_KEY | NLK_KB_FLAG_LIGHT_UNDERGLOW |
+                          NLK_KB_FLAG_LIGHT_RGB_KEY |
                           NLK_KB_FLAG_LIGHT_INDICATORS,
     .debounce_ms        = 10U,
     .led_matrix_rows    = 5U,
     .led_matrix_cols    = 14U,
-    .underglow_leds     = 9U,
-    .led_count          = 70U,
+    .underglow_leds     = 0U,
+    .led_count          = 61U,
     .poll_rate_hz       = 100U,
     .default_keymap     = &g_nk60_def_key_code_layout[0][0],
 
@@ -215,14 +171,14 @@ static const struct keyboard_profile g_nk60_kb_profile = {
     .default_action_bindings      = g_nk60_default_action_bindings,
 
     /* Multi-Layout Registration */
-    .layout_count       = 2U,
+    .layout_count       = 1U,
     .layouts            = g_nk60_layouts,
 
     .light_effect_count = (uint8_t)(sizeof(g_nk60_light_effects) / sizeof(g_nk60_light_effects[0])),
     .light_effects      = g_nk60_light_effects,
 
     /* Multi-Zone Backlight Registration */
-    .light_zone_count   = 3U,
+    .light_zone_count   = 1U,
     .light_zones        = g_nk60_light_zones,
     .default_zone_cfgs  = g_nk60_default_zone_cfgs,
 

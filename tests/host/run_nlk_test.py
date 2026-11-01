@@ -29,6 +29,8 @@ def main():
             NLK_DIR / "caps/cap_shell.c",
             NLK_DIR / "caps/cap_vfs.c",
             NLK_DIR / "caps/cap_keyboard.c",
+            ROOT / "app/server/keyboard/keyboard_config.c",
+            ROOT / "app/server/keyboard/keyboard_config_store.c",
             NLK_DIR / "caps/cap_encoder.c",
             NLK_DIR / "caps/cap_display.c",
             NLK_DIR / "caps/cap_wireless.c",
