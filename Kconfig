@@ -383,6 +383,14 @@ config SHELL
 	help
 	  启用交互式 Shell 命令行界面。
 
+config SHELL_CONSOLE
+	bool "Enable console TTY shell session"
+	depends on SHELL
+	default y
+	help
+	  在默认 console TTY 上启动独立 nshell 交互任务。如果禁用，
+	  系统初始化时不自动派生 console 任务，但仍可通过 NLK 等通道派生 shell。
+
 config SHELL_STACK_SIZE
 	int "Shell task stack size"
 	depends on SHELL

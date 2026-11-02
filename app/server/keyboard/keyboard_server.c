@@ -1177,7 +1177,7 @@ static int keyboard_server_init(void)
     ks->ks_dev.priv = ks;
 
     ks->task = task_create("keyboard_server", keyboard_server_task_entry,
-                           ks, 3, 4096, 10, NULL);
+                           ks, 3, 2048, 10, NULL);
     if (ks->task == NULL) {
         pr_fatal("create keyboard_server task err\n");
         BUG_ON(true);

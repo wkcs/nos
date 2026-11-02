@@ -6674,8 +6674,10 @@ int nshell_spawn(struct nos_tty *tty, const char *name, bool show_banner)
     return 0;
 }
 
+#ifdef CONFIG_SHELL_CONSOLE
 static int nshell_init(void)
 {
     return nshell_spawn(nos_console_tty(), "nshell", true);
 }
 task_init(nshell_init);
+#endif
