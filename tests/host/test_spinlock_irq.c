@@ -16,6 +16,8 @@ int test_waiter_entered;
 static int owner_entered;
 static int owner_irq_state = -1;
 static SPINLOCK(test_lock);
+static SPINLOCK(lock_a);
+static SPINLOCK(lock_b);
 
 addr_t disable_irq_save(void)
 {
@@ -65,6 +67,70 @@ int main(void)
         fputs("FAIL: waiter overwrote owner's saved interrupt state\n", stderr);
         return 1;
     }
+
+    /* Verify LIFO nested spin_lock_irq / spin_unlock_irq */
+    test_irq_state = 0;
+    spin_lock_irq(&lock_a);
+    if (test_irq_state != 1 || !spin_is_locked(&lock_a)) {
+        fputs("FAIL: lock_a did not disable IRQ or mark locked\n", stderr);
+        return 1;
+    }
+    spin_lock_irq(&lock_b);
+    if (test_irq_state != 1 || !spin_is_locked(&lock_b)) {
+        fputs("FAIL: lock_b did not keep IRQ disabled\n", stderr);
+        return 1;
+    }
+    spin_unlock_irq(&lock_b);
+    if (test_irq_state != 1 || spin_is_locked(&lock_b)) {
+        fputs("FAIL: LIFO inner unlock prematurely re-enabled IRQ\n", stderr);
+        return 1;
+    }
+    spin_unlock_irq(&lock_a);
+    if (test_irq_state != 0 || spin_is_locked(&lock_a)) {
+        fputs("FAIL: LIFO outer unlock did not restore IRQ state\n", stderr);
+        return 1;
+    }
+
+    /* Verify non-LIFO nested spin_lock_irq(A); spin_lock_irq(B); spin_unlock_irq(A); spin_unlock_irq(B); */
+    test_irq_state = 0;
+    spin_lock_irq(&lock_a);
+    spin_lock_irq(&lock_b);
+    spin_unlock_irq(&lock_a);
+    if (test_irq_state != 1 || !spin_is_locked(&lock_b)) {
+        fputs("FAIL: non-LIFO first unlock prematurely re-enabled IRQ while lock_b held\n", stderr);
+        return 1;
+    }
+    spin_unlock_irq(&lock_b);
+    if (test_irq_state != 0 || spin_is_locked(&lock_b)) {
+        fputs("FAIL: non-LIFO last unlock failed to restore outermost IRQ state\n", stderr);
+        return 1;
+    }
+
+    /* Verify spin_trylock_irq and spin_lock_irqsave / spin_unlock_irqrestore */
+    {
+        addr_t flags = 0;
+        test_irq_state = 0;
+        if (!spin_trylock_irq(&lock_a)) {
+            fputs("FAIL: spin_trylock_irq failed on unlocked lock_a\n", stderr);
+            return 1;
+        }
+        if (spin_trylock_irq(&lock_a)) {
+            fputs("FAIL: spin_trylock_irq succeeded on already-locked lock_a\n", stderr);
+            return 1;
+        }
+        spin_lock_irqsave(&lock_b, flags);
+        spin_unlock_irq(&lock_a);
+        if (test_irq_state != 1) {
+            fputs("FAIL: IRQ re-enabled while irqsave lock_b still held\n", stderr);
+            return 1;
+        }
+        spin_unlock_irqrestore(&lock_b, flags);
+        if (test_irq_state != 0) {
+            fputs("FAIL: spin_unlock_irqrestore did not restore IRQ state\n", stderr);
+            return 1;
+        }
+    }
+
     puts("spinlock IRQ state checks passed");
     return 0;
 }

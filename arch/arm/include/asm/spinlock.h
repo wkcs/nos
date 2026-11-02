@@ -13,6 +13,7 @@
 #include <asm/barrier.h>
 
 #define TICKET_SHIFT 16
+#define ARCH_HAS_SPIN_TRYLOCK 1
 
 typedef struct {
     union {
@@ -29,7 +30,38 @@ typedef struct {
     };
 } arch_spinlock_t;
 
-#define SEV		__ALT_SMP_ASM(WASM(sev), WASM(nop))
+static inline int arch_spin_is_locked(const arch_spinlock_t *lock)
+{
+    return ACCESS_ONCE(lock->tickets.next) != ACCESS_ONCE(lock->tickets.owner);
+}
+
+#if !defined(CONFIG_SMP) && (!defined(CONFIG_NR_CPUS) || (CONFIG_NR_CPUS <= 1))
+
+static inline void arch_spin_lock(arch_spinlock_t *lock)
+{
+    lock->tickets.next = (u16)(lock->tickets.owner + 1U);
+    barrier();
+}
+
+static inline int arch_spin_trylock(arch_spinlock_t *lock)
+{
+    if (arch_spin_is_locked(lock)) {
+        return 0;
+    }
+    lock->tickets.next = (u16)(lock->tickets.owner + 1U);
+    barrier();
+    return 1;
+}
+
+static inline void arch_spin_unlock(arch_spinlock_t *lock)
+{
+    barrier();
+    lock->tickets.owner = lock->tickets.next;
+}
+
+#else /* SMP */
+
+#define SEV __ALT_SMP_ASM(WASM(sev), WASM(nop))
 
 static inline void dsb_sev(void)
 {
@@ -64,11 +96,37 @@ static inline void arch_spin_lock(arch_spinlock_t *lock)
     smp_mb();
 }
 
+static inline int arch_spin_trylock(arch_spinlock_t *lock)
+{
+    unsigned long contended, res;
+    u32 slock;
+
+    do {
+        __asm__ __volatile__(
+        "   ldrex   %0, [%3]\n"
+        "   mov     %2, #0\n"
+        "   subs    %1, %0, %0, ror #16\n"
+        "   addeq   %0, %0, %4\n"
+        "   strexeq %2, %0, [%3]"
+        : "=&r" (slock), "=&r" (contended), "=&r" (res)
+        : "r" (&lock->slock), "I" (1 << TICKET_SHIFT)
+        : "cc");
+    } while (res);
+
+    if (!contended) {
+        smp_mb();
+        return 1;
+    }
+    return 0;
+}
+
 static inline void arch_spin_unlock(arch_spinlock_t *lock)
 {
     smp_mb();
     lock->tickets.owner++;
     dsb_sev();
 }
+
+#endif /* CONFIG_SMP */
 
 #endif /* __ARM_ASM_SPINLOCK_H__ */
