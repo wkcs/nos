@@ -189,60 +189,207 @@ static int ks_apply_layout_id(struct keyboard_server *ks, uint8_t layout_id)
     return -EINVAL;
 }
 
+/* Profile 头部结构体（流式持久化使用，免 6.2KB 堆内存分配） */
+struct keyboard_profile_header {
+    uint32_t magic;                    /* KS_CONFIG_MAGIC */
+    uint16_t version;                  /* KS_CONFIG_VERSION */
+    uint8_t  slot_id;                  /* 0..KS_PROFILE_MAX_SLOTS-1 */
+    uint8_t  key_count;                /* 按键总数 */
+    uint8_t  layer_count;              /* 图层总数 */
+    uint8_t  active_layout_id;         /* 当前布局 ID */
+    uint8_t  reserved[2];              /* 对齐保留 */
+    struct nlk_kb_params       params; /* 运行参数 */
+    struct nlk_kb_light_cfg    light;  /* 灯效配置 */
+    struct nlk_kb_zone_light_cfg zone_cfgs[NLK_KB_MAX_LIGHT_ZONES]; /* 多区域背光 */
+} __attribute__((packed));
+
+_Static_assert(sizeof(struct keyboard_profile_header) ==
+               offsetof(struct keyboard_stored_profile, keymap),
+               "keyboard_profile_header prefix size mismatch");
+_Static_assert(sizeof(struct keyboard_stored_profile) ==
+               sizeof(struct keyboard_profile_header) +
+               sizeof(((struct keyboard_stored_profile *)0)->keymap) +
+               sizeof(((struct keyboard_stored_profile *)0)->action_chains) +
+               sizeof(uint32_t),
+               "keyboard_stored_profile layout size mismatch");
+
+/* 完整写入指定字节数，处理部分写入 */
+static int ks_write_exact(int fd, const void *buf, size_t count)
+{
+    const uint8_t *p = (const uint8_t *)buf;
+    while (count > 0U) {
+        ssize_t ret = nos_write(fd, p, count);
+        if (ret <= 0) {
+            return (ret < 0) ? (int)ret : -EIO;
+        }
+        p += ret;
+        count -= (size_t)ret;
+    }
+    return 0;
+}
+
+/* 完整读取指定字节数，处理部分读取 */
+static int ks_read_exact(int fd, void *buf, size_t count)
+{
+    uint8_t *p = (uint8_t *)buf;
+    while (count > 0U) {
+        ssize_t ret = nos_read(fd, p, count);
+        if (ret <= 0) {
+            return (ret < 0) ? (int)ret : -EIO;
+        }
+        p += ret;
+        count -= (size_t)ret;
+    }
+    return 0;
+}
+
+/* 写入分块并增量计算 CRC32 */
+static int ks_write_chunk(int fd, uint32_t *crc, const void *data, size_t len)
+{
+    if (len == 0U) {
+        return 0;
+    }
+    if (crc != NULL) {
+        *crc = nlk_crc32(*crc, data, len);
+    }
+    if (fd >= 0) {
+        return ks_write_exact(fd, data, len);
+    }
+    return 0;
+}
+
+/* 填充零字节并增量计算 CRC32 */
+static int ks_write_padding(int fd, uint32_t *crc, size_t count)
+{
+    static const uint8_t zeros[32] = {0};
+    while (count > 0U) {
+        size_t chunk = (count > sizeof(zeros)) ? sizeof(zeros) : count;
+        int ret = ks_write_chunk(fd, crc, zeros, chunk);
+        if (ret != 0) {
+            return ret;
+        }
+        count -= chunk;
+    }
+    return 0;
+}
+
+/* 跳过指定字节数 */
+static int ks_read_discard(int fd, size_t count)
+{
+    uint8_t dummy[32];
+    while (count > 0U) {
+        size_t chunk = (count > sizeof(dummy)) ? sizeof(dummy) : count;
+        int ret = ks_read_exact(fd, dummy, chunk);
+        if (ret != 0) {
+            return ret;
+        }
+        count -= chunk;
+    }
+    return 0;
+}
+
 int keyboard_config_save_profile(uint8_t slot_id)
 {
     struct keyboard_server *ks = g_keyboard_server;
-    struct keyboard_stored_profile *stored;
+    struct keyboard_profile_header hdr;
     char path[48];
-    char active_path[48];
     int fd;
-    ssize_t ret;
+    uint32_t crc = 0U;
     uint8_t layer;
+    uint8_t key_cnt;
+    int ret;
 
     if (ks == NULL || slot_id >= KS_PROFILE_MAX_SLOTS) {
         return -EINVAL;
     }
 
-    stored = kmalloc(sizeof(*stored), GFP_KERNEL);
-    if (stored == NULL) {
-        return -ENOMEM;
-    }
-    memset(stored, 0, sizeof(*stored));
-    stored->magic = KS_CONFIG_MAGIC;
-    stored->version = KS_CONFIG_VERSION;
-    stored->slot_id = slot_id;
-    stored->key_count = ks->profile.key_count;
-    stored->layer_count = ks->profile.layer_count;
-    stored->active_layout_id = ks->kb_cap.active_layout_id;
-    stored->params = ks->kb_cap.params;
-    stored->light = ks->kb_cap.light_cfg;
-    memcpy(stored->zone_cfgs, ks->kb_cap.zone_cfgs, sizeof(stored->zone_cfgs));
-    for (layer = 0U; layer < ks->kb_cap.desc.layer_count; layer++) {
-        memcpy(stored->keymap[layer], ks->kb_cap.keymap[layer], ks->kb_cap.desc.key_count);
-        memcpy(stored->action_chains[layer], ks->kb_cap.action_chains[layer],
-               (size_t)ks->kb_cap.desc.key_count * sizeof(stored->action_chains[0][0]));
-    }
-
-    stored->crc32 = nlk_crc32(0U, stored, offsetof(struct keyboard_stored_profile, crc32));
+    /* 组装 Profile 头部信息（约 64 字节栈内存） */
+    memset(&hdr, 0, sizeof(hdr));
+    hdr.magic = KS_CONFIG_MAGIC;
+    hdr.version = KS_CONFIG_VERSION;
+    hdr.slot_id = slot_id;
+    hdr.key_count = ks->profile.key_count;
+    hdr.layer_count = ks->profile.layer_count;
+    hdr.active_layout_id = ks->kb_cap.active_layout_id;
+    hdr.params = ks->kb_cap.params;
+    hdr.light = ks->kb_cap.light_cfg;
+    memcpy(hdr.zone_cfgs, ks->kb_cap.zone_cfgs, sizeof(hdr.zone_cfgs));
 
     ks_make_profile_path(slot_id, path, sizeof(path));
     fd = nos_open(path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
     if (fd < 0) {
         pr_err("failed to open %s for saving: %d\n", path, fd);
-        kfree(stored);
         return fd;
     }
-    ret = nos_write(fd, stored, sizeof(*stored));
-    nos_close(fd);
-    kfree(stored);
 
-    if (ret != (ssize_t)sizeof(*stored)) {
-        pr_err("failed to write %s: written=%ld\n", path, (long)ret);
-        return -EIO;
+    /* 1. 写入 Header 并计算 CRC32 */
+    ret = ks_write_chunk(fd, &crc, &hdr, sizeof(hdr));
+    if (ret != 0) {
+        goto err_out;
     }
 
-    ks_make_active_slot_path(active_path, sizeof(active_path));
-    fd = nos_open(active_path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    key_cnt = ks->kb_cap.desc.key_count;
+
+    /* 2. 流式写入各层 keymap（每层固定 NLK_KB_MAX_KEYS 字节） */
+    for (layer = 0U; layer < NLK_KB_MAX_LAYERS; layer++) {
+        if (layer < ks->kb_cap.desc.layer_count && ks->kb_cap.keymap[layer] != NULL) {
+            uint8_t write_keys = (key_cnt < NLK_KB_MAX_KEYS) ? key_cnt : NLK_KB_MAX_KEYS;
+            ret = ks_write_chunk(fd, &crc, ks->kb_cap.keymap[layer], write_keys);
+            if (ret != 0) {
+                goto err_out;
+            }
+            if (write_keys < NLK_KB_MAX_KEYS) {
+                ret = ks_write_padding(fd, &crc, (size_t)(NLK_KB_MAX_KEYS - write_keys));
+                if (ret != 0) {
+                    goto err_out;
+                }
+            }
+        } else {
+            ret = ks_write_padding(fd, &crc, NLK_KB_MAX_KEYS);
+            if (ret != 0) {
+                goto err_out;
+            }
+        }
+    }
+
+    /* 3. 流式写入各层 action chains（每层固定 NLK_KB_MAX_KEYS 组动作链） */
+    for (layer = 0U; layer < NLK_KB_MAX_LAYERS; layer++) {
+        if (layer < ks->kb_cap.desc.layer_count && ks->kb_cap.action_chains[layer] != NULL) {
+            uint8_t write_keys = (key_cnt < NLK_KB_MAX_KEYS) ? key_cnt : NLK_KB_MAX_KEYS;
+            size_t bytes = (size_t)write_keys * sizeof(struct nlk_kb_key_action_chain);
+            ret = ks_write_chunk(fd, &crc, ks->kb_cap.action_chains[layer], bytes);
+            if (ret != 0) {
+                goto err_out;
+            }
+            if (write_keys < NLK_KB_MAX_KEYS) {
+                size_t pad_bytes = (size_t)(NLK_KB_MAX_KEYS - write_keys) *
+                                   sizeof(struct nlk_kb_key_action_chain);
+                ret = ks_write_padding(fd, &crc, pad_bytes);
+                if (ret != 0) {
+                    goto err_out;
+                }
+            }
+        } else {
+            size_t pad_bytes = (size_t)NLK_KB_MAX_KEYS * sizeof(struct nlk_kb_key_action_chain);
+            ret = ks_write_padding(fd, &crc, pad_bytes);
+            if (ret != 0) {
+                goto err_out;
+            }
+        }
+    }
+
+    /* 4. 写入校验码 CRC32 */
+    ret = ks_write_exact(fd, &crc, sizeof(crc));
+    if (ret != 0) {
+        goto err_out;
+    }
+
+    nos_close(fd);
+    fd = -1;
+
+    /* 保存当前激活 Slot 编号 */
+    ks_make_active_slot_path(path, sizeof(path));
+    fd = nos_open(path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
     if (fd >= 0) {
         (void)nos_write(fd, &slot_id, 1U);
         nos_close(fd);
@@ -255,82 +402,182 @@ int keyboard_config_save_profile(uint8_t slot_id)
 
     pr_info("Profile slot %u saved to Flash (%s)\n", slot_id, path);
     return 0;
+
+err_out:
+    if (fd >= 0) {
+        nos_close(fd);
+    }
+    pr_err("failed to write %s: %d\n", path, ret);
+    return ret;
 }
 
 int keyboard_config_load_profile(uint8_t slot_id)
 {
     struct keyboard_server *ks = g_keyboard_server;
-    struct keyboard_stored_profile *stored;
+    struct keyboard_profile_header hdr;
     char path[48];
     int fd;
-    ssize_t ret;
+    int ret;
     uint32_t calc_crc;
+    uint32_t stored_crc;
     uint8_t layer;
+    uint8_t kcnt;
+    bool locked;
 
     if (ks == NULL || slot_id >= KS_PROFILE_MAX_SLOTS) {
         return -EINVAL;
     }
 
-    stored = kmalloc(sizeof(*stored), GFP_KERNEL);
-    if (stored == NULL) {
-        return -ENOMEM;
-    }
     ks_make_profile_path(slot_id, path, sizeof(path));
     fd = nos_open(path, O_RDONLY, 0);
     if (fd < 0) {
-        kfree(stored);
         return fd;
     }
-    ret = nos_read(fd, stored, sizeof(*stored));
-    nos_close(fd);
 
-    if (ret != (ssize_t)sizeof(*stored)) {
-        kfree(stored);
+    /* 第一阶段：读取头部并校验 magic 与 version */
+    ret = ks_read_exact(fd, &hdr, sizeof(hdr));
+    if (ret != 0) {
+        nos_close(fd);
         return -EIO;
     }
-    if (stored->magic != KS_CONFIG_MAGIC || stored->version != KS_CONFIG_VERSION) {
+
+    if (hdr.magic != KS_CONFIG_MAGIC || hdr.version != KS_CONFIG_VERSION) {
         pr_err("corrupted profile magic/version in %s\n", path);
-        kfree(stored);
+        nos_close(fd);
         return -EINVAL;
     }
-    calc_crc = nlk_crc32(0U, stored, offsetof(struct keyboard_stored_profile, crc32));
-    if (calc_crc != stored->crc32) {
-        pr_err("CRC mismatch in %s: calc=0x%08x, stored=0x%08x\n", path,
-               (unsigned int)calc_crc, (unsigned int)stored->crc32);
-        kfree(stored);
+
+    /* 第一阶段：分块流式校验文件完整性 CRC32，不修改当前键盘状态 */
+    calc_crc = nlk_crc32(0U, &hdr, sizeof(hdr));
+    {
+        uint8_t chunk_buf[64];
+        size_t remaining = sizeof(struct keyboard_stored_profile) -
+                           sizeof(hdr) - sizeof(uint32_t);
+        while (remaining > 0U) {
+            size_t chunk = (remaining > sizeof(chunk_buf)) ? sizeof(chunk_buf) : remaining;
+            ret = ks_read_exact(fd, chunk_buf, chunk);
+            if (ret != 0) {
+                nos_close(fd);
+                return -EIO;
+            }
+            calc_crc = nlk_crc32(calc_crc, chunk_buf, chunk);
+            remaining -= chunk;
+        }
+    }
+
+    ret = ks_read_exact(fd, &stored_crc, sizeof(stored_crc));
+    if (ret != 0) {
+        nos_close(fd);
         return -EIO;
     }
 
-    /* Old profiles may reference effects this firmware no longer provides. */
+    if (calc_crc != stored_crc) {
+        pr_err("CRC mismatch in %s: calc=0x%08x, stored=0x%08x\n", path,
+               (unsigned int)calc_crc, (unsigned int)stored_crc);
+        nos_close(fd);
+        return -EIO;
+    }
+
+    /* 第二阶段：校验通过，重置文件指针至负载起始位置 */
+    if (nos_lseek(fd, (loff_t)sizeof(hdr), SEEK_SET) < 0) {
+        nos_close(fd);
+        fd = nos_open(path, O_RDONLY, 0);
+        if (fd < 0) {
+            return fd;
+        }
+        ret = ks_read_discard(fd, sizeof(hdr));
+        if (ret != 0) {
+            nos_close(fd);
+            return -EIO;
+        }
+    }
+
+    /* 处理灯效兼容性（固件变更兼容） */
     if (ks->kb_cap.light_effect_count > 0U) {
         uint8_t zone;
-        if (stored->light.effect_id >= ks->kb_cap.light_effect_count) {
-            stored->light.effect_id = ks->kb_cap.light_cfg.effect_id;
+        if (hdr.light.effect_id >= ks->kb_cap.light_effect_count) {
+            hdr.light.effect_id = ks->kb_cap.light_cfg.effect_id;
         }
         for (zone = 0U; zone < NLK_KB_MAX_LIGHT_ZONES; zone++) {
-            if (stored->zone_cfgs[zone].effect_id >= ks->kb_cap.light_effect_count) {
-                stored->zone_cfgs[zone].effect_id = ks->kb_cap.zone_cfgs[zone].effect_id;
+            if (hdr.zone_cfgs[zone].effect_id >= ks->kb_cap.light_effect_count) {
+                hdr.zone_cfgs[zone].effect_id = ks->kb_cap.zone_cfgs[zone].effect_id;
             }
         }
     }
-    mutex_lock(&ks->lock);
-    for (layer = 0U; layer < ks->kb_cap.desc.layer_count; layer++) {
-        memcpy(ks->kb_cap.keymap[layer], stored->keymap[layer], ks->kb_cap.desc.key_count);
-        memcpy(ks->kb_cap.action_chains[layer], stored->action_chains[layer],
-               (size_t)ks->kb_cap.desc.key_count * sizeof(stored->action_chains[0][0]));
-    }
-    ks->kb_cap.light_cfg = stored->light;
-    memcpy(ks->kb_cap.zone_cfgs, stored->zone_cfgs, sizeof(stored->zone_cfgs));
-    (void)nlk_cap_keyboard_set_params(&ks->kb_cap, &stored->params);
 
-    if (stored->active_layout_id != 0U && stored->active_layout_id != ks->kb_cap.active_layout_id) {
-        (void)ks_apply_layout_id(ks, stored->active_layout_id);
+    locked = (ks->lock.owner != current);
+    if (locked) {
+        mutex_lock(&ks->lock);
     }
-    mutex_unlock(&ks->lock);
+
+    kcnt = ks->kb_cap.desc.key_count;
+
+    /* 第二阶段：直接读取各层按键映射至 ks->kb_cap.keymap */
+    for (layer = 0U; layer < NLK_KB_MAX_LAYERS; layer++) {
+        if (layer < ks->kb_cap.desc.layer_count && ks->kb_cap.keymap[layer] != NULL) {
+            uint8_t read_keys = (kcnt < NLK_KB_MAX_KEYS) ? kcnt : NLK_KB_MAX_KEYS;
+            ret = ks_read_exact(fd, ks->kb_cap.keymap[layer], read_keys);
+            if (ret != 0) {
+                goto err_unlock;
+            }
+            if (read_keys < NLK_KB_MAX_KEYS) {
+                ret = ks_read_discard(fd, (size_t)(NLK_KB_MAX_KEYS - read_keys));
+                if (ret != 0) {
+                    goto err_unlock;
+                }
+            }
+        } else {
+            ret = ks_read_discard(fd, NLK_KB_MAX_KEYS);
+            if (ret != 0) {
+                goto err_unlock;
+            }
+        }
+    }
+
+    /* 第二阶段：直接读取各层动作链至 ks->kb_cap.action_chains */
+    for (layer = 0U; layer < NLK_KB_MAX_LAYERS; layer++) {
+        if (layer < ks->kb_cap.desc.layer_count && ks->kb_cap.action_chains[layer] != NULL) {
+            uint8_t read_keys = (kcnt < NLK_KB_MAX_KEYS) ? kcnt : NLK_KB_MAX_KEYS;
+            size_t bytes = (size_t)read_keys * sizeof(struct nlk_kb_key_action_chain);
+            ret = ks_read_exact(fd, ks->kb_cap.action_chains[layer], bytes);
+            if (ret != 0) {
+                goto err_unlock;
+            }
+            if (read_keys < NLK_KB_MAX_KEYS) {
+                size_t pad_bytes = (size_t)(NLK_KB_MAX_KEYS - read_keys) *
+                                   sizeof(struct nlk_kb_key_action_chain);
+                ret = ks_read_discard(fd, pad_bytes);
+                if (ret != 0) {
+                    goto err_unlock;
+                }
+            }
+        } else {
+            size_t pad_bytes = (size_t)NLK_KB_MAX_KEYS * sizeof(struct nlk_kb_key_action_chain);
+            ret = ks_read_discard(fd, pad_bytes);
+            if (ret != 0) {
+                goto err_unlock;
+            }
+        }
+    }
+
+    ks->kb_cap.light_cfg = hdr.light;
+    memcpy(ks->kb_cap.zone_cfgs, hdr.zone_cfgs, sizeof(hdr.zone_cfgs));
+    (void)nlk_cap_keyboard_set_params(&ks->kb_cap, &hdr.params);
+
+    if (hdr.active_layout_id != 0U && hdr.active_layout_id != ks->kb_cap.active_layout_id) {
+        (void)ks_apply_layout_id(ks, hdr.active_layout_id);
+    }
+
+    if (locked) {
+        mutex_unlock(&ks->lock);
+        locked = false;
+    }
+    nos_close(fd);
+    fd = -1;
 
     if (ks->key_dev != NULL && ks->key_dev->ops.control != NULL) {
-        uint16_t deb = stored->params.debounce_ms;
-        uint16_t poll = stored->params.poll_rate_hz;
+        uint16_t deb = hdr.params.debounce_ms;
+        uint16_t poll = hdr.params.poll_rate_hz;
         if (deb > 0U) {
             (void)ks->key_dev->ops.control(ks->key_dev, KEY_CTRL_SET_DEBOUNCE, &deb);
         }
@@ -343,11 +590,9 @@ int keyboard_config_load_profile(uint8_t slot_id)
         ks->ds_dev = device_find_by_name("display-server");
     }
     if (ks->ds_dev != NULL && ks->ds_dev->ops.control != NULL) {
-        int cmd = (stored->light.enable != 0U) ? DS_CTRL_ENABLE : DS_CTRL_DISABLE;
+        int cmd = (hdr.light.enable != 0U) ? DS_CTRL_ENABLE : DS_CTRL_DISABLE;
         (void)ks->ds_dev->ops.control(ks->ds_dev, cmd, NULL);
     }
-
-    kfree(stored);
 
     ks->active_slot_id = slot_id;
     ks->saved_slots_mask |= (uint8_t)(1U << slot_id);
@@ -356,6 +601,15 @@ int keyboard_config_load_profile(uint8_t slot_id)
 
     pr_info("Profile slot %u loaded from Flash filesystem\n", slot_id);
     return 0;
+
+err_unlock:
+    if (locked) {
+        mutex_unlock(&ks->lock);
+    }
+    if (fd >= 0) {
+        nos_close(fd);
+    }
+    return ret;
 }
 
 int keyboard_config_switch_profile(uint8_t slot_id)
