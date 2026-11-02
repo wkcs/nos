@@ -562,8 +562,9 @@ static int fatfs_file_fsync(struct file *file, loff_t start, loff_t end, int dat
         return -EBADF;
     }
     FIL *fp = (FIL *)file->private_data;
+    BYTE drv = (fp->fs != NULL) ? fp->fs->drv : 0;
     FRESULT res = f_sync(fp);
-    if (disk_ioctl(0, CTRL_SYNC, NULL) != RES_OK || res != FR_OK) {
+    if (disk_ioctl(drv, CTRL_SYNC, NULL) != RES_OK || res != FR_OK) {
         return -EIO;
     }
     return 0;
@@ -594,8 +595,14 @@ static int fatfs_sync_fs(struct super_block *sb, int wait)
         return -EINVAL;
     }
     FATFS *fs = (FATFS *)sb->s_fs_info;
+#if _FS_REENTRANT
+    if (!ff_req_grant(fs->sobj)) return -EBUSY;
+#endif
     FRESULT res = sync_fs(fs);
-    if (disk_ioctl(0, CTRL_SYNC, NULL) != RES_OK || res != FR_OK) {
+#if _FS_REENTRANT
+    ff_rel_grant(fs->sobj);
+#endif
+    if (disk_ioctl(fs->drv, CTRL_SYNC, NULL) != RES_OK || res != FR_OK) {
         return -EIO;
     }
     return 0;
