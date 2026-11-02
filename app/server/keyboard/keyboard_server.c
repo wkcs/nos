@@ -1025,9 +1025,14 @@ static int ks_on_config_files(uint8_t op, const void *req, uint16_t req_len,
                     ks->sync_busy = true;
                     need_signal = true;
                 }
+                /* 清除脏标记，确保不触发防抖计时器的二次冗余落盘 */
+                ks->config_dirty = false;
+            } else {
+                /* 若后台持久化正在写盘，标记脏位并在 100ms 后重试快照生成 */
+                uint32_t now_ms = (uint32_t)tick_to_msec_64(cpu_run_ticks());
+                ks->config_dirty = true;
+                ks->sync_deadline_ms = now_ms + 100U;
             }
-            /* 清除脏标记，确保不触发防抖计时器的二次冗余落盘 */
-            ks->config_dirty = false;
         }
         mutex_unlock(&ks->lock);
         kfree(file_buf);
