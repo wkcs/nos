@@ -6,4 +6,7 @@ if(CONFIG_BLOCK_SPI_SD)
     list(APPEND DRIVERS_SRCS block/sd_block.c block/sd_spi.c block/sd_spi_card.c
                             block/sd_spi_io.c block/sd_csd.c)
 endif()
+if(CONFIG_BLOCK_CACHE)
+    list(APPEND DRIVERS_SRCS block/block_cache.c)
+endif()
 

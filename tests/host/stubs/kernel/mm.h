@@ -5,5 +5,6 @@
 #include <kernel/kernel.h>
 #define GFP_KERNEL 1U
 void *kmalloc(size_t size, gfp_t flags);
+void *kzalloc(size_t size, gfp_t flags);
 void kfree(void *ptr);
 #endif

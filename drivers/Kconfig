@@ -76,6 +76,21 @@ config BLOCK_SPI_SD
 	help
 	  启用 SPI SD 卡块设备适配层。
 
+config BLOCK_CACHE
+	bool "Generic block cache support"
+	default y if FATFS
+	help
+	  启用通用块缓存模块，为块设备提供写合并、延迟回写与 LRU 缓存。
+
+config BLOCK_CACHE_SECTORS
+	int "Number of cached sectors"
+	depends on BLOCK_CACHE
+	range 2 64
+	default 8 if BOARD_NK60
+	default 4
+	help
+	  块缓存保留的扇区条目数。NK60-V2 上默认为 8（对应 4KB Flash 扇区缓存）。
+
 endmenu
 
 # SPI 与存储外设驱动

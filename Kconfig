@@ -444,7 +444,7 @@ config DEVICE_TREE
 
 endmenu
 
-# 驱动程序配置
+# 驱动程序配置 (含通用块缓存 Block Cache)
 source "drivers/Kconfig"
 
 # 文件系统配置
