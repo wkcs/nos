@@ -173,7 +173,7 @@ struct w25q_wl *nk60_flash_get_assets_wl(void)
 
 int nk60_assets_mount(void)
 {
-#if defined(CONFIG_VFS) && (defined(CONFIG_LITTLEFS) || defined(CONFIG_FATFS))
+#if defined(CONFIG_VFS) && (defined(CONFIG_ASSETS_FS_LITTLEFS) || defined(CONFIG_FATFS))
     struct dentry *root;
     struct dentry *dir = NULL;
     struct dentry *mnt_root = NULL;
@@ -198,7 +198,7 @@ int nk60_assets_mount(void)
 
     (void)vfs_unmount(dir);
 
-#if defined(CONFIG_LITTLEFS)
+#if defined(CONFIG_ASSETS_FS_LITTLEFS)
     mnt_root = vfs_mount("littlefs", 0, "nk60_v2-assets", NULL);
     if (mnt_root != NULL) {
         fs_name = "LittleFS";

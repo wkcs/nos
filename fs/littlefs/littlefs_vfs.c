@@ -15,10 +15,6 @@
 #include <drivers/block.h>
 #include <string.h>
 
-#ifdef CONFIG_FATFS
-#include "../fatfs/diskio.h"
-#endif
-
 #include "lfs.h"
 
 /* LittleFS 超级块私有信息 */
@@ -196,9 +192,6 @@ static int littlefs_bd_erase(const struct lfs_config *c, lfs_block_t block)
 static int littlefs_bd_sync(const struct lfs_config *c)
 {
     (void)c;
-#ifdef CONFIG_FATFS
-    (void)disk_ioctl(0, CTRL_SYNC, NULL);
-#endif
     return LFS_ERR_OK;
 }
 
@@ -898,8 +891,8 @@ static struct dentry *littlefs_mount(struct file_system_type *fs_type, int flags
     sbi->cfg.lock = littlefs_bd_lock;
     sbi->cfg.unlock = littlefs_bd_unlock;
 
-    sbi->cfg.read_size = 512;
-    sbi->cfg.prog_size = 512;
+    sbi->cfg.read_size = sector_size;
+    sbi->cfg.prog_size = sector_size;
     sbi->cfg.block_size = 4096;
     if (sector_count > 0 && sector_size > 0) {
         uint32_t sectors_per_block = 4096 / sector_size;
@@ -907,7 +900,7 @@ static struct dentry *littlefs_mount(struct file_system_type *fs_type, int flags
     } else {
         sbi->cfg.block_count = 0;
     }
-    sbi->cfg.cache_size = 512;
+    sbi->cfg.cache_size = sector_size;
     sbi->cfg.lookahead_size = 32;
     sbi->cfg.block_cycles = 500;
 
