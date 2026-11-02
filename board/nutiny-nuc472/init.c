@@ -9,6 +9,7 @@
 #ifdef CONFIG_NLK_SERVER
 #include <nos/nlk_core.h>
 #endif
+#include <uapi/nos/errno.h>
 
 extern addr_t __mm_pool_start, __mm_pool_end;
 extern addr_t __mm_sys_reserve_start, __mm_sys_reserve_end;
@@ -35,3 +36,14 @@ void board_init(void)
     arch_mmu_init();
 }
 void board_late_init(void) { }
+
+int board_write_boot_flag(uint32_t flag)
+{
+    (void)flag;
+    return -ENOSYS;
+}
+
+uint32_t board_read_boot_flag(void)
+{
+    return 0;
+}
