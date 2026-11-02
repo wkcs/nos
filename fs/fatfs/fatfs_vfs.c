@@ -550,18 +550,59 @@ static int fatfs_same_file(struct file *left, struct file *right)
     return a->fs == b->fs && a->dir_sect == b->dir_sect && a->dir_ptr == b->dir_ptr;
 }
 
+/**
+ * fatfs_file_fsync - 将 FatFs 打开文件的缓冲数据与目录项刷新至底层设备
+ */
+static int fatfs_file_fsync(struct file *file, loff_t start, loff_t end, int datasync)
+{
+    (void)start;
+    (void)end;
+    (void)datasync;
+    if (file == NULL || file->private_data == NULL) {
+        return -EBADF;
+    }
+    FIL *fp = (FIL *)file->private_data;
+    FRESULT res = f_sync(fp);
+    if (disk_ioctl(0, CTRL_SYNC, NULL) != RES_OK || res != FR_OK) {
+        return -EIO;
+    }
+    return 0;
+}
+
 static struct file_operations fatfs_file_ops = {
     .read = fatfs_read,
     .write = fatfs_write,
     .release = fatfs_release,
     .open = fatfs_file_open,
     .same_file = fatfs_same_file,
+    .fsync = fatfs_file_fsync,
 };
 
 static struct file_operations fatfs_dir_ops = {
     .open = fatfs_dir_open,
     .readdir = fatfs_readdir,
     .release = fatfs_dir_release,
+};
+
+/**
+ * fatfs_sync_fs - 刷新 FatFs 文件系统元数据窗口与物理存储设备
+ */
+static int fatfs_sync_fs(struct super_block *sb, int wait)
+{
+    (void)wait;
+    if (sb == NULL || sb->s_fs_info == NULL) {
+        return -EINVAL;
+    }
+    FATFS *fs = (FATFS *)sb->s_fs_info;
+    FRESULT res = sync_fs(fs);
+    if (disk_ioctl(0, CTRL_SYNC, NULL) != RES_OK || res != FR_OK) {
+        return -EIO;
+    }
+    return 0;
+}
+
+static const struct super_operations fatfs_super_ops = {
+    .sync_fs = fatfs_sync_fs,
 };
 
 
@@ -600,6 +641,7 @@ static int fatfs_fill_super(struct super_block *sb, void *data, int silent) {
     }
     
     sb->s_fs_info = fs;
+    sb->s_op = &fatfs_super_ops;
     
     // Root inode
     struct inode *inode = fatfs_make_inode(sb, S_IFDIR | 0755);

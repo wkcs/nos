@@ -26,6 +26,18 @@ static ssize_t delayed_read(struct file *file, char *buf, size_t count, loff_t *
 
 static const struct file_operations ops = { .read = delayed_read };
 
+int vfs_get_mount_count(void)
+{
+    return 0;
+}
+
+int vfs_get_mount_entry(int index, struct vfs_mount_entry *entry)
+{
+    (void)index;
+    (void)entry;
+    return -ENOENT;
+}
+
 static void *reader(void *arg)
 {
     int fd = *(int *)arg;

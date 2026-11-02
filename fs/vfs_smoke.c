@@ -29,6 +29,23 @@ static int vfs_smoke(void)
         return -EIO;
     }
 
+    /* 验证 nos_fsync / nos_fdatasync 与 nos_sync 系统调用契约 */
+    if (nos_fsync(fd) != 0 || nos_fdatasync(fd) != 0) {
+        pr_err("vfs_smoke: fsync/fdatasync on open file failed\n");
+        nos_close(fd);
+        return -EIO;
+    }
+    if (nos_fsync(-1) != -EBADF || nos_fdatasync(-1) != -EBADF) {
+        pr_err("vfs_smoke: fsync on invalid fd failed\n");
+        nos_close(fd);
+        return -EIO;
+    }
+    if (nos_sync() != 0) {
+        pr_err("vfs_smoke: nos_sync failed\n");
+        nos_close(fd);
+        return -EIO;
+    }
+
     if (nos_close(fd) < 0) {
         pr_err("vfs_smoke: close after write failed\n");
         return -EIO;

@@ -188,6 +188,11 @@ int nos_rename(const char *oldpath, const char *newpath);
 int nos_truncate(const char *pathname, loff_t length);
 int vfs_bind_mount(struct dentry *target, struct dentry *mnt_root); // Add declaration
 
+/* VFS Synchronization API */
+int nos_sync(void);
+int nos_fsync(int fd);
+int nos_fdatasync(int fd);
+
 /* Filesystem Initialization */
 int init_ramfs(void);
 int init_fatfs(void);

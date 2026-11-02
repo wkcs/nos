@@ -101,3 +101,83 @@ out:
     (void)vfs_fd_put(file);
     return new_pos;
 }
+
+/**
+ * nos_fsync - 将指定文件描述符的脏数据与元数据刷新到存储介质
+ * @fd: 目标文件描述符
+ *
+ * 成功返回 0，失败返回负值错误码（如 -EBADF, -EIO 等）。
+ */
+int nos_fsync(int fd)
+{
+    struct file *file;
+    int ret = 0;
+
+    file = vfs_fd_get(fd);
+    if (file == NULL) return -EBADF;
+
+    if (file->f_op != NULL && file->f_op->fsync != NULL) {
+        ret = file->f_op->fsync(file, 0, (loff_t)-1, 0);
+    } else if (file->f_path.dentry != NULL &&
+               file->f_path.dentry->d_sb != NULL &&
+               file->f_path.dentry->d_sb->s_op != NULL &&
+               file->f_path.dentry->d_sb->s_op->sync_fs != NULL) {
+        ret = file->f_path.dentry->d_sb->s_op->sync_fs(file->f_path.dentry->d_sb, 1);
+    }
+
+    (void)vfs_fd_put(file);
+    return ret;
+}
+
+/**
+ * nos_fdatasync - 将指定文件描述符的数据刷新到存储介质（元数据在不影响后续读取时可不强制刷新）
+ * @fd: 目标文件描述符
+ *
+ * 在当前轻量实现中直接委托给 nos_fsync(fd)。
+ */
+int nos_fdatasync(int fd)
+{
+    return nos_fsync(fd);
+}
+
+/**
+ * nos_sync - 遍历所有已挂载文件系统超级块并触发持久化刷盘
+ *
+ * 成功返回 0，如遇错误返回首个失败的错误码。
+ */
+int nos_sync(void)
+{
+    int count = vfs_get_mount_count();
+    struct super_block *synced[16];
+    int synced_count = 0;
+    int ret = 0;
+
+    for (int i = 0; i < count; i++) {
+        struct vfs_mount_entry entry;
+        if (vfs_get_mount_entry(i, &entry) != 0 || entry.dentry == NULL) {
+            continue;
+        }
+        struct super_block *sb = entry.dentry->d_sb;
+        if (sb == NULL || sb->s_op == NULL || sb->s_op->sync_fs == NULL) {
+            continue;
+        }
+        bool already_synced = false;
+        for (int j = 0; j < synced_count; j++) {
+            if (synced[j] == sb) {
+                already_synced = true;
+                break;
+            }
+        }
+        if (already_synced) {
+            continue;
+        }
+        if (synced_count < (int)(sizeof(synced) / sizeof(synced[0]))) {
+            synced[synced_count++] = sb;
+        }
+        int err = sb->s_op->sync_fs(sb, 1);
+        if (err != 0 && ret == 0) {
+            ret = err;
+        }
+    }
+    return ret;
+}

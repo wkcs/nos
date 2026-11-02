@@ -8,4 +8,7 @@ typedef long long loff_t;
 ssize_t nos_read(int fd, void *buf, size_t count);
 ssize_t nos_write(int fd, const void *buf, size_t count);
 loff_t nos_lseek(int fd, loff_t offset, int whence);
+int nos_sync(void);
+int nos_fsync(int fd);
+int nos_fdatasync(int fd);
 #endif

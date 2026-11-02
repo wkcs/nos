@@ -4,14 +4,26 @@
 #include <kernel/sem.h>
 struct inode { loff_t i_size; };
 struct file;
+struct super_block;
+struct dentry;
 struct file_operations {
     int (*release)(struct inode *, struct file *);
     ssize_t (*read)(struct file *, char *, size_t, loff_t *);
     ssize_t (*write)(struct file *, const char *, size_t, loff_t *);
+    int (*fsync)(struct file *, loff_t, loff_t, int);
     loff_t (*llseek)(struct file *, loff_t, int);
 };
+struct super_operations {
+    int (*sync_fs)(struct super_block *sb, int wait);
+};
+struct super_block {
+    const struct super_operations *s_op;
+};
+struct dentry {
+    struct super_block *d_sb;
+};
 struct file {
-    struct { void *dentry; } f_path;
+    struct { struct dentry *dentry; } f_path;
     struct inode *f_inode;
     const struct file_operations *f_op;
     unsigned int f_refs;
@@ -20,5 +32,13 @@ struct file {
     sem_t f_pos_sem;
     int marker;
 };
+struct vfs_mount_entry {
+    const char *dev_name;
+    const char *mount_path;
+    const char *fs_name;
+    struct dentry *dentry;
+};
+int vfs_get_mount_count(void);
+int vfs_get_mount_entry(int index, struct vfs_mount_entry *entry);
 static inline void vfs_dentry_put(void *dentry) { (void)dentry; }
 #endif
