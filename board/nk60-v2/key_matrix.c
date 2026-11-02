@@ -13,7 +13,6 @@
 #define pr_fmt(fmt) "[KEY]:%s[%d]:"fmt, __func__, __LINE__
 
 #include <kernel/errno.h>
-#include <kernel/sleep.h>
 #include <kernel/device.h>
 #include <kernel/init.h>
 #include <kernel/gpio.h>
@@ -23,13 +22,30 @@
 #include <board/board.h>
 #include <nos/keyboard.h>
 
-#define HC595_EN   PBout(12)
-#define HC595_CLK  PBout(13)
-#define HC595_DATA PBout(15)
-#define KEY_DATA   PBin(14)
+#define HC595_EN_PIN    GPIO_Pin_12
+#define HC595_CLK_PIN   GPIO_Pin_13
+#define KEY_DATA_PIN    GPIO_Pin_14
+#define HC595_DATA_PIN  GPIO_Pin_15
 
-#define KEY_UP   1
-#define KEY_DOWN 0
+/*
+ * 兼容标准 CMSIS 32 位 BSRR 寄存器访问：
+ * 厂商 SPL 库头文件将 0x18 拆分为 16 位的 BSRRL/BSRRH，
+ * 此处为本文件重定义 GPIOB 寄存器结构以支持 32 位原子单周期写入。
+ */
+typedef struct {
+    __IO uint32_t MODER;
+    __IO uint32_t OTYPER;
+    __IO uint32_t OSPEEDR;
+    __IO uint32_t PUPDR;
+    __IO uint32_t IDR;
+    __IO uint32_t ODR;
+    __IO uint32_t BSRR;
+    __IO uint32_t LCKR;
+    __IO uint32_t AFR[2];
+} nk60_gpio_reg_t;
+
+#undef GPIOB
+#define GPIOB ((nk60_gpio_reg_t *)GPIOB_BASE)
 
 #define NK60_KEY_NUM        61U
 #define HC595_BIT_NUM       (8 * 9)
@@ -58,33 +74,51 @@ struct nk60_key {
     struct key_driver_stats stats;
 };
 
-static void hc595_load(void)
+static inline void hc595_pulse_clk(void)
 {
-    HC595_EN = 1;
-    usleep(1);
-    HC595_EN = 0;
-    usleep(10);
+    GPIOB->BSRR = HC595_CLK_PIN;
+    __asm__ volatile("nop\n\tnop\n\t");
+    GPIOB->BSRR = (uint32_t)HC595_CLK_PIN << 16U;
 }
 
-static void hc595_send_bit(uint8_t data)
+static inline void hc595_pulse_load(void)
 {
-    HC595_DATA = data;
-    usleep(1);
-    HC595_CLK = 1;
-    usleep(1);
-    HC595_CLK = 0;
-    hc595_load();
+    GPIOB->BSRR = HC595_EN_PIN;
+    __asm__ volatile("nop\n\tnop\n\t");
+    GPIOB->BSRR = (uint32_t)HC595_EN_PIN << 16U;
 }
 
-static void nk60_v2_key_scan_once(uint32_t *raw_data)
+static inline void key_matrix_settle_delay(void)
+{
+    /*
+     * 矩阵回路 RC 充放电建立延时：
+     * 约 60~70 个周期，在 84MHz 主频下约为 700~800 ns，
+     * 保证 PB14 内部上拉电平在按键释放时充分恢复到高电平阈值。
+     */
+    for (volatile int i = 0; i < 15; i++) {
+        __asm__ volatile("nop");
+    }
+}
+
+static noinline void nk60_v2_key_scan_once(uint32_t *raw_data)
 {
     int i;
 
     memset(raw_data, 0, HC595_RAW_DATA_NUM * sizeof(uint32_t));
 
-    for (i = 0; i < HC595_BIT_NUM; i++) {
-        hc595_send_bit(i != 0);
-        if (KEY_DATA == KEY_DOWN) {
+    for (i = 0; i < (int)HC595_BIT_NUM; i++) {
+        if (i == 0) {
+            GPIOB->BSRR = (uint32_t)HC595_DATA_PIN << 16U; /* 送 0 */
+        } else {
+            GPIOB->BSRR = HC595_DATA_PIN;                  /* 送 1 */
+        }
+        __asm__ volatile("nop\n\t");
+
+        hc595_pulse_clk();
+        hc595_pulse_load();
+        key_matrix_settle_delay();
+
+        if ((GPIOB->IDR & KEY_DATA_PIN) == 0U) {
             raw_data[KEY_RAW_GROUP(i)] |= (1UL << KEY_RAW_BIT(i));
         }
     }
@@ -149,9 +183,9 @@ static int nk60_v2_key_control(struct device *dev, int cmd, void *args)
         break;
     case KEY_CTRL_DISABLE:
         key->enable = false;
-        HC595_CLK = 0;
-        HC595_DATA = 0;
-        HC595_EN = 0;
+        GPIOB->BSRR = ((uint32_t)HC595_CLK_PIN << 16U) |
+                      ((uint32_t)HC595_DATA_PIN << 16U) |
+                      ((uint32_t)HC595_EN_PIN << 16U);
         break;
     case KEY_CTRL_GET_ENABLE_STATUS:
         return key->enable;
@@ -200,12 +234,12 @@ static int nk60_v2_key_gpio_init(void)
     GPIO_InitStructure.GPIO_OType = GPIO_OType_PP;
     GPIO_InitStructure.GPIO_Speed = GPIO_Speed_100MHz;
     GPIO_InitStructure.GPIO_PuPd = GPIO_PuPd_UP;
-    GPIO_Init(GPIOB, &GPIO_InitStructure);
+    GPIO_Init((GPIO_TypeDef *)GPIOB, &GPIO_InitStructure);
 
     GPIO_InitStructure.GPIO_Pin = GPIO_Pin_14;
     GPIO_InitStructure.GPIO_Mode = GPIO_Mode_IN;
     GPIO_InitStructure.GPIO_PuPd = GPIO_PuPd_UP;
-    GPIO_Init(GPIOB, &GPIO_InitStructure);
+    GPIO_Init((GPIO_TypeDef *)GPIOB, &GPIO_InitStructure);
 
     RCC_AHB1PeriphClockCmd(RCC_AHB1Periph_GPIOA, ENABLE);
     GPIO_InitStructure.GPIO_Pin = GPIO_Pin_0;
@@ -213,9 +247,9 @@ static int nk60_v2_key_gpio_init(void)
     GPIO_InitStructure.GPIO_PuPd = GPIO_PuPd_UP;
     GPIO_Init(GPIOA, &GPIO_InitStructure);
 
-    HC595_CLK = 0;
-    HC595_DATA = 0;
-    HC595_EN = 0;
+    GPIOB->BSRR = ((uint32_t)HC595_CLK_PIN << 16U) |
+                  ((uint32_t)HC595_DATA_PIN << 16U) |
+                  ((uint32_t)HC595_EN_PIN << 16U);
 
     return 0;
 }
