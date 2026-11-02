@@ -52,6 +52,10 @@ typedef struct {
 #define HC595_RAW_DATA_NUM  KEY_RAW_WORDS(HC595_BIT_NUM)
 #define NK60_KEY_WORDS      KEY_RAW_WORDS(NK60_KEY_NUM)
 
+#ifndef NK60_KEY_SETTLE_LOOPS
+#define NK60_KEY_SETTLE_LOOPS 15U
+#endif
+
 /* 74HC595 硬件扫描位到 NK60 逻辑按键序号的私有走线映射表 */
 static const int8_t s_nk60_position_index[HC595_BIT_NUM] = {
      0,  1,  2,  3,  4,  5,  6,  7,
@@ -95,7 +99,7 @@ static inline void key_matrix_settle_delay(void)
      * 约 60~70 个周期，在 84MHz 主频下约为 700~800 ns，
      * 保证 PB14 内部上拉电平在按键释放时充分恢复到高电平阈值。
      */
-    for (volatile int i = 0; i < 15; i++) {
+    for (volatile uint32_t i = 0; i < NK60_KEY_SETTLE_LOOPS; i++) {
         __asm__ volatile("nop");
     }
 }
