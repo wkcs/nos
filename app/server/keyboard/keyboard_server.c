@@ -59,6 +59,8 @@ struct keyboard_server {
     struct mutex            lock;
     bool                    enable;
     bool                    caps_lock_active;
+    bool                    config_dirty;
+    uint32_t                sync_deadline_ms;
     uint8_t                 active_slot_id;
     uint8_t                 saved_slots_mask;
     uint32_t                raw_prev[KS_MAX_KEY_WORDS];
@@ -71,6 +73,8 @@ struct keyboard_server {
 };
 
 static struct keyboard_server *g_keyboard_server;
+
+static int ks_persistent_store_ready(struct keyboard_server *ks);
 
 static const struct keyboard_profile *g_registered_kb_profile;
 
@@ -615,10 +619,19 @@ err_unlock:
 
 int keyboard_config_switch_profile(uint8_t slot_id)
 {
+    struct keyboard_server *ks = g_keyboard_server;
     int ret;
 
     if (slot_id >= KS_PROFILE_MAX_SLOTS) {
         return -EINVAL;
+    }
+    if (ks != NULL && ks->config_dirty) {
+        ks->config_dirty = false;
+        if (ks_persistent_store_ready(ks) == 0) {
+            (void)keyboard_config_active_save(&ks->kb_cap, ks->profile.hardware_id,
+                                              "/assets/keyboard");
+            (void)nos_sync();
+        }
     }
     ret = keyboard_config_load_profile(slot_id);
     if (ret != 0) {
@@ -760,13 +773,56 @@ static int ks_on_config_files(uint8_t op, const void *req, uint16_t req_len,
                               void *resp, uint16_t *resp_len, void *priv)
 {
     struct keyboard_server *ks = priv;
-    int ret = ks_persistent_store_ready(ks);
-    if (ret != 0) return ret;
-    mutex_lock(&ks->lock);
+    int ret;
+
+    if (ks == NULL) {
+        return -EINVAL;
+    }
+    ret = ks_persistent_store_ready(ks);
+    if (ret != 0) {
+        return ret;
+    }
+
+    /*
+     * RPC 改灯、改键、调参在 cap_keyboard 中已在 RAM 完成更新。
+     * op == 0 (kb_sync_active_config) 仅标记脏位并刷新 1000ms 写回防抖截止时间，
+     * 避免持锁同步写 Flash 挂起按键扫描任务（时延 < 1ms 返回 ACK）。
+     */
+    if (op == 0U) {
+        uint32_t now_ms = (uint32_t)tick_to_msec_64(cpu_run_ticks());
+        mutex_lock(&ks->lock);
+        ks->config_dirty = true;
+        ks->sync_deadline_ms = now_ms + 1000U;
+        mutex_unlock(&ks->lock);
+        if (resp_len != NULL) {
+            *resp_len = 0U;
+        }
+        return 0;
+    }
+
+    if (op == NLK_KB_OP_CONFIG_FILES_INFO) {
+        mutex_lock(&ks->lock);
+        ret = keyboard_config_file_rpc(&ks->kb_cap, ks->profile.hardware_id,
+                                       "/assets/keyboard", op, req, req_len,
+                                       resp, resp_len);
+        mutex_unlock(&ks->lock);
+        return ret;
+    }
+
+    /*
+     * 文件列表、保存、加载、删除等操作在无锁状态下执行文件 I/O，
+     * 绝不在持有 ks->lock 期间挂起等待 Flash 擦写。
+     */
     ret = keyboard_config_file_rpc(&ks->kb_cap, ks->profile.hardware_id,
                                    "/assets/keyboard", op, req, req_len,
                                    resp, resp_len);
-    mutex_unlock(&ks->lock);
+    if (ret == 0 && (op == NLK_KB_OP_CONFIG_FILES_SAVE || op == NLK_KB_OP_CONFIG_FILES_LOAD)) {
+        uint32_t now_ms = (uint32_t)tick_to_msec_64(cpu_run_ticks());
+        mutex_lock(&ks->lock);
+        ks->config_dirty = true;
+        ks->sync_deadline_ms = now_ms + 1000U;
+        mutex_unlock(&ks->lock);
+    }
     return ret;
 }
 
@@ -826,8 +882,9 @@ static int ks_action_light_toggle(const struct key_action_context *ctx, void *pr
                 ks->kb_cap.zone_cfgs[0].enable = ks->kb_cap.light_cfg.enable;
             }
             if (ks_persistent_store_ready(ks) == 0) {
-                (void)keyboard_config_active_save(&ks->kb_cap, ks->profile.hardware_id,
-                                                  "/assets/keyboard");
+                uint32_t now_ms = (uint32_t)tick_to_msec_64(cpu_run_ticks());
+                ks->config_dirty = true;
+                ks->sync_deadline_ms = now_ms + 1000U;
             }
         }
     }
@@ -1161,13 +1218,15 @@ static int keyboard_server_control(struct device *dev, int cmd, void *args)
             return -EINVAL;
         }
         {
-            int rc = nlk_cap_keyboard_set_params(&ks->kb_cap, (const struct nlk_kb_params *)args);
+            int rc;
+            mutex_lock(&ks->lock);
+            rc = nlk_cap_keyboard_set_params(&ks->kb_cap, (const struct nlk_kb_params *)args);
             if (rc == 0 && ks_persistent_store_ready(ks) == 0) {
-                mutex_lock(&ks->lock);
-                (void)keyboard_config_active_save(&ks->kb_cap, ks->profile.hardware_id,
-                                                  "/assets/keyboard");
-                mutex_unlock(&ks->lock);
+                uint32_t now_ms = (uint32_t)tick_to_msec_64(cpu_run_ticks());
+                ks->config_dirty = true;
+                ks->sync_deadline_ms = now_ms + 1000U;
             }
+            mutex_unlock(&ks->lock);
             return rc;
         }
     case KS_CTRL_GET_ACTIVE_LAYOUT:
@@ -1177,13 +1236,15 @@ static int keyboard_server_control(struct device *dev, int cmd, void *args)
             return -EINVAL;
         }
         {
-            int rc = ks_apply_layout_id(ks, *(const uint8_t *)args);
+            int rc;
+            mutex_lock(&ks->lock);
+            rc = ks_apply_layout_id(ks, *(const uint8_t *)args);
             if (rc == 0 && ks_persistent_store_ready(ks) == 0) {
-                mutex_lock(&ks->lock);
-                (void)keyboard_config_active_save(&ks->kb_cap, ks->profile.hardware_id,
-                                                  "/assets/keyboard");
-                mutex_unlock(&ks->lock);
+                uint32_t now_ms = (uint32_t)tick_to_msec_64(cpu_run_ticks());
+                ks->config_dirty = true;
+                ks->sync_deadline_ms = now_ms + 1000U;
             }
+            mutex_unlock(&ks->lock);
             return rc;
         }
     case KS_CTRL_SAVE_PROFILE:
@@ -1284,7 +1345,6 @@ static void keyboard_server_task_entry(void *parameter)
     g_keyboard_server = ks;
     ks_init_filesystem_profiles(ks);
     if (ks_persistent_store_ready(ks) == 0) {
-        mutex_lock(&ks->lock);
         (void)nos_unlink("/assets/keyboard/k-default.nkc");
         (void)nos_unlink("/assets/keyboard/l-default.nkc");
         (void)nos_unlink("/assets/keyboard/m-quick-paste.nkc");
@@ -1298,7 +1358,6 @@ static void keyboard_server_task_entry(void *parameter)
             (void)keyboard_config_active_save(&ks->kb_cap, ks->profile.hardware_id,
                                               "/assets/keyboard");
         }
-        mutex_unlock(&ks->lock);
     }
 
     ks->hid_dev = device_find_by_name("hidd");
@@ -1319,6 +1378,16 @@ static void keyboard_server_task_entry(void *parameter)
             uint32_t w;
             uint32_t scan_ms;
             uint32_t now_ms = (uint32_t)tick_to_msec_64(cpu_run_ticks());
+
+            /* 异步写回防抖：无改动持续 1000ms 后，在无锁状态下执行安全写盘与 nos_sync() */
+            if (ks->config_dirty && (int32_t)(now_ms - ks->sync_deadline_ms) >= 0) {
+                ks->config_dirty = false;
+                if (ks_persistent_store_ready(ks) == 0) {
+                    (void)keyboard_config_active_save(&ks->kb_cap, ks->profile.hardware_id,
+                                                      "/assets/keyboard");
+                    (void)nos_sync();
+                }
+            }
 
             mutex_lock(&ks->lock);
             (void)nlk_cap_keyboard_tick(&ks->kb_cap, now_ms);
@@ -1344,6 +1413,8 @@ static void keyboard_server_task_entry(void *parameter)
                     }
                 }
                 if (changed) {
+                    uint8_t switch_slot = 0xFF;
+
                     mutex_lock(&ks->lock);
                     (void)nlk_cap_keyboard_update_local_keys(
                         &ks->kb_cap, ks->raw_stable, ks->profile.key_count);
@@ -1357,9 +1428,7 @@ static void keyboard_server_task_entry(void *parameter)
                                 if (base_kc >= KC_1 && base_kc <= KC_4) {
                                     uint8_t target_slot = (uint8_t)(base_kc - KC_1);
                                     if (target_slot != ks->active_slot_id) {
-                                        pr_info("Combo HotKey: FN + %u -> Switch to Profile Slot %u\n",
-                                                (unsigned int)(target_slot + 1U), (unsigned int)target_slot);
-                                        (void)keyboard_config_switch_profile(target_slot);
+                                        switch_slot = target_slot;
                                     }
                                     break;
                                 }
@@ -1367,6 +1436,12 @@ static void keyboard_server_task_entry(void *parameter)
                         }
                     }
                     mutex_unlock(&ks->lock);
+
+                    if (switch_slot != 0xFF) {
+                        pr_info("Combo HotKey: FN + %u -> Switch to Profile Slot %u\n",
+                                (unsigned int)(switch_slot + 1U), (unsigned int)switch_slot);
+                        (void)keyboard_config_switch_profile(switch_slot);
+                    }
                 }
             }
 
