@@ -27,3 +27,15 @@
 - Verified Markdown links, required sections, whitespace and placeholders.
 - Documentation changeset contains audit, first-stage spec and workflow notes;
   written-spec review remains the next gate. Runtime code is unchanged.
+- User approved written spec. Applied writing-plans and inspected the existing
+  build/test/init code to map dependencies and source paths.
+- Wrote 14 first-stage implementation tasks with API ledger, red/green steps,
+  producer-source host suites, legacy adapters, PI and full acceptance matrix.
+- Inline plan review clarified shared epoch namespace, atomic host locks,
+  fixture initialization and limits of the legacy Endpoint PI adapter.
+- No runtime source changed and no new implementation tests were run.
+- Completed inline spec-to-task coverage and signature/sequence checks; added
+  cancellation self-reference cleanup and queue hooks for lock-safe PI settling.
+- Offered subagent-driven versus inline execution and recommended ignored local
+  worktree location in one asynchronous preference question.
+- Preparing plan/spec-status documentation commit; implementation has not begun.

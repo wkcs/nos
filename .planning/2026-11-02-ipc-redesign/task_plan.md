@@ -11,8 +11,9 @@ design predictable MCU behavior and a correct SMP concurrency contract.
 4. [complete] User approved option A and the three-stage order; detailed wait-foundation specification is being written.
 5. [complete] First-stage spec and audit saved in the documentation changeset.
 6. [complete] Spec self-review: concrete lock order, timer tags/references, wake acknowledgement, legacy coexistence and mutex handoff clarified; local links and placeholders checked.
-7. [in_progress] Await written-spec review of docs/superpowers/specs/2026-11-02-ipc-wait-foundation-design.md before implementation planning.
-8. [pending] Invoke writing-plans and create staged implementation plans.
+7. [complete] User approved written wait-foundation spec (reply: 没问题).
+8. [complete] writing-plans applied; 14-task first-stage plan written and inline self-reviewed against the approved spec.
+9. [in_progress] Execution workflow/worktree question offered; await selection, then implement first-stage tasks with TDD and atomic commits.
 
 Visual companion: not needed for initial semantic and concurrency questions.
 Implementation is gated by the explicitly requested brainstorming workflow.
@@ -33,7 +34,17 @@ Implementation is gated by the explicitly requested brainstorming workflow.
   source-runqueue revalidation before considering cross-CPU placement.
 - No runtime source changed during design; baseline tests are from the audit,
   not fresh verification of an implementation.
+- User approved the written specification; design approval gate is satisfied.
+- Implementation plan: docs/superpowers/plans/2026-11-02-ipc-wait-foundation.md.
+- Repository .gitignore already ignores .worktrees/; no local worktree directory
+  or CLAUDE.md directory preference exists. Proposed execution checkout is
+  .worktrees/ipc-wait-foundation on feature/ipc-wait-foundation.
+- Plan self-review added lock-safe queue change/settle hooks for timeout PI
+  cleanup, and reaper-driven abandonment for cancelled tasks that never return
+  through normal wait_finish. These clarify existing approved lifecycle goals.
 
 ## Errors
 - Read attempt for arch/arm64/kernel/context.S found no such file; discover
   architecture context/switch paths with rg --files instead of guessing paths.
+- Optional CLAUDE.md lookup found no file; used .gitignore and existing worktree
+  inventory to prepare the execution location recommendation.

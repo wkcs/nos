@@ -85,3 +85,17 @@ behavior; no wholesale Linux userspace IPC/futex compatibility is implied.
   https://docs.kernel.org/driver-api/basics.html
   NOS will use immutable event tags plus retained lifetime for wait callbacks;
   generation checking alone is not sufficient for memory safety.
+
+## Implementation planning findings
+- User approved the written first-stage spec with 没问题.
+- Existing timer_get_base initialization disables local IRQ only; add a
+  cross-CPU initialization publication protocol before multithreaded first use.
+- Existing timer next_expires is uint64_t read via READ_ONCE; the new matrix
+  must not assume a 64-bit read is atomic on a 32-bit MCU.
+- Existing scheduler host spinlock stub increments tickets without real
+  exclusion. Reuse its generated headers only after replacing the spinlock
+  with a real host atomic implementation for new concurrency suites.
+- Existing .gitignore ignores .worktrees/; no local .worktrees/worktrees dir
+  or CLAUDE.md exists. Execution mode/location choice follows the plan handoff.
+- Plan uses one shared task epoch namespace across legacy/managed operations;
+  source-specific counters must not collide and acknowledge the wrong wait.
