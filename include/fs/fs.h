@@ -198,5 +198,6 @@ int init_ramfs(void);
 int init_fatfs(void);
 int init_procfs(void);
 int init_sysfs(void);
+int init_littlefs(void);
 
 #endif /* __NOS_FS_H__ */

@@ -69,4 +69,20 @@ config FATFS_CODEPAGE
 	help
 	  FatFs OEM 代码页（例如 936 为简体中文 GBK，437 为美式单字节编码以节省 Flash）。
 
+config LITTLEFS
+	bool "LittleFS file system"
+	default y if BOARD_NK60
+	default n
+	depends on VFS
+	help
+	  启用 LittleFS 文件系统支持（专为 MCU 与 NOR Flash 设计的轻量级掉电安全文件系统）。
+
+config ASSETS_FS_LITTLEFS
+	bool "Mount LittleFS on /assets"
+	default y if LITTLEFS && BOARD_NK60
+	default n
+	depends on LITTLEFS
+	help
+	  在系统引导阶段，将 W25Q assets 分区以 LittleFS 文件系统格式挂载至 /assets。
+
 endmenu

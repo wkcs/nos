@@ -35,5 +35,17 @@ if(CONFIG_FATFS)
     )
 endif()
 
+if(CONFIG_LITTLEFS)
+    list(APPEND FS_SRCS
+        littlefs/littlefs_vfs.c
+        ../libs/third_party/littlefs/lfs.c
+        ../libs/third_party/littlefs/lfs_util.c
+    )
+endif()
+
 add_library(nos_fs OBJECT ${FS_SRCS})
 nos_configure_kernel_target(nos_fs)
+
+if(CONFIG_LITTLEFS)
+    target_include_directories(nos_fs PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../libs/third_party/littlefs")
+endif()

@@ -216,6 +216,15 @@ int vfs_init(void) {
   }
 #endif
 
+#ifdef CONFIG_LITTLEFS
+  extern int init_littlefs(void);
+  ret = init_littlefs();
+  if (ret) {
+    pr_err("VFS: Failed to register littlefs\n");
+    return ret;
+  }
+#endif
+
 #ifdef CONFIG_PROCFS
   extern int init_procfs(void);
   ret = init_procfs();

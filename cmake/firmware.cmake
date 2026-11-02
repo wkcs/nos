@@ -47,16 +47,27 @@ if(EXISTS "${BOARD_LD_S}")
 
     # Pass 2: real kallsyms table extracted via Python + objdump (Windows/macOS/Linux safe)
     set(KALLSYMS_REAL_C "${CMAKE_CURRENT_BINARY_DIR}/kallsyms_table.c")
-    add_custom_command(
-        OUTPUT "${KALLSYMS_REAL_C}"
-        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/scripts/mkkallsyms.py"
-                --objdump "${CMAKE_OBJDUMP}"
-                --elf "$<TARGET_FILE:nos_pass1.elf>"
-                --out "${KALLSYMS_REAL_C}"
-        DEPENDS nos_pass1.elf "${CMAKE_CURRENT_SOURCE_DIR}/scripts/mkkallsyms.py"
-        COMMENT "Extracting kernel symbol table into kallsyms_table.c"
-        VERBATIM
-    )
+    if(CONFIG_KALLSYMS)
+        add_custom_command(
+            OUTPUT "${KALLSYMS_REAL_C}"
+            COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/scripts/mkkallsyms.py"
+                    --objdump "${CMAKE_OBJDUMP}"
+                    --elf "$<TARGET_FILE:nos_pass1.elf>"
+                    --out "${KALLSYMS_REAL_C}"
+            DEPENDS nos_pass1.elf "${CMAKE_CURRENT_SOURCE_DIR}/scripts/mkkallsyms.py"
+            COMMENT "Extracting kernel symbol table into kallsyms_table.c"
+            VERBATIM
+        )
+    else()
+        add_custom_command(
+            OUTPUT "${KALLSYMS_REAL_C}"
+            COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/scripts/mkkallsyms.py"
+                    --empty "${KALLSYMS_REAL_C}"
+            DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/scripts/mkkallsyms.py"
+            COMMENT "Generating empty kallsyms table (CONFIG_KALLSYMS disabled)"
+            VERBATIM
+        )
+    endif()
 
     add_executable(nos.elf ${NOS_OBJECT_LIBS} "${KALLSYMS_REAL_C}")
     add_dependencies(nos.elf nos_linker_script)

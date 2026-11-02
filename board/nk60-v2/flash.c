@@ -171,18 +171,18 @@ struct w25q_wl *nk60_flash_get_assets_wl(void)
     return &g_nk60_flash_info->assets_wl;
 }
 
-int nk60_assets_mount_fatfs(void)
+int nk60_assets_mount(void)
 {
-#if defined(CONFIG_VFS) && defined(CONFIG_FATFS)
+#if defined(CONFIG_VFS) && (defined(CONFIG_LITTLEFS) || defined(CONFIG_FATFS))
     struct dentry *root;
     struct dentry *dir = NULL;
-    struct dentry *mnt_root;
+    struct dentry *mnt_root = NULL;
+    const char *fs_name = NULL;
 
     if (g_nk60_flash_info == NULL || !g_nk60_flash_info->assets_ready) {
         return -ENODEV;
     }
 
-    fatfs_set_block_device(&g_nk60_flash_info->assets_dev);
     root = vfs_get_root();
     if (root == NULL) {
         return -ENOENT;
@@ -197,9 +197,26 @@ int nk60_assets_mount_fatfs(void)
     }
 
     (void)vfs_unmount(dir);
-    mnt_root = vfs_mount("fatfs", 0, "nk60_v2-assets", NULL);
+
+#if defined(CONFIG_LITTLEFS)
+    mnt_root = vfs_mount("littlefs", 0, "nk60_v2-assets", NULL);
+    if (mnt_root != NULL) {
+        fs_name = "LittleFS";
+    }
+#endif
+
+#if defined(CONFIG_FATFS)
     if (mnt_root == NULL) {
-        pr_err("w25qxx: failed to mount FatFs on /assets\n");
+        fatfs_set_block_device(&g_nk60_flash_info->assets_dev);
+        mnt_root = vfs_mount("fatfs", 0, "nk60_v2-assets", NULL);
+        if (mnt_root != NULL) {
+            fs_name = "FatFs";
+        }
+    }
+#endif
+
+    if (mnt_root == NULL) {
+        pr_err("w25qxx: failed to mount assets filesystem on /assets\n");
         return -EIO;
     }
     if (vfs_bind_mount(dir, mnt_root) != 0) {
@@ -207,13 +224,19 @@ int nk60_assets_mount_fatfs(void)
         return -EIO;
     }
 
-    pr_info("w25qxx: mounted wear-leveled assets FatFs at /assets (%u KB, %u spares)\n",
+    pr_info("w25qxx: mounted wear-leveled assets %s at /assets (%u KB, %u spares)\n",
+            fs_name ? fs_name : "FS",
             (unsigned int)(g_nk60_flash_info->assets_wl.logical_blocks * 4U),
             (unsigned int)g_nk60_flash_info->assets_wl.spare_sectors);
     return 0;
 #else
     return 0;
 #endif
+}
+
+int nk60_assets_mount_fatfs(void)
+{
+    return nk60_assets_mount();
 }
 
 int nk60_assets_reload(void)
@@ -227,7 +250,7 @@ int nk60_assets_reload(void)
     if (ret != 0) {
         return ret;
     }
-    return nk60_assets_mount_fatfs();
+    return nk60_assets_mount();
 }
 
 int spi_w25qxx_init(void)
@@ -277,7 +300,7 @@ int spi_w25qxx_init(void)
             info->assets_dev.ready = true;
             if (device_register(&info->assets_dev) == 0) {
                 info->assets_ready = true;
-                (void)nk60_assets_mount_fatfs();
+                (void)nk60_assets_mount();
             }
         }
     }

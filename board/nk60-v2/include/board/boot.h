@@ -87,6 +87,7 @@ struct w25q_wl;
 int board_write_boot_flag(u32 flag);
 u32 board_read_boot_flag(void);
 struct w25q_wl *nk60_flash_get_assets_wl(void);
+int nk60_assets_mount(void);
 int nk60_assets_mount_fatfs(void);
 int nk60_assets_reload(void);
 #endif
