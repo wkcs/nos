@@ -1158,6 +1158,23 @@ struct nlk_kb_config_list_resp {
     char name[NLK_KB_CONFIG_NAME_SIZE];
 } __attribute__((packed));
 
+/* 灯效覆盖使能掩码 */
+#define NLK_KB_LIGHT_OVERRIDE_BRIGHTNESS  (1U << 0)
+#define NLK_KB_LIGHT_OVERRIDE_SPEED       (1U << 1)
+#define NLK_KB_LIGHT_OVERRIDE_COLOR       (1U << 2)
+
+/* 键盘配置中的灯效引用与局部覆盖参数 */
+struct nlk_kb_light_override {
+    char    light_id[NLK_KB_CONFIG_ID_SIZE]; /* 引用的公共灯效模板 ID */
+    uint8_t override_flags;                  /* 覆盖掩码 (NLK_KB_LIGHT_OVERRIDE_*) */
+    uint8_t brightness;                      /* 覆盖后的亮度 (0..255) */
+    uint8_t speed;                           /* 覆盖后的动态速度 (0..255) */
+    uint8_t color_r;                         /* 针对单色灯效覆盖的 RGB 颜色 R */
+    uint8_t color_g;                         /* 针对单色灯效覆盖的 RGB 颜色 G */
+    uint8_t color_b;                         /* 针对单色灯效覆盖的 RGB 颜色 B */
+    uint8_t reserved[2];                     /* 对齐保留 */
+} __attribute__((packed));
+
 /* =========================================================================
  * Cap 0x0101: NLK_CAP_ENCODER — Rotary Knob / Haptic Encoder
  * ========================================================================= */
@@ -1308,6 +1325,7 @@ _Static_assert(sizeof(struct nlk_kb_named_light_sync_beacon) == 24, "named light
 _Static_assert(sizeof(struct nlk_kb_light_cfg) == 8, "nlk_kb_light_cfg must be 8 bytes");
 _Static_assert(sizeof(struct nlk_kb_light_sync_beacon) == 8, "nlk_kb_light_sync_beacon must be 8 bytes");
 _Static_assert(sizeof(struct nlk_kb_analog_cfg) == 8, "nlk_kb_analog_cfg must be 8 bytes");
+_Static_assert(sizeof(struct nlk_kb_light_override) == 32, "nlk_kb_light_override must be 32 bytes");
 #endif
 
 #endif /* __NOS_UAPI_NLK_H__ */

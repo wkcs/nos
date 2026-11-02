@@ -114,8 +114,8 @@ static const struct nlk_kb_action_desc g_nk60_actions[6] = {
         .action_id = 5U,
         .flags     = 0U,
         .reserved  = 0U,
-        .name      = "profile_next",
-        .desc      = "Switch next profile",
+        .name      = "config_next",
+        .desc      = "Switch next config",
     },
     {
         .action_id = 6U,

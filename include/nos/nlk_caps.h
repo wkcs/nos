@@ -256,6 +256,7 @@ struct nlk_keyboard_ctx {
     void                           *profile_priv;
     char                            active_keyboard_id[NLK_KB_CONFIG_ID_SIZE];
     char                            active_light_id[NLK_KB_CONFIG_ID_SIZE];
+    struct nlk_kb_light_override    active_light_override;
     nlk_kb_config_files_cb_t         config_files_cb;
     void                           *config_files_priv;
 

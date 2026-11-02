@@ -146,6 +146,7 @@ static void config_keyboard(struct config_cursor *c, struct nlk_keyboard_ctx *ct
 {
     struct nlk_kb_params params;
     struct nlk_kb_analog_cfg analog;
+    struct nlk_kb_light_override light_override;
     uint8_t layer, key, i, macro_count = 0U;
     uint8_t seen = 0U;
     int layout_valid = 0;
@@ -155,9 +156,11 @@ static void config_keyboard(struct config_cursor *c, struct nlk_keyboard_ctx *ct
         params.default_layer = ctx->default_layer;
         params.active_layout_id = ctx->active_layout_id;
         analog = ctx->analog_cfg;
+        light_override = ctx->active_light_override;
     }
     config_io(c, &params, sizeof(params), write);
     config_io(c, &analog, sizeof(analog), write);
+    config_io(c, &light_override, sizeof(light_override), write);
     if (c->error != 0 || params.default_layer >= ctx->desc.layer_count) {
         c->error = -EINVAL;
         return;
@@ -258,6 +261,7 @@ static void config_keyboard(struct config_cursor *c, struct nlk_keyboard_ctx *ct
         ctx->active_layer = params.default_layer;
         ctx->active_layout_id = params.active_layout_id;
         ctx->analog_cfg = analog;
+        ctx->active_light_override = light_override;
     }
 }
 

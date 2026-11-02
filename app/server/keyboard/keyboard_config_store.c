@@ -78,6 +78,7 @@ static size_t config_max_size(const struct nlk_keyboard_ctx *ctx)
     return sizeof(struct keyboard_config_header) + KEYBOARD_CONFIG_ID_SIZE * 2U +
            sizeof(struct nlk_kb_params) +
            sizeof(struct nlk_kb_analog_cfg) +
+           sizeof(struct nlk_kb_light_override) +
            cells * (2U + NLK_KB_MAX_KEY_ACTIONS * NLK_KB_ACTION_NAME_MAX) + 1U +
            NLK_KB_MAX_MACROS * (1U + sizeof(struct nlk_kb_macro_info) +
                NLK_KB_MAX_MACRO_STEPS * sizeof(struct nlk_kb_macro_step)) +
@@ -354,6 +355,27 @@ int keyboard_config_file_rpc(struct nlk_keyboard_ctx *ctx, const char *hardware,
         if (ret == 0) {
             if (file_req->kind == KEYBOARD_CONFIG_KEYBOARD) {
                 memcpy(ctx->active_keyboard_id, file_req->id, sizeof(ctx->active_keyboard_id));
+                if (ctx->active_light_override.light_id[0] != '\0') {
+                    (void)keyboard_config_file_load(ctx, hardware, dir,
+                                                    ctx->active_light_override.light_id,
+                                                    KEYBOARD_CONFIG_LIGHT, 0U);
+                    memcpy(ctx->active_light_id, ctx->active_light_override.light_id,
+                           sizeof(ctx->active_light_id));
+                    if ((ctx->active_light_override.override_flags & NLK_KB_LIGHT_OVERRIDE_BRIGHTNESS) != 0U) {
+                        ctx->light_cfg.brightness = ctx->active_light_override.brightness;
+                    }
+                    if ((ctx->active_light_override.override_flags & NLK_KB_LIGHT_OVERRIDE_SPEED) != 0U) {
+                        ctx->light_cfg.speed = ctx->active_light_override.speed;
+                    }
+                    if ((ctx->active_light_override.override_flags & NLK_KB_LIGHT_OVERRIDE_COLOR) != 0U) {
+                        ctx->light_cfg.color_r = ctx->active_light_override.color_r;
+                        ctx->light_cfg.color_g = ctx->active_light_override.color_g;
+                        ctx->light_cfg.color_b = ctx->active_light_override.color_b;
+                    }
+                    if (ctx->light_cb != NULL) {
+                        ctx->light_cb(&ctx->light_cfg, NULL, ctx->indicator_leds, ctx->light_priv);
+                    }
+                }
             } else if (file_req->kind == KEYBOARD_CONFIG_LIGHT) {
                 memcpy(ctx->active_light_id, file_req->id, sizeof(ctx->active_light_id));
             }
