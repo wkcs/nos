@@ -37,6 +37,8 @@ enum task_status {
 
 #define TASK_PRIO_INVALID 0xFFU
 
+struct mutex;
+
 struct sched_entity {
     struct list_head run_node;      /* Dedicated scheduler runqueue node */
     uint64_t         vruntime;      /* Virtual runtime in us (Fair class) */
@@ -95,6 +97,7 @@ struct task_struct {
     struct list_head list;
     struct list_head tlist;
     struct list_head held_mutex_list;
+    struct mutex *blocked_on;
 
     spinlock_t lock;
     spinlock_t *list_lock;

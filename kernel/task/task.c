@@ -188,6 +188,7 @@ static int __task_create(struct task_struct *task,
     INIT_LIST_HEAD(&task->tlist);
     INIT_LIST_HEAD(&task->held_mutex_list);
     INIT_LIST_HEAD(&task->se.run_node);
+    task->blocked_on = NULL;
     spin_lock_init(&task->lock);
 
     task->list_lock = NULL;
