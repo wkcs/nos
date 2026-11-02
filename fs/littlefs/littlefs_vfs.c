@@ -183,10 +183,15 @@ static int littlefs_bd_prog(const struct lfs_config *c, lfs_block_t block,
 
 static int littlefs_bd_erase(const struct lfs_config *c, lfs_block_t block)
 {
-    (void)c;
-    (void)block;
-    /* 磨损均衡驱动 (w25q_wl) 会在扇区覆写时自动处理物理块擦除，此处无需重复擦除 */
-    return LFS_ERR_OK;
+    struct littlefs_sb_info *sbi = (struct littlefs_sb_info *)c->context;
+    uint32_t sector_size = sbi->sector_size ? sbi->sector_size : 512U;
+    uint32_t sectors_per_block = c->block_size / sector_size;
+    uint32_t lba = block * sectors_per_block;
+    uint32_t count = c->block_size / sector_size;
+    int ret;
+
+    ret = block_erase(sbi->bdev, lba, count);
+    return ret == 0 ? LFS_ERR_OK : LFS_ERR_IO;
 }
 
 static int littlefs_bd_sync(const struct lfs_config *c)

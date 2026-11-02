@@ -58,6 +58,7 @@ int w25q_wl_reset(struct w25q_wl *wl);
 int w25q_wl_read(struct w25q_wl *wl, uint32_t lba, void *buf, uint32_t count);
 int w25q_wl_write(struct w25q_wl *wl, uint32_t lba, const void *buf,
                   uint32_t count);
+int w25q_wl_erase(struct w25q_wl *wl, uint32_t lba, uint32_t count);
 int w25q_wl_get_info(const struct w25q_wl *wl, uint32_t *sector_size,
                      uint32_t *sector_count);
 

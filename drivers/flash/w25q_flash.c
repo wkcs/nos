@@ -896,6 +896,59 @@ int w25q_wl_write(struct w25q_wl *wl, uint32_t lba, const void *buf,
     return ret;
 }
 
+int w25q_wl_erase(struct w25q_wl *wl, uint32_t lba, uint32_t count)
+{
+    uint32_t total_lbas;
+    uint32_t start_lblock, end_lblock, lblock;
+    bool meta_dirty = false;
+    int ret = 0;
+
+    if (wl == NULL || wl->flash == NULL || count == 0U) {
+        return -EINVAL;
+    }
+    total_lbas = (uint32_t)wl->logical_blocks * W25Q_WL_SUBSECTORS_PER_BLOCK;
+    if (lba >= total_lbas || count > total_lbas - lba) {
+        return -EINVAL;
+    }
+
+    start_lblock = lba / W25Q_WL_SUBSECTORS_PER_BLOCK;
+    end_lblock = (lba + count + W25Q_WL_SUBSECTORS_PER_BLOCK - 1) / W25Q_WL_SUBSECTORS_PER_BLOCK;
+
+    mutex_lock(&wl->flash->lock);
+    ret = w25q_wait_ready(wl->flash->spi);
+    for (lblock = start_lblock; lblock < end_lblock && ret == 0; lblock++) {
+        uint16_t old_phys = wl->l2p[lblock];
+        uint16_t new_phys = w25q_wl_pick_min_spare(wl);
+        uint32_t new_addr;
+
+        if (new_phys == 0xffffU) {
+            new_phys = old_phys;
+        }
+        new_addr = wl->base_addr + (uint32_t)new_phys * W25Q_SECTOR_SIZE;
+
+        ret = w25q_erase_one_sector(wl->flash->spi, new_addr);
+        if (ret == 0) {
+            if (wl->erase_counts[new_phys] < 0xffffU) {
+                wl->erase_counts[new_phys]++;
+            }
+            wl->total_erases++;
+            wl->l2p[lblock] = new_phys;
+            w25q_wl_mark_used(wl, new_phys);
+            if (new_phys != old_phys) {
+                w25q_wl_mark_free(wl, old_phys);
+            }
+            meta_dirty = true;
+            ret = w25q_wl_check_static_leveling(wl);
+        }
+    }
+
+    if (ret == 0 && meta_dirty) {
+        ret = w25q_wl_commit_meta_locked(wl);
+    }
+    mutex_unlock(&wl->flash->lock);
+    return ret;
+}
+
 static int w25q_wl_block_read(const struct device *dev, uint32_t lba,
                               void *buf, uint32_t count)
 {
@@ -914,6 +967,15 @@ static int w25q_wl_block_write(const struct device *dev, uint32_t lba,
     return w25q_wl_write((struct w25q_wl *)dev->data, lba, buf, count);
 }
 
+static int w25q_wl_block_erase(const struct device *dev, uint32_t lba,
+                               uint32_t count)
+{
+    if (dev == NULL || dev->data == NULL) {
+        return -EINVAL;
+    }
+    return w25q_wl_erase((struct w25q_wl *)dev->data, lba, count);
+}
+
 static int w25q_wl_block_get_info(const struct device *dev,
                                   uint32_t *sector_size,
                                   uint32_t *sector_count)
@@ -928,5 +990,6 @@ static int w25q_wl_block_get_info(const struct device *dev,
 const struct block_driver_api w25q_wl_block_driver_api = {
     .read = w25q_wl_block_read,
     .write = w25q_wl_block_write,
+    .erase = w25q_wl_block_erase,
     .get_info = w25q_wl_block_get_info,
 };

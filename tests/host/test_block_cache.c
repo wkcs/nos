@@ -19,8 +19,10 @@ void *kzalloc(size_t size, gfp_t flags)
     return calloc(1, size);
 }
 
+static int g_kfree_calls = 0;
 void kfree(void *ptr)
 {
+    g_kfree_calls++;
     free(ptr);
 }
 
@@ -70,9 +72,22 @@ static int mock_get_info(const struct device *dev, uint32_t *sector_size, uint32
     return 0;
 }
 
+static int mock_erase(const struct device *dev, uint32_t lba, uint32_t count)
+{
+    (void)dev;
+    if (lba + count > MOCK_DISK_SECTORS) {
+        return -EINVAL;
+    }
+    for (uint32_t i = 0; i < count; i++) {
+        memset(g_mock_disk[lba + i], 0xFF, MOCK_SECTOR_SIZE);
+    }
+    return 0;
+}
+
 static struct block_driver_api g_mock_api = {
     .read = mock_read,
     .write = mock_write,
+    .erase = mock_erase,
     .get_info = mock_get_info,
 };
 
@@ -309,6 +324,61 @@ static void test_multi_sector(void)
     block_cache_deinit(&bc);
 }
 
+static void test_static_cache(void)
+{
+    struct block_cache bc;
+    struct block_cache_entry static_entries[4];
+    uint8_t static_pool[4 * MOCK_SECTOR_SIZE];
+    uint8_t wbuf[MOCK_SECTOR_SIZE];
+    uint8_t rbuf[MOCK_SECTOR_SIZE];
+    int prev_kfree;
+
+    reset_mock_state();
+    memset(&bc, 0, sizeof(bc));
+    bc.entries = static_entries;
+    bc.data_pool = static_pool;
+
+    prev_kfree = g_kfree_calls;
+    assert(block_cache_init(&bc, &g_mock_dev, 4, MOCK_SECTOR_SIZE) == 0);
+    assert(!bc.is_dynamic);
+
+    memset(wbuf, 0x42, sizeof(wbuf));
+    assert(block_cache_write(&bc, 3, wbuf, 1) == 0);
+    assert(block_cache_read(&bc, 3, rbuf, 1) == 0);
+    assert(rbuf[0] == 0x42);
+
+    /* 验证 static 缓存析构时不调用 kfree 释放外部栈上内存 */
+    block_cache_deinit(&bc);
+    assert(g_kfree_calls == prev_kfree);
+}
+
+static void test_erase_and_invalidate(void)
+{
+    struct block_cache bc;
+    uint8_t wbuf[MOCK_SECTOR_SIZE];
+    uint8_t rbuf[MOCK_SECTOR_SIZE];
+
+    reset_mock_state();
+    memset(&bc, 0, sizeof(bc));
+    assert(block_cache_init(&bc, &g_mock_dev, 4, MOCK_SECTOR_SIZE) == 0);
+    assert(bc.is_dynamic);
+
+    memset(wbuf, 0x88, sizeof(wbuf));
+    assert(block_cache_write(&bc, 6, wbuf, 1) == 0);
+    assert(block_cache_read(&bc, 6, rbuf, 1) == 0);
+    assert(rbuf[0] == 0x88);
+
+    /* 擦除 LBA 6：底层存储全置 0xFF，且缓存中条目失效 */
+    assert(block_cache_erase(&bc, 6, 1) == 0);
+    assert(g_mock_disk[6][0] == 0xFF);
+
+    /* 重新读取 LBA 6：发生 cache miss，从底层读出 0xFF */
+    assert(block_cache_read(&bc, 6, rbuf, 1) == 0);
+    assert(rbuf[0] == 0xFF);
+
+    block_cache_deinit(&bc);
+}
+
 int main(void)
 {
     test_param_validation();
@@ -319,6 +389,8 @@ int main(void)
     test_dirty_eviction();
     test_flush_lba();
     test_multi_sector();
+    test_static_cache();
+    test_erase_and_invalidate();
 
     puts("block cache checks passed");
     return 0;

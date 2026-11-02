@@ -185,6 +185,22 @@ int main(void)
         return 17;
     }
 
+    /* 测试 block_erase 擦除逻辑块 2 (LBA 16~23)，擦除后读取应全为 0xFF */
+    if (block_erase(&wl_dev, 16U, 8U) != 0) {
+        fputs("block_erase failed\n", stderr);
+        return 18;
+    }
+    if (block_read(&wl_dev, 16U, sec_out, 1U) != 0) {
+        fputs("block_read after block_erase failed\n", stderr);
+        return 19;
+    }
+    for (iter = 0; iter < 512; iter++) {
+        if (sec_out[iter] != 0xFFU) {
+            fputs("block_read after block_erase did not return 0xFF\n", stderr);
+            return 20;
+        }
+    }
+
     puts("W25Q flash storage checks passed");
     return 0;
 }

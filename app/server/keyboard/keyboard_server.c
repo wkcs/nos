@@ -44,7 +44,7 @@
 
 #define KS_MAX_KEY_WORDS    KEY_RAW_WORDS(KEY_MAX_NUM)
 #define KS_NLK_HID_QUEUE_LEN 8U
-#define KS_ACTIVE_SNAPSHOT_SIZE 512U
+#define KS_ACTIVE_SNAPSHOT_SIZE 1280U
 
 struct keyboard_server {
     struct task_struct     *task;
@@ -886,8 +886,13 @@ static void ks_trigger_config_snapshot(struct keyboard_server *ks)
                 ks->sync_pending = true;
                 ks->sync_busy = true;
                 need_signal = true;
+                ks->config_dirty = false;
+            } else {
+                uint32_t now_ms = (uint32_t)tick_to_msec_64(cpu_run_ticks());
+                ks->config_dirty = true;
+                ks->sync_deadline_ms = now_ms + 200U;
+                pr_err("ks: failed to encode active config snapshot\n");
             }
-            ks->config_dirty = false;
         } else {
             uint32_t now_ms = (uint32_t)tick_to_msec_64(cpu_run_ticks());
             ks->sync_deadline_ms = now_ms + 100U;
@@ -1024,9 +1029,14 @@ static int ks_on_config_files(uint8_t op, const void *req, uint16_t req_len,
                     ks->sync_pending = true;
                     ks->sync_busy = true;
                     need_signal = true;
+                    /* 清除脏标记，确保不触发防抖计时器的二次冗余落盘 */
+                    ks->config_dirty = false;
+                } else {
+                    uint32_t now_ms = (uint32_t)tick_to_msec_64(cpu_run_ticks());
+                    ks->config_dirty = true;
+                    ks->sync_deadline_ms = now_ms + 200U;
+                    pr_err("ks: failed to encode active config snapshot on load\n");
                 }
-                /* 清除脏标记，确保不触发防抖计时器的二次冗余落盘 */
-                ks->config_dirty = false;
             } else {
                 /* 若后台持久化正在写盘，标记脏位并在 100ms 后重试快照生成 */
                 uint32_t now_ms = (uint32_t)tick_to_msec_64(cpu_run_ticks());

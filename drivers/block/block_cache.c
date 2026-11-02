@@ -93,10 +93,14 @@ int block_cache_init(struct block_cache *bc, const struct device *raw_bdev,
             return -ENOMEM;
         }
         bc->data_pool = (uint8_t *)(bc->entries + entry_count);
-    } else if (bc->data_pool == NULL) {
-        bc->data_pool = kzalloc(pool_sz, GFP_KERNEL);
+        bc->is_dynamic = true;
+    } else {
+        bc->is_dynamic = false;
         if (bc->data_pool == NULL) {
-            return -ENOMEM;
+            bc->data_pool = kzalloc(pool_sz, GFP_KERNEL);
+            if (bc->data_pool == NULL) {
+                return -ENOMEM;
+            }
         }
     }
 
@@ -286,8 +290,48 @@ int block_cache_flush_lba(struct block_cache *bc, uint32_t lba)
     e = block_cache_find(bc, lba);
     if (e != NULL) {
         ret = block_cache_flush_entry(bc, e);
+        if (ret == 0) {
+            /* 回写到底层介质后使该条目失效，释放槽位 */
+            e->flags = 0;
+            e->lba = 0;
+            e->access_seq = 0;
+        }
     }
     mutex_unlock(&bc->lock);
+    return ret;
+}
+
+int block_cache_invalidate(struct block_cache *bc, uint32_t lba, uint32_t count)
+{
+    uint32_t i;
+
+    if (bc == NULL || count == 0) {
+        return -EINVAL;
+    }
+
+    mutex_lock(&bc->lock);
+    for (i = 0; i < count; i++) {
+        struct block_cache_entry *e = block_cache_find(bc, lba + i);
+        if (e != NULL) {
+            e->flags = 0;
+            e->lba = 0;
+            e->access_seq = 0;
+        }
+    }
+    mutex_unlock(&bc->lock);
+    return 0;
+}
+
+int block_cache_erase(struct block_cache *bc, uint32_t lba, uint32_t count)
+{
+    int ret;
+
+    if (bc == NULL || bc->raw_bdev == NULL || count == 0) {
+        return -EINVAL;
+    }
+
+    (void)block_cache_invalidate(bc, lba, count);
+    ret = block_erase(bc->raw_bdev, lba, count);
     return ret;
 }
 
@@ -301,16 +345,23 @@ void block_cache_deinit(struct block_cache *bc)
     (void)block_cache_sync(bc);
 
     mutex_lock(&bc->lock);
-    if (bc->entries != NULL) {
-        if (bc->data_pool != NULL &&
-            bc->data_pool != (uint8_t *)(bc->entries + bc->entry_count)) {
+    if (bc->is_dynamic) {
+        if (bc->entries != NULL) {
+            if (bc->data_pool != NULL &&
+                bc->data_pool != (uint8_t *)(bc->entries + bc->entry_count)) {
+                kfree(bc->data_pool);
+            }
+            kfree(bc->entries);
+            bc->entries = NULL;
+            bc->data_pool = NULL;
+        } else if (bc->data_pool != NULL) {
             kfree(bc->data_pool);
+            bc->data_pool = NULL;
         }
-        kfree(bc->entries);
+        bc->is_dynamic = false;
+    } else {
+        /* 静态分配资源，仅清空指针与计数器，不调用 kfree */
         bc->entries = NULL;
-        bc->data_pool = NULL;
-    } else if (bc->data_pool != NULL) {
-        kfree(bc->data_pool);
         bc->data_pool = NULL;
     }
 

@@ -83,6 +83,27 @@ static int ramdisk_write(const struct device *dev, uint32_t lba,
     return 0;
 }
 
+static int ramdisk_erase(const struct device *dev, uint32_t lba,
+                         uint32_t count)
+{
+    uint32_t offset;
+    uint32_t bytes;
+    int ret;
+
+    (void)dev;
+
+    ret = ramdisk_validate_request(lba, count);
+    if (ret) {
+        return ret;
+    }
+
+    offset = lba * RAMDISK_SECTOR_SIZE;
+    bytes = count * RAMDISK_SECTOR_SIZE;
+    memset(&ramdisk_storage[offset], 0xFF, bytes);
+
+    return 0;
+}
+
 static int ramdisk_get_info(const struct device *dev, uint32_t *sector_size,
                             uint32_t *sector_count)
 {
@@ -108,6 +129,7 @@ static int ramdisk_init(struct device *dev)
 static const struct block_driver_api ramdisk_api = {
     .read = ramdisk_read,
     .write = ramdisk_write,
+    .erase = ramdisk_erase,
     .get_info = ramdisk_get_info,
 };
 

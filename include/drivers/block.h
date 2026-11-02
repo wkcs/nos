@@ -16,6 +16,7 @@ struct block_driver_api {
                 uint32_t count);
     int (*write)(const struct device *dev, uint32_t lba, const void *buf,
                  uint32_t count);
+    int (*erase)(const struct device *dev, uint32_t lba, uint32_t count);
     int (*get_info)(const struct device *dev, uint32_t *sector_size,
                     uint32_t *sector_count);
 };
@@ -58,6 +59,38 @@ static inline int block_write(const struct device *dev, uint32_t lba,
     }
 
     return api->write(dev, lba, buf, count);
+}
+
+/**
+ * 擦除块设备上指定的扇区范围
+ *
+ * @param dev 块设备句柄
+ * @param lba 起始逻辑块地址
+ * @param count 擦除扇区数量
+ * @return 0 成功，负数表示错误码
+ */
+static inline int block_erase(const struct device *dev, uint32_t lba,
+                              uint32_t count)
+{
+    const struct block_driver_api *api;
+
+    if (!device_is_ready(dev)) {
+        return -ENODEV;
+    }
+    if (count == 0) {
+        return 0;
+    }
+
+    api = dev->api;
+    if (api == NULL) {
+        return -ENOSYS;
+    }
+
+    if (api->erase != NULL) {
+        return api->erase(dev, lba, count);
+    }
+
+    return 0;
 }
 
 static inline int block_get_info(const struct device *dev,
