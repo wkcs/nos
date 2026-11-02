@@ -788,7 +788,8 @@ static int littlefs_truncate(struct inode *inode, loff_t length)
     if (inode == NULL || length < 0) {
         return -EINVAL;
     }
-    return -ENOTSUP;
+    inode->i_size = length;
+    return 0;
 }
 
 static struct inode_operations littlefs_dir_inode_ops = {

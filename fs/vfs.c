@@ -899,7 +899,8 @@ int nos_open(const char *path, int flags, ...)
     ret = vfs_truncate_dentry(dentry, 0);
     if (ret != 0 && !(ret == -ENOTSUP && dentry->d_sb &&
                       dentry->d_sb->s_type &&
-                      strcmp(dentry->d_sb->s_type->name, "fatfs") == 0))
+                      (strcmp(dentry->d_sb->s_type->name, "fatfs") == 0 ||
+                       strcmp(dentry->d_sb->s_type->name, "littlefs") == 0)))
       goto free_file;
   }
 
