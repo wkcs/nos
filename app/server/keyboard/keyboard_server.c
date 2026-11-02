@@ -387,6 +387,8 @@ int keyboard_config_save_profile(uint8_t slot_id)
     nos_close(fd);
     fd = -1;
 
+    pr_info("Profile slot %u saved to Flash (%s)\n", slot_id, path);
+
     /* 保存当前激活 Slot 编号 */
     ks_make_active_slot_path(path, sizeof(path));
     fd = nos_open(path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
@@ -400,7 +402,6 @@ int keyboard_config_save_profile(uint8_t slot_id)
     ks->kb_cap.active_profile_slot = slot_id;
     ks->kb_cap.saved_profiles_mask = ks->saved_slots_mask;
 
-    pr_info("Profile slot %u saved to Flash (%s)\n", slot_id, path);
     return 0;
 
 err_out:
