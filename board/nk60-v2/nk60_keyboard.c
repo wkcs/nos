@@ -132,6 +132,7 @@ static const struct nlk_kb_macro_info g_nk60_default_macro_info[1] = {
         .step_count   = 3U,
         .repeat_count = 1U,
         .flags        = 0U,
+        .id           = "paste",
         .name         = "Quick-Paste",
     },
 };

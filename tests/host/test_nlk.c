@@ -1097,9 +1097,9 @@ int main(void)
         src.analog_cfg.actuation_01mm = 31U;
         assert(nlk_cap_keyboard_bind_key_action(&src, 1U, 2U, "macro_play", false) == 0);
         assert(nlk_cap_keyboard_set_macro(&src, 2U, "Copy", &step, 1U, 2U) == 0);
-        assert(keyboard_config_encode(&src, "NK60-v2", "Work", KEYBOARD_CONFIG_KEYBOARD,
+        assert(keyboard_config_encode(&src, "NK60-v2", "Work", "Main layout", KEYBOARD_CONFIG_KEYBOARD,
                                       0U, NULL, 0U, &measured) == 0);
-        assert(keyboard_config_encode(&src, "NK60-v2", "Work", KEYBOARD_CONFIG_KEYBOARD,
+        assert(keyboard_config_encode(&src, "NK60-v2", "Work", "Main layout", KEYBOARD_CONFIG_KEYBOARD,
                                       0U, buf, sizeof(buf), &len) == 0);
         assert(measured == len);
         assert(keyboard_config_decode(&dst, "other", KEYBOARD_CONFIG_KEYBOARD,
@@ -1110,7 +1110,6 @@ int main(void)
         assert(dst.keymap[1][2] == 42U);
         assert(dst.analog_cfg.actuation_01mm == 31U);
         assert(dst.action_chains[1][2].count == 1U);
-        assert(dst.macro_info[2].step_count == 1U && dst.macro_steps[2][0].key_code == 4U);
         {
             struct keyboard_config_header *header = (struct keyboard_config_header *)buf;
             struct nlk_kb_params *params = (struct nlk_kb_params *)(buf + sizeof(*header));
@@ -1137,7 +1136,7 @@ int main(void)
         assert(keyboard_config_decode(&dst, "NK60-v2", KEYBOARD_CONFIG_KEYBOARD,
                                       0U, buf, len) < 0);
         assert(dst.keymap[1][2] == 7U);
-        assert(keyboard_config_encode(&src, "NK60-v2", "Copy macro", KEYBOARD_CONFIG_MACRO,
+        assert(keyboard_config_encode(&src, "NK60-v2", "Copy macro", "Copy macro desc", KEYBOARD_CONFIG_MACRO,
                                       2U, buf, sizeof(buf), &len) == 0);
         assert(keyboard_config_decode(&dst, "NK60-v2", KEYBOARD_CONFIG_MACRO,
                                       1U, buf, len) == 0);
@@ -1185,6 +1184,29 @@ int main(void)
                 assert(nlk_cap_keyboard_update_local_keys(&dst, &pressed, 1U) == 0);
                 assert(dst.macro_playing == 0U && dst.macro_modifiers == 0U);
             }
+            {
+                /* 测试 32 位键码携带 24-bit Hash 触发宏播放 */
+                struct nlk_kb_macro_step hash_step = { NLK_KB_MACRO_ACT_KEY_TAP, 4U, 10U };
+                uint32_t macro_hash;
+                pressed = 0U;
+                assert(nlk_cap_keyboard_update_local_keys(&dst, &pressed, 1U) == 0);
+                assert(nlk_cap_keyboard_set_macro_meta(&dst, 2U, "macro_b", "Macro B", "Desc B",
+                                                       &hash_step, 1U, 1U) == 0);
+                macro_hash = nlk_fnv1a_24("macro_b");
+                assert(macro_hash != 0U);
+                /* 32 位键码：高 24 位为 macro_hash，低 8 位为任意 HID 键码或 0 */
+                dst.keymap[0][0] = (macro_hash << 8) | 4U;
+                saw_macro_key = false;
+                pressed = 1U;
+                assert(nlk_cap_keyboard_update_local_keys(&dst, &pressed, 1U) == 0);
+                assert(dst.macro_playing == 1U);
+                assert(dst.macro_play_id == 2U);
+                assert(nlk_cap_keyboard_tick(&dst, 20U) == 0);
+                assert(nlk_cap_keyboard_tick(&dst, 31U) == 0);
+                assert(saw_macro_key);
+                pressed = 0U;
+                assert(nlk_cap_keyboard_update_local_keys(&dst, &pressed, 1U) == 0);
+            }
         }
         assert(nlk_cap_keyboard_register_light_effect(&src, "off", "", NULL, NULL) == 0);
         assert(nlk_cap_keyboard_register_light_effect(&src, "rainbow", "", NULL, NULL) == 0);
@@ -1199,7 +1221,7 @@ int main(void)
         }
         src.light_cfg.effect_id = 1U;
         src.light_cfg.brightness = 53U;
-        assert(keyboard_config_encode(&src, "NK60-v2", "Evening", KEYBOARD_CONFIG_LIGHT,
+        assert(keyboard_config_encode(&src, "NK60-v2", "Evening", "Night mood", KEYBOARD_CONFIG_LIGHT,
                                       0U, buf, sizeof(buf), &len) == 0);
         assert(keyboard_config_decode(&dst, "NK60-v2", KEYBOARD_CONFIG_LIGHT,
                                       0U, buf, len) == 0);
@@ -1227,13 +1249,13 @@ int main(void)
         for (i = 0; i < 6; i++) {
             snprintf(id, sizeof(id), "profile%d", i);
             kb.keymap[0][0] = (uint8_t)(10 + i);
-            assert(keyboard_config_file_save(&kb, "NK60-v2", "/profiles", id, id,
+            assert(keyboard_config_file_save(&kb, "NK60-v2", "/profiles", id, id, "Profile desc",
                                              KEYBOARD_CONFIG_KEYBOARD, 0U) == 0);
         }
-        assert(keyboard_config_file_save(&kb, "NK60-v2", "/profiles", "profile0", "duplicate",
+        assert(keyboard_config_file_save(&kb, "NK60-v2", "/profiles", "profile0", "duplicate", "",
                                          KEYBOARD_CONFIG_KEYBOARD, 0U) == -EEXIST);
         g_vfs_fail_close = true;
-        assert(keyboard_config_file_save(&kb, "NK60-v2", "/profiles", "badclose", "badclose",
+        assert(keyboard_config_file_save(&kb, "NK60-v2", "/profiles", "badclose", "badclose", "",
                                          KEYBOARD_CONFIG_KEYBOARD, 0U) < 0);
         g_vfs_fail_close = false;
         assert(vfs_lookup_path(NULL, "/profiles/config/badclose.nkc") == NULL);
@@ -1254,6 +1276,7 @@ int main(void)
         req.kind = NLK_KB_CONFIG_KEYBOARD;
         strcpy(req.id, "via_nlk");
         strcpy(req.name, "Via NLK");
+        strcpy(req.desc, "NLK desc");
         assert(kb.cap.ops->on_rpc(NULL, &kb.cap, &hdr, &req, sizeof(req), NULL, &resp_len) == 0);
         kb.keymap[0][0] = 55U;
         assert(keyboard_config_file_restore(&kb, "NK60-v2", "/profiles",
@@ -1289,6 +1312,17 @@ int main(void)
         list.kind = NLK_KB_CONFIG_KEYBOARD;
         assert(kb.cap.ops->on_rpc(NULL, &kb.cap, &hdr, &list, sizeof(list), &page, &resp_len) == 0);
         assert(resp_len == sizeof(page) && page.eof == 0U && page.id[0] != '\0');
+        /* 测试 Manifest 清单构建与查找 */
+        assert(keyboard_config_manifest_build("/profiles", "NK60-v2", &kb.manifest) == 0);
+        assert(kb.manifest.config_count >= 6U);
+        {
+            uint32_t prof1_hash = nlk_fnv1a_24("profile1");
+            const char *ent_id =
+                keyboard_config_manifest_lookup_config(&kb.manifest, prof1_hash);
+            assert(ent_id != NULL);
+            assert(strcmp(ent_id, "profile1") == 0);
+            assert(keyboard_config_manifest_lookup_config(&kb.manifest, 0x123456U) == NULL);
+        }
         nlk_cap_keyboard_deinit(&kb);
     }
     assert(nlk_cap_flash_init(&node_nk60, &nk60_flash_cap,

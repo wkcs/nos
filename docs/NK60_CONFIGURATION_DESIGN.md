@@ -138,6 +138,89 @@ macro data or a hardware identity, so migration cannot reconstruct missing
 macros or prove their original hardware provenance; it must report those limits
 and leave the source file untouched.
 
+## 宏与配置解耦及 32 位键码/清单索引（Version 2 规范）
+
+### 1. 核心改进背景与设计原则
+在 NK60 初始实现（Version 1）中，宏与键盘配置文件存在强耦合关系（宏被内嵌在键盘配置文件中），且动作触发基于固定槽位编号（Slot），存在以下局限性：
+1. **槽位限制**: 用户受限于固定的宏槽位，无法跨配置共享宏定义。
+2. **标识信息不完整**: 配置和宏缺乏明确的机器唯一标识（ID）、用户可读名称（Name）和详细功能说明（Desc）。
+3. **检索性能瓶颈**: 键盘按键触发动作（如跳转指定配置、播放特定宏）若实时扫描文件系统遍历 `.nkc` 文件，在微控制器（MCU）与低速存储介质（如 SPI Flash）上会导致显著的输入延迟；若全量缓存又会耗尽受限的 RAM 资源。
+
+为此，Version 2 设计全面解耦宏与配置，引入 32 位通用键码与常驻内存的轻量级清单索引表（Manifest）。
+
+---
+
+### 2. 对象标识三元组体系与灯效规范
+在系统内，键盘配置、灯效配置和宏均统称为具名对象（Named Object），统一采用结构化三元组标识：
+- **`id` (1–23 字符 ASCII)**: 机器与文件系统级别的唯一标识符。对应外部存储路径文件名：
+  - 键盘配置: `/assets/keyboard/config/<id>.nkc`
+  - 灯效配置: `/assets/keyboard/light/<id>.nkc`
+  - 宏定义: `/assets/keyboard/macro/<id>.nkc`
+- **`name` (最长 31 字节 UTF-8 字符串)**: 面向人机界面的友好展示名称（如 `"Programming Mode"`、`"Vim Copy"`）。
+- **`desc` (最长 63 字节 UTF-8 字符串)**: 对象的详细功能说明（如 `"Caps mapped to Ctrl, Arrow keys enabled on layer 1"`），帮助用户明确该配置或宏的具体用途。
+
+#### 灯效体系解耦
+- 灯效配置独立于按键配置，用户可在不同按键布局下保持相同的灯效氛围，或在不同场景下独立切换。
+- 灯效效果（Effect）通过字符串名称解析绑定到接收端的本地效果驱动，不再依赖枚举注册顺序。
+
+---
+
+### 3. 32 位通用键码（32-bit Keycode）与 24 位 FNV-1a 短哈希
+为了在单个键码中完整携带动作参数，微内核将按键流转与按键映射表（Keymap）从 8 位扩展为 32 位：
+
+```text
+ 31                          8 7                   0
++-----------------------------+---------------------+
+|      Action Param / Hash    |    Base HID Keycode |
+|           (24 bits)         |        (8 bits)     |
++-----------------------------+---------------------+
+```
+
+- **低 8 位 (`kc & 0xFFU`)**: 标准 USB HID 键码（如 `KC_A`, `KC_LCTRL`）。当按键未绑定自定义动作时，系统向主机上报该基础键码，确保硬件透明性与标准兼容。
+- **高 24 位 (`kc >> 8U`)**: 动作参数扩展字段。对于宏触发和配置切换动作，高 24 位存放目标对象 `id` 的 **24-bit FNV-1a 短哈希**：
+  - `target_hash = nlk_fnv1a_24(target_id)`
+  - 宏播放动作 (`macro_play`): 高 24 位哈希非 0 时，直接以此短哈希检索宏；若为 0，则兼容回退为槽位索引或当前激活宏。
+  - 配置切换动作 (`config_select`): 高 24 位哈希用于精确定位目标键盘配置，实现“一键直达指定配置”。
+
+---
+
+### 4. 内存轻量级清单索引表（Manifest）与 $O(1)$ 常数时间检索
+为兼顾实时性与低 RAM 占用，键盘服务在内存中常驻一份轻量级清单索引表（`struct nlk_kb_manifest`）：
+
+```c
+struct nlk_kb_manifest_entry {
+    uint32_t hash24;               /* 24-bit FNV-1a 目标 ID 哈希 */
+    char id[NLK_KB_CONFIG_ID_SIZE]; /* 对象文件名 ID (24 字节) */
+};
+
+struct nlk_kb_manifest {
+    uint8_t config_count;
+    uint8_t macro_count;
+    struct nlk_kb_manifest_entry configs[NLK_KB_MANIFEST_MAX_CONFIGS]; /* 最多 16 个配置 */
+    struct nlk_kb_manifest_entry macros[NLK_KB_MANIFEST_MAX_MACROS];   /* 最多 16 个宏 */
+};
+```
+
+#### 工作流与维护策略
+1. **启动与挂载初始化**:
+   - 在系统启动挂载 `/assets` 文件系统时，调用 `keyboard_config_manifest_build()` 快速扫描 `/assets/keyboard/config` 与 `/assets/keyboard/macro` 目录，提取文件 ID 并计算 24 位哈希，填充至 `manifest`。
+2. **动态保存与删除同步**:
+   - 当上位机通过 NLK RPC 执行 `SAVE` 或 `DELETE` 操作时，存储模块调用 `keyboard_config_manifest_update()` 同步原子更新清单，保证内存索引与文件系统始终一致。
+3. **按键常数时间检索**:
+   - 按键按下触发 `macro_play` 或 `config_select` 时，直接在 `manifest` 数组中匹配 24 位哈希（比对整数），耗时在微秒级内，避免了对文件系统的任何磁盘 I/O 操作。
+
+---
+
+### 5. NLK MTU 契约与 RPC 通信安全
+由于底层 NLK 报文严格受限于硬件单包传输上限（`CONFIG_NLK_PACKET_MTU = 256` 字节），任何 RPC 结构体严禁打破此上限：
+- **宏列表查询 (`NLK_KB_OP_GET_MACRO_LIST`)**:
+  - `struct nlk_kb_macro_info` 仅保留 `id[12]`、`name[14]` 及元数据（单项共 30 字节），8 个宏总长 240 字节，加上响应头严格限制在 244 字节内。
+  - 详细描述（`desc`）通过单项宏查询 `NLK_KB_OP_GET_MACRO` 或文件系统分页查询 `NLK_KB_OP_CONFIG_FILES_LIST` 获取，杜绝栈与堆缓冲区写穿溢出。
+- **动作查询 (`NLK_KB_OP_GET_ACTIONS`)**:
+  - `NLK_KB_MAX_ACTIONS` 严格限定在 6 个内置核心动作以内，确保响应包不超过 244 字节。
+
+---
+
 ## Verification required before release
 
 Host tests should cover round trips for all three object types, name and ID

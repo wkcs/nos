@@ -184,10 +184,10 @@ struct nlk_keyboard_ctx {
     uint8_t                         default_layer;
     uint8_t                         indicator_leds;
     uint8_t                         module_key_offset[8];
-    uint8_t                        *keymap[NLK_KB_MAX_LAYERS];
+    uint32_t                       *keymap[NLK_KB_MAX_LAYERS];
     struct nlk_kb_key_action_chain *action_chains[NLK_KB_MAX_LAYERS];
     uint8_t                        *key_state;
-    uint8_t                        *active_code;
+    uint32_t                       *active_code;
     uint8_t                         key_capacity;
     uint8_t                         layer_capacity;
     struct nlk_kb_hid_report        last_report;
@@ -234,6 +234,7 @@ struct nlk_keyboard_ctx {
     struct nlk_kb_macro_step        macro_play_steps[NLK_KB_MAX_MACRO_STEPS];
     struct nlk_kb_macro_info        macro_info[NLK_KB_MAX_MACROS];
     struct nlk_kb_macro_step        macro_steps[NLK_KB_MAX_MACROS][NLK_KB_MAX_MACRO_STEPS];
+    char                            macro_desc[NLK_KB_MAX_MACROS][NLK_KB_MACRO_DESC_MAX];
 
     /* Dynamic Action Bindings */
     uint8_t                         action_count;
@@ -259,6 +260,7 @@ struct nlk_keyboard_ctx {
     struct nlk_kb_light_override    active_light_override;
     nlk_kb_config_files_cb_t         config_files_cb;
     void                           *config_files_priv;
+    struct nlk_kb_manifest          manifest;
 
     nlk_kb_report_cb_t              report_cb;
     nlk_kb_nkro_cb_t                nkro_cb;
@@ -331,6 +333,12 @@ int nlk_cap_keyboard_set_macro(struct nlk_keyboard_ctx *ctx, uint8_t macro_id,
                                const char *name,
                                const struct nlk_kb_macro_step *steps,
                                uint8_t step_count, uint8_t repeat_count);
+int nlk_cap_keyboard_set_macro_meta(struct nlk_keyboard_ctx *ctx, uint8_t macro_id,
+                                    const char *id,
+                                    const char *name,
+                                    const char *desc,
+                                    const struct nlk_kb_macro_step *steps,
+                                    uint8_t step_count, uint8_t repeat_count);
 int nlk_cap_keyboard_macro_start(struct nlk_keyboard_ctx *ctx, uint8_t macro_id,
                                  uint32_t now_ms);
 int nlk_cap_keyboard_macro_cancel(struct nlk_keyboard_ctx *ctx);
@@ -345,6 +353,9 @@ int nlk_cap_keyboard_set_module_offset(struct nlk_keyboard_ctx *ctx,
 int nlk_cap_keyboard_load_layout(struct nlk_keyboard_ctx *ctx, uint8_t layer,
                                  const uint8_t *key_codes,
                                  uint8_t count);
+int nlk_cap_keyboard_load_layout32(struct nlk_keyboard_ctx *ctx, uint8_t layer,
+                                   const uint32_t *key_codes,
+                                   uint8_t count);
 int nlk_cap_keyboard_update_local_keys(struct nlk_keyboard_ctx *ctx,
                                        const uint32_t *raw_bitmap,
                                        uint8_t key_count);

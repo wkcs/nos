@@ -273,8 +273,8 @@ int keyboard_config_save_profile(uint8_t slot_id)
     }
     snprintf(id, sizeof(id), "slot_%u", (unsigned int)slot_id);
     dir = (ks_persistent_store_ready(ks) == 0) ? "/assets/keyboard" : "/keyboard";
-    return keyboard_config_file_save(&ks->kb_cap, "nk60_v2-rev1", dir, id, id,
-                                    KEYBOARD_CONFIG_KEYBOARD, 0U);
+    return keyboard_config_file_save(&ks->kb_cap, "nk60_v2-rev1", dir, id, id, "",
+                                     KEYBOARD_CONFIG_KEYBOARD, 0U);
 }
 
 int keyboard_config_load_profile(uint8_t slot_id)
@@ -547,7 +547,8 @@ static void ks_trigger_config_snapshot(struct keyboard_server *ks)
             size_t encoded_len = 0U;
             if (ks_persistent_store_ready(ks) == 0 &&
                 keyboard_config_encode(&ks->kb_cap, ks->profile.hardware_id,
-                                       "active", KEYBOARD_CONFIG_ACTIVE, 0U,
+                                       "active", "Active configuration",
+                                       KEYBOARD_CONFIG_ACTIVE, 0U,
                                        ks->active_snapshot_buf,
                                        sizeof(ks->active_snapshot_buf),
                                        &encoded_len) == 0) {
@@ -690,7 +691,8 @@ static int ks_on_config_files(uint8_t op, const void *req, uint16_t req_len,
             if (!ks->sync_busy) {
                 size_t encoded_len = 0U;
                 if (keyboard_config_encode(&ks->kb_cap, ks->profile.hardware_id,
-                                           "active", KEYBOARD_CONFIG_ACTIVE, 0U,
+                                           "active", "Active configuration",
+                                           KEYBOARD_CONFIG_ACTIVE, 0U,
                                            ks->active_snapshot_buf,
                                            sizeof(ks->active_snapshot_buf),
                                            &encoded_len) == 0) {
@@ -853,6 +855,31 @@ static int ks_action_profile_next(const struct key_action_context *ctx, void *pr
         (void)ks_switch_next_keyboard_config(ks);
     }
     return KEY_ACTION_DROP; /* 显式拦截按键 */
+}
+
+static int ks_action_config_select(const struct key_action_context *ctx, void *priv)
+{
+    struct keyboard_server *ks = (struct keyboard_server *)priv;
+    uint32_t target_hash;
+    const char *target_id;
+
+    if (ks == NULL || ctx == NULL || ctx->event_type != 1U) {
+        return KEY_ACTION_PASS;
+    }
+
+    /* 从 32 位键码的高 24 位提取目标配置的 FNV-1a 24-bit Hash */
+    target_hash = (ctx->key_code >> 8) & 0x00FFFFFFU;
+    if (target_hash == 0U) {
+        return KEY_ACTION_PASS;
+    }
+
+    target_id = keyboard_config_manifest_lookup_config(&ks->kb_cap.manifest, target_hash);
+    if (target_id != NULL) {
+        (void)ks_switch_keyboard_config(ks, target_id);
+        return KEY_ACTION_DROP;
+    }
+
+    return KEY_ACTION_PASS;
 }
 
 static int ks_action_caps_lock(const struct key_action_context *ctx, void *priv)
@@ -1032,13 +1059,13 @@ static int ks_register_nlk_capability(struct keyboard_server *ks)
                                            "Trigger per-key light",
                                            ks_action_key_light, ks);
     (void)nlk_cap_keyboard_register_action(&ks->kb_cap, "config_next",
-                                           "Switch to next keyboard config",
+                                           "Next config/profile",
                                            ks_action_profile_next, ks);
-    (void)nlk_cap_keyboard_register_action(&ks->kb_cap, "profile_next",
-                                           "Switch to next profile",
-                                           ks_action_profile_next, ks);
+    (void)nlk_cap_keyboard_register_action(&ks->kb_cap, "config_select",
+                                           "Select config/prof",
+                                           ks_action_config_select, ks);
     (void)nlk_cap_keyboard_register_action(&ks->kb_cap, "caps_lock",
-                                           "Caps Lock special light",
+                                           "Caps Lock light",
                                            ks_action_caps_lock, ks);
 
     /* Bind default profile actions by capability name */
@@ -1060,12 +1087,14 @@ static int ks_register_nlk_capability(struct keyboard_server *ks)
         for (i = 0U; i < ks->profile.macro_count; i++) {
             const struct nlk_kb_macro_step *msteps =
                 (ks->profile.default_macros != NULL) ? ks->profile.default_macros[i] : NULL;
-            (void)nlk_cap_keyboard_set_macro(&ks->kb_cap,
-                                             ks->profile.macro_infos[i].macro_id,
-                                             ks->profile.macro_infos[i].name,
-                                             msteps,
-                                             ks->profile.macro_infos[i].step_count,
-                                             ks->profile.macro_infos[i].repeat_count);
+            (void)nlk_cap_keyboard_set_macro_meta(&ks->kb_cap,
+                                                  ks->profile.macro_infos[i].macro_id,
+                                                  ks->profile.macro_infos[i].id,
+                                                  ks->profile.macro_infos[i].name,
+                                                  "",
+                                                  msteps,
+                                                  ks->profile.macro_infos[i].step_count,
+                                                  ks->profile.macro_infos[i].repeat_count);
         }
     }
 
@@ -1096,6 +1125,9 @@ static void ks_init_filesystem_profiles(struct keyboard_server *ks)
     if (ks_persistent_store_ready(ks) != 0) {
         return;
     }
+
+    /* 构建轻量级清单索引表 (Manifest) */
+    (void)keyboard_config_manifest_build(dir, ks->profile.hardware_id, &ks->kb_cap.manifest);
 
     /* 优先从 /assets/keyboard/active.nkc 恢复当前生效工作态 */
     rc = keyboard_config_file_restore(&ks->kb_cap, ks->profile.hardware_id, dir, KEYBOARD_CONFIG_ACTIVE);

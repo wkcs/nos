@@ -79,7 +79,7 @@ static size_t config_max_size(const struct nlk_keyboard_ctx *ctx)
            sizeof(struct nlk_kb_params) +
            sizeof(struct nlk_kb_analog_cfg) +
            sizeof(struct nlk_kb_light_override) +
-           cells * (2U + NLK_KB_MAX_KEY_ACTIONS * NLK_KB_ACTION_NAME_MAX) + 1U +
+           cells * (sizeof(uint32_t) + 1U + NLK_KB_MAX_KEY_ACTIONS * NLK_KB_ACTION_NAME_MAX) + 1U +
            NLK_KB_MAX_MACROS * (1U + sizeof(struct nlk_kb_macro_info) +
                NLK_KB_MAX_MACRO_STEPS * sizeof(struct nlk_kb_macro_step)) +
            sizeof(struct nlk_kb_light_cfg) + NLK_KB_LIGHT_EFFECT_NAME_MAX + 1U +
@@ -89,7 +89,7 @@ static size_t config_max_size(const struct nlk_keyboard_ctx *ctx)
 
 static int config_write_file(const struct nlk_keyboard_ctx *ctx, const char *hardware,
                              const char *dir, const char *id, const char *name,
-                             uint8_t kind, uint8_t macro_id, int replace)
+                             const char *desc, uint8_t kind, uint8_t macro_id, int replace)
 {
     char path[CONFIG_PATH_SIZE], temp[CONFIG_PATH_SIZE];
     void *buffer;
@@ -102,11 +102,11 @@ static int config_write_file(const struct nlk_keyboard_ctx *ctx, const char *har
     if (config_path(path, dir, id, kind, 0) != 0 ||
         config_path(temp, dir, id, kind, 1) != 0) return -EINVAL;
     if (!replace && vfs_lookup_path(vfs_get_root(), path) != NULL) return -EEXIST;
-    ret = keyboard_config_encode(ctx, hardware, name, kind, macro_id, NULL, 0U, &length);
+    ret = keyboard_config_encode(ctx, hardware, name, desc, kind, macro_id, NULL, 0U, &length);
     if (ret != 0) return ret;
     buffer = kmalloc(length, GFP_KERNEL);
     if (buffer == NULL) return -ENOMEM;
-    ret = keyboard_config_encode(ctx, hardware, name, kind, macro_id, buffer, length, &length);
+    ret = keyboard_config_encode(ctx, hardware, name, desc, kind, macro_id, buffer, length, &length);
     if (ret != 0) goto out;
     fd = nos_open(temp, O_WRONLY | O_CREAT | O_TRUNC, 0644);
     if (fd < 0) { ret = fd; goto out; }
@@ -129,16 +129,16 @@ out:
 
 int keyboard_config_file_save(const struct nlk_keyboard_ctx *ctx, const char *hardware,
                               const char *dir, const char *id, const char *name,
-                              uint8_t kind, uint8_t macro_id)
+                              const char *desc, uint8_t kind, uint8_t macro_id)
 {
     if (kind == KEYBOARD_CONFIG_ACTIVE) return -EINVAL;
-    return config_write_file(ctx, hardware, dir, id, name, kind, macro_id, 0);
+    return config_write_file(ctx, hardware, dir, id, name, desc, kind, macro_id, 0);
 }
 
 int keyboard_config_active_save(const struct nlk_keyboard_ctx *ctx,
                                 const char *hardware, const char *dir)
 {
-    return config_write_file(ctx, hardware, dir, NULL, "active",
+    return config_write_file(ctx, hardware, dir, NULL, "active", "",
                              KEYBOARD_CONFIG_ACTIVE, 0U, 1);
 }
 
@@ -246,13 +246,17 @@ int keyboard_config_file_next(const char *dir, const char *hardware, uint8_t kin
         ret = (int)nos_read(fd, &header, sizeof(header));
         (void)nos_close(fd);
         if (ret != (int)sizeof(header) || header.magic != KEYBOARD_CONFIG_MAGIC ||
-            header.version != 1U || header.kind != kind ||
+            (header.version != 1U && header.version != 2U) || header.kind != kind ||
             memchr(header.hardware, '\0', sizeof(header.hardware)) == NULL ||
             memchr(header.name, '\0', sizeof(header.name)) == NULL ||
+            (header.version >= 2U && memchr(header.desc, '\0', sizeof(header.desc)) == NULL) ||
             strcmp(header.hardware, hardware) != 0) continue;
         memset(info, 0, sizeof(*info));
         memcpy(info->id, scan.id, strlen(scan.id) + 1U);
         memcpy(info->name, header.name, sizeof(info->name));
+        if (header.version >= 2U) {
+            memcpy(info->desc, header.desc, sizeof(info->desc));
+        }
         info->size = header.length;
         return 1;
     }
@@ -318,6 +322,7 @@ int keyboard_config_file_rpc(struct nlk_keyboard_ctx *ctx, const char *hardware,
             page->size = info.size;
             memcpy(page->id, info.id, sizeof(page->id));
             memcpy(page->name, info.name, sizeof(page->name));
+            memcpy(page->desc, info.desc, sizeof(page->desc));
         }
         *resp_len = sizeof(*page);
         return 0;
@@ -327,8 +332,10 @@ int keyboard_config_file_rpc(struct nlk_keyboard_ctx *ctx, const char *hardware,
     if (op == NLK_KB_OP_CONFIG_FILES_SAVE) {
         if (memchr(file_req->name, '\0', sizeof(file_req->name)) == NULL) return -EINVAL;
         ret = keyboard_config_file_save(ctx, hardware, dir, file_req->id, file_req->name,
-                                        file_req->kind, file_req->macro_id);
+                                        file_req->desc, file_req->kind, file_req->macro_id);
         if (ret == 0) {
+            (void)keyboard_config_manifest_update((struct nlk_kb_manifest *)&ctx->manifest,
+                                                  file_req->kind, file_req->id, 0);
             if (file_req->kind == KEYBOARD_CONFIG_KEYBOARD) {
                 memcpy(ctx->active_keyboard_id, file_req->id, sizeof(ctx->active_keyboard_id));
                 ret = keyboard_config_active_save(ctx, hardware, dir);
@@ -342,12 +349,12 @@ int keyboard_config_file_rpc(struct nlk_keyboard_ctx *ctx, const char *hardware,
     if (op == NLK_KB_OP_CONFIG_FILES_LOAD) {
         void *backup = NULL;
         size_t backup_len = 0U;
-        ret = keyboard_config_encode(ctx, hardware, "active", KEYBOARD_CONFIG_ACTIVE,
+        ret = keyboard_config_encode(ctx, hardware, "active", "", KEYBOARD_CONFIG_ACTIVE,
                                      0U, NULL, 0U, &backup_len);
         if (ret != 0) return ret;
         backup = kmalloc(backup_len, GFP_KERNEL);
         if (backup == NULL) return -ENOMEM;
-        ret = keyboard_config_encode(ctx, hardware, "active", KEYBOARD_CONFIG_ACTIVE,
+        ret = keyboard_config_encode(ctx, hardware, "active", "", KEYBOARD_CONFIG_ACTIVE,
                                      0U, backup, backup_len, &backup_len);
         if (ret != 0) { kfree(backup); return ret; }
         ret = keyboard_config_file_load(ctx, hardware, dir, file_req->id,
@@ -395,7 +402,119 @@ int keyboard_config_file_rpc(struct nlk_keyboard_ctx *ctx, const char *hardware,
              strcmp(ctx->active_light_id, file_req->id) == 0)) {
             return -EBUSY;
         }
-        return keyboard_config_file_delete(dir, file_req->id, file_req->kind);
+        ret = keyboard_config_file_delete(dir, file_req->id, file_req->kind);
+        if (ret == 0) {
+            (void)keyboard_config_manifest_update((struct nlk_kb_manifest *)&ctx->manifest,
+                                                  file_req->kind, file_req->id, 1);
+        }
+        return ret;
     }
     return -ENOTSUP;
+}
+
+int keyboard_config_manifest_build(const char *dir, const char *hardware, struct nlk_kb_manifest *manifest)
+{
+    uint32_t cursor = 0U;
+    struct keyboard_config_file_info info;
+
+    if (dir == NULL || manifest == NULL) {
+        return -EINVAL;
+    }
+    memset(manifest, 0, sizeof(*manifest));
+
+    /* 扫描键盘配置文件 */
+    cursor = 0U;
+    while (manifest->config_count < NLK_KB_MANIFEST_MAX_CONFIGS &&
+           keyboard_config_file_next(dir, hardware, KEYBOARD_CONFIG_KEYBOARD, &cursor, &info) > 0) {
+        struct nlk_kb_manifest_entry *ent = &manifest->configs[manifest->config_count++];
+        ent->hash = nlk_fnv1a_24(info.id);
+        memcpy(ent->id, info.id, sizeof(ent->id));
+    }
+
+    /* 扫描宏配置文件 */
+    cursor = 0U;
+    while (manifest->macro_count < NLK_KB_MANIFEST_MAX_MACROS &&
+           keyboard_config_file_next(dir, hardware, KEYBOARD_CONFIG_MACRO, &cursor, &info) > 0) {
+        struct nlk_kb_manifest_entry *ent = &manifest->macros[manifest->macro_count++];
+        ent->hash = nlk_fnv1a_24(info.id);
+        memcpy(ent->id, info.id, sizeof(ent->id));
+    }
+
+    return 0;
+}
+
+const char *keyboard_config_manifest_lookup_config(const struct nlk_kb_manifest *manifest, uint32_t hash)
+{
+    uint8_t i;
+    if (manifest == NULL || hash == 0U) {
+        return NULL;
+    }
+    for (i = 0U; i < manifest->config_count && i < NLK_KB_MANIFEST_MAX_CONFIGS; i++) {
+        if (manifest->configs[i].hash == hash) {
+            return manifest->configs[i].id;
+        }
+    }
+    return NULL;
+}
+
+const char *keyboard_config_manifest_lookup_macro(const struct nlk_kb_manifest *manifest, uint32_t hash)
+{
+    uint8_t i;
+    if (manifest == NULL || hash == 0U) {
+        return NULL;
+    }
+    for (i = 0U; i < manifest->macro_count && i < NLK_KB_MANIFEST_MAX_MACROS; i++) {
+        if (manifest->macros[i].hash == hash) {
+            return manifest->macros[i].id;
+        }
+    }
+    return NULL;
+}
+
+int keyboard_config_manifest_update(struct nlk_kb_manifest *manifest, uint8_t kind, const char *id, int remove)
+{
+    uint8_t i;
+    uint32_t hash;
+    if (manifest == NULL || id == NULL || id[0] == '\0') {
+        return -EINVAL;
+    }
+    hash = nlk_fnv1a_24(id);
+    if (kind == KEYBOARD_CONFIG_KEYBOARD) {
+        for (i = 0U; i < manifest->config_count; i++) {
+            if (manifest->configs[i].hash == hash && strcmp(manifest->configs[i].id, id) == 0) {
+                if (remove) {
+                    for (; i + 1U < manifest->config_count; i++) {
+                        manifest->configs[i] = manifest->configs[i + 1U];
+                    }
+                    manifest->config_count--;
+                }
+                return 0;
+            }
+        }
+        if (!remove && manifest->config_count < NLK_KB_MANIFEST_MAX_CONFIGS) {
+            struct nlk_kb_manifest_entry *ent = &manifest->configs[manifest->config_count++];
+            ent->hash = hash;
+            memcpy(ent->id, id, sizeof(ent->id));
+            return 0;
+        }
+    } else if (kind == KEYBOARD_CONFIG_MACRO) {
+        for (i = 0U; i < manifest->macro_count; i++) {
+            if (manifest->macros[i].hash == hash && strcmp(manifest->macros[i].id, id) == 0) {
+                if (remove) {
+                    for (; i + 1U < manifest->macro_count; i++) {
+                        manifest->macros[i] = manifest->macros[i + 1U];
+                    }
+                    manifest->macro_count--;
+                }
+                return 0;
+            }
+        }
+        if (!remove && manifest->macro_count < NLK_KB_MANIFEST_MAX_MACROS) {
+            struct nlk_kb_manifest_entry *ent = &manifest->macros[manifest->macro_count++];
+            ent->hash = hash;
+            memcpy(ent->id, id, sizeof(ent->id));
+            return 0;
+        }
+    }
+    return 0;
 }

@@ -17,6 +17,7 @@ enum keyboard_config_kind {
 };
 
 #define KEYBOARD_CONFIG_NAME_SIZE NLK_KB_CONFIG_NAME_SIZE
+#define KEYBOARD_CONFIG_DESC_SIZE NLK_KB_CONFIG_DESC_SIZE
 #define KEYBOARD_CONFIG_HARDWARE_SIZE NLK_KB_CONFIG_HARDWARE_SIZE
 #define KEYBOARD_CONFIG_ID_SIZE NLK_KB_CONFIG_ID_SIZE
 #define KEYBOARD_CONFIG_MAGIC 0x31434b4eUL
@@ -32,10 +33,11 @@ struct keyboard_config_header {
     uint32_t checksum;
     char hardware[KEYBOARD_CONFIG_HARDWARE_SIZE];
     char name[KEYBOARD_CONFIG_NAME_SIZE];
+    char desc[KEYBOARD_CONFIG_DESC_SIZE];
 } __attribute__((packed));
 
 int keyboard_config_encode(const struct nlk_keyboard_ctx *ctx, const char *hardware,
-                           const char *name, uint8_t kind, uint8_t macro_id,
+                           const char *name, const char *desc, uint8_t kind, uint8_t macro_id,
                            void *buffer, size_t capacity, size_t *length);
 int keyboard_config_decode(struct nlk_keyboard_ctx *ctx, const char *hardware,
                            uint8_t kind, uint8_t macro_id,
@@ -44,12 +46,13 @@ int keyboard_config_decode(struct nlk_keyboard_ctx *ctx, const char *hardware,
 struct keyboard_config_file_info {
     char id[KEYBOARD_CONFIG_ID_SIZE];
     char name[KEYBOARD_CONFIG_NAME_SIZE];
+    char desc[KEYBOARD_CONFIG_DESC_SIZE];
     uint32_t size;
 };
 
 int keyboard_config_file_save(const struct nlk_keyboard_ctx *ctx, const char *hardware,
                               const char *dir, const char *id, const char *name,
-                              uint8_t kind, uint8_t macro_id);
+                              const char *desc, uint8_t kind, uint8_t macro_id);
 int keyboard_config_file_load(struct nlk_keyboard_ctx *ctx, const char *hardware,
                               const char *dir, const char *id, uint8_t kind,
                               uint8_t macro_id);
@@ -63,5 +66,10 @@ int keyboard_config_file_restore(struct nlk_keyboard_ctx *ctx, const char *hardw
 int keyboard_config_file_rpc(struct nlk_keyboard_ctx *ctx, const char *hardware,
                              const char *dir, uint8_t op, const void *req,
                              uint16_t req_len, void *resp, uint16_t *resp_len);
+
+int keyboard_config_manifest_build(const char *dir, const char *hardware, struct nlk_kb_manifest *manifest);
+const char *keyboard_config_manifest_lookup_config(const struct nlk_kb_manifest *manifest, uint32_t hash);
+const char *keyboard_config_manifest_lookup_macro(const struct nlk_kb_manifest *manifest, uint32_t hash);
+int keyboard_config_manifest_update(struct nlk_kb_manifest *manifest, uint8_t kind, const char *id, int remove);
 
 #endif

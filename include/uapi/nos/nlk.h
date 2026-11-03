@@ -913,10 +913,27 @@ struct nlk_kb_set_active_layer_req {
 /* Keyboard Macro Recording & Configuration */
 #define NLK_KB_MAX_MACROS               8U
 #define NLK_KB_MAX_MACRO_STEPS          32U
-#define NLK_KB_MACRO_NAME_MAX           16U
+#define NLK_KB_MACRO_ID_MAX             12U
+#define NLK_KB_MACRO_NAME_MAX           14U
+#define NLK_KB_MACRO_DESC_MAX           64U
 /* Bind action "macro_play" to a key using BASE + macro slot as its keycode. */
 #define NLK_KB_MACRO_KEYCODE_BASE       0xF0U
 #define NLK_KB_MACRO_FLAG_RECORD_OVERFLOW 0x01U
+
+/* 24 位 FNV-1a Hash 计算函数（用于宏与配置 ID 的短哈希索引） */
+static inline uint32_t nlk_fnv1a_24(const char *str)
+{
+    uint32_t hash = 2166136261UL;
+    if (str == NULL) {
+        return 0U;
+    }
+    while (*str != '\0') {
+        hash ^= (uint8_t)(*str++);
+        hash *= 16777619UL;
+    }
+    uint32_t h24 = ((hash >> 24) ^ hash) & 0x00FFFFFFUL;
+    return (h24 == 0U) ? 1U : h24;
+}
 
 enum nlk_kb_macro_action_type {
     NLK_KB_MACRO_ACT_NONE           = 0U,
@@ -937,7 +954,8 @@ struct nlk_kb_macro_info {
     uint8_t  step_count;           /* Number of active steps (0=empty) */
     uint8_t  repeat_count;         /* Playback loops (1..255) */
     uint8_t  flags;                /* Reserved flags */
-    char     name[NLK_KB_MACRO_NAME_MAX]; /* Macro description/name */
+    char     id[NLK_KB_MACRO_ID_MAX];     /* 唯一标识 (文件名)，如 "paste" */
+    char     name[NLK_KB_MACRO_NAME_MAX]; /* 人类可读名称 */
 } __attribute__((packed));
 
 struct nlk_kb_macro_list_resp {
@@ -952,7 +970,9 @@ struct nlk_kb_macro_cfg_hdr {
     uint8_t  step_count;           /* Number of steps following this header */
     uint8_t  repeat_count;         /* Playback loops */
     uint8_t  reserved;
+    char     id[NLK_KB_MACRO_ID_MAX];
     char     name[NLK_KB_MACRO_NAME_MAX];
+    char     desc[NLK_KB_MACRO_DESC_MAX];
 } __attribute__((packed));
 
 struct nlk_kb_macro_record_req {
@@ -1010,13 +1030,12 @@ struct nlk_kb_light_effect_page_resp {
 
 /* 按键动作上下文（输入按键信息） */
 struct key_action_context {
-    uint8_t layer;        /* 按键所在层 (0..7) */
-    uint8_t key_index;    /* 按键逻辑序号 (0..key_count-1) */
-    uint8_t initial_code; /* 初始配置的 HID 键码 (未经过 action 处理) */
-    uint8_t key_code;     /* 当前输入按键码 (上一动作输出，初始为 initial_code) */
-    uint8_t event_type;   /* 触发事件类型: 1 = 按下, 0 = 释放 */
-    uint8_t state;        /* 按键物理状态: 1 = pressed, 0 = released */
-    uint8_t reserved[2];
+    uint8_t  layer;        /* 按键所在层 (0..7) */
+    uint8_t  key_index;    /* 按键逻辑序号 (0..key_count-1) */
+    uint8_t  event_type;   /* 触发事件类型: 1 = 按下, 0 = 释放 */
+    uint8_t  state;        /* 按键物理状态: 1 = pressed, 0 = released */
+    uint32_t initial_code; /* 初始配置的 32 位按键码 ([31:8]=参数/Hash, [7:0]=HID 键码) */
+    uint32_t key_code;     /* 当前输入 32 位按键码 (上一动作输出，初始为 initial_code) */
 } __attribute__((packed));
 
 /* 按键动作处理函数返回值宏定义 */
@@ -1119,6 +1138,7 @@ struct nlk_kb_profile_slot_req {
 /* Named configuration objects; file count is not limited by the protocol. */
 #define NLK_KB_CONFIG_ID_SIZE       24U
 #define NLK_KB_CONFIG_NAME_SIZE     32U
+#define NLK_KB_CONFIG_DESC_SIZE     64U
 #define NLK_KB_CONFIG_HARDWARE_SIZE 24U
 enum nlk_kb_config_kind {
     NLK_KB_CONFIG_KEYBOARD = 1U,
@@ -1143,6 +1163,7 @@ struct nlk_kb_config_file_req {
     uint8_t reserved[2];
     char id[NLK_KB_CONFIG_ID_SIZE];
     char name[NLK_KB_CONFIG_NAME_SIZE];
+    char desc[NLK_KB_CONFIG_DESC_SIZE];
 } __attribute__((packed));
 struct nlk_kb_config_list_req {
     uint8_t kind;
@@ -1156,7 +1177,25 @@ struct nlk_kb_config_list_resp {
     uint8_t reserved[3];
     char id[NLK_KB_CONFIG_ID_SIZE];
     char name[NLK_KB_CONFIG_NAME_SIZE];
+    char desc[NLK_KB_CONFIG_DESC_SIZE];
 } __attribute__((packed));
+
+/* 内存驻留轻量级索引清单 (Manifest) */
+#define NLK_KB_MANIFEST_MAX_CONFIGS  16U
+#define NLK_KB_MANIFEST_MAX_MACROS   32U
+
+struct nlk_kb_manifest_entry {
+    uint32_t hash;                       /* 24 位 FNV-1a Hash */
+    char     id[NLK_KB_CONFIG_ID_SIZE];  /* 24 字节机器文件名 ID */
+};
+
+struct nlk_kb_manifest {
+    uint8_t config_count;
+    uint8_t macro_count;
+    uint8_t reserved[2];
+    struct nlk_kb_manifest_entry configs[NLK_KB_MANIFEST_MAX_CONFIGS];
+    struct nlk_kb_manifest_entry macros[NLK_KB_MANIFEST_MAX_MACROS];
+};
 
 /* 灯效覆盖使能掩码 */
 #define NLK_KB_LIGHT_OVERRIDE_BRIGHTNESS  (1U << 0)

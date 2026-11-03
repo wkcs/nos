@@ -9,6 +9,7 @@
 #include <nos/nlk_caps.h>
 #include <kernel/mm.h>
 #include <uapi/nos/errno.h>
+#include <nos/keyboard_config.h>
 #include <string.h>
 
 /* Standard HID modifier keycodes (0xE0..0xE7) & Layer shift codes (0xE8=FN, 0xE9=PN, 0xEA=MO3) */
@@ -209,6 +210,11 @@ static uint8_t kb_find_action_id(const struct nlk_keyboard_ctx *ctx, const char 
     if (ctx == NULL || name == NULL || name[0] == '\0') {
         return 0U;
     }
+    if (strcmp(name, "profile_next") == 0) {
+        name = "config_next";
+    } else if (strcmp(name, "profile_select") == 0) {
+        name = "config_select";
+    }
     for (i = 0U; i < ctx->action_count && i < NLK_KB_MAX_ACTIONS; i++) {
         if (strncmp(ctx->action_descs[i].name, name, NLK_KB_ACTION_NAME_MAX) == 0) {
             return ctx->action_descs[i].action_id;
@@ -253,9 +259,9 @@ static bool kb_macro_steps_valid(const struct nlk_kb_macro_step *steps, uint8_t 
 
 static void kb_play_macro(struct nlk_keyboard_ctx *ctx, uint8_t macro_id);
 static void kb_record_event(struct nlk_keyboard_ctx *ctx, uint8_t type, uint8_t key_code);
-static uint8_t kb_execute_action_chain(struct nlk_keyboard_ctx *ctx, uint8_t layer,
-                                       uint8_t key_index, uint8_t initial_code,
-                                       uint8_t pressed);
+static uint32_t kb_execute_action_chain(struct nlk_keyboard_ctx *ctx, uint8_t layer,
+                                        uint8_t key_index, uint32_t initial_code,
+                                        uint8_t pressed);
 
 static void kb_sync_active_config(struct nlk_keyboard_ctx *ctx)
 {
@@ -659,7 +665,9 @@ static int kb_on_rpc(struct nlk_node *node, struct nlk_capability *cap,
         mhdr->macro_id = mid;
         mhdr->step_count = steps_cnt;
         mhdr->repeat_count = ctx->macro_info[mid].repeat_count;
-        memcpy(mhdr->name, ctx->macro_info[mid].name, NLK_KB_MACRO_NAME_MAX);
+        memcpy(mhdr->id, ctx->macro_info[mid].id, sizeof(mhdr->id));
+        memcpy(mhdr->name, ctx->macro_info[mid].name, sizeof(mhdr->name));
+        memcpy(mhdr->desc, ctx->macro_desc[mid], sizeof(mhdr->desc));
         if (steps_cnt > 0U) {
             memcpy((uint8_t *)resp + sizeof(*mhdr),
                    ctx->macro_steps[mid],
@@ -694,7 +702,9 @@ static int kb_on_rpc(struct nlk_node *node, struct nlk_capability *cap,
         ctx->macro_info[mid].macro_id = mid;
         ctx->macro_info[mid].step_count = mhdr->step_count;
         ctx->macro_info[mid].repeat_count = (mhdr->repeat_count == 0U) ? 1U : mhdr->repeat_count;
-        memcpy(ctx->macro_info[mid].name, mhdr->name, NLK_KB_MACRO_NAME_MAX);
+        memcpy(ctx->macro_info[mid].id, mhdr->id, sizeof(ctx->macro_info[mid].id));
+        memcpy(ctx->macro_info[mid].name, mhdr->name, sizeof(ctx->macro_info[mid].name));
+        memcpy(ctx->macro_desc[mid], mhdr->desc, sizeof(ctx->macro_desc[mid]));
         if (mhdr->step_count > 0U) {
             memcpy(ctx->macro_steps[mid], steps,
                    (size_t)mhdr->step_count * sizeof(struct nlk_kb_macro_step));
@@ -1013,22 +1023,22 @@ static int kb_on_event(struct nlk_node *node, struct nlk_capability *cap,
                         (void)kb_execute_action_chain(ctx, ehdr->active_layer, (uint8_t)idx,
                                                       ctx->active_code[idx], 0U);
                         if (ctx->recording_macro_id < NLK_KB_MAX_MACROS) {
-                            kb_record_event(ctx, NLK_KB_MACRO_ACT_KEY_UP, ctx->active_code[idx]);
+                            kb_record_event(ctx, NLK_KB_MACRO_ACT_KEY_UP, (uint8_t)(ctx->active_code[idx] & 0xFFU));
                         }
                     }
                     ctx->active_code[idx] = 0U;
                 } else {
                     if (old_st == 0U) {
-                        uint8_t final_kc = kb_execute_action_chain(ctx, ehdr->active_layer, (uint8_t)idx,
-                                                                   items[i].key_code, 1U);
+                        uint32_t final_kc = kb_execute_action_chain(ctx, ehdr->active_layer, (uint8_t)idx,
+                                                                    (uint32_t)items[i].key_code, 1U);
                         ctx->active_code[idx] = final_kc;
                         if (ctx->recording_macro_id < NLK_KB_MAX_MACROS) {
-                            kb_record_event(ctx, NLK_KB_MACRO_ACT_KEY_DOWN, final_kc);
+                            kb_record_event(ctx, NLK_KB_MACRO_ACT_KEY_DOWN, (uint8_t)(final_kc & 0xFFU));
                         }
                     }
                 }
                 if (items[i].key_code != 0U && ctx->keymap[0][idx] == 0U) {
-                    ctx->keymap[0][idx] = items[i].key_code;
+                    ctx->keymap[0][idx] = (uint32_t)items[i].key_code;
                 }
             }
         }
@@ -1240,24 +1250,60 @@ static int kb_action_macro_play(const struct key_action_context *ctx, void *priv
 {
     struct nlk_keyboard_ctx *kb = (struct nlk_keyboard_ctx *)priv;
     if (ctx != NULL && ctx->event_type == 1U && kb != NULL) {
+        uint32_t hash = (ctx->initial_code >> 8) & 0x00FFFFFFUL;
         uint8_t macro_id = 0U;
-        if (ctx->initial_code >= NLK_KB_MACRO_KEYCODE_BASE &&
-            ctx->initial_code < NLK_KB_MACRO_KEYCODE_BASE + NLK_KB_MAX_MACROS) {
-            macro_id = (uint8_t)(ctx->initial_code - NLK_KB_MACRO_KEYCODE_BASE);
+        bool found = false;
+
+        if (hash != 0U) {
+            /* 1. 先在内存已加载的宏池中按 Hash 匹配 */
+            for (uint8_t i = 0U; i < NLK_KB_MAX_MACROS; i++) {
+                if (kb->macro_info[i].step_count != 0U) {
+                    if (nlk_fnv1a_24(kb->macro_info[i].id) == hash ||
+                        nlk_fnv1a_24(kb->macro_info[i].name) == hash) {
+                        macro_id = i;
+                        found = true;
+                        break;
+                    }
+                }
+            }
+            /* 2. 若未直接命中，通过 Manifest 查找目标宏 ID 并匹配 */
+            if (!found && kb->manifest.macro_count > 0U) {
+                const char *mid = keyboard_config_manifest_lookup_macro(&kb->manifest, hash);
+                if (mid != NULL) {
+                    for (uint8_t i = 0U; i < NLK_KB_MAX_MACROS; i++) {
+                        if (strcmp(kb->macro_info[i].id, mid) == 0 ||
+                            strcmp(kb->macro_info[i].name, mid) == 0) {
+                            macro_id = i;
+                            found = true;
+                            break;
+                        }
+                    }
+                }
+            }
+        } else {
+            /* 向下兼容：根据 0xF0 + slot 解析 */
+            if (ctx->initial_code >= NLK_KB_MACRO_KEYCODE_BASE &&
+                ctx->initial_code < NLK_KB_MACRO_KEYCODE_BASE + NLK_KB_MAX_MACROS) {
+                macro_id = (uint8_t)(ctx->initial_code - NLK_KB_MACRO_KEYCODE_BASE);
+            }
+            found = true;
         }
-        kb_play_macro(kb, macro_id);
+
+        if (found) {
+            kb_play_macro(kb, macro_id);
+        }
     }
     return KEY_ACTION_DROP;
 }
 
-static uint8_t kb_execute_action_chain(struct nlk_keyboard_ctx *ctx, uint8_t layer,
-                                       uint8_t key_index, uint8_t initial_code,
-                                       uint8_t pressed)
+static uint32_t kb_execute_action_chain(struct nlk_keyboard_ctx *ctx, uint8_t layer,
+                                        uint8_t key_index, uint32_t initial_code,
+                                        uint8_t pressed)
 {
     struct nlk_kb_key_action_chain *chain;
     struct key_action_context act_ctx;
-    uint8_t current_code = initial_code;
-    uint8_t final_code = initial_code;
+    uint32_t current_code = initial_code;
+    uint32_t final_code = initial_code;
     bool key_dropped = false;
     uint8_t k, a;
 
@@ -1275,8 +1321,6 @@ static uint8_t kb_execute_action_chain(struct nlk_keyboard_ctx *ctx, uint8_t lay
     act_ctx.initial_code = initial_code;
     act_ctx.event_type = pressed ? 1U : 0U;
     act_ctx.state = pressed ? 1U : 0U;
-    act_ctx.reserved[0] = 0U;
-    act_ctx.reserved[1] = 0U;
 
     for (k = 0U; k < chain->count && k < NLK_KB_MAX_KEY_ACTIONS; k++) {
         uint8_t act_id = chain->action_ids[k];
@@ -1292,10 +1336,10 @@ static uint8_t kb_execute_action_chain(struct nlk_keyboard_ctx *ctx, uint8_t lay
                         key_dropped = true;
                         current_code = 0U;
                         final_code = 0U;
-                    } else if (res > 0 && res <= 0xFF) {
+                    } else if (res > 0) {
                         /* 动作输出了有效按键值，以最后一个输出的为准 */
-                        current_code = (uint8_t)res;
-                        final_code = (uint8_t)res;
+                        current_code = (uint32_t)res;
+                        final_code = (uint32_t)res;
                         key_dropped = false;
                     } else {
                         /* res == 0 (KEY_ACTION_PASS): 该动作未返回按键值 (如仅用于点灯/旁路通知)
@@ -1334,8 +1378,12 @@ void nlk_cap_keyboard_deinit(struct nlk_keyboard_ctx *ctx)
     if (ctx->key_state != NULL) {
         kfree(ctx->key_state);
     }
+    if (ctx->active_code != NULL) {
+        kfree(ctx->active_code);
+    }
     memset(ctx->keymap, 0, sizeof(ctx->keymap));
     memset(ctx->action_chains, 0, sizeof(ctx->action_chains));
+    memset(ctx->macro_desc, 0, sizeof(ctx->macro_desc));
     ctx->key_state = NULL;
     ctx->active_code = NULL;
     ctx->key_capacity = 0U;
@@ -1365,17 +1413,19 @@ int nlk_cap_keyboard_init_sized(struct nlk_node *node, struct nlk_keyboard_ctx *
     }
     memset(ctx, 0, sizeof(*ctx));
     cells = (size_t)key_count * layer_count;
-    ctx->keymap[0] = kmalloc(cells, GFP_KERNEL);
+    ctx->keymap[0] = kmalloc(cells * sizeof(uint32_t), GFP_KERNEL);
     ctx->action_chains[0] = kmalloc(cells * sizeof(*ctx->action_chains[0]), GFP_KERNEL);
-    ctx->key_state = kmalloc((size_t)key_count * 2U, GFP_KERNEL);
-    if (ctx->keymap[0] == NULL || ctx->action_chains[0] == NULL || ctx->key_state == NULL) {
+    ctx->key_state = kmalloc((size_t)key_count, GFP_KERNEL);
+    ctx->active_code = kmalloc((size_t)key_count * sizeof(uint32_t), GFP_KERNEL);
+    if (ctx->keymap[0] == NULL || ctx->action_chains[0] == NULL ||
+        ctx->key_state == NULL || ctx->active_code == NULL) {
         nlk_cap_keyboard_deinit(ctx);
         return -ENOMEM;
     }
-    memset(ctx->keymap[0], 0, cells);
+    memset(ctx->keymap[0], 0, cells * sizeof(uint32_t));
     memset(ctx->action_chains[0], 0, cells * sizeof(*ctx->action_chains[0]));
-    memset(ctx->key_state, 0, (size_t)key_count * 2U);
-    ctx->active_code = ctx->key_state + key_count;
+    memset(ctx->key_state, 0, (size_t)key_count);
+    memset(ctx->active_code, 0, (size_t)key_count * sizeof(uint32_t));
     ctx->key_capacity = key_count;
     ctx->layer_capacity = layer_count;
     for (l = 1U; l < layer_count; l++) {
@@ -1850,10 +1900,12 @@ int nlk_cap_keyboard_bind_all_keys(struct nlk_keyboard_ctx *ctx,
     return 0;
 }
 
-int nlk_cap_keyboard_set_macro(struct nlk_keyboard_ctx *ctx, uint8_t macro_id,
-                               const char *name,
-                               const struct nlk_kb_macro_step *steps,
-                               uint8_t step_count, uint8_t repeat_count)
+int nlk_cap_keyboard_set_macro_meta(struct nlk_keyboard_ctx *ctx, uint8_t macro_id,
+                                    const char *id,
+                                    const char *name,
+                                    const char *desc,
+                                    const struct nlk_kb_macro_step *steps,
+                                    uint8_t step_count, uint8_t repeat_count)
 {
     if (ctx == NULL || macro_id >= NLK_KB_MAX_MACROS ||
         !kb_macro_steps_valid(steps, step_count)) {
@@ -1865,15 +1917,31 @@ int nlk_cap_keyboard_set_macro(struct nlk_keyboard_ctx *ctx, uint8_t macro_id,
     ctx->macro_info[macro_id].macro_id = macro_id;
     ctx->macro_info[macro_id].step_count = step_count;
     ctx->macro_info[macro_id].repeat_count = (repeat_count == 0U) ? 1U : repeat_count;
+    if (id != NULL) {
+        strncpy(ctx->macro_info[macro_id].id, id, NLK_KB_MACRO_ID_MAX - 1);
+        ctx->macro_info[macro_id].id[NLK_KB_MACRO_ID_MAX - 1] = '\0';
+    }
     if (name != NULL) {
         strncpy(ctx->macro_info[macro_id].name, name, NLK_KB_MACRO_NAME_MAX - 1);
         ctx->macro_info[macro_id].name[NLK_KB_MACRO_NAME_MAX - 1] = '\0';
+    }
+    if (desc != NULL) {
+        strncpy(ctx->macro_desc[macro_id], desc, NLK_KB_MACRO_DESC_MAX - 1);
+        ctx->macro_desc[macro_id][NLK_KB_MACRO_DESC_MAX - 1] = '\0';
     }
     if (steps != NULL && step_count > 0U) {
         memcpy(ctx->macro_steps[macro_id], steps,
                (size_t)step_count * sizeof(struct nlk_kb_macro_step));
     }
     return 0;
+}
+
+int nlk_cap_keyboard_set_macro(struct nlk_keyboard_ctx *ctx, uint8_t macro_id,
+                               const char *name,
+                               const struct nlk_kb_macro_step *steps,
+                               uint8_t step_count, uint8_t repeat_count)
+{
+    return nlk_cap_keyboard_set_macro_meta(ctx, macro_id, name, name, "", steps, step_count, repeat_count);
 }
 
 int nlk_cap_keyboard_record_macro_step(struct nlk_keyboard_ctx *ctx,
@@ -1959,11 +2027,30 @@ int nlk_cap_keyboard_load_layout(struct nlk_keyboard_ctx *ctx, uint8_t layer,
                                  const uint8_t *key_codes,
                                  uint8_t count)
 {
+    uint8_t i;
     if (ctx == NULL || layer >= ctx->desc.layer_count || count > ctx->desc.key_count) {
         return -EINVAL;
     }
     if (key_codes != NULL) {
-        memcpy(ctx->keymap[layer], key_codes, count);
+        for (i = 0U; i < count; i++) {
+            ctx->keymap[layer][i] = (uint32_t)key_codes[i];
+        }
+    }
+    return 0;
+}
+
+int nlk_cap_keyboard_load_layout32(struct nlk_keyboard_ctx *ctx, uint8_t layer,
+                                   const uint32_t *key_codes,
+                                   uint8_t count)
+{
+    uint8_t i;
+    if (ctx == NULL || layer >= ctx->desc.layer_count || count > ctx->desc.key_count) {
+        return -EINVAL;
+    }
+    if (key_codes != NULL) {
+        for (i = 0U; i < count; i++) {
+            ctx->keymap[layer][i] = key_codes[i];
+        }
     }
     return 0;
 }
@@ -1984,7 +2071,7 @@ int nlk_cap_keyboard_update_local_keys(struct nlk_keyboard_ctx *ctx,
     /* First pass: update raw key_state for layer-shift keys so active_layer is current */
     for (i = 0U; i < limit; i++) {
         uint8_t pressed = (uint8_t)((raw_bitmap[i / 32U] >> (i % 32U)) & 0x01U);
-        uint8_t base_kc = ctx->keymap[0][i];
+        uint8_t base_kc = (uint8_t)(ctx->keymap[0][i] & 0xFFU);
         if (base_kc == NLK_KC_FN || base_kc == NLK_KC_PN || base_kc == NLK_KC_MO3) {
             ctx->key_state[i] = pressed;
         }
@@ -1994,32 +2081,33 @@ int nlk_cap_keyboard_update_local_keys(struct nlk_keyboard_ctx *ctx,
     /* Second pass: process press/release transitions and fire key actions */
     for (i = 0U; i < limit; i++) {
         uint8_t pressed = (uint8_t)((raw_bitmap[i / 32U] >> (i % 32U)) & 0x01U);
-        uint8_t base_kc = ctx->keymap[0][i];
+        uint32_t base_code = ctx->keymap[0][i];
+        uint8_t base_kc = (uint8_t)(base_code & 0xFFU);
         bool is_layer_key = (base_kc == NLK_KC_FN ||
                              base_kc == NLK_KC_PN ||
                              base_kc == NLK_KC_MO3);
 
         if (pressed != 0U) {
             if (ctx->key_state[i] == 0U || is_layer_key) {
-                uint8_t kc = is_layer_key ? base_kc : ctx->keymap[layer][i];
+                uint32_t code = is_layer_key ? base_code : ctx->keymap[layer][i];
                 bool first_down = (ctx->key_state[i] == 0U && !is_layer_key);
 
                 ctx->key_state[i] = 1U;
                 if (first_down) {
-                    uint8_t final_kc = kb_execute_action_chain(ctx, layer, i, kc, 1U);
-                    ctx->active_code[i] = final_kc;
+                    uint32_t final_code = kb_execute_action_chain(ctx, layer, i, code, 1U);
+                    ctx->active_code[i] = final_code;
                     if (ctx->recording_macro_id < NLK_KB_MAX_MACROS) {
-                        kb_record_event(ctx, NLK_KB_MACRO_ACT_KEY_DOWN, final_kc);
+                        kb_record_event(ctx, NLK_KB_MACRO_ACT_KEY_DOWN, (uint8_t)(final_code & 0xFFU));
                     }
                 } else {
-                    ctx->active_code[i] = kc;
+                    ctx->active_code[i] = code;
                 }
             }
         } else {
             if (ctx->key_state[i] != 0U) {
                 (void)kb_execute_action_chain(ctx, layer, i, ctx->active_code[i], 0U);
                 if (ctx->recording_macro_id < NLK_KB_MAX_MACROS) {
-                    kb_record_event(ctx, NLK_KB_MACRO_ACT_KEY_UP, ctx->active_code[i]);
+                    kb_record_event(ctx, NLK_KB_MACRO_ACT_KEY_UP, (uint8_t)(ctx->active_code[i] & 0xFFU));
                 }
             }
             ctx->key_state[i] = 0U;
