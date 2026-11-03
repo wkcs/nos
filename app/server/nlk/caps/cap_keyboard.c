@@ -348,7 +348,8 @@ static int kb_on_rpc(struct nlk_node *node, struct nlk_capability *cap,
         entries = (const struct nlk_kb_keymap_entry *)((const uint8_t *)req + sizeof(*khdr));
         for (i = 0U; i < khdr->count; i++) {
             uint8_t idx = (uint8_t)(khdr->start_index + i);
-            ctx->keymap[khdr->layer][idx] = entries[i].key_code;
+            ctx->keymap[khdr->layer][idx] =
+                (ctx->keymap[khdr->layer][idx] & ~0xFFU) | (uint32_t)entries[i].key_code;
             if (entries[i].action != 0U) {
                 ctx->action_chains[khdr->layer][idx].count = 1U;
                 ctx->action_chains[khdr->layer][idx].action_ids[0] = entries[i].action;
@@ -923,6 +924,13 @@ static int kb_on_rpc(struct nlk_node *node, struct nlk_capability *cap,
         rc = nlk_cap_keyboard_bind_key_action(ctx, breq->layer, breq->key_index,
                                               breq->action_name, breq->append != 0U);
         if (rc == 0) {
+            if (req_len >= sizeof(*breq) + sizeof(uint32_t)) {
+                uint32_t hash = *(const uint32_t *)((const uint8_t *)req + sizeof(*breq));
+                if (breq->layer < ctx->desc.layer_count && breq->key_index < ctx->desc.key_count) {
+                    ctx->keymap[breq->layer][breq->key_index] =
+                        (hash << 8) | (ctx->keymap[breq->layer][breq->key_index] & 0xFFU);
+                }
+            }
             kb_sync_active_config(ctx);
         }
         return rc;
