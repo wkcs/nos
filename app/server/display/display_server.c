@@ -30,7 +30,7 @@ struct display_server {
     struct device *led_dev;
     struct device ds_dev;
     struct display_dev_info dev_info;
-    struct nos_completion sem;
+    struct nos_completion comp;
     struct mutex lock;
     struct list_head draw_list;
 
@@ -143,7 +143,7 @@ static int display_server_control(struct device *dev, int cmd, void *args)
     case DS_CTRL_ENABLE:
         ds->led_dev->ops.control(ds->led_dev, LED_CTRL_ENABLE, NULL);
         ds->led_enable = true;
-        nos_complete(&ds->sem);
+        nos_complete(&ds->comp);
         break;
     case DS_CTRL_DISABLE:
         ds->led_enable = false;
@@ -264,7 +264,7 @@ static void display_server_task_entry(void* parameter)
             ds->led_dev->ops.control(ds->led_dev, LED_CTRL_REFRESH, NULL);
             msleep(10);
         } else {
-            nos_completion_wait(&ds->sem, NOS_WAIT_FOREVER);
+            nos_completion_wait(&ds->comp, NOS_WAIT_FOREVER);
         }
     }
 }
@@ -279,7 +279,7 @@ static int display_server_init(void)
         return -ENOMEM;
     }
 
-    nos_completion_init(&ds->sem);
+    nos_completion_init(&ds->comp);
     mutex_init(&ds->lock);
     INIT_LIST_HEAD(&ds->draw_list);
 

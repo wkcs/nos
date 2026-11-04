@@ -70,7 +70,7 @@ static void test2_task_entry(void* parameter)
         all_usage = get_cpu_usage() / 100;
         // pr_info("%s: usage:%u.%02u%%, total:%u.%02u%%\n", current->name,
         //        usage / 100, usage % 100, all_usage / 100, all_usage % 100);
-        size = nos_msgq_recv(&msg_q, buf, sizeof(buf) - 1, NOS_WAIT_FOREVER);
+        size = nos_msgq_recv(&msg_q, buf, sizeof(buf), NOS_WAIT_FOREVER);
         if (size == 0) {
             buf[sizeof(buf) - 1] = 0;
             i++;
@@ -161,7 +161,7 @@ static void test5_task_entry(void* parameter)
 {
     u32 usage;
     u32 all_usage;
-    char buf[] = "lalala";
+    char buf[128] = "lalala";
     int i = 0;
 
     mutex_init(&g_lock);
