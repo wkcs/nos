@@ -19,6 +19,8 @@
 #include <uapi/nos/ipc.h>
 #include <nos/cap.h>
 #include <nos/mm.h>
+#include <nos/refcount.h>
+#include <nos/wait.h>
 
 enum task_status {
     TASK_RUNNING   = 0x01,
@@ -116,6 +118,10 @@ struct task_struct {
     struct task_struct  *ipc_partner;
     uint8_t              ipc_state;
     uint64_t             notify_bits;
+
+    /* 通用等待底座记录与原子引用计数 */
+    nos_refcount_t       refcount;
+    struct nos_wait_entry wait_entry;
 };
 
 enum task_ps_mode {
@@ -126,6 +132,34 @@ enum task_ps_mode {
 
 struct task_struct *task_current(void);
 #define current task_current()
+
+/**
+ * 获取任务的原子引用计数
+ *
+ * @param task: 目标任务指针
+ * @return: true 成功获取引用，false 对象已归零或无效
+ */
+static inline bool task_get(struct task_struct *task)
+{
+    if (task == NULL) {
+        return false;
+    }
+    return nos_refcount_get(&task->refcount);
+}
+
+/**
+ * 释放任务的原子引用计数
+ *
+ * @param task: 目标任务指针
+ * @return: true 引用归零，false 仍有在途引用或对象无效
+ */
+static inline bool task_put(struct task_struct *task)
+{
+    if (task == NULL) {
+        return false;
+    }
+    return nos_refcount_put(&task->refcount);
+}
 
 struct task_struct *task_create(const char *name,
                                 void (*entry)(void *parameter),

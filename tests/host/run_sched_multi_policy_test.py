@@ -103,6 +103,13 @@ def write_host_asm_stubs(stub_root: Path) -> None:
         "#endif\n",
         encoding="utf-8",
     )
+    (asm_dir / "atomic.h").write_text(
+        "#ifndef __HOST_ASM_ATOMIC_H__\n"
+        "#define __HOST_ASM_ATOMIC_H__\n"
+        "typedef struct { volatile int counter; } atomic_t;\n"
+        "#endif\n",
+        encoding="utf-8",
+    )
 
 
 def main() -> None:

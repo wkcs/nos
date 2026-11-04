@@ -12,6 +12,9 @@
 #ifndef _DEV_T_DECLARED
 #define _DEV_T_DECLARED
 #endif
+#ifndef _PID_T_DECLARED
+#define _PID_T_DECLARED
+#endif
 typedef int8_t    s8;
 typedef uint8_t   u8;
 typedef int16_t   s16;
@@ -21,4 +24,15 @@ typedef uint32_t  u32;
 typedef int64_t   s64;
 typedef uint64_t  u64;
 typedef uintptr_t addr_t;
+
+#ifndef offsetof
+#define offsetof(TYPE, MEMBER) ((size_t)&((TYPE *)0)->MEMBER)
+#endif
+
+#ifndef container_of
+#define container_of(ptr, type, member) ({ \
+    const typeof( ((type *)0)->member ) *__mptr = (ptr); \
+    (type *)( (char *)__mptr - offsetof(type, member) );})
+#endif
+
 #endif

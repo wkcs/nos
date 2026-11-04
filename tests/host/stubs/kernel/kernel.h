@@ -11,6 +11,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <errno.h>
+#include <kernel/types.h>
 
 #define __printf(fmt, args) __attribute__((format(printf, fmt, args)))
 #define min(a, b) ((a) < (b) ? (a) : (b))

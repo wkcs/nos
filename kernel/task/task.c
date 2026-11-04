@@ -224,6 +224,8 @@ static int __task_create(struct task_struct *task,
     task->ipc_partner = NULL;
     task->ipc_state = NOS_IPC_STATE_NONE;
     task->notify_bits = 0;
+    nos_refcount_init(&task->refcount, 1U);
+    nos_wait_entry_init(&task->wait_entry, task);
     memset(&task->ipc_msg, 0, sizeof(task->ipc_msg));
     nos_cap_table_init(&task->cap_table);
     (void)nos_cap_alloc_at(&task->cap_table,
@@ -528,6 +530,20 @@ int task_resume(struct task_struct *task)
     add_task_to_ready_list(task);
 
     return 0;
+}
+
+void nos_task_wake_up_locked(struct task_struct *task)
+{
+    if (task == NULL) {
+        return;
+    }
+
+    timer_stop(&task->timer);
+    task_clear_uninterruptible(task);
+    task_clear_wchan(task);
+    if (task->status != TASK_READY && task->status != TASK_RUNNING) {
+        add_task_to_ready_list_lock(task);
+    }
 }
 
 int task_waitpid(pid_t pid, int *status, uint32_t timeout_ticks)

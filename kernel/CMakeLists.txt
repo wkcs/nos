@@ -23,6 +23,7 @@ set(KERNEL_SRCS
     cap/cap_table.c
     ipc/timeout.c
     ipc/object.c
+    ipc/wait.c
     ipc/mutex.c
     ipc/sem.c
     ipc/msg_queue.c
