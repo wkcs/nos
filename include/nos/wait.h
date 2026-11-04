@@ -40,6 +40,7 @@ typedef struct nos_wait_entry {
     int32_t                result;        /* 最终完成返回值 */
     uint64_t               deadline;      /* 绝对单调截止时间戳 (ticks) */
     struct nos_object     *waiting_obj;   /* 当前等待的对象引用 */
+    struct nos_wait_queue *queue;         /* 所挂载的等待队列指针 */
     struct task_struct    *task;          /* 所属任务反向指针 */
 } nos_wait_entry_t;
 

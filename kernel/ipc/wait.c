@@ -38,12 +38,13 @@ void nos_wait_entry_init(struct nos_wait_entry *entry, struct task_struct *task)
     entry->result = 0;
     entry->deadline = 0ULL;
     entry->waiting_obj = NULL;
+    entry->queue = NULL;
     entry->task = task;
 }
 
 int nos_wait_prepare(struct nos_wait_entry *entry, struct nos_object *obj, uint64_t deadline)
 {
-    if (entry == NULL || obj == NULL) {
+    if (entry == NULL || obj == NULL || entry->task == NULL) {
         return -EINVAL;
     }
 
@@ -85,7 +86,10 @@ void nos_wait_finish(struct nos_wait_entry *entry)
     }
 
     /* 确保从等待链表及唤醒批次链表中安全摘除 */
-    if (!list_empty(&entry->wait_node)) {
+    if (entry->queue != NULL) {
+        nos_wait_queue_del(entry->queue, entry);
+        entry->queue = NULL;
+    } else if (!list_empty(&entry->wait_node)) {
         list_del_init(&entry->wait_node);
     }
     if (!list_empty(&entry->wake_node)) {
@@ -123,8 +127,11 @@ int nos_wait_complete_state_locked(struct nos_wait_entry *entry,
     entry->state = (uint8_t)state;
     entry->result = result;
 
-    /* 从对象等待队列摘出 */
-    if (!list_empty(&entry->wait_node)) {
+    /* 从对象等待队列摘出并同步更新队列计数 */
+    if (entry->queue != NULL) {
+        nos_wait_queue_del(entry->queue, entry);
+        entry->queue = NULL;
+    } else if (!list_empty(&entry->wait_node)) {
         list_del_init(&entry->wait_node);
     }
 
@@ -163,6 +170,7 @@ void nos_wait_queue_add_tail(struct nos_wait_queue *wq, struct nos_wait_entry *e
 
     if (list_empty(&entry->wait_node)) {
         list_add_tail(&entry->wait_node, &wq->list);
+        entry->queue = wq;
         wq->count++;
     }
 }
@@ -173,6 +181,11 @@ void nos_wait_queue_add_prio(struct nos_wait_queue *wq, struct nos_wait_entry *e
     bool inserted = false;
 
     if (wq == NULL || entry == NULL) {
+        return;
+    }
+
+    /* 重复入队防护 */
+    if (!list_empty(&entry->wait_node)) {
         return;
     }
 
@@ -193,6 +206,7 @@ void nos_wait_queue_add_prio(struct nos_wait_queue *wq, struct nos_wait_entry *e
         list_add_tail(&entry->wait_node, &wq->list);
     }
 
+    entry->queue = wq;
     wq->count++;
 }
 
@@ -204,6 +218,7 @@ void nos_wait_queue_del(struct nos_wait_queue *wq, struct nos_wait_entry *entry)
 
     if (!list_empty(&entry->wait_node)) {
         list_del_init(&entry->wait_node);
+        entry->queue = NULL;
         if (wq->count > 0U) {
             wq->count--;
         }
