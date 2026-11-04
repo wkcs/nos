@@ -11,6 +11,9 @@
 #include <uapi/nos/ipc.h>
 #include <kernel/list.h>
 #include <kernel/spinlock.h>
+#include <nos/object.h>
+#include <nos/wait.h>
+#include <nos/timeout.h>
 #include <nos/notification.h>
 
 struct task_struct;
@@ -26,11 +29,11 @@ enum nos_ipc_state {
 
 /* Synchronous Rendezvous IPC Endpoint */
 struct nos_endpoint {
-    spinlock_t       lock;
-    struct list_head send_queue; /* Clients waiting in nos_ipc_call to deliver request */
-    struct list_head recv_queue; /* Servers waiting in nos_ipc_recv / nos_ipc_reply_wait */
-    uint32_t         id;
-    bool             closed;
+    struct nos_object     object;
+    uint32_t              id;
+    struct nos_wait_queue send_queue;   /* Clients waiting in nos_ipc_call to deliver request */
+    struct nos_wait_queue recv_queue;   /* Servers waiting in nos_ipc_recv / nos_ipc_reply_wait */
+    struct list_head      reply_queue;  /* In-flight client transactions waiting for reply */
 };
 
 

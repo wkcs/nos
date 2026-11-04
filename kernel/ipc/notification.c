@@ -337,7 +337,9 @@ int nos_notify_signal(nos_handle_t notif_cap, uint64_t bits)
         return rc;
     }
 
-    return nos_notify_signal_obj(notif, (badge != 0U) ? (bits | (uint64_t)badge) : bits);
+    rc = nos_notify_signal_obj(notif, (badge != 0U) ? (bits | (uint64_t)badge) : bits);
+    nos_object_put(&notif->object);
+    return rc;
 }
 
 int nos_notify_wait(nos_handle_t notif_cap,
@@ -372,5 +374,7 @@ int nos_notify_wait(nos_handle_t notif_cap,
         timeout = (nos_timeout_t)timeout_ticks;
     }
 
-    return nos_notify_wait_obj(notif, out_bits, timeout);
+    rc = nos_notify_wait_obj(notif, out_bits, timeout);
+    nos_object_put(&notif->object);
+    return rc;
 }

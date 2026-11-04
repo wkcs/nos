@@ -74,6 +74,7 @@ TESTS = [
     ("run_ipc_completion_test.py",),
     ("run_ipc_msgq_test.py",),
     ("run_ipc_notify_test.py",),
+    ("run_ipc_endpoint_test.py",),
 ]
 
 

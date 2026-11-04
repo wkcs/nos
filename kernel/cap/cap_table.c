@@ -7,6 +7,7 @@
 #define pr_fmt(fmt) "[CAP]:%s[%d]:"fmt, __func__, __LINE__
 
 #include <nos/cap.h>
+#include <nos/object.h>
 #include <uapi/nos/abi.h>
 #include <uapi/nos/errno.h>
 #include <kernel/kernel.h>
@@ -186,6 +187,22 @@ int nos_cap_lookup(struct nos_cap_table *table,
         spin_unlock_irq(&table->lock);
         return -EACCES;
     }
+
+    /*
+     * Capability 查找与对象引用固定 (Pinned Lookup):
+     * 在 Capability 表锁内同步递增对象的原子引用计数，
+     * 确保后续系统调用或在途操作期间对象不被并发释放。
+     * 若对象已处于退休或析构状态 (retired 或 refcount 归零)，返回错误。
+     */
+    if (out_obj != NULL && slot->obj != NULL &&
+        (slot->type == NOS_CAP_ENDPOINT || slot->type == NOS_CAP_NOTIFICATION)) {
+        struct nos_object *obj = (struct nos_object *)slot->obj;
+        if (obj->retired || !nos_object_get(obj)) {
+            spin_unlock_irq(&table->lock);
+            return -ESTALE;
+        }
+    }
+
     if (out_obj != NULL) {
         *out_obj = slot->obj;
     }
