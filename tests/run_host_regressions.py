@@ -71,6 +71,7 @@ TESTS = [
     ("run_ipc_object_test.py",),
     ("run_ipc_wait_test.py",),
     ("run_ipc_sem_test.py",),
+    ("run_ipc_completion_test.py",),
 ]
 
 
