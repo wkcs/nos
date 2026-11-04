@@ -27,6 +27,7 @@ set(KERNEL_SRCS
     ipc/mutex.c
     ipc/sem.c
     ipc/completion.c
+    ipc/msgq.c
     ipc/msg_queue.c
     ipc/endpoint.c
     ipc/notification.c
