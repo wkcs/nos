@@ -21,6 +21,8 @@ set(KERNEL_SRCS
     task/task.c
     task/task_dump.c
     cap/cap_table.c
+    ipc/timeout.c
+    ipc/object.c
     ipc/mutex.c
     ipc/sem.c
     ipc/msg_queue.c

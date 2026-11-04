@@ -10,5 +10,6 @@
 #include <stdint.h>
 
 uint64_t cpu_run_time_us(void);
+uint64_t cpu_run_ticks(void);
 
 #endif

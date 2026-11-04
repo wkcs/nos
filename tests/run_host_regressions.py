@@ -68,6 +68,7 @@ TESTS = [
     ("run_vfs_fd_lifetime_test.py",),
     ("run_vfs_fd_position_test.py",),
     ("run_ramfs_concurrency_test.py",),
+    ("run_ipc_object_test.py",),
 ]
 
 
