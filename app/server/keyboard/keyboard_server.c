@@ -58,8 +58,8 @@ struct keyboard_server {
     struct keyboard_profile profile;
     struct nlk_node        *nlk_node;
     struct nlk_keyboard_ctx kb_cap;
-    struct nos_completion   sem;
-    struct nos_completion   sync_sem;
+    struct nos_completion   comp;
+    struct nos_completion   sync_comp;
     struct mutex            lock;
     bool                    enable;
     bool                    caps_lock_active;
@@ -506,7 +506,7 @@ static void kb_config_worker_task_entry(void *parameter)
     struct keyboard_server *ks = (struct keyboard_server *)parameter;
 
     while (true) {
-        nos_completion_wait(&ks->sync_sem, NOS_WAIT_FOREVER);
+        nos_completion_wait(&ks->sync_comp, NOS_WAIT_FOREVER);
 
         if (ks == NULL) {
             continue;
@@ -572,7 +572,7 @@ static void ks_trigger_config_snapshot(struct keyboard_server *ks)
     mutex_unlock(&ks->lock);
 
     if (need_signal) {
-        nos_complete(&ks->sync_sem);
+        nos_complete(&ks->sync_comp);
     }
 }
 
@@ -742,7 +742,7 @@ static int ks_on_config_files(uint8_t op, const void *req, uint16_t req_len,
             }
 
             if (need_signal) {
-                nos_complete(&ks->sync_sem);
+                nos_complete(&ks->sync_comp);
             }
         }
 
@@ -1153,7 +1153,7 @@ static int keyboard_server_control(struct device *dev, int cmd, void *args)
             ks->key_dev->ops.control(ks->key_dev, KEY_CTRL_ENABLE, NULL);
         }
         ks->enable = true;
-        nos_complete(&ks->sem);
+        nos_complete(&ks->comp);
         break;
     case KS_CTRL_DISABLE:
         ks->enable = false;
@@ -1401,7 +1401,7 @@ static void keyboard_server_task_entry(void *parameter)
             }
             msleep(scan_ms);
         } else {
-            nos_completion_wait(&ks->sem, NOS_WAIT_FOREVER);
+            nos_completion_wait(&ks->comp, NOS_WAIT_FOREVER);
         }
     }
 }
@@ -1417,8 +1417,8 @@ static int keyboard_server_init(void)
     }
     memset(ks, 0, sizeof(*ks));
 
-    nos_completion_init(&ks->sem);
-    nos_completion_init(&ks->sync_sem);
+    nos_completion_init(&ks->comp);
+    nos_completion_init(&ks->sync_comp);
     mutex_init(&ks->lock);
 
     device_init(&ks->ks_dev);

@@ -353,6 +353,9 @@ int nos_endpoint_call(struct nos_endpoint *ep,
     }
 
     spin_lock_irq(&client->lock);
+    if (client->flag == -ETIMEDOUT) {
+        client->flag = 0;
+    }
     task_clear_wchan(client);
     nos_wait_finish(&client->wait_entry);
     client->ipc_state = NOS_IPC_STATE_NONE;
@@ -493,6 +496,9 @@ int nos_endpoint_recv(struct nos_endpoint *ep,
     }
 
     spin_lock_irq(&server->lock);
+    if (server->flag == -ETIMEDOUT) {
+        server->flag = 0;
+    }
     task_clear_wchan(server);
     nos_wait_finish(&server->wait_entry);
     server->ipc_state = NOS_IPC_STATE_NONE;
@@ -556,7 +562,9 @@ int nos_endpoint_reply_wait(struct nos_endpoint *ep,
             }
         }
 
-        if (target_entry == NULL || target->wait_entry.state != NOS_WAIT_STATE_WAITING) {
+        if (target_entry == NULL || target_entry->state != NOS_WAIT_STATE_WAITING) {
+            bool is_closed = ep->object.closed;
+
             if (server->current_priority != server->init_priority) {
                 should_unboost = true;
             }
@@ -566,7 +574,7 @@ int nos_endpoint_reply_wait(struct nos_endpoint *ep,
             if (should_unboost) {
                 (void)task_pi_unboost(server, TASK_PRIO_INVALID);
             }
-            return -ETIMEDOUT;
+            return is_closed ? -EPIPE : -ETIMEDOUT;
         }
 
         /* 目标客户端有效在途等待：复制回复消息并处理权能委托 */

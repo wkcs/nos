@@ -201,6 +201,9 @@ int nos_sem_give(struct nos_sem *sem)
         if (entry != NULL) {
             /* 单点线性化：完成等待并加入延后唤醒批次，count 保持不变 */
             rc = nos_wait_complete_locked(entry, 0, &batch);
+            if (rc != 0) {
+                nos_wait_queue_del(&sem->wait_queue, entry);
+            }
         }
         spin_unlock_irq(&sem->object.lock);
 
