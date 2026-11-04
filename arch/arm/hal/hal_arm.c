@@ -86,6 +86,13 @@ void hal_irq_ack(uint32_t irq)
     }
 }
 
+bool hal_in_irq(void)
+{
+    uint32_t ipsr;
+    __asm__ volatile ("mrs %0, ipsr" : "=r" (ipsr));
+    return (ipsr != 0U);
+}
+
 int hal_vm_space_init(struct nos_vm_space *space)
 {
     return nos_mpu_space_init(space);

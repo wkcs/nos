@@ -110,6 +110,12 @@ void hal_irq_ack(uint32_t irq)
     *GICC_EOIR = irq;
 }
 
+bool hal_in_irq(void)
+{
+    extern volatile uint32_t interrupt_nest;
+    return (interrupt_nest > 0U);
+}
+
 int hal_vm_space_init(struct nos_vm_space *space)
 {
     return nos_vmm_space_init(space);

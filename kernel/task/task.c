@@ -137,6 +137,10 @@ static void *alloc_task_stack(uint32_t stack_size, void **stack_base, uintptr_t 
     }
     buf = kmalloc_aligned(stack_size + NOS_MPU_GUARD_SIZE, NOS_MPU_GUARD_SIZE, GFP_KERNEL);
     if (buf == NULL) {
+        clean_close_task();
+        buf = kmalloc_aligned(stack_size + NOS_MPU_GUARD_SIZE, NOS_MPU_GUARD_SIZE, GFP_KERNEL);
+    }
+    if (buf == NULL) {
         pr_err("alloc stack error\n");
         return NULL;
     }
@@ -147,6 +151,10 @@ static void *alloc_task_stack(uint32_t stack_size, void **stack_base, uintptr_t 
 #else
     if (stack_size > UINT32_MAX - 15U) return NULL;
     buf = kmalloc(stack_size + 15U, GFP_KERNEL);
+    if (buf == NULL) {
+        clean_close_task();
+        buf = kmalloc(stack_size + 15U, GFP_KERNEL);
+    }
     if (buf == NULL) {
         pr_err("alloc stack error\n");
         return NULL;
@@ -953,6 +961,9 @@ void clean_close_task(void)
 
     spin_lock_irq(&g_close_list_lock);
     list_for_each_entry_safe(task, tmp, &g_close_task_list, list) {
+        if (task == current) {
+            continue;
+        }
         if (task->status != TASK_CLOSE) {
             pr_fatal("%s task status is not close\n", task->name);
             list_del(&task->list);

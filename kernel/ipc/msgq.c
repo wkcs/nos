@@ -20,11 +20,15 @@
 #include <kernel/errno.h>
 #include <string.h>
 
-/* 中断上下文弱符号探测 (UP 汇编及 IRQ 子系统提供) */
+/* 中断上下文探测 (优先架构 HAL 硬件寄存器，回退全局中断嵌套计数) */
 extern volatile uint32_t interrupt_nest __attribute__((weak));
+extern bool hal_in_irq(void) __attribute__((weak));
 
 static inline bool nos_msgq_in_isr(void)
 {
+    if (&hal_in_irq != NULL && hal_in_irq()) {
+        return true;
+    }
     if (&interrupt_nest != NULL && interrupt_nest > 0U) {
         return true;
     }

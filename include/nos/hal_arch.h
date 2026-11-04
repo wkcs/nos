@@ -30,6 +30,7 @@ void hal_irq_restore(uintptr_t flags);
 void hal_irq_enable(uint32_t irq);
 void hal_irq_disable(uint32_t irq);
 void hal_irq_ack(uint32_t irq);
+bool hal_in_irq(void);
 
 /* 3. Address Space Interface: MMU Page Tables or MPU/PMP Regions (mmu.c / mpu.c) */
 #define HAL_VM_PROT_READ    (1U << 0)

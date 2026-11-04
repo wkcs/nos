@@ -26,6 +26,11 @@
 /* 模拟中断嵌套深度 */
 volatile uint32_t interrupt_nest = 0;
 
+bool hal_in_irq(void)
+{
+    return (interrupt_nest > 0);
+}
+
 /* 模拟任务运行上下文 */
 struct mock_task_ctx {
     struct task_struct      task;
