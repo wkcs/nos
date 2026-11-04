@@ -11,6 +11,7 @@
 #include <uapi/nos/ipc.h>
 #include <kernel/list.h>
 #include <kernel/spinlock.h>
+#include <nos/notification.h>
 
 struct task_struct;
 
@@ -32,13 +33,6 @@ struct nos_endpoint {
     bool             closed;
 };
 
-/* Asynchronous Bitmask Notification Object */
-struct nos_notification {
-    spinlock_t          lock;
-    uint64_t            pending_bits;
-    struct list_head    wait_queue;
-    bool                closed;
-};
 
 /* Endpoint lifecycle */
 int nos_endpoint_init(struct nos_endpoint *ep, uint32_t id);
@@ -80,16 +74,9 @@ int nos_ipc_reply_wait(nos_handle_t ep_cap,
                        struct nos_ipc_msg *next_req,
                        uint32_t timeout_ticks);
 
-/* Notification lifecycle & operations */
-int nos_notification_init(struct nos_notification *notif);
+/* Notification capability wrappers */
 struct nos_notification *nos_notification_create(nos_handle_t *out_cap);
 void nos_notification_destroy(struct nos_notification *notif);
-
-int nos_notify_signal_obj(struct nos_notification *notif, uint64_t bits);
-int nos_notify_wait_obj(struct nos_notification *notif,
-                        uint64_t *out_bits,
-                        uint32_t timeout_ticks);
-
 int nos_notify_signal(nos_handle_t notif_cap, uint64_t bits);
 int nos_notify_wait(nos_handle_t notif_cap,
                     uint64_t *out_bits,
