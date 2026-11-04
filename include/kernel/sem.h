@@ -6,8 +6,8 @@
  * Email: huqihan@live.com
  */
 
-#ifndef __NOS_SEM_H__
-#define __NOS_SEM_H__
+#ifndef __KERNEL_SEM_H__
+#define __KERNEL_SEM_H__
 
 #include <kernel/kernel.h>
 #include <kernel/list.h>
@@ -27,4 +27,4 @@ void sem_send_all(sem_t *sem);
 
 #define sem_send_one(sem) sem_send(sem, 1)
 
-#endif /* __NOS_SEM_H__ */
+#endif /* __KERNEL_SEM_H__ */

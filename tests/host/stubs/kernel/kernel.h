@@ -27,4 +27,12 @@ static inline bool is_power_of_2(unsigned long value)
     return value != 0 && (value & (value - 1)) == 0;
 }
 
+#ifndef BUG_ON
+#include <assert.h>
+#define BUG_ON(condition) assert(!(condition))
+#endif
+#ifndef IDEL_TASK_PID
+#define IDEL_TASK_PID 1
+#endif
+
 #endif

@@ -3,4 +3,5 @@
 #define NOS_TEST_SCHED_H
 static inline void sch_lock(void) {}
 static inline void sch_unlock(void) {}
+void switch_task(void);
 #endif

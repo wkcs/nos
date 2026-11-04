@@ -70,6 +70,7 @@ TESTS = [
     ("run_ramfs_concurrency_test.py",),
     ("run_ipc_object_test.py",),
     ("run_ipc_wait_test.py",),
+    ("run_ipc_sem_test.py",),
 ]
 
 
