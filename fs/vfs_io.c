@@ -2,24 +2,22 @@
 #include <fs/fs.h>
 #include <fs/vfs.h>
 #include <kernel/kernel.h>
-#include <kernel/sem.h>
+#include <kernel/mutex.h>
 #include "vfs_fd.h"
 
 /* Before scheduling begins there can be no competing task. */
 static int file_lock_position(struct file *file, bool *locked)
 {
-    int rc;
     *locked = false;
     if (!kernel_running) return 0;
-    rc = sem_get_timeout(&file->f_pos_sem, 0);
-    if (rc != 0) return rc;
+    mutex_lock(&file->f_pos_lock);
     *locked = true;
     return 0;
 }
 
 static void file_unlock_position(struct file *file, bool locked)
 {
-    if (locked) sem_send_one(&file->f_pos_sem);
+    if (locked) mutex_unlock(&file->f_pos_lock);
 }
 
 ssize_t nos_read(int fd, void *buf, size_t count)

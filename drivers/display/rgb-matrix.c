@@ -20,7 +20,6 @@
 #include <kernel/mm.h>
 #include <string.h>
 #include <board/board.h>
-#include <kernel/sem.h>
 #include <kernel/mutex.h>
 
 #include <drivers/led.h>

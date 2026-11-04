@@ -18,7 +18,8 @@
 #include <kernel/spinlock.h>
 #include <kernel/mm.h>
 #include <string.h>
-#include <kernel/sem.h>
+#include <nos/completion.h>
+#include <nos/timeout.h>
 #include <kernel/list.h>
 
 #include <drivers/led.h>
@@ -29,7 +30,7 @@ struct display_server {
     struct device *led_dev;
     struct device ds_dev;
     struct display_dev_info dev_info;
-    sem_t sem;
+    struct nos_completion sem;
     struct mutex lock;
     struct list_head draw_list;
 
@@ -142,7 +143,7 @@ static int display_server_control(struct device *dev, int cmd, void *args)
     case DS_CTRL_ENABLE:
         ds->led_dev->ops.control(ds->led_dev, LED_CTRL_ENABLE, NULL);
         ds->led_enable = true;
-        sem_send_one(&ds->sem);
+        nos_complete(&ds->sem);
         break;
     case DS_CTRL_DISABLE:
         ds->led_enable = false;
@@ -263,7 +264,7 @@ static void display_server_task_entry(void* parameter)
             ds->led_dev->ops.control(ds->led_dev, LED_CTRL_REFRESH, NULL);
             msleep(10);
         } else {
-            sem_get(&ds->sem);
+            nos_completion_wait(&ds->sem, NOS_WAIT_FOREVER);
         }
     }
 }
@@ -278,7 +279,7 @@ static int display_server_init(void)
         return -ENOMEM;
     }
 
-    sem_init(&ds->sem, 0);
+    nos_completion_init(&ds->sem);
     mutex_init(&ds->lock);
     INIT_LIST_HEAD(&ds->draw_list);
 

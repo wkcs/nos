@@ -28,7 +28,6 @@ set(KERNEL_SRCS
     ipc/sem.c
     ipc/completion.c
     ipc/msgq.c
-    ipc/msg_queue.c
     ipc/endpoint.c
     ipc/notification.c
     syscall/syscall.c

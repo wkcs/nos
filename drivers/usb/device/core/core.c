@@ -9,7 +9,8 @@
 #define pr_fmt(fmt) "[USB_CORE]:%s[%d]:"fmt, __func__, __LINE__
 
 #include <kernel/task.h>
-#include <kernel/msg_queue.h>
+#include <nos/msgq.h>
+#include <nos/timeout.h>
 #include <kernel/mutex.h>
 #include <kernel/printk.h>
 #include <drivers/usb/usb_common.h>
@@ -1963,7 +1964,8 @@ size_t usbd_ep0_read(udevice_t device, void *buffer, size_t size,
     return size;
 }
 
-static struct msg_queue usb_mq;
+static struct nos_msgq usb_mq;
+static uint8_t s_usb_mq_buf[16 * sizeof(struct udev_msg)];
 
 /**
  * This function is the main entry of usb device task, it is in charge of
@@ -1981,7 +1983,7 @@ static void usbd_task_entry(__maybe_unused void* parameter)
         udevice_t device;
 
         /* receive message */
-        if (msg_q_recv(&usb_mq, (char *)&msg, sizeof(struct udev_msg)) <= 0)
+        if (nos_msgq_recv(&usb_mq, &msg, sizeof(struct udev_msg), NOS_WAIT_FOREVER) != 0)
             continue;
 
         device = usbd_find_device(msg.dcd);
@@ -2045,7 +2047,7 @@ int usbd_event_signal(struct udev_msg *msg)
     }
 
     /* send message to usb message queue */
-    rc = msg_q_send(&usb_mq, (char *)msg, sizeof(struct udev_msg));
+    rc = nos_msgq_send(&usb_mq, msg, sizeof(struct udev_msg), NOS_NO_WAIT);
     if (rc < 0) {
         pr_err("usb message send failed, rc=%d\n", rc);
     }
@@ -2070,7 +2072,7 @@ int usbd_core_init(void)
     usb_task = task_create("usbd", usbd_task_entry, NULL, 2, 1024, 5, NULL);
 
     /* create an usb message queue */
-    msg_q_init(&usb_mq);
+    nos_msgq_init(&usb_mq, s_usb_mq_buf, sizeof(s_usb_mq_buf), sizeof(struct udev_msg), 16);
     mutex_init(&ep_write_lock);
 
     task_ready(usb_task);

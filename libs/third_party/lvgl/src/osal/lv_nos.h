@@ -18,7 +18,8 @@ extern "C" {
 #include <kernel/kernel.h>
 #include <kernel/task.h>
 #include <kernel/mutex.h>
-#include <kernel/sem.h>
+#include <nos/sem.h>
+#include <nos/timeout.h>
 
 /*********************
  *      DEFINES
@@ -36,7 +37,7 @@ typedef struct {
 } lv_mutex_t;
 
 typedef struct {
-    sem_t sem;
+    struct nos_sem sem;
 } lv_thread_sync_t;
 
 /**********************

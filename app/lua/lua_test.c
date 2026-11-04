@@ -18,7 +18,6 @@
 #include <kernel/spinlock.h>
 #include <kernel/mm.h>
 #include <string.h>
-#include <kernel/sem.h>
 
 #include <lua.h>
 #include <lauxlib.h>

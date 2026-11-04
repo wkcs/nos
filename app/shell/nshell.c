@@ -19,7 +19,8 @@
 #include <kernel/spinlock.h>
 #include <kernel/mm.h>
 #include <string.h>
-#include <kernel/sem.h>
+#include <nos/completion.h>
+#include <nos/timeout.h>
 #include <kernel/console.h>
 #include <fs/fs.h>
 #include <fs/vfs.h>
@@ -4746,7 +4747,7 @@ error:
 }
 
 struct shell_pipeline_group {
-    sem_t done;
+    struct nos_completion done;
     int last_status;
 };
 
@@ -5748,7 +5749,7 @@ static void shell_pipeline_worker(void *context)
 static void shell_pipeline_cleanup(struct task_struct *task)
 {
     struct shell_pipeline_stage *stage = (void *)task->parameter;
-    sem_send_one(&stage->group->done);
+    nos_complete(&stage->group->done);
 }
 
 static noinline int shell_run_pipeline(struct nshell *parent, struct shell_command *commands, int count)
@@ -5762,7 +5763,7 @@ static noinline int shell_run_pipeline(struct nshell *parent, struct shell_comma
     stages = kzalloc(sizeof(*stages) * (size_t)count, GFP_KERNEL);
     pipes = kzalloc(sizeof(*pipes) * (size_t)(count - 1), GFP_KERNEL);
     if (group == NULL || stages == NULL || pipes == NULL) goto cleanup;
-    sem_init(&group->done, 0);
+    nos_completion_init(&group->done);
     for (i = 0; i < count - 1; i++) {
         if (shell_stream_pipe_init(&pipes[i]) != 0) goto cleanup;
     }
@@ -5816,7 +5817,7 @@ static noinline int shell_run_pipeline(struct nshell *parent, struct shell_comma
         }
         started++;
     }
-    for (i = 0; i < started; i++) sem_get(&group->done);
+    for (i = 0; i < started; i++) nos_completion_wait(&group->done, NOS_WAIT_FOREVER);
     rc = group->last_status;
     created = 0;
     started = 0;
@@ -5824,7 +5825,7 @@ static noinline int shell_run_pipeline(struct nshell *parent, struct shell_comma
 
 cleanup:
     if (started != 0) {
-        for (i = 0; i < started; i++) sem_get(&group->done);
+        for (i = 0; i < started; i++) nos_completion_wait(&group->done, NOS_WAIT_FOREVER);
     }
     for (i = started; i < created; i++) {
         if (stages[i].task != NULL) {
@@ -5837,7 +5838,7 @@ cleanup:
         kfree(stages[i].shell);
     }
     /* The cleanup callback signals only after the task stack has been freed. */
-    for (i = 0; i < pending; i++) sem_get(&group->done);
+    for (i = 0; i < pending; i++) nos_completion_wait(&group->done, NOS_WAIT_FOREVER);
     shell_error("shell: cannot start pipeline\n");
 out:
     if (pipes != NULL) kfree(pipes);

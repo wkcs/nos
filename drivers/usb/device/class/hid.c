@@ -10,7 +10,8 @@
 
 #include <kernel/kernel.h>
 #include <kernel/task.h>
-#include <kernel/msg_queue.h>
+#include <nos/msgq.h>
+#include <nos/timeout.h>
 #include <kernel/device.h>
 #include <kernel/printk.h>
 #include <kernel/init.h>
@@ -27,7 +28,8 @@ struct hid_s {
     int status;
     uint16_t protocol;
     uint8_t report_buf[MAX_REPORT_SIZE];
-    struct msg_queue hid_mq;
+    struct nos_msgq hid_mq;
+    uint8_t mq_storage[8 * sizeof(struct hid_report)];
 };
 
 /* CustomHID_ConfigDescriptor */
@@ -393,7 +395,7 @@ static int _ep_out_handler(ufunction_t func, size_t size)
     if (size != 0) {
         memcpy((void *)&report,(void*)data->ep_out->buffer, size);
         report.size = size-1;
-        msg_q_send(&data->hid_mq, (char *)&report, sizeof(report));
+        nos_msgq_send(&data->hid_mq, &report, sizeof(report), NOS_NO_WAIT);
     }
 
     data->ep_out->request.buffer = data->ep_out->buffer;
@@ -608,12 +610,11 @@ static void hid_task_entry(void* parameter)
     struct hid_report report;
     struct hid_s *hiddev;
     hiddev = (struct hid_s *)parameter;
-	while(1)
-	{
-		if(msg_q_recv(&hiddev->hid_mq, (char *)&report, sizeof(struct hid_report)) <= 0)
+    while (1) {
+        if (nos_msgq_recv(&hiddev->hid_mq, &report, sizeof(struct hid_report), NOS_WAIT_FOREVER) != 0)
             continue;
-		HID_Report_Received(&report);
-	}
+        HID_Report_Received(&report);
+    }
 }
 
 static void usb_hid_init(struct ufunction *func)
@@ -635,7 +636,7 @@ static void usb_hid_init(struct ufunction *func)
     } else {
         pr_info("hid task creat ok\n");
     }
-    msg_q_init(&hiddev->hid_mq);
+    nos_msgq_init(&hiddev->hid_mq, hiddev->mq_storage, sizeof(hiddev->mq_storage), sizeof(struct hid_report), 8);
     task_ready(hid_task);
 }
 

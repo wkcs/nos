@@ -46,7 +46,7 @@ void vfs_fd_cancel(int fd)
 
 void vfs_fd_publish(int fd, struct file *file)
 {
-    sem_init(&file->f_pos_sem, 1);
+    mutex_init(&file->f_pos_lock);
     spin_lock(&open_files_lock);
     file->f_refs = 1;
     open_files[fd] = file;

@@ -8,8 +8,8 @@ int shell_stream_pipe_init(struct shell_stream_pipe *pipe)
 {
     if (pipe == NULL) return -EINVAL;
     memset(pipe, 0, sizeof(*pipe));
-    if (mutex_init(&pipe->lock) != 0 || sem_init(&pipe->readable, 0) != 0 ||
-        sem_init(&pipe->writable, 0) != 0) return -EINVAL;
+    if (mutex_init(&pipe->lock) != 0 || nos_sem_init(&pipe->readable, 0, 1) != 0 ||
+        nos_sem_init(&pipe->writable, 0, 1) != 0) return -EINVAL;
     return 0;
 }
 
@@ -23,7 +23,7 @@ int shell_stream_pipe_read(struct shell_stream_pipe *pipe, char *data, size_t si
     while (pipe->count == 0 && !pipe->writer_closed && !pipe->reader_closed) {
         pipe->reader_waiting = true;
         mutex_unlock(&pipe->lock);
-        sem_get(&pipe->readable);
+        nos_sem_take(&pipe->readable, NOS_WAIT_FOREVER);
         mutex_lock(&pipe->lock);
     }
     if (pipe->reader_closed) {
@@ -44,7 +44,7 @@ int shell_stream_pipe_read(struct shell_stream_pipe *pipe, char *data, size_t si
     wake = pipe->writer_waiting;
     pipe->writer_waiting = false;
     mutex_unlock(&pipe->lock);
-    if (wake) sem_send_one(&pipe->writable);
+    if (wake) nos_sem_give(&pipe->writable);
     return (int)amount;
 }
 
@@ -61,7 +61,7 @@ int shell_stream_pipe_write(struct shell_stream_pipe *pipe, const char *data, si
                !pipe->reader_closed && !pipe->writer_closed) {
             pipe->writer_waiting = true;
             mutex_unlock(&pipe->lock);
-            sem_get(&pipe->writable);
+            nos_sem_take(&pipe->writable, NOS_WAIT_FOREVER);
             mutex_lock(&pipe->lock);
         }
         if (pipe->reader_closed || pipe->writer_closed) {
@@ -82,7 +82,7 @@ int shell_stream_pipe_write(struct shell_stream_pipe *pipe, const char *data, si
         wake = pipe->reader_waiting;
         pipe->reader_waiting = false;
         mutex_unlock(&pipe->lock);
-        if (wake) sem_send_one(&pipe->readable);
+        if (wake) nos_sem_give(&pipe->readable);
     }
     return (int)total;
 }
@@ -98,8 +98,8 @@ void shell_stream_pipe_close_reader(struct shell_stream_pipe *pipe)
     pipe->reader_waiting = false;
     pipe->writer_waiting = false;
     mutex_unlock(&pipe->lock);
-    if (wake_reader) sem_send_one(&pipe->readable);
-    if (wake_writer) sem_send_one(&pipe->writable);
+    if (wake_reader) nos_sem_give(&pipe->readable);
+    if (wake_writer) nos_sem_give(&pipe->writable);
 }
 
 void shell_stream_pipe_close_writer(struct shell_stream_pipe *pipe)
@@ -113,6 +113,6 @@ void shell_stream_pipe_close_writer(struct shell_stream_pipe *pipe)
     pipe->reader_waiting = false;
     pipe->writer_waiting = false;
     mutex_unlock(&pipe->lock);
-    if (wake_reader) sem_send_one(&pipe->readable);
-    if (wake_writer) sem_send_one(&pipe->writable);
+    if (wake_reader) nos_sem_give(&pipe->readable);
+    if (wake_writer) nos_sem_give(&pipe->writable);
 }

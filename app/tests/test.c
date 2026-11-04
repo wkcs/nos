@@ -11,14 +11,16 @@
 #include <kernel/task.h>
 #include <kernel/init.h>
 #include <kernel/sleep.h>
-#include <kernel/sem.h>
+#include <nos/sem.h>
+#include <nos/msgq.h>
+#include <nos/timeout.h>
 #include <kernel/mutex.h>
-#include <kernel/msg_queue.h>
 #include <drivers/usb/usb_device.h>
 
-sem_t g_sem;
+struct nos_sem g_sem;
 struct mutex g_lock;
-struct msg_queue msg_q;
+struct nos_msgq msg_q;
+static uint8_t s_test_msg_buf[16 * 128];
 
 static void test1_task_entry(void* parameter)
 {
@@ -68,9 +70,9 @@ static void test2_task_entry(void* parameter)
         all_usage = get_cpu_usage() / 100;
         // pr_info("%s: usage:%u.%02u%%, total:%u.%02u%%\n", current->name,
         //        usage / 100, usage % 100, all_usage / 100, all_usage % 100);
-        size = msg_q_recv(&msg_q, buf, sizeof(buf) - 1);
-        if (size > 0) {
-            buf[size] = 0;
+        size = nos_msgq_recv(&msg_q, buf, sizeof(buf) - 1, NOS_WAIT_FOREVER);
+        if (size == 0) {
+            buf[sizeof(buf) - 1] = 0;
             i++;
             if (i > 100000) {
                 i = 0;
@@ -101,7 +103,7 @@ static void test3_task_entry(void* parameter)
     int i = 0;
 
     while (1) {
-        sem_get(&g_sem);
+        nos_sem_take(&g_sem, NOS_WAIT_FOREVER);
         usage = task_get_cpu_usage(current) / 100;
         all_usage = get_cpu_usage() / 100;
         i++;
@@ -163,8 +165,8 @@ static void test5_task_entry(void* parameter)
     int i = 0;
 
     mutex_init(&g_lock);
-    sem_init(&g_sem, 0);
-    msg_q_init(&msg_q);
+    nos_sem_init(&g_sem, 0, 100);
+    nos_msgq_init(&msg_q, s_test_msg_buf, sizeof(s_test_msg_buf), 128, 16);
 
     test4_task_init();
     test3_task_init();
@@ -182,8 +184,8 @@ static void test5_task_entry(void* parameter)
             pr_info("%s: usage:%u.%02u%%, total:%u.%02u%%\n", current->name,
                     usage / 100, usage % 100, all_usage / 100, all_usage % 100);
         }
-        msg_q_send(&msg_q, buf, sizeof(buf));
-        sem_send_one(&g_sem);
+        nos_msgq_send(&msg_q, buf, sizeof(buf), NOS_WAIT_FOREVER);
+        nos_sem_give(&g_sem);
         mutex_unlock(&g_lock);
     }
 }

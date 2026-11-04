@@ -95,7 +95,7 @@ lv_result_t lv_mutex_delete(lv_mutex_t * mutex)
 
 lv_result_t lv_thread_sync_init(lv_thread_sync_t * sync)
 {
-    int rc = sem_init(&sync->sem, 0);
+    int rc = nos_sem_init(&sync->sem, 0, 1);
     if(rc < 0) {
         LV_LOG_WARN("create semaphore failed");
         return LV_RESULT_INVALID;
@@ -106,18 +106,19 @@ lv_result_t lv_thread_sync_init(lv_thread_sync_t * sync)
 
 lv_result_t lv_thread_sync_wait(lv_thread_sync_t * sync)
 {
-    sem_get(&sync->sem);
+    nos_sem_take(&sync->sem, NOS_WAIT_FOREVER);
     return LV_RESULT_OK;
 }
 
 lv_result_t lv_thread_sync_signal(lv_thread_sync_t * sync)
 {
-    sem_send_all(&sync->sem);
+    nos_sem_give(&sync->sem);
     return LV_RESULT_OK;
 }
 
 lv_result_t lv_thread_sync_delete(lv_thread_sync_t * sync)
 {
+    nos_sem_close(&sync->sem);
     return LV_RESULT_OK;
 }
 

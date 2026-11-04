@@ -2,7 +2,8 @@
 #ifndef NOS_SHELL_PIPE_H
 #define NOS_SHELL_PIPE_H
 #include <kernel/mutex.h>
-#include <kernel/sem.h>
+#include <nos/sem.h>
+#include <nos/timeout.h>
 #include <stdbool.h>
 #include <stddef.h>
 
@@ -11,8 +12,8 @@
 /* One reader and one writer; keep the object alive until both have stopped. */
 struct shell_stream_pipe {
     struct mutex lock;
-    sem_t readable;
-    sem_t writable;
+    struct nos_sem readable;
+    struct nos_sem writable;
     size_t head;
     size_t count;
     bool reader_closed;

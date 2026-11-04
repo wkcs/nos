@@ -1,7 +1,7 @@
 #ifndef TEST_VFS_FD_VFS_H
 #define TEST_VFS_FD_VFS_H
 #include <fs/fs.h>
-#include <kernel/sem.h>
+#include <kernel/mutex.h>
 struct inode { loff_t i_size; };
 struct file;
 struct super_block;
@@ -29,7 +29,7 @@ struct file {
     unsigned int f_refs;
     unsigned int f_flags;
     loff_t f_pos;
-    sem_t f_pos_sem;
+    struct mutex f_pos_lock;
     int marker;
 };
 struct vfs_mount_entry {

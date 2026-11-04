@@ -10,11 +10,11 @@
 
 #include <kernel/kernel.h>
 #include <kernel/task.h>
-#include <kernel/msg_queue.h>
+#include <nos/completion.h>
+#include <nos/timeout.h>
 #include <kernel/device.h>
 #include <kernel/printk.h>
 #include <kernel/init.h>
-#include <kernel/sem.h>
 #include <kernel/clk.h>
 #include <string.h>
 #include <lib/kfifo.h>
@@ -69,8 +69,8 @@ struct vcom {
     uep_t ep_out;
     uep_t ep_in;
     uep_t ep_cmd;
-    sem_t wait;
-    sem_t tx_ready;
+    struct nos_completion wait;
+    struct nos_completion tx_ready;
     bool connected;
     uint8_t rx_fifo_buf[CDC_RX_BUFSIZE];
     struct kfifo rx_fifo;
@@ -280,7 +280,7 @@ static int _ep_in_handler(ufunction_t func, size_t size)
         return 0;
     }
 
-    sem_send_one(&data->wait);
+    nos_complete(&data->wait);
 
     return 0;
 }
@@ -651,7 +651,7 @@ static void vcom_tx_task_entry(void* parameter)
     uint8_t ch[CDC_BULKIN_MAXSIZE];
 
     while (1) {
-        sem_get(&data->tx_ready);
+        nos_completion_wait(&data->tx_ready, NOS_WAIT_FOREVER);
         pr_err("mask:%u\n", data->mask);
         while(kfifo_used(&data->tx_fifo) > 0) {
             pr_info("used: %u\n", kfifo_used(&data->tx_fifo));
@@ -663,7 +663,7 @@ static void vcom_tx_task_entry(void* parameter)
             data->ep_in->request.req_type   = UIO_REQUEST_WRITE;
             usbd_io_request(func->device, data->ep_in, &data->ep_in->request);
 
-            if (sem_get_timeout(&data->wait, msec_to_tick(VCOM_TX_TIMEOUT)) != 0) {
+            if (nos_completion_wait(&data->wait, msec_to_tick(VCOM_TX_TIMEOUT)) != 0) {
                 pr_info("vcom tx timeout\n");
             }
         }
@@ -688,8 +688,8 @@ static void usb_vcom_init(struct ufunction *func)
         return;
     }
 
-    sem_init(&data->wait, 0);
-    sem_init(&data->tx_ready, 0);
+    nos_completion_init(&data->wait);
+    nos_completion_init(&data->tx_ready);
 
     data->cdc_task = task_create("vcom", vcom_tx_task_entry, (void *)func, 5, 1024, 5, NULL);
     if (data->cdc_task == NULL) {

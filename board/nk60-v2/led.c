@@ -20,7 +20,8 @@
 #include <kernel/mm.h>
 #include <string.h>
 #include <board/board.h>
-#include <kernel/sem.h>
+#include <nos/notification.h>
+#include <nos/timeout.h>
 #include <kernel/mutex.h>
 
 #include <drivers/led.h>
@@ -43,7 +44,7 @@ static uint8_t g_led_buf[LED_BUF_SZIE];
 struct nk60_led {
     struct mutex lock;
     struct device dev;
-    sem_t sem;
+    struct nos_notification notify;
     uint8_t *buf;
 
     bool enable;
@@ -153,12 +154,14 @@ static int nk60_v2_led_control(struct device *dev, int cmd, void *args)
         break;
     case LED_CTRL_GET_ENABLE_STATUS:
         return led->enable;
-    case LED_CTRL_REFRESH:
+    case LED_CTRL_REFRESH: {
+        uint64_t bits;
         mutex_lock(&led->lock);
         nk60_v2_led_dma_start();
-        sem_get(&led->sem);
+        nos_notify_wait_obj(&led->notify, &bits, NOS_WAIT_FOREVER);
         mutex_unlock(&led->lock);
         break;
+    }
     case DS_CTRL_GET_DEV_INFO:
         memcpy(args, &info, sizeof(struct display_dev_info));
         break;
@@ -270,7 +273,7 @@ void DMA1_Stream4_IRQHandler(void)
 {
     DMA_ClearITPendingBit(DMA1_Stream4, DMA_FLAG_TCIF4);
 
-    sem_send_one(&g_led->sem);
+    nos_notify_signal_obj(&g_led->notify, 0x1);
 }
 
 static int nk60_v2_led_init(void)
@@ -291,7 +294,7 @@ static int nk60_v2_led_init(void)
     memset(led->buf, LED_DATA_0, LED_BUF_SZIE);
 
     mutex_init(&led->lock);
-    sem_init(&led->sem, 0);
+    nos_notification_init(&led->notify);
     led->enable = false;
 
     device_init(&led->dev);

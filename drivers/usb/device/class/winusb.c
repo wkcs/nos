@@ -11,8 +11,8 @@
 #define pr_fmt(fmt) "[WINUSB]:%s[%d]:"fmt, __func__, __LINE__
 
 #include <kernel/task.h>
-#include <kernel/task.h>
-#include <kernel/sem.h>
+#include <nos/completion.h>
+#include <nos/timeout.h>
 #include <kernel/mutex.h>
 #include <kernel/device.h>
 #include <kernel/printk.h>
@@ -46,8 +46,8 @@ struct winusb_device {
     struct kfifo rx_fifo;
     uep_t ep_out;
     uep_t ep_in;
-    sem_t read_sem;
-    sem_t write_sem;
+    struct nos_completion read_sem;
+    struct nos_completion write_sem;
     struct mutex write_lock;
     volatile bool tx_pending;   /* IN 传输已提交、尚未被主机取走 */
     volatile bool zlp_pending;  /* 本次传输长度为 MPS 整数倍，完成后需补发 ZLP */
@@ -168,7 +168,7 @@ static int _ep_out_handler(ufunction_t func, size_t size)
 
     if (size > 0) {
         kfifo_in(&winusb_device->rx_fifo, winusb_device->ep_rx_buf, (unsigned int)size);
-        sem_send_one(&winusb_device->read_sem);
+        nos_complete(&winusb_device->read_sem);
     }
 
     winusb_device->ep_out->buffer = winusb_device->ep_rx_buf;
@@ -201,7 +201,7 @@ static int _ep_in_handler(ufunction_t func, size_t size)
     }
 
     /* 先发信号再清 pending：写者看到 pending == false 时信号必然已投递 */
-    sem_send_one(&winusb_device->write_sem);
+    nos_complete(&winusb_device->write_sem);
     __atomic_store_n(&winusb_device->tx_pending, false, __ATOMIC_RELEASE);
 
     return 0;
@@ -212,7 +212,7 @@ static void winusb_reset_tx_state(struct winusb_device *winusb_device)
 {
     winusb_device->zlp_pending = false;
     __atomic_store_n(&winusb_device->tx_pending, false, __ATOMIC_RELEASE);
-    sem_init(&winusb_device->write_sem, 0);
+    nos_completion_reset(&winusb_device->write_sem);
 }
 static ufunction_t cmd_func = NULL;
 static int _ep0_cmd_handler(udevice_t device, size_t size)
@@ -318,7 +318,7 @@ static ssize_t winusb_read(struct device *dev, addr_t pos,
         return -EINVAL;
 
     while (kfifo_used(&win_dev->rx_fifo) == 0) {
-        sem_get(&win_dev->read_sem);
+        nos_completion_wait(&win_dev->read_sem, NOS_WAIT_FOREVER);
     }
 
     read_size = kfifo_out(&win_dev->rx_fifo, buffer, (unsigned int)size);
@@ -356,8 +356,8 @@ static ssize_t winusb_xmit(struct winusb_device *win_dev, const void *buffer,
 
     if (__atomic_load_n(&win_dev->tx_pending, __ATOMIC_ACQUIRE)) {
         if (forever) {
-            sem_get(&win_dev->write_sem);
-        } else if (sem_get_timeout(&win_dev->write_sem, tick) < 0) {
+            nos_completion_wait(&win_dev->write_sem, NOS_WAIT_FOREVER);
+        } else if (nos_completion_wait(&win_dev->write_sem, tick) != 0) {
             mutex_unlock(&win_dev->write_lock);
             /* 主机未读取属于正常的对端离线/流控状态，此处不打印日志，避免远程日志自激 */
             return -ETIMEDOUT;
@@ -365,7 +365,7 @@ static ssize_t winusb_xmit(struct winusb_device *win_dev, const void *buffer,
     }
 
     /* 此时没有未完成传输：清掉可能残留的完成信号，再提交新传输 */
-    sem_init(&win_dev->write_sem, 0);
+    nos_completion_reset(&win_dev->write_sem);
     memcpy(win_dev->ep_tx_buf, buffer, size);
     mps = EP_MAXPACKET(win_dev->ep_in);
     win_dev->zlp_pending = (mps != 0U) && ((size % mps) == 0U);
@@ -404,7 +404,7 @@ static ssize_t winusb_read_timeout(struct device *dev, addr_t pos,
         return -EINVAL;
 
     while (kfifo_used(&win_dev->rx_fifo) == 0) {
-        rc = sem_get_timeout(&win_dev->read_sem, tick);
+        rc = nos_completion_wait(&win_dev->read_sem, tick);
         if (rc < 0 && kfifo_used(&win_dev->rx_fifo) == 0) {
             return -ETIMEDOUT;
         }
@@ -472,8 +472,8 @@ ufunction_t usbd_function_winusb_create(udevice_t device)
     winusb_device = kmalloc(sizeof(*winusb_device), GFP_KERNEL);
     winusb_dev = winusb_device;
     memset((void *)winusb_device, 0, sizeof(*winusb_device));
-    sem_init(&winusb_device->read_sem, 0);
-    sem_init(&winusb_device->write_sem, 0);
+    nos_completion_init(&winusb_device->read_sem);
+    nos_completion_init(&winusb_device->write_sem);
     mutex_init(&winusb_device->write_lock);
     kfifo_init(&winusb_device->rx_fifo, winusb_device->rx_fifo_buf,
                WINUSB_RX_FIFOSIZE, 1);
