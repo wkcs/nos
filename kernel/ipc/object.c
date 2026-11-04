@@ -50,7 +50,7 @@ bool nos_object_is_closed(const struct nos_object *object)
         return false;
     }
 
-    return object->closed;
+    return __atomic_load_n(&object->closed, __ATOMIC_RELAXED);
 }
 
 int nos_object_retire(struct nos_object *object)
@@ -77,11 +77,7 @@ int nos_object_retire(struct nos_object *object)
     spin_unlock(&object->lock);
 
     /* 锁外释放创建者的 owner 引用 */
-    if (nos_refcount_put(&object->refcount)) {
-        if (object->release != NULL) {
-            object->release(object);
-        }
-    }
+    (void)nos_object_put(object);
 
     return 0;
 }

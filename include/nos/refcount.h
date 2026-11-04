@@ -10,15 +10,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
-
-#if !defined(__ASM_GENERIC_ATOMIC_H__) && !defined(__ASM_ARM_ATOMIC_H__) && \
-    !defined(__ASM_ARM64_ATOMIC_H__) && !defined(__ASM_RISCV_ATOMIC_H__) && \
-    !defined(__ASM_X86_ATOMIC_H__)
-#define __ASM_GENERIC_ATOMIC_H__
-typedef struct {
-    volatile int counter;
-} atomic_t;
-#endif
+#include <asm/atomic.h>
 
 /**
  * 32 位原子引用计数结构体
