@@ -62,7 +62,12 @@ static struct ucdc_line_coding line_coding;
 #define CDC_TX_HAS_DATE   0x01
 #define CDC_TX_HAS_SPACE  0x02
 
+#ifndef kfifo_avail
+#define kfifo_avail(f) kfifo_unused(f)
+#endif
+
 struct vcom {
+    struct device dev;
     unsigned int mask;
     struct task_struct *cdc_task;
     struct ufunction *func;
@@ -71,7 +76,9 @@ struct vcom {
     uep_t ep_cmd;
     struct nos_completion wait;
     struct nos_completion tx_ready;
+    struct nos_completion rx_ready;
     bool connected;
+    bool rx_paused;
     uint8_t rx_fifo_buf[CDC_RX_BUFSIZE];
     struct kfifo rx_fifo;
     uint8_t tx_fifo_buf[CDC_TX_BUFSIZE];
@@ -248,6 +255,12 @@ static void _vcom_reset_state(ufunction_t func)
 
     data = (struct vcom*)func->user_data;
     data->connected = false;
+    data->rx_paused = false;
+    kfifo_skip(&data->rx_fifo, kfifo_used(&data->rx_fifo));
+    kfifo_skip(&data->tx_fifo, kfifo_used(&data->tx_fifo));
+    nos_completion_reset(&data->wait);
+    nos_completion_reset(&data->tx_ready);
+    nos_completion_reset(&data->rx_ready);
 }
 
 /**
@@ -305,12 +318,21 @@ static int _ep_out_handler(ufunction_t func, size_t size)
     pr_info("_ep_out_handler %d\n", size);
 
     data = (struct vcom*)func->user_data;
-    kfifo_in(&data->rx_fifo, data->ep_out->buffer, size);
+    if (size > 0) {
+        kfifo_in(&data->rx_fifo, data->ep_out->buffer, (unsigned int)size);
+        nos_complete(&data->rx_ready);
+    }
 
-    data->ep_out->request.buffer = data->ep_out->buffer;
-    data->ep_out->request.size = EP_MAXPACKET(data->ep_out);
-    data->ep_out->request.req_type = UIO_REQUEST_READ_BEST;
-    usbd_io_request(func->device, data->ep_out, &data->ep_out->request);
+    if (kfifo_avail(&data->rx_fifo) >= EP_MAXPACKET(data->ep_out)) {
+        data->ep_out->request.buffer = data->ep_out->buffer;
+        data->ep_out->request.size = EP_MAXPACKET(data->ep_out);
+        data->ep_out->request.req_type = UIO_REQUEST_READ_BEST;
+        data->rx_paused = false;
+        usbd_io_request(func->device, data->ep_out, &data->ep_out->request);
+    } else {
+        /* FIFO 空间不足，暂停挂载接收，底层硬件对主机自动回复 NAK 形成背压 */
+        data->rx_paused = true;
+    }
 
     return 0;
 }
@@ -444,7 +466,11 @@ static int _interface_handler(ufunction_t func, ureq_t setup)
         break;
     case CDC_SET_CONTROL_LINE_STATE:
         data->connected = (setup->wValue & 0x01) > 0 ? true : false;
-        pr_info("vcom state:%d ", data->connected);
+        pr_info("vcom state:%d\n", data->connected);
+        if (!data->connected) {
+            nos_complete_all(&data->rx_ready);
+            nos_complete_all(&data->wait);
+        }
         dcd_ep0_send_status(func->device->dcd);
         break;
     case CDC_SEND_BREAK:
@@ -478,10 +504,14 @@ static int _function_enable(ufunction_t func)
     _vcom_reset_state(func);
 
     data = (struct vcom*)func->user_data;
-    data->ep_out->buffer = kmalloc(CDC_RX_BUFSIZE, GFP_KERNEL);
-    if(data->ep_out->buffer == NULL) {
-        pr_err("alloc ep_out->buffer failed\n");
-        return -EINVAL;
+    data->connected = true;
+    data->rx_paused = false;
+    if (data->ep_out->buffer == NULL) {
+        data->ep_out->buffer = kmalloc(CDC_RX_BUFSIZE, GFP_KERNEL);
+        if (data->ep_out->buffer == NULL) {
+            pr_err("alloc ep_out->buffer failed\n");
+            return -EINVAL;
+        }
     }
 
     data->ep_out->request.buffer = data->ep_out->buffer;
@@ -514,10 +544,15 @@ static int _function_disable(ufunction_t func)
     _vcom_reset_state(func);
 
     data = (struct vcom*)func->user_data;
-    if(data->ep_out->buffer != NULL) {
+    data->connected = false;
+    data->rx_paused = false;
+    if (data->ep_out->buffer != NULL) {
         kfree(data->ep_out->buffer);
         data->ep_out->buffer = NULL;
     }
+
+    nos_complete_all(&data->rx_ready);
+    nos_complete_all(&data->wait);
 
     return 0;
 }
@@ -643,6 +678,100 @@ ufunction_t usbd_function_cdc_create(udevice_t device)
     return func;
 }
 
+static ssize_t vcom_read(struct device *dev, addr_t pos, void *buffer, size_t size)
+{
+    unsigned int read_size;
+    struct vcom *data = container_of(dev, struct vcom, dev);
+
+    (void)pos;
+    if (buffer == NULL || size == 0)
+        return -EINVAL;
+
+    if (!data->connected)
+        return -ENOTCONN;
+
+    while (kfifo_used(&data->rx_fifo) == 0) {
+        if (!data->connected)
+            return -ENOTCONN;
+        nos_completion_wait(&data->rx_ready, NOS_WAIT_FOREVER);
+        if (!data->connected)
+            return -ENOTCONN;
+    }
+
+    read_size = kfifo_out(&data->rx_fifo, buffer, (unsigned int)size);
+
+    /* 背压恢复：若此前暂停了接收且现在可用空间充足，恢复挂载 */
+    if (data->connected && data->rx_paused &&
+        kfifo_avail(&data->rx_fifo) >= EP_MAXPACKET(data->ep_out)) {
+        data->rx_paused = false;
+        data->ep_out->request.buffer = data->ep_out->buffer;
+        data->ep_out->request.size = EP_MAXPACKET(data->ep_out);
+        data->ep_out->request.req_type = UIO_REQUEST_READ_BEST;
+        usbd_io_request(data->func->device, data->ep_out, &data->ep_out->request);
+    }
+
+    return (ssize_t)read_size;
+}
+
+static ssize_t vcom_read_timeout(struct device *dev, addr_t pos,
+                                 void *buffer, size_t size, uint32_t tick)
+{
+    unsigned int read_size;
+    struct vcom *data = container_of(dev, struct vcom, dev);
+    int rc;
+
+    (void)pos;
+    if (buffer == NULL || size == 0)
+        return -EINVAL;
+
+    if (!data->connected)
+        return -ENOTCONN;
+
+    while (kfifo_used(&data->rx_fifo) == 0) {
+        if (!data->connected)
+            return -ENOTCONN;
+        rc = nos_completion_wait(&data->rx_ready, tick);
+        if (!data->connected)
+            return -ENOTCONN;
+        if (rc < 0 && kfifo_used(&data->rx_fifo) == 0) {
+            return -ETIMEDOUT;
+        }
+    }
+
+    read_size = kfifo_out(&data->rx_fifo, buffer, (unsigned int)size);
+
+    if (data->connected && data->rx_paused &&
+        kfifo_avail(&data->rx_fifo) >= EP_MAXPACKET(data->ep_out)) {
+        data->rx_paused = false;
+        data->ep_out->request.buffer = data->ep_out->buffer;
+        data->ep_out->request.size = EP_MAXPACKET(data->ep_out);
+        data->ep_out->request.req_type = UIO_REQUEST_READ_BEST;
+        usbd_io_request(data->func->device, data->ep_out, &data->ep_out->request);
+    }
+
+    return (ssize_t)read_size;
+}
+
+static ssize_t vcom_write(struct device *dev, addr_t pos, const void *buffer, size_t size)
+{
+    struct vcom *data = container_of(dev, struct vcom, dev);
+    unsigned int written;
+
+    (void)pos;
+    if (buffer == NULL || size == 0)
+        return -EINVAL;
+
+    if (!data->connected || data->func->device->state != USB_STATE_CONFIGURED)
+        return -ENOTCONN;
+
+    written = kfifo_in(&data->tx_fifo, buffer, (unsigned int)size);
+    if (written > 0) {
+        nos_complete(&data->tx_ready);
+    }
+
+    return (ssize_t)written;
+}
+
 static void vcom_tx_task_entry(void* parameter)
 {
     uint32_t rc;
@@ -652,15 +781,14 @@ static void vcom_tx_task_entry(void* parameter)
 
     while (1) {
         nos_completion_wait(&data->tx_ready, NOS_WAIT_FOREVER);
-        pr_err("mask:%u\n", data->mask);
         while(kfifo_used(&data->tx_fifo) > 0) {
-            pr_info("used: %u\n", kfifo_used(&data->tx_fifo));
             rc = kfifo_out(&data->tx_fifo, ch, CDC_BULKIN_MAXSIZE);
             if (rc <= 0)
                 continue;
             data->ep_in->request.buffer     = ch;
             data->ep_in->request.size       = rc;
             data->ep_in->request.req_type   = UIO_REQUEST_WRITE;
+            nos_completion_reset(&data->wait);
             usbd_io_request(func->device, data->ep_in, &data->ep_in->request);
 
             if (nos_completion_wait(&data->wait, msec_to_tick(VCOM_TX_TIMEOUT)) != 0) {
@@ -672,7 +800,6 @@ static void vcom_tx_task_entry(void* parameter)
 
 static void usb_vcom_init(struct ufunction *func)
 {
-    int result = 0;
     struct vcom *data = (struct vcom*)func->user_data;
     int rc;
 
@@ -690,6 +817,14 @@ static void usb_vcom_init(struct ufunction *func)
 
     nos_completion_init(&data->wait);
     nos_completion_init(&data->tx_ready);
+    nos_completion_init(&data->rx_ready);
+
+    device_init(&data->dev);
+    data->dev.name = "vcom";
+    data->dev.ops.read = vcom_read;
+    data->dev.ops.write = vcom_write;
+    data->dev.ops.read_timeout = vcom_read_timeout;
+    device_register(&data->dev);
 
     data->cdc_task = task_create("vcom", vcom_tx_task_entry, (void *)func, 5, 1024, 5, NULL);
     if (data->cdc_task == NULL) {

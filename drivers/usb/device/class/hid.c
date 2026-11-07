@@ -28,6 +28,7 @@ struct hid_s {
     int status;
     uint16_t protocol;
     uint8_t report_buf[MAX_REPORT_SIZE];
+    struct hid_report tx_report;
     struct nos_msgq hid_mq;
     uint8_t mq_storage[8 * sizeof(struct hid_report)];
 };
@@ -581,16 +582,17 @@ static int _hid_descriptor_config(__maybe_unused uhid_comm_desc_t hid, __maybe_u
 static ssize_t _hid_write(struct device *dev, addr_t pos, const void *buffer, size_t size)
 {
     struct hid_s *hid_dev;
-    struct hid_report report;
 
     hid_dev = container_of(dev, struct hid_s, dev);
     if (hid_dev->func->device->state == USB_STATE_CONFIGURED)
     {
-        report.report_id = pos;
-        memcpy((void *)report.report,(void *)buffer, size);
-        report.size = size;
-        hid_dev->ep_in->request.buffer = (void *)&report;
-        hid_dev->ep_in->request.size = (size+1) > 64 ? 64 : size+1;
+        if (size > sizeof(hid_dev->tx_report.report))
+            return -EINVAL;
+        hid_dev->tx_report.report_id = pos;
+        memcpy((void *)hid_dev->tx_report.report, (void *)buffer, size);
+        hid_dev->tx_report.size = size;
+        hid_dev->ep_in->request.buffer = (void *)&hid_dev->tx_report;
+        hid_dev->ep_in->request.size = (size + 1) > 64 ? 64 : size + 1;
         hid_dev->ep_in->request.req_type = UIO_REQUEST_WRITE;
         usbd_io_request(hid_dev->func->device, hid_dev->ep_in, &hid_dev->ep_in->request);
         return size;

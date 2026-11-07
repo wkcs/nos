@@ -29,12 +29,17 @@
 #define CONFIG_WINUSB_TX_BUFSIZE    512
 #endif
 
+#ifndef kfifo_avail
+#define kfifo_avail(f) kfifo_unused(f)
+#endif
+
 void winusb_read_test(void);
 
 struct winusb_device {
     struct device dev;
     void (*cmd_handler)(uint8_t *buffer, size_t size);
     struct ufunction *func;
+    struct ufunction *cmd_func;
     uint8_t cmd_buff[512];
     uint8_t ep_rx_buf[WINUSB_EP_BUFSIZE];
     /*
@@ -51,6 +56,8 @@ struct winusb_device {
     struct mutex write_lock;
     volatile bool tx_pending;   /* IN 传输已提交、尚未被主机取走 */
     volatile bool zlp_pending;  /* 本次传输长度为 MPS 整数倍，完成后需补发 ZLP */
+    bool connected;             /* USB 连接使能状态 */
+    bool rx_paused;             /* Bulk OUT 接收暂停状态 (背压) */
 };
 
 struct winusb_device *winusb_dev;
@@ -171,12 +178,18 @@ static int _ep_out_handler(ufunction_t func, size_t size)
         nos_complete(&winusb_device->read_sem);
     }
 
-    winusb_device->ep_out->buffer = winusb_device->ep_rx_buf;
-    winusb_device->ep_out->request.buffer = winusb_device->ep_rx_buf;
-    winusb_device->ep_out->request.size = EP_MAXPACKET(winusb_device->ep_out);
-    winusb_device->ep_out->request.req_type = UIO_REQUEST_READ_BEST;
-    usbd_io_request(func->device, winusb_device->ep_out,
-                    &winusb_device->ep_out->request);
+    if (kfifo_avail(&winusb_device->rx_fifo) >= EP_MAXPACKET(winusb_device->ep_out)) {
+        winusb_device->ep_out->buffer = winusb_device->ep_rx_buf;
+        winusb_device->ep_out->request.buffer = winusb_device->ep_rx_buf;
+        winusb_device->ep_out->request.size = EP_MAXPACKET(winusb_device->ep_out);
+        winusb_device->ep_out->request.req_type = UIO_REQUEST_READ_BEST;
+        winusb_device->rx_paused = false;
+        usbd_io_request(func->device, winusb_device->ep_out,
+                        &winusb_device->ep_out->request);
+    } else {
+        /* FIFO 空间不足，暂停挂载接收，底层硬件对主机自动回复 NAK 形成背压 */
+        winusb_device->rx_paused = true;
+    }
 
     return 0;
 }
@@ -214,28 +227,49 @@ static void winusb_reset_tx_state(struct winusb_device *winusb_device)
     __atomic_store_n(&winusb_device->tx_pending, false, __ATOMIC_RELEASE);
     nos_completion_reset(&winusb_device->write_sem);
 }
-static ufunction_t cmd_func = NULL;
+
+static struct ufunction_ops ops;
+
 static int _ep0_cmd_handler(udevice_t device, size_t size)
 {
-    struct winusb_device *winusb_device;
+    struct winusb_device *winusb_device = NULL;
 
-    if(cmd_func != NULL) {
-        winusb_device = (struct winusb_device *)cmd_func->user_data;
-        cmd_func = NULL;
+    if (device->curr_cfg != NULL) {
+        struct ufunction *f;
+        list_for_each_entry(f, &device->curr_cfg->func_list, list) {
+            if (f->ops == &ops) {
+                winusb_device = (struct winusb_device *)f->user_data;
+                break;
+            }
+        }
+    }
+    if (winusb_device == NULL) {
+        winusb_device = winusb_dev;
+    }
+
+    if (winusb_device != NULL && winusb_device->cmd_func != NULL) {
+        winusb_device->cmd_func = NULL;
         if (winusb_device->cmd_handler != NULL)
             winusb_device->cmd_handler(winusb_device->cmd_buff, size);
-
     }
     dcd_ep0_send_status(device->dcd);
     return 0;
 }
+
 static int _ep0_cmd_read(ufunction_t func, ureq_t setup)
 {
     struct winusb_device *winusb_device = (struct winusb_device *)func->user_data;
-    cmd_func = func;
+
+    if (setup->wLength > sizeof(winusb_device->cmd_buff)) {
+        usbd_ep0_set_stall(func->device);
+        return -EINVAL;
+    }
+
+    winusb_device->cmd_func = func;
     usbd_ep0_read(func->device, winusb_device->cmd_buff, setup->wLength, _ep0_cmd_handler);
     return 0;
 }
+
 static int _interface_handler(ufunction_t func, ureq_t setup)
 {
     switch (setup->bRequest) {
@@ -254,6 +288,7 @@ static int _interface_handler(ufunction_t func, ureq_t setup)
 
     return 0;
 }
+
 static int _function_enable(ufunction_t func)
 {
     struct winusb_device *winusb_device;
@@ -262,9 +297,12 @@ static int _function_enable(ufunction_t func)
         return -EINVAL;
 
     winusb_device = (struct winusb_device *)func->user_data;
+    winusb_device->connected = true;
+    winusb_device->rx_paused = false;
     kfifo_skip(&winusb_device->rx_fifo, kfifo_used(&winusb_device->rx_fifo));
     /* SET_CONFIGURATION 会关闭并重开端点（硬件 FIFO 已冲刷、数据翻转复位），软件侧同步复位 */
     winusb_reset_tx_state(winusb_device);
+    nos_completion_reset(&winusb_device->read_sem);
 
     winusb_device->ep_out->buffer = winusb_device->ep_rx_buf;
     winusb_device->ep_out->request.buffer = winusb_device->ep_rx_buf;
@@ -275,6 +313,7 @@ static int _function_enable(ufunction_t func)
 
     return 0;
 }
+
 static int _function_disable(ufunction_t func)
 {
     struct winusb_device *winusb_device;
@@ -283,8 +322,14 @@ static int _function_disable(ufunction_t func)
         return -EINVAL;
 
     winusb_device = (struct winusb_device *)func->user_data;
+    winusb_device->connected = false;
+    winusb_device->rx_paused = false;
     kfifo_skip(&winusb_device->rx_fifo, kfifo_used(&winusb_device->rx_fifo));
     winusb_reset_tx_state(winusb_device);
+
+    /* 广播唤醒阻塞等待的读写任务 */
+    nos_complete_all(&winusb_device->write_sem);
+    nos_complete_all(&winusb_device->read_sem);
 
     return 0;
 }
@@ -317,11 +362,28 @@ static ssize_t winusb_read(struct device *dev, addr_t pos,
     if (buffer == NULL || size == 0)
         return -EINVAL;
 
+    if (!win_dev->connected)
+        return -ENOTCONN;
+
     while (kfifo_used(&win_dev->rx_fifo) == 0) {
+        if (!win_dev->connected)
+            return -ENOTCONN;
         nos_completion_wait(&win_dev->read_sem, NOS_WAIT_FOREVER);
+        if (!win_dev->connected)
+            return -ENOTCONN;
     }
 
     read_size = kfifo_out(&win_dev->rx_fifo, buffer, (unsigned int)size);
+
+    if (win_dev->connected && win_dev->rx_paused &&
+        kfifo_avail(&win_dev->rx_fifo) >= EP_MAXPACKET(win_dev->ep_out)) {
+        win_dev->rx_paused = false;
+        win_dev->ep_out->buffer = win_dev->ep_rx_buf;
+        win_dev->ep_out->request.buffer = win_dev->ep_rx_buf;
+        win_dev->ep_out->request.size = EP_MAXPACKET(win_dev->ep_out);
+        win_dev->ep_out->request.req_type = UIO_REQUEST_READ_BEST;
+        usbd_io_request(win_dev->func->device, win_dev->ep_out, &win_dev->ep_out->request);
+    }
 
     return (ssize_t)read_size;
 }
@@ -349,7 +411,7 @@ static ssize_t winusb_xmit(struct winusb_device *win_dev, const void *buffer,
         return -EINVAL;
     if (size > CONFIG_WINUSB_TX_BUFSIZE)
         return -EMSGSIZE;
-    if (win_dev->func->device->state != USB_STATE_CONFIGURED)
+    if (!win_dev->connected || win_dev->func->device->state != USB_STATE_CONFIGURED)
         return -ENOTCONN;
 
     mutex_lock(&win_dev->write_lock);
@@ -362,6 +424,11 @@ static ssize_t winusb_xmit(struct winusb_device *win_dev, const void *buffer,
             /* 主机未读取属于正常的对端离线/流控状态，此处不打印日志，避免远程日志自激 */
             return -ETIMEDOUT;
         }
+    }
+
+    if (!win_dev->connected || win_dev->func->device->state != USB_STATE_CONFIGURED) {
+        mutex_unlock(&win_dev->write_lock);
+        return -ENOTCONN;
     }
 
     /* 此时没有未完成传输：清掉可能残留的完成信号，再提交新传输 */
@@ -403,14 +470,31 @@ static ssize_t winusb_read_timeout(struct device *dev, addr_t pos,
     if (buffer == NULL || size == 0)
         return -EINVAL;
 
+    if (!win_dev->connected)
+        return -ENOTCONN;
+
     while (kfifo_used(&win_dev->rx_fifo) == 0) {
+        if (!win_dev->connected)
+            return -ENOTCONN;
         rc = nos_completion_wait(&win_dev->read_sem, tick);
+        if (!win_dev->connected)
+            return -ENOTCONN;
         if (rc < 0 && kfifo_used(&win_dev->rx_fifo) == 0) {
             return -ETIMEDOUT;
         }
     }
 
     read_size = kfifo_out(&win_dev->rx_fifo, buffer, (unsigned int)size);
+
+    if (win_dev->connected && win_dev->rx_paused &&
+        kfifo_avail(&win_dev->rx_fifo) >= EP_MAXPACKET(win_dev->ep_out)) {
+        win_dev->rx_paused = false;
+        win_dev->ep_out->buffer = win_dev->ep_rx_buf;
+        win_dev->ep_out->request.buffer = win_dev->ep_rx_buf;
+        win_dev->ep_out->request.size = EP_MAXPACKET(win_dev->ep_out);
+        win_dev->ep_out->request.req_type = UIO_REQUEST_READ_BEST;
+        usbd_io_request(win_dev->func->device, win_dev->ep_out, &win_dev->ep_out->request);
+    }
 
     return (ssize_t)read_size;
 }
