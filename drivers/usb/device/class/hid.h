@@ -9,6 +9,9 @@
 #ifndef _USBDEVICE_CLASS_HID_H_
 #define _USBDEVICE_CLASS_HID_H_
 
+#include <kernel/types.h>
+#include <drivers/usb/usb_common.h>
+
 #define USB_DEVICE_HID_KEYBOARD_NUMBER 1
 
 #define HID_DESCRIPTOR_TYPE             0x21
@@ -245,5 +248,22 @@ struct uhid_comm_descriptor
     struct uendpoint_descriptor     ep_out_desc;
 };
 typedef struct uhid_comm_descriptor* uhid_comm_desc_t;
+
+#define HID_REPORT_ID_KEYBOARD1         1
+#define HID_REPORT_ID_KEYBOARD2         2
+#define HID_REPORT_ID_KEYBOARD3         3
+#define HID_REPORT_ID_KEYBOARD4         7
+#define HID_REPORT_ID_MEDIA             4
+#define HID_REPORT_ID_GENERAL           5
+#define HID_REPORT_ID_MOUSE             6
+
+struct hid_report
+{
+    uint8_t report_id;
+    uint8_t report[63];
+    uint8_t size;
+};
+typedef struct hid_report* hid_report_t;
+void HID_Report_Received(hid_report_t report);
 
 #endif /* _USBDEVICE_CLASS_HID_H_ */

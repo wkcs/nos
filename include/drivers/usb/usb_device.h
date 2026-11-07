@@ -12,8 +12,103 @@
 #include <kernel/kernel.h>
 #include <kernel/mm.h>
 #include <kernel/device.h>
+#include <kernel/list.h>
 #include <string.h>
 #include <drivers/usb/usb_common.h>
+
+typedef void (*func_callback)(void *context);
+
+typedef enum
+{
+    USB_STATE_NOTATTACHED = 0,
+    USB_STATE_ATTACHED,
+    USB_STATE_POWERED,
+    USB_STATE_RECONNECTING,
+    USB_STATE_UNAUTHENTICATED,
+    USB_STATE_DEFAULT,
+    USB_STATE_ADDRESS,
+    USB_STATE_CONFIGURED,
+    USB_STATE_SUSPENDED
+} udevice_state_t;
+
+typedef enum
+{
+    STAGE_IDLE,
+    STAGE_SETUP,
+    STAGE_STATUS_IN,
+    STAGE_STATUS_OUT,
+    STAGE_DIN,
+    STAGE_DOUT
+} uep0_stage_t;
+
+#pragma pack(1)
+struct usb_os_header_comp_id_descriptor
+{
+    uint32_t dwLength;
+    uint16_t bcdVersion;
+    uint16_t wIndex;
+    uint8_t  bCount;
+    uint8_t  reserved[7];
+};
+typedef struct usb_os_header_comp_id_descriptor * usb_os_header_desc_t;
+
+struct usb_os_function_comp_id_descriptor
+{
+    struct list_head list;
+    uint8_t bFirstInterfaceNumber;
+    uint8_t reserved1;
+    uint8_t compatibleID[8];
+    uint8_t subCompatibleID[8];
+    uint8_t reserved2[6];
+};
+typedef struct usb_os_function_comp_id_descriptor * usb_os_func_comp_id_desc_t;
+
+struct usb_os_comp_id_descriptor
+{
+    struct usb_os_header_comp_id_descriptor head_desc;
+    struct list_head func_desc;
+};
+typedef struct usb_os_comp_id_descriptor * usb_os_comp_id_desc_t;
+
+struct usb_os_property_header
+{
+    uint32_t dwLength;
+    uint16_t bcdVersion;
+    uint16_t wIndex;
+    uint16_t wCount;
+};
+typedef struct usb_os_property_header * usb_os_property_header_t;
+
+struct usb_os_proerty
+{
+    uint32_t dwSize;
+    uint32_t dwPropertyDataType;
+    uint16_t wPropertyNameLength;
+    const char * bPropertyName;
+    uint32_t dwPropertyDataLength;
+    const char * bPropertyData;
+};
+typedef struct usb_os_proerty * usb_os_proerty_t;
+#pragma pack()
+
+#define USB_OS_PROERTY_TYPE_REG_SZ                      0x01UL
+#define USB_OS_PROERTY_TYPE_REG_EXPAND_SZ               0x02UL
+#define USB_OS_PROERTY_TYPE_REG_BINARY                  0x03UL
+#define USB_OS_PROERTY_TYPE_REG_DWORD_LITTLE_ENDIAN     0x04UL
+#define USB_OS_PROERTY_TYPE_REG_DWORD_BIG_ENDIAN        0x05UL
+#define USB_OS_PROERTY_TYPE_REG_LINK                    0x06UL
+#define USB_OS_PROERTY_TYPE_REG_MULTI_SZ                0x07UL
+
+#define USB_OS_PROERTY_DESC(PropertyDataType,PropertyName,PropertyData) \
+{\
+    .dwSize                 = sizeof(struct usb_os_proerty)-sizeof(const char *)*2\
+                            +sizeof(PropertyName)*2+sizeof(PropertyData)*2,\
+    .dwPropertyDataType     = PropertyDataType,\
+    .wPropertyNameLength    = sizeof(PropertyName)*2,\
+    .bPropertyName          = PropertyName,\
+    .dwPropertyDataLength   = sizeof(PropertyData)*2,\
+    .bPropertyData          = PropertyData\
+}
 
 /* Vendor ID */
 #ifdef CONFIG_USB_VENDOR_ID
@@ -176,10 +271,15 @@ struct ufunction
 };
 typedef struct ufunction* ufunction_t;
 
+#ifndef USB_CONFIG_RAW_DESC_SIZE
+#define USB_CONFIG_RAW_DESC_SIZE 512
+#endif
+
 struct uconfig
 {
     struct list_head list;
     struct uconfig_descriptor cfg_desc;
+    uint8_t raw_desc[USB_CONFIG_RAW_DESC_SIZE];
     struct list_head func_list;
 };
 typedef struct uconfig* uconfig_t;
@@ -369,5 +469,18 @@ static inline int dcd_ep_clear_stall(udcd_t dcd, uint8_t address)
 void usbd_os_proerty_descriptor_send(ufunction_t func, ureq_t setup,
                                      usb_os_proerty_t usb_os_proerty,
                                      uint8_t number_of_proerty);
+
+/*
+ * USB 设备事件循环线程配置
+ */
+#ifndef USBD_THREAD_STACK_SZ
+#define USBD_THREAD_STACK_SZ 1536
+#endif
+
+#ifndef USBD_THREAD_PRIO
+#define USBD_THREAD_PRIO 8
+#endif
+
+int usb_class_register(void);
 
 #endif /* __NOS_USB_DEVICE_H__ */

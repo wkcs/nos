@@ -73,16 +73,24 @@ static int _get_device_descriptor(struct udevice* device, ureq_t setup)
 static int _get_config_descriptor(struct udevice* device, ureq_t setup)
 {
     size_t size;
-    ucfg_desc_t cfg_desc;
+    uconfig_t cfg;
 
     pr_info("_get_config_descriptor\n");
 
-    cfg_desc = &device->curr_cfg->cfg_desc;
-    size = (setup->wLength > cfg_desc->wTotalLength) ?
-           cfg_desc->wTotalLength : setup->wLength;
+    if (device == NULL || device->curr_cfg == NULL || setup == NULL) {
+        return -EINVAL;
+    }
+
+    cfg = device->curr_cfg;
+    size = (setup->wLength > cfg->cfg_desc.wTotalLength) ?
+           cfg->cfg_desc.wTotalLength : setup->wLength;
+
+    if (size > sizeof(cfg->raw_desc)) {
+        size = sizeof(cfg->raw_desc);
+    }
 
     /* send configuration descriptor to endpoint 0 */
-    usbd_ep0_write(device, (uint8_t*)cfg_desc, size);
+    usbd_ep0_write(device, cfg->raw_desc, size);
 
     return 0;
 }
@@ -1023,6 +1031,9 @@ uconfig_t usbd_config_new(void)
     cfg->cfg_desc.bmAttributes = 0xC0;
     cfg->cfg_desc.MaxPower = 0x32;
 
+    /* 使用默认配置描述符头部初始化 raw_desc 缓冲区 */
+    memcpy(cfg->raw_desc, &cfg->cfg_desc, USB_DESC_LENGTH_CONFIG);
+
     /* to initialize function object list */
     INIT_LIST_HEAD(&cfg->func_list);
 
@@ -1387,12 +1398,16 @@ int usbd_device_add_config(udevice_t device, uconfig_t cfg)
     pr_info("usbd_device_add_config\n");
 
     /* parameter check */
-    // WK_ERROR(device != NULL);
-    // WK_ERROR(cfg != NULL);
+    if (device == NULL || cfg == NULL) {
+        return -EINVAL;
+    }
 
     /* set configuration number to the configuration descriptor */
     cfg->cfg_desc.bConfigurationValue = device->dev_desc.bNumConfigurations + 1;
     device->dev_desc.bNumConfigurations++;
+
+    /* 重置描述符总长度为标准配置描述符基础长度 */
+    cfg->cfg_desc.wTotalLength = USB_DESC_LENGTH_CONFIG;
 
     for (i=cfg->func_list.next; i!=&cfg->func_list; i=i->next)
     {
@@ -1414,13 +1429,22 @@ int usbd_device_add_config(udevice_t device, uconfig_t cfg)
                 }
             }
 
-            /* construct complete configuration descriptor */
-            memcpy((void*)&cfg->cfg_desc.data[cfg->cfg_desc.wTotalLength - USB_DESC_LENGTH_CONFIG],
+            /* 拼接完整配置描述符并进行长度越界保护检查 */
+            if (cfg->cfg_desc.wTotalLength + intf->curr_setting->desc_size > sizeof(cfg->raw_desc))
+            {
+                pr_err("config descriptor overflow, max %zu bytes\n", sizeof(cfg->raw_desc));
+                return -ENOSPC;
+            }
+
+            memcpy((void*)&cfg->raw_desc[cfg->cfg_desc.wTotalLength],
                         (void*)intf->curr_setting->desc,
                         intf->curr_setting->desc_size);
             cfg->cfg_desc.wTotalLength += intf->curr_setting->desc_size;
         }
     }
+
+    /* 将更新后的配置描述符头部拷贝至原始描述符缓冲区起始处 */
+    memcpy((void*)cfg->raw_desc, (void*)&cfg->cfg_desc, USB_DESC_LENGTH_CONFIG);
 
     /* insert the configuration to the list */
     list_add(&cfg->list, &device->cfg_list);
