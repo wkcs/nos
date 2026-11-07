@@ -199,6 +199,7 @@ struct uio_request
     uint8_t* buffer;
     size_t size;
     size_t remain_size;
+    size_t req_wlength;
 };
 typedef struct uio_request* uio_request_t;
 
@@ -213,6 +214,7 @@ struct uendpoint
     struct ep_id *id;
     udep_handler_t handler;
     int (*rx_indicate)(struct udevice* dev, size_t size);
+    size_t req_wlength;
 };
 typedef struct uendpoint* uep_t;
 
@@ -299,6 +301,7 @@ struct udevice
     uint8_t nr_intf;
 
     udcd_t dcd;
+    uint8_t str_desc_buf[128];
 };
 typedef struct udevice* udevice_t;
 

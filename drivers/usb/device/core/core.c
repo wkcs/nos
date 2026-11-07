@@ -105,13 +105,16 @@ static int _get_config_descriptor(struct udevice* device, ureq_t setup)
  */
 static int _get_string_descriptor(struct udevice* device, ureq_t setup)
 {
-    struct ustring_descriptor str_desc;
     uint8_t index, i;
     uint32_t len;
+    uint32_t desc_len;
 
     pr_info("_get_string_descriptor\n");
 
-    str_desc.type = USB_DESC_TYPE_STRING;
+    if (device == NULL || setup == NULL) {
+        return -EINVAL;
+    }
+
     index = setup->wValue & 0xFF;
 
     if(index == 0xEE)
@@ -119,37 +122,47 @@ static int _get_string_descriptor(struct udevice* device, ureq_t setup)
         index = USB_STRING_OS_INDEX;
     }
 
-    if(index > USB_STRING_MAX)
+    if(index > USB_STRING_MAX || device->str == NULL || device->str[index] == NULL)
     {
         pr_err("unknown string index\n");
         usbd_ep0_set_stall(device);
         return -1;
     }
-    else if(index == USB_STRING_LANGID_INDEX)
+
+    /* 格式化至 device->str_desc_buf，消除异步栈逃逸风险 */
+    device->str_desc_buf[1] = USB_DESC_TYPE_STRING;
+
+    if(index == USB_STRING_LANGID_INDEX)
     {
-        str_desc.bLength = 4;
-        str_desc.String[0] = 0x09;
-        str_desc.String[1] = 0x04;
+        desc_len = 4;
+        device->str_desc_buf[0] = 4;
+        device->str_desc_buf[2] = 0x09;
+        device->str_desc_buf[3] = 0x04;
     }
     else
     {
         len = strlen(device->str[index]);
-        str_desc.bLength = len*2 + 2;
+        /* 限制最大支持的字符串长度，防止 str_desc_buf[128] 溢出 (128 - 2) / 2 = 63 字符 */
+        if (len > (sizeof(device->str_desc_buf) - 2) / 2) {
+            len = (sizeof(device->str_desc_buf) - 2) / 2;
+        }
+        desc_len = len * 2 + 2;
+        device->str_desc_buf[0] = (uint8_t)desc_len;
 
-        for(i=0; i<len; i++)
+        for(i = 0; i < len; i++)
         {
-            str_desc.String[i*2] = device->str[index][i];
-            str_desc.String[i*2 + 1] = 0;
+            device->str_desc_buf[2 + i * 2] = (uint8_t)device->str[index][i];
+            device->str_desc_buf[2 + i * 2 + 1] = 0;
         }
     }
 
-    if (setup->wLength > str_desc.bLength)
-        len = str_desc.bLength;
+    if (setup->wLength > desc_len)
+        len = desc_len;
     else
         len = setup->wLength;
 
     /* send string descriptor to endpoint 0 */
-    usbd_ep0_write(device, (uint8_t*)&str_desc, len);
+    usbd_ep0_write(device, device->str_desc_buf, len);
 
     return 0;
 }
@@ -231,6 +244,10 @@ static int _get_interface(struct udevice* device, ureq_t setup)
 
     pr_info("_get_interface\n");
 
+    if (device == NULL || setup == NULL) {
+        return -EINVAL;
+    }
+
     if (device->state != USB_STATE_CONFIGURED)
     {
         usbd_ep0_set_stall(device);
@@ -239,6 +256,10 @@ static int _get_interface(struct udevice* device, ureq_t setup)
 
     /* find the specified interface and its alternate setting */
     intf = usbd_find_interface(device, setup->wIndex & 0xFF, NULL);
+    if (intf == NULL || intf->curr_setting == NULL || intf->curr_setting->intf_desc == NULL) {
+        usbd_ep0_set_stall(device);
+        return -EINVAL;
+    }
     value = intf->curr_setting->intf_desc->bAlternateSetting;
 
     /* send the interface alternate setting to endpoint 0*/
@@ -264,6 +285,10 @@ static int _set_interface(struct udevice* device, ureq_t setup)
 
     pr_info("_set_interface\n");
 
+    if (device == NULL || setup == NULL) {
+        return -EINVAL;
+    }
+
     if (device->state != USB_STATE_CONFIGURED)
     {
         usbd_ep0_set_stall(device);
@@ -272,9 +297,16 @@ static int _set_interface(struct udevice* device, ureq_t setup)
 
     /* find the specified interface */
     intf = usbd_find_interface(device, setup->wIndex & 0xFF, NULL);
+    if (intf == NULL) {
+        usbd_ep0_set_stall(device);
+        return -EINVAL;
+    }
 
     /* set alternate setting to the interface */
-    usbd_set_altsetting(intf, setup->wValue & 0xFF);
+    if (usbd_set_altsetting(intf, setup->wValue & 0xFF) != 0 || intf->curr_setting == NULL) {
+        usbd_ep0_set_stall(device);
+        return -EINVAL;
+    }
     setting = intf->curr_setting;
 
     /* start all endpoints of the interface alternate setting */
@@ -336,6 +368,10 @@ static int _set_config(struct udevice* device, ureq_t setup)
 
     pr_info("_set_config\n");
 
+    if (device == NULL || setup == NULL) {
+        return -EINVAL;
+    }
+
     if (setup->wValue > device->dev_desc.bNumConfigurations)
     {
         usbd_ep0_set_stall(device);
@@ -345,7 +381,25 @@ static int _set_config(struct udevice* device, ureq_t setup)
     if (setup->wValue == 0)
     {
         pr_info("address state\n");
+        if (device->curr_cfg != NULL) {
+            for (i = device->curr_cfg->func_list.next; i != &device->curr_cfg->func_list; i = i->next) {
+                ufunction_t func = (ufunction_t)list_entry(i, struct ufunction, list);
+                for (j = func->intf_list.next; j != &func->intf_list; j = j->next) {
+                    intf = (uintf_t)list_entry(j, struct uinterface, list);
+                    if (intf->curr_setting != NULL) {
+                        setting = intf->curr_setting;
+                        for (k = setting->ep_list.next; k != &setting->ep_list; k = k->next) {
+                            ep = (uep_t)list_entry(k, struct uendpoint, list);
+                            dcd_ep_disable(device->dcd, ep);
+                        }
+                    }
+                }
+                FUNC_DISABLE(func);
+            }
+        }
+        device->curr_cfg = NULL;
         device->state = USB_STATE_ADDRESS;
+        dcd_set_config(device->dcd, 0);
 
         goto _exit;
     }
@@ -353,6 +407,10 @@ static int _set_config(struct udevice* device, ureq_t setup)
     /* set current configuration */
     usbd_set_config(device, setup->wValue);
     cfg = device->curr_cfg;
+    if (cfg == NULL) {
+        usbd_ep0_set_stall(device);
+        return -EINVAL;
+    }
 
     for (i=cfg->func_list.next; i!=&cfg->func_list; i=i->next)
     {
@@ -362,13 +420,15 @@ static int _set_config(struct udevice* device, ureq_t setup)
         {
             intf = (uintf_t)list_entry(j, struct uinterface, list);
             setting = intf->curr_setting;
-            for(k=setting->ep_list.next; k != &setting->ep_list; k=k->next)
-            {
-                ep = (uep_t)list_entry(k, struct uendpoint, list);
+            if (setting != NULL) {
+                for(k=setting->ep_list.next; k != &setting->ep_list; k=k->next)
+                {
+                    ep = (uep_t)list_entry(k, struct uendpoint, list);
 
-                /* first disable then enable an endpoint */
-                dcd_ep_disable(device->dcd, ep);
-                dcd_ep_enable(device->dcd, ep);
+                    /* first disable then enable an endpoint */
+                    dcd_ep_disable(device->dcd, ep);
+                    dcd_ep_enable(device->dcd, ep);
+                }
             }
         }
         /* after enabled endpoints, then enable function */
@@ -625,13 +685,20 @@ static int _vendor_request(udevice_t device, ureq_t setup)
     usb_os_func_comp_id_desc_t func_comp_id_desc;
     uintf_t intf;
     ufunction_t func;
+    size_t send_len;
+
+    if (device == NULL || setup == NULL) {
+        return -EINVAL;
+    }
+
     switch(setup->bRequest)
     {
         case 'A':
         switch(setup->wIndex)
         {
             case 0x04:
-                if(list_len(&device->os_comp_id_desc->func_desc) == 0)
+                if(device->os_comp_id_desc == NULL ||
+                   list_len(&device->os_comp_id_desc->func_desc) == 0)
                 {
                     usbd_ep0_set_stall(device);
                     return 0;
@@ -646,6 +713,7 @@ static int _vendor_request(udevice_t device, ureq_t setup)
                     usb_comp_id_desc = (uint8_t *)kmalloc(usb_comp_id_desc_size, GFP_KERNEL);
                     if (usb_comp_id_desc == NULL) {
                         pr_err("alloc usb_comp_id_desc buf error\n");
+                        usbd_ep0_set_stall(device);
                         return 0;
                     }
                     device->os_comp_id_desc->head_desc.dwLength = usb_comp_id_desc_size;
@@ -661,17 +729,28 @@ static int _vendor_request(udevice_t device, ureq_t setup)
                         pusb_comp_id_desc += sizeof(struct usb_os_function_comp_id_descriptor)-sizeof(struct list_head);
                     }
                 }
-                usbd_ep0_write(device, (void*)usb_comp_id_desc, setup->wLength);
+                send_len = min_t(size_t, setup->wLength, (size_t)usb_comp_id_desc_size);
+                usbd_ep0_write(device, (void*)usb_comp_id_desc, send_len);
             break;
             case 0x05:
                 intf = usbd_find_interface(device, setup->wValue & 0xFF, &func);
-                if(intf != NULL)
+                if(intf != NULL && intf->handler != NULL)
                 {
                     intf->handler(func, setup);
                 }
+                else
+                {
+                    usbd_ep0_set_stall(device);
+                }
+                break;
+            default:
+                usbd_ep0_set_stall(device);
                 break;
         }
 
+        break;
+    default:
+        usbd_ep0_set_stall(device);
         break;
     }
     return 0;
@@ -1282,8 +1361,9 @@ uintf_t usbd_find_interface(udevice_t device, uint8_t value, ufunction_t *pfunc)
     pr_info("usbd_find_interface\n");
 
     /* parameter check */
-    // WK_ERROR(device != NULL);
-    // WK_ERROR(value < device->nr_intf);
+    if (device == NULL || device->curr_cfg == NULL) {
+        return NULL;
+    }
 
     /* search an interface in the current configuration */
     list_for_each_entry(func, &device->curr_cfg->func_list, list) {
@@ -1316,9 +1396,11 @@ ualtsetting_t usbd_find_altsetting(uintf_t intf, uint8_t value)
     pr_info("usbd_find_altsetting\n");
 
     /* parameter check */
-    // WK_ERROR(intf != NULL);
+    if (intf == NULL) {
+        return NULL;
+    }
 
-    if(intf->curr_setting != NULL)
+    if(intf->curr_setting != NULL && intf->curr_setting->intf_desc != NULL)
     {
         /* if the wValue equal to the current alternate setting, then do not search */
         if(intf->curr_setting->intf_desc->bAlternateSetting == value)
@@ -1329,7 +1411,7 @@ ualtsetting_t usbd_find_altsetting(uintf_t intf, uint8_t value)
     for(i=intf->setting_list.next; i!=&intf->setting_list; i=i->next)
     {
         setting =(ualtsetting_t)list_entry(i, struct ualtsetting, list);
-        if(setting->intf_desc->bAlternateSetting == value)
+        if(setting->intf_desc != NULL && setting->intf_desc->bAlternateSetting == value)
             return setting;
     }
 
@@ -1353,7 +1435,9 @@ uep_t usbd_find_endpoint(udevice_t device, ufunction_t* pfunc, uint8_t ep_addr)
     uintf_t intf;
 
     /* parameter check */
-    // WK_ERROR(device != NULL);
+    if (device == NULL || device->curr_cfg == NULL) {
+        return NULL;
+    }
 
     /* search a endpoint in the current configuration */
     for (i=device->curr_cfg->func_list.next; i!=&device->curr_cfg->func_list; i=i->next)
@@ -1362,6 +1446,8 @@ uep_t usbd_find_endpoint(udevice_t device, ufunction_t* pfunc, uint8_t ep_addr)
         for(j=func->intf_list.next; j!=&func->intf_list; j=j->next)
         {
             intf = (uintf_t)list_entry(j, struct uinterface, list);
+            if (intf->curr_setting == NULL)
+                continue;
             for(k=intf->curr_setting->ep_list.next;
                     k!=&intf->curr_setting->ep_list; k=k->next)
             {
@@ -1406,8 +1492,9 @@ int usbd_device_add_config(udevice_t device, uconfig_t cfg)
     cfg->cfg_desc.bConfigurationValue = device->dev_desc.bNumConfigurations + 1;
     device->dev_desc.bNumConfigurations++;
 
-    /* 重置描述符总长度为标准配置描述符基础长度 */
+    /* 重置描述符总长度与接口数 */
     cfg->cfg_desc.wTotalLength = USB_DESC_LENGTH_CONFIG;
+    cfg->cfg_desc.bNumInterfaces = 0;
 
     for (i=cfg->func_list.next; i!=&cfg->func_list; i=i->next)
     {
@@ -1419,27 +1506,33 @@ int usbd_device_add_config(udevice_t device, uconfig_t cfg)
             cfg->cfg_desc.bNumInterfaces++;
 
             /* allocate address for every endpoint in the interface alternate setting */
-            for(k=intf->curr_setting->ep_list.next;
-                    k!=&intf->curr_setting->ep_list; k=k->next)
+            if (intf->curr_setting != NULL)
             {
-                ep = (uep_t)list_entry(k, struct uendpoint, list);
-                if(usbd_ep_assign(device, ep) != 0)
+                for(k=intf->curr_setting->ep_list.next;
+                        k!=&intf->curr_setting->ep_list; k=k->next)
                 {
-                    pr_err("endpoint assign error\n");
+                    ep = (uep_t)list_entry(k, struct uendpoint, list);
+                    if(usbd_ep_assign(device, ep) != 0)
+                    {
+                        pr_err("endpoint assign error for ep %p\n", ep);
+                        device->dev_desc.bNumConfigurations--;
+                        return -ENOSPC;
+                    }
                 }
-            }
 
-            /* 拼接完整配置描述符并进行长度越界保护检查 */
-            if (cfg->cfg_desc.wTotalLength + intf->curr_setting->desc_size > sizeof(cfg->raw_desc))
-            {
-                pr_err("config descriptor overflow, max %zu bytes\n", sizeof(cfg->raw_desc));
-                return -ENOSPC;
-            }
+                /* 拼接完整配置描述符并进行长度越界保护检查 */
+                if (cfg->cfg_desc.wTotalLength + intf->curr_setting->desc_size > sizeof(cfg->raw_desc))
+                {
+                    pr_err("config descriptor overflow, max %zu bytes\n", sizeof(cfg->raw_desc));
+                    device->dev_desc.bNumConfigurations--;
+                    return -ENOSPC;
+                }
 
-            memcpy((void*)&cfg->raw_desc[cfg->cfg_desc.wTotalLength],
-                        (void*)intf->curr_setting->desc,
-                        intf->curr_setting->desc_size);
-            cfg->cfg_desc.wTotalLength += intf->curr_setting->desc_size;
+                memcpy((void*)&cfg->raw_desc[cfg->cfg_desc.wTotalLength],
+                            (void*)intf->curr_setting->desc,
+                            intf->curr_setting->desc_size);
+                cfg->cfg_desc.wTotalLength += intf->curr_setting->desc_size;
+            }
         }
     }
 
@@ -1567,10 +1660,15 @@ int usbd_set_altsetting(uintf_t intf, uint8_t value)
     pr_info("usbd_set_altsetting\n");
 
     /* parameter check */
-    // WK_ERROR(intf != NULL);
+    if (intf == NULL) {
+        return -EINVAL;
+    }
 
     /* find an alternate setting */
     setting = usbd_find_altsetting(intf, value);
+    if (setting == NULL) {
+        return -EINVAL;
+    }
 
     /* set as current alternate setting */
     intf->curr_setting = setting;
@@ -1738,18 +1836,17 @@ static int usbd_ep_assign(udevice_t device, uep_t ep)
 {
     int i = 0;
 
-    // WK_ERROR(device != NULL);
-    // WK_ERROR(device->dcd != NULL);
-    // WK_ERROR(device->dcd->ep_pool != NULL);
-    // WK_ERROR(ep != NULL);
-    // WK_ERROR(ep->ep_desc != NULL);
+    if (device == NULL || device->dcd == NULL || device->dcd->ep_pool == NULL ||
+        ep == NULL || ep->ep_desc == NULL) {
+        return -EINVAL;
+    }
 
     while(device->dcd->ep_pool[i].addr != 0xFF)
     {
         if (device->dcd->ep_pool[i].status == ID_UNASSIGNED &&
             ep->ep_desc->bmAttributes == device->dcd->ep_pool[i].type &&
             (EP_ADDRESS(ep) & 0x80) == device->dcd->ep_pool[i].dir) {
-            EP_ADDRESS(ep) |= device->dcd->ep_pool[i].addr;
+            EP_ADDRESS(ep) = (EP_ADDRESS(ep) & ~0x0FU) | (device->dcd->ep_pool[i].addr & 0x0FU);
             ep->id = &device->dcd->ep_pool[i];
             device->dcd->ep_pool[i].status = ID_ASSIGNED;
 
@@ -1764,11 +1861,9 @@ static int usbd_ep_assign(udevice_t device, uep_t ep)
 
 int usbd_ep_unassign(udevice_t device, uep_t ep)
 {
-    // WK_ERROR(device != NULL);
-    // WK_ERROR(device->dcd != NULL);
-    // WK_ERROR(device->dcd->ep_pool != NULL);
-    // WK_ERROR(ep != NULL);
-    // WK_ERROR(ep->ep_desc != NULL);
+    if (ep == NULL || ep->id == NULL) {
+        return -EINVAL;
+    }
 
     ep->id->status = ID_UNASSIGNED;
 
@@ -1780,7 +1875,9 @@ int usbd_ep0_setup_handler(udcd_t dcd, struct urequest *setup)
     struct udev_msg msg;
     size_t size;
 
-    // WK_ERROR(dcd != NULL);
+    if (dcd == NULL) {
+        return -EINVAL;
+    }
 
     if (setup == NULL) {
         size = dcd_ep_read(dcd, EP0_OUT_ADDR, (void*)&msg.content.setup);
@@ -1791,6 +1888,13 @@ int usbd_ep0_setup_handler(udcd_t dcd, struct urequest *setup)
     } else {
         memcpy((void*)&msg.content.setup, (void*)setup, sizeof(*setup));
     }
+
+    /* 收到新 SETUP 时中止并清理可能残留的 EP0 传输状态，记录请求长度 */
+    dcd->ep0.request.remain_size = 0;
+    dcd->ep0.request.size = 0;
+    dcd->ep0.request.buffer = NULL;
+    dcd->ep0.request.req_wlength = msg.content.setup.wLength;
+    dcd->ep0.req_wlength = msg.content.setup.wLength;
 
     msg.type = USB_MSG_SETUP_NOTIFY;
     msg.dcd = dcd;
@@ -1803,14 +1907,16 @@ int usbd_ep0_in_handler(udcd_t dcd)
 {
     int32_t remain, mps;
 
-    // WK_ERROR(dcd != NULL);
+    if (dcd == NULL || dcd->ep0.id == NULL) {
+        return -EINVAL;
+    }
 
     if (dcd->stage != STAGE_DIN)
         return 0;
 
     mps = dcd->ep0.id->maxpacket;
     dcd->ep0.request.remain_size -= mps;
-    remain = dcd->ep0.request.remain_size;
+    remain = (int32_t)dcd->ep0.request.remain_size;
 
     if (remain > 0)
     {
@@ -1824,15 +1930,21 @@ int usbd_ep0_in_handler(udcd_t dcd)
     }
     else
     {
-        /* last packet is MPS multiple, so send ZLP packet */
-        if ((remain == 0) && (dcd->ep0.request.size > 0))
+        /* 仅当发送长度是 MPS 整数倍且严格小于主机要求的 wLength 时才发 ZLP */
+        if ((remain == 0) &&
+            (mps > 0) &&
+            (dcd->ep0.request.size > 0) &&
+            (dcd->ep0.request.size < dcd->ep0.request.req_wlength) &&
+            ((dcd->ep0.request.size % mps) == 0))
         {
+            dcd->ep0.request.req_wlength = 0;
+            dcd->ep0.req_wlength = 0;
             dcd->ep0.request.size = 0;
             dcd_ep_write(dcd, EP0_IN_ADDR, NULL, 0);
         }
         else
         {
-            /* receive status */
+            /* 接收状态阶段 */
             dcd->stage = STAGE_STATUS_OUT;
             dcd_ep_read_prepare(dcd, EP0_OUT_ADDR, NULL, 0);
         }

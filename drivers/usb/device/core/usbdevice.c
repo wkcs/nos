@@ -78,6 +78,13 @@ void usbd_os_proerty_descriptor_send(ufunction_t func, ureq_t setup,
     static uint8_t * data;
     uint8_t * pdata;
     uint8_t index,i;
+    size_t actual_len;
+    size_t send_len;
+
+    if (func == NULL || func->device == NULL || setup == NULL) {
+        return;
+    }
+
     if(data == NULL)
     {
         header.dwLength = sizeof(struct usb_os_property_header);
@@ -89,7 +96,11 @@ void usbd_os_proerty_descriptor_send(ufunction_t func, ureq_t setup,
             header.dwLength += usb_os_proerty[index].dwSize;
         }
         data = (uint8_t *)kmalloc(header.dwLength, GFP_KERNEL);
-        // WK_ERROR(data != NULL);
+        if (data == NULL) {
+            pr_err("alloc os property desc failed\n");
+            usbd_ep0_set_stall(func->device);
+            return;
+        }
         pdata = data;
         memcpy((void *)pdata,(void *)&header,sizeof(struct usb_os_property_header));
         pdata += sizeof(struct usb_os_property_header);
@@ -115,7 +126,11 @@ void usbd_os_proerty_descriptor_send(ufunction_t func, ureq_t setup,
             }
         }
     }
-    usbd_ep0_write(func->device, data, setup->wLength);
+
+    /* 钳制发送长度，避免越界访问缓冲区 */
+    actual_len = ((struct usb_os_property_header *)data)->dwLength;
+    send_len = min_t(size_t, setup->wLength, actual_len);
+    usbd_ep0_write(func->device, data, send_len);
 }
 
 static LIST_HEAD(class_list);
