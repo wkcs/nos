@@ -1,3 +1,4 @@
+#include <string.h>
 #include <kernel/sleep.h>
 #include "stm32f4xx_ll_usb.h"
 #include "stm32f4xx_hal_pcd.h"
@@ -789,14 +790,21 @@ HAL_StatusTypeDef USB_EP0StartXfer(USB_OTG_GlobalTypeDef *USBx , USB_OTG_EPTypeD
   */
 HAL_StatusTypeDef USB_WritePacket(USB_OTG_GlobalTypeDef *USBx, uint8_t *src, uint8_t ch_ep_num, uint16_t len, uint8_t dma)
 {
-  uint32_t count32b = 0U , i = 0U;
+  uint32_t words = 0U, rem = 0U, i = 0U;
 
   if (dma == 0U)
   {
-    count32b =  (len + 3U) / 4U;
-    for (i = 0U; i < count32b; i++, src += 4U)
+    words = len / 4U;
+    rem = len % 4U;
+    for (i = 0U; i < words; i++, src += 4U)
     {
       USBx_DFIFO(ch_ep_num) = *((uint32_t *)src);
+    }
+    if (rem > 0U)
+    {
+      uint32_t tail_word = 0U;
+      memcpy(&tail_word, src, rem);
+      USBx_DFIFO(ch_ep_num) = tail_word;
     }
   }
   return HAL_OK;
@@ -806,34 +814,25 @@ HAL_StatusTypeDef USB_WritePacket(USB_OTG_GlobalTypeDef *USBx, uint8_t *src, uin
   * @brief  USB_ReadPacket : read a packet from the Tx FIFO associated
   *         with the EP/channel
   * @param  USBx  Selected device
-  * @param  src  source pointer
-  * @param  ch_ep_num  endpoint or host channel number
+  * @param  dest  destination pointer
   * @param  len  Number of bytes to read
-  * @param  dma USB dma enabled or disabled
-  *          This parameter can be one of these values:
-  *           0 : DMA feature not used
-  *           1 : DMA feature used
   * @retval pointer to destination buffer
   */
-extern struct task_struct *usb_task;
 void *USB_ReadPacket(USB_OTG_GlobalTypeDef *USBx, uint8_t *dest, uint16_t len)
 {
-  uint32_t i=0U;
-  uint32_t count32b = (len + 3U) / 4U;
-  uint8_t *start = dest;
+  uint32_t words = len / 4U;
+  uint32_t rem = len % 4U;
+  uint32_t i = 0U;
 
-  for ( i = 0U; i < count32b; i++, dest += 4U )
+  for (i = 0U; i < words; i++, dest += 4U)
   {
-    if ((addr_t)dest == (addr_t)usb_task) {
-      pr_err("start=0x%08lx, len=%u\n", (addr_t)start, len);
-      BUG_ON(true);
-    }
-
-    if (dest >= start + len) {
-      pr_err("start=0x%08lx, len=%u\n", (addr_t)start, len);
-    }
     *(uint32_t *)dest = USBx_DFIFO(0U);
-
+  }
+  if (rem > 0U)
+  {
+    uint32_t tail_word = USBx_DFIFO(0U);
+    memcpy(dest, &tail_word, rem);
+    dest += rem;
   }
   return ((void *)dest);
 }

@@ -593,40 +593,45 @@ HAL_StatusTypeDef USB_DeActivateRemoteWakeup(USB_TypeDef *USBx)
   */
 void USB_WritePMA(USB_TypeDef *USBx, uint8_t *pbUsrBuf, uint16_t wPMABufAddr, uint16_t wNBytes)
 {
-  uint32_t nbytes = (wNBytes + 1) >> 1;   /* nbytes = (wNBytes + 1) / 2 */
+  uint32_t halfwords = wNBytes >> 1;
   uint32_t index = 0, temp1 = 0, temp2 = 0;
-  uint16_t *pdwVal = NULL;
-  
-  pdwVal = (uint16_t *)(wPMABufAddr * 2 + (uint32_t)USBx + 0x400);
-  for (index = nbytes; index != 0; index--)
+  uint16_t *pdwVal = (uint16_t *)(wPMABufAddr * 2 + (uint32_t)USBx + 0x400);
+
+  for (index = halfwords; index != 0; index--)
   {
-    temp1 = (uint16_t) * pbUsrBuf;
-    pbUsrBuf++;
-    temp2 = temp1 | (uint16_t) * pbUsrBuf << 8;
-    *pdwVal++ = temp2;
-    pdwVal++;
-    pbUsrBuf++;
+    temp1 = (uint16_t)*pbUsrBuf++;
+    temp2 = temp1 | ((uint16_t)*pbUsrBuf++ << 8);
+    *pdwVal = temp2;
+    pdwVal += 2;
+  }
+  if (wNBytes & 1)
+  {
+    *pdwVal = (uint16_t)*pbUsrBuf;
   }
 }
 
 /**
   * @brief  Copy a buffer from user memory area to packet memory area (PMA)
   * @param  USBx : pointer to USB register.
-* @param  pbUsrBuf : pointer to user memory area.
+  * @param  pbUsrBuf : pointer to user memory area.
   * @param  wPMABufAddr : address into PMA.
   * @param  wNBytes : number of bytes to be copied.
   * @retval None
   */
 void USB_ReadPMA(USB_TypeDef *USBx, uint8_t *pbUsrBuf, uint16_t wPMABufAddr, uint16_t wNBytes)
 {
-  uint32_t nbytes = (wNBytes + 1) >> 1;/* /2*/
+  uint32_t halfwords = wNBytes >> 1;
   uint32_t index = 0;
-  uint32_t *pdwVal = NULL;
-  
-  pdwVal = (uint32_t *)(wPMABufAddr * 2 + (uint32_t)USBx + 0x400);
-  for (index = nbytes; index != 0; index--)
+  uint32_t *pdwVal = (uint32_t *)(wPMABufAddr * 2 + (uint32_t)USBx + 0x400);
+
+  for (index = halfwords; index != 0; index--)
   {
-    *(uint16_t*)pbUsrBuf++ = *pdwVal++;
-    pbUsrBuf++;
+    uint32_t val = *pdwVal++;
+    *pbUsrBuf++ = (uint8_t)(val & 0xFF);
+    *pbUsrBuf++ = (uint8_t)((val >> 8) & 0xFF);
+  }
+  if (wNBytes & 1)
+  {
+    *pbUsrBuf = (uint8_t)(*pdwVal & 0xFF);
   }
 }

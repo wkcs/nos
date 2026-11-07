@@ -215,13 +215,13 @@ static int _init(void)
     pcd->Init.battery_charging_enable = DISABLE;
     /* Initialize LL Driver */
     HAL_PCD_Init(pcd);
-    HAL_PCDEx_PMAConfig(pcd, 0x00, PCD_SNG_BUF, 0x18);
-    HAL_PCDEx_PMAConfig(pcd, 0x80, PCD_SNG_BUF, 0x58);
-    HAL_PCDEx_PMAConfig(pcd, 0x81, PCD_SNG_BUF, 0x98);
-    HAL_PCDEx_PMAConfig(pcd, 0x01, PCD_SNG_BUF, 0x118);
-    HAL_PCDEx_PMAConfig(pcd, 0x82, PCD_SNG_BUF, 0xD8);
-    HAL_PCDEx_PMAConfig(pcd, 0x02, PCD_SNG_BUF, 0x158);
-    HAL_PCDEx_PMAConfig(pcd, 0x83, PCD_SNG_BUF, 0x198);
+    HAL_PCDEx_PMAConfig(pcd, 0x00, PCD_SNG_BUF, 0x40);
+    HAL_PCDEx_PMAConfig(pcd, 0x80, PCD_SNG_BUF, 0x80);
+    HAL_PCDEx_PMAConfig(pcd, 0x81, PCD_SNG_BUF, 0xC0);
+    HAL_PCDEx_PMAConfig(pcd, 0x01, PCD_SNG_BUF, 0x100);
+    HAL_PCDEx_PMAConfig(pcd, 0x82, PCD_SNG_BUF, 0x140);
+    HAL_PCDEx_PMAConfig(pcd, 0x02, PCD_SNG_BUF, 0x180);
+    HAL_PCDEx_PMAConfig(pcd, 0x83, PCD_SNG_BUF, 0x1C0);
     HAL_PCD_Start(pcd);
     return 0;
 }

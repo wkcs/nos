@@ -230,11 +230,12 @@ static int _init(void)
     pcd->Init.use_dedicated_ep1 = DISABLE;
     /* Initialize LL Driver */
     HAL_PCD_Init(pcd);
-    HAL_PCDEx_SetRxFiFo(pcd, 0x80);
-    HAL_PCDEx_SetTxFiFo(pcd, 0, 0x40);
-    HAL_PCDEx_SetTxFiFo(pcd, 1, 0x40);
-    HAL_PCDEx_SetTxFiFo(pcd, 2, 0x40);
-    HAL_PCDEx_SetTxFiFo(pcd, 3, 0x40);
+    HAL_PCDEx_SetRxFiFo(pcd, 0x80);    /* 128 words = 512B */
+    HAL_PCDEx_SetTxFiFo(pcd, 0, 0x20); /* 32 words = 128B (EP0) */
+    HAL_PCDEx_SetTxFiFo(pcd, 1, 0x40); /* 64 words = 256B (EP1 Bulk IN) */
+    HAL_PCDEx_SetTxFiFo(pcd, 2, 0x20); /* 32 words = 128B (EP2 Interrupt IN) */
+    HAL_PCDEx_SetTxFiFo(pcd, 3, 0x40); /* 64 words = 256B (EP3 Bulk IN 备用) */
+    /* 0x80 + 0x20 + 0x40 + 0x20 + 0x40 = 0x140 = 320 words，严格不超出 1.25KB 物理边界 */
     HAL_PCD_Start(pcd);
     return 0;
 }
