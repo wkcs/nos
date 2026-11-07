@@ -10,6 +10,7 @@
 
 #include <kernel/kernel.h>
 #include <kernel/task.h>
+#include <kernel/sleep.h>
 #include <nos/completion.h>
 #include <nos/timeout.h>
 #include <kernel/device.h>
@@ -70,6 +71,7 @@ struct vcom {
     struct device dev;
     unsigned int mask;
     struct task_struct *cdc_task;
+    struct task_struct *echo_task;
     struct ufunction *func;
     uep_t ep_out;
     uep_t ep_in;
@@ -78,6 +80,8 @@ struct vcom {
     struct nos_completion tx_ready;
     struct nos_completion rx_ready;
     bool connected;
+    bool line_dtr;
+    bool line_rts;
     bool rx_paused;
     uint8_t rx_fifo_buf[CDC_RX_BUFSIZE];
     struct kfifo rx_fifo;
@@ -465,12 +469,9 @@ static int _interface_handler(ufunction_t func, ureq_t setup)
         _cdc_get_line_coding(func->device, setup);
         break;
     case CDC_SET_CONTROL_LINE_STATE:
-        data->connected = (setup->wValue & 0x01) > 0 ? true : false;
-        pr_info("vcom state:%d\n", data->connected);
-        if (!data->connected) {
-            nos_complete_all(&data->rx_ready);
-            nos_complete_all(&data->wait);
-        }
+        data->line_dtr = (setup->wValue & 0x01) > 0 ? true : false;
+        data->line_rts = (setup->wValue & 0x02) > 0 ? true : false;
+        pr_info("vcom line state: dtr=%d, rts=%d\n", data->line_dtr, data->line_rts);
         dcd_ep0_send_status(func->device->dcd);
         break;
     case CDC_SEND_BREAK:
@@ -798,6 +799,27 @@ static void vcom_tx_task_entry(void* parameter)
     }
 }
 
+static void vcom_rx_echo_task_entry(void *parameter)
+{
+    struct ufunction *func = (struct ufunction *)parameter;
+    struct vcom *data = (struct vcom *)func->user_data;
+    uint8_t buf[64];
+    ssize_t n;
+
+    while (1) {
+        if (!data->connected) {
+            msleep(100);
+            continue;
+        }
+        n = vcom_read(&data->dev, 0, buf, sizeof(buf));
+        if (n > 0) {
+            vcom_write(&data->dev, 0, buf, (size_t)n);
+        } else {
+            msleep(10);
+        }
+    }
+}
+
 static void usb_vcom_init(struct ufunction *func)
 {
     struct vcom *data = (struct vcom*)func->user_data;
@@ -834,6 +856,11 @@ static void usb_vcom_init(struct ufunction *func)
         pr_info("cdc task creat ok\n");
     }
     task_ready(data->cdc_task);
+
+    data->echo_task = task_create("vcom_echo", vcom_rx_echo_task_entry, (void *)func, 6, 1024, 5, NULL);
+    if (data->echo_task != NULL) {
+        task_ready(data->echo_task);
+    }
 }
 struct udclass vcom_class =
 {
