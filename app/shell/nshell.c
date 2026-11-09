@@ -4164,6 +4164,7 @@ static noinline int nshell_apply_redirection(struct nshell *shell,
         if (op->kind == SHELL_REDIRECT_INPUT) {
             if (*saved_stdin < 0) {
                 *saved_stdin = nos_dup(0);
+                if (*saved_stdin < 0) return *saved_stdin;
             }
             rc = nshell_resolve_path(shell, path, full_path, sizeof(full_path));
             int fd = (rc == 0) ? nos_open(full_path, O_RDONLY) : rc;
@@ -4176,6 +4177,7 @@ static noinline int nshell_apply_redirection(struct nshell *shell,
         } else if (op->kind == SHELL_REDIRECT_OUTPUT) {
             if (*saved_stdout < 0) {
                 *saved_stdout = nos_dup(1);
+                if (*saved_stdout < 0) return *saved_stdout;
             }
             rc = nshell_resolve_path(shell, path, full_path, sizeof(full_path));
             int flags = O_WRONLY | O_CREAT | (op->append ? O_APPEND : O_TRUNC);
@@ -4189,6 +4191,7 @@ static noinline int nshell_apply_redirection(struct nshell *shell,
         } else if (op->kind == SHELL_REDIRECT_ERROR) {
             if (*saved_stderr < 0) {
                 *saved_stderr = nos_dup(2);
+                if (*saved_stderr < 0) return *saved_stderr;
             }
             if (op->to_output) {
                 nos_dup2(1, 2);
@@ -4840,11 +4843,9 @@ static int cmd_mv(int argc, char *argv[])
             }
         }
         if (rc == 0) {
-            pr_info("cmd_mv: successfully moved %s to %s\n", argv[i], workspace->target);
             continue;
         }
 error:
-        pr_info("cmd_mv error: src=%s target=%s rc=%d\n", argv[i], workspace->target, rc);
         shell_error("mv: cannot move '%s': error %d\n", argv[i], rc);
         status = 1;
     }

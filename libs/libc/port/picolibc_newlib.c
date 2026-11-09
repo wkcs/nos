@@ -366,7 +366,6 @@ _ssize_t _read(int fd, void *buf, size_t cnt)
 
 int _open_r(struct _reent *r, const char *path, int flags, int mode)
 {
-    (void)mode;
 #if defined(CONFIG_VFS) || defined(CONFIG_FS)
     int nos_flags = translate_newlib_open_flags(flags);
     int vfs_fd = nos_open(path, nos_flags, mode);
@@ -381,6 +380,7 @@ int _open_r(struct _reent *r, const char *path, int flags, int mode)
 #else
     (void)path;
     (void)flags;
+    (void)mode;
     if (r) {
         r->_errno = ENOSYS;
     }
@@ -487,8 +487,11 @@ int _fstat_r(struct _reent *r, int fd, struct stat *st)
         st->st_mode = S_IFCHR | 0666;
         return 0;
     }
-    st->st_mode = S_IFREG | 0644;
-    return 0;
+    if (r) {
+        r->_errno = EBADF;
+    }
+    errno = EBADF;
+    return -1;
 }
 
 int _fstat(int fd, struct stat *st)
@@ -518,7 +521,6 @@ int _stat(const char *path, struct stat *st)
 
 int _isatty_r(struct _reent *r, int fd)
 {
-    (void)r;
     if (fd < 0) {
         if (r) {
             r->_errno = EBADF;
@@ -535,7 +537,14 @@ int _isatty_r(struct _reent *r, int fd)
     }
 #endif
     /* 防御性回退：早期未打开 fd 表时 0/1/2 视为 tty */
-    return (fd < 3) ? 1 : 0;
+    if (fd < 3) {
+        return 1;
+    }
+    if (r) {
+        r->_errno = EBADF;
+    }
+    errno = EBADF;
+    return 0;
 }
 
 int _isatty(int fd)

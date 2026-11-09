@@ -297,6 +297,14 @@ static void test_isatty_and_fstat(void)
     assert(_fstat(1, &st) == 0);
     assert(S_ISCHR(st.st_mode));
 
+    /* 未打开的非标准流 FD 必须返回 EBADF */
+    errno = 0;
+    assert(_fstat(5, &st) == -1);
+    assert(errno == EBADF);
+    errno = 0;
+    assert(_isatty(5) == 0);
+    assert(errno == EBADF);
+
     vfs_task_files_cleanup(&task);
 }
 
