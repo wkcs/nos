@@ -11,6 +11,7 @@ int nos_dup2(int oldfd, int newfd);
 ssize_t nos_read(int fd, void *buf, size_t count);
 ssize_t nos_write(int fd, const void *buf, size_t count);
 loff_t nos_lseek(int fd, loff_t offset, int whence);
+int nos_ioctl(int fd, unsigned int cmd, unsigned long arg);
 int nos_sync(void);
 int nos_fsync(int fd);
 int nos_fdatasync(int fd);

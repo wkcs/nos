@@ -57,6 +57,10 @@ int nos_tty_init(struct nos_tty *tty, const struct nos_tty_ops *ops, void *conte
     tty->termios.c_oflag = 0;
     tty->termios.c_lflag = 0;
     spin_lock_init(&tty->lock);
+    /*
+     * read_wait: 预留等待队列，用于规范模式换行就绪或未来异步/select/poll
+     * 机制下等待输入数据。当前阻塞读取直接委托给底层 UART/设备驱动等待。
+     */
     nos_wait_queue_init(&tty->read_wait);
 #ifdef CONFIG_TTY_CANONICAL
     tty->mode = 0;
@@ -79,6 +83,10 @@ int nos_tty_init_dev(struct nos_tty *tty, const struct device *dev)
     tty->termios.c_oflag = 0;
     tty->termios.c_lflag = 0;
     spin_lock_init(&tty->lock);
+    /*
+     * read_wait: 预留等待队列，用于规范模式换行就绪或未来异步/select/poll
+     * 机制下等待输入数据。当前阻塞读取直接委托给底层 UART/设备驱动等待。
+     */
     nos_wait_queue_init(&tty->read_wait);
 #ifdef CONFIG_TTY_CANONICAL
     tty->mode = 0;
@@ -100,7 +108,9 @@ int nos_tty_ioctl(struct nos_tty *tty, unsigned int cmd, unsigned long arg)
         if (tio == NULL) {
             return -EINVAL;
         }
+        spin_lock(&tty->lock);
         *tio = tty->termios;
+        spin_unlock(&tty->lock);
         return 0;
     }
     case TCSETS: {
@@ -108,6 +118,7 @@ int nos_tty_ioctl(struct nos_tty *tty, unsigned int cmd, unsigned long arg)
         if (tio == NULL) {
             return -EINVAL;
         }
+        spin_lock(&tty->lock);
         tty->termios = *tio;
 #ifdef CONFIG_TTY_CANONICAL
         tty->mode = 0;
@@ -119,6 +130,7 @@ int nos_tty_ioctl(struct nos_tty *tty, unsigned int cmd, unsigned long arg)
         tty->line_pos = 0;
         tty->line_complete = false;
 #endif
+        spin_unlock(&tty->lock);
         return 0;
     }
     default:
@@ -136,6 +148,7 @@ int nos_tty_set_mode(struct nos_tty *tty, unsigned int flags)
         return -EINVAL;
     }
 #ifdef CONFIG_TTY_CANONICAL
+    spin_lock(&tty->lock);
     tty->mode = flags;
     tty->termios.c_iflag = 0;
     tty->termios.c_oflag = 0;
@@ -155,6 +168,7 @@ int nos_tty_set_mode(struct nos_tty *tty, unsigned int flags)
     tty->line_len = 0;
     tty->line_pos = 0;
     tty->line_complete = false;
+    spin_unlock(&tty->lock);
     return 0;
 #else
     return flags == 0 ? 0 : -ENOSYS;

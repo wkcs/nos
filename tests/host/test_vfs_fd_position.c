@@ -7,6 +7,7 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <unistd.h>
+#include <fs/fs.h>
 #include <fs/vfs.h>
 #include "../../fs/vfs_fd.h"
 
@@ -24,7 +25,20 @@ static ssize_t delayed_read(struct file *file, char *buf, size_t count, loff_t *
     return 1;
 }
 
-static const struct file_operations ops = { .read = delayed_read };
+static int test_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
+{
+    (void)file;
+    if (cmd == 0x1234) {
+        *(int *)(uintptr_t)arg = 42;
+        return 0;
+    }
+    return -EINVAL;
+}
+
+static const struct file_operations ops = {
+    .read = delayed_read,
+    .ioctl = test_ioctl,
+};
 
 int vfs_get_mount_count(void)
 {
@@ -66,6 +80,11 @@ int main(void)
     assert(nos_lseek(fd, 0, SEEK_CUR) == 100);
     assert(nos_lseek(fd, LLONG_MAX, SEEK_CUR) == -EINVAL);
     assert(nos_lseek(fd, 0, SEEK_CUR) == 100);
+    int ioctl_val = 0;
+    assert(nos_ioctl(fd, 0x1234, (unsigned long)(uintptr_t)&ioctl_val) == 0);
+    assert(ioctl_val == 42);
+    assert(nos_ioctl(fd, 0x9999, 0) == -EINVAL);
+    assert(nos_ioctl(-1, 0x1234, 0) == -EBADF);
     assert(vfs_fd_close(fd) == 0);
     return 0;
 }

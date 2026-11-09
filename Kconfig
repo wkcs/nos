@@ -183,7 +183,6 @@ config CORE_TASK_STACK_SIZE
 
 config TASK_MAX_FDS
 	int "Maximum open files per task"
-	default 4 if BOARD_WL_001
 	default 8
 	range 2 64
 	help

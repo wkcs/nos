@@ -73,12 +73,8 @@ static int tty_uart_read(void *context, unsigned char *buf, unsigned int len, bo
 
 static int tty_uart_write(void *context, const unsigned char *buf, unsigned int len)
 {
-#ifdef CONFIG_CONSOLE_CRLF
-    (void)context;
-    return uart_console_text_write(buf, len, false);
-#else
+    /* TTY 线路规程已处理 ONLCR 模式，底层驱动按原始字节流直接输出 */
     return uart_write(context, buf, len);
-#endif
 }
 
 static const struct nos_tty_ops tty_uart_ops = {
@@ -99,7 +95,14 @@ static int uart_console_init(void)
         return -ENODEV;
     }
 #ifdef CONFIG_TTY
-    return nos_tty_init(&console_tty, &tty_uart_ops, console_uart);
+    int rc = nos_tty_init(&console_tty, &tty_uart_ops, console_uart);
+    if (rc != 0) {
+        return rc;
+    }
+#ifdef CONFIG_CONSOLE_CRLF
+    console_tty.termios.c_oflag |= ONLCR;
+#endif
+    return 0;
 #else
     return 0;
 #endif

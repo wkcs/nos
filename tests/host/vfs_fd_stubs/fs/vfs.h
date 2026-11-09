@@ -12,6 +12,7 @@ struct file_operations {
     ssize_t (*write)(struct file *, const char *, size_t, loff_t *);
     int (*fsync)(struct file *, loff_t, loff_t, int);
     loff_t (*llseek)(struct file *, loff_t, int);
+    int (*ioctl)(struct file *, unsigned int, unsigned long);
 };
 struct super_operations {
     int (*sync_fs)(struct super_block *sb, int wait);

@@ -101,6 +101,29 @@ out:
 }
 
 /**
+ * nos_ioctl - 对指定文件描述符执行设备特定的控制命令
+ * @fd: 目标文件描述符
+ * @cmd: 控制命令号 (如 TCGETS, TCSETS)
+ * @arg: 命令参数指针或整数值
+ *
+ * 成功返回 0 或命令特定正值，失败返回负值错误码（如 -EBADF, -ENOTTY 等）。
+ */
+int nos_ioctl(int fd, unsigned int cmd, unsigned long arg)
+{
+    struct file *file = vfs_fd_get(fd);
+    int ret;
+
+    if (file == NULL) return -EBADF;
+    if (file->f_op == NULL || file->f_op->ioctl == NULL) {
+        ret = -ENOTTY;
+    } else {
+        ret = file->f_op->ioctl(file, cmd, arg);
+    }
+    (void)vfs_fd_put(file);
+    return ret;
+}
+
+/**
  * nos_fsync - 将指定文件描述符的脏数据与元数据刷新到存储介质
  * @fd: 目标文件描述符
  *

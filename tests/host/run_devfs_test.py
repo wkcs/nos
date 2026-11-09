@@ -18,6 +18,8 @@ def run_test():
         sources = [
             str(TEST_DIR / "test_devfs.c"),
             str(ROOT / "fs" / "devfs.c"),
+            str(ROOT / "fs" / "vfs_fd.c"),
+            str(ROOT / "fs" / "vfs_io.c"),
             str(ROOT / "kernel" / "tty" / "tty.c"),
         ]
         subprocess.run(

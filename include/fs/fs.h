@@ -183,6 +183,7 @@ int nos_dup2(int oldfd, int newfd);
 ssize_t nos_read(int fd, void *buf, size_t count);
 ssize_t nos_write(int fd, const void *buf, size_t count);
 loff_t nos_lseek(int fd, loff_t offset, int whence);
+int nos_ioctl(int fd, unsigned int cmd, unsigned long arg);
 int nos_mkdir(const char *pathname, mode_t mode);
 int nos_rmdir(const char *pathname);
 int nos_unlink(const char *pathname);

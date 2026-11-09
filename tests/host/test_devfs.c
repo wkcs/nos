@@ -14,6 +14,36 @@
 #include <fs/fs.h>
 #include <fs/vfs.h>
 #include <nos/tty.h>
+#include "../../fs/vfs_fd.h"
+
+uintptr_t kernel_running = 0;
+
+struct task_struct *task_current(void)
+{
+    return NULL;
+}
+
+void vfs_dentry_put(struct dentry *dentry)
+{
+    (void)dentry;
+}
+
+int vfs_get_mount_count(void)
+{
+    return 0;
+}
+
+int vfs_get_mount_entry(int index, struct vfs_mount_entry *entry)
+{
+    (void)index;
+    (void)entry;
+    return -ENOENT;
+}
+
+int nos_close(int fd)
+{
+    return vfs_fd_close(fd);
+}
 
 /* Host 内存与 VFS 桩函数 */
 void *kmalloc(size_t size, gfp_t flags)
@@ -246,38 +276,50 @@ static void test_devfs_console(struct dentry *devfs_root)
     assert(dentry.d_inode->i_fop == &nos_tty_fops);
     assert(dentry.d_inode->i_private == &mock_tty);
 
-    /* 模拟文件打开 */
-    struct file file = {
-        .f_inode = dentry.d_inode,
-        .f_op = dentry.d_inode->i_fop,
-        .private_data = NULL,
-    };
-    assert(file.f_op->open(file.f_inode, &file) == 0);
-    assert(file.private_data == &mock_tty);
+    /* 模拟文件打开并发布到 VFS 描述符表 */
+    struct file *file = kzalloc(sizeof(*file), 0);
+    assert(file != NULL);
+    file->f_inode = dentry.d_inode;
+    file->f_op = dentry.d_inode->i_fop;
+    file->f_flags = O_RDWR;
+    assert(file->f_op->open(file->f_inode, file) == 0);
+    assert(file->private_data == &mock_tty);
 
-    /* 写入验证 */
+    int fd = vfs_fd_reserve();
+    assert(fd >= 0);
+    vfs_fd_publish(fd, file);
+
+    /* 验证 nos_ioctl 通过 VFS FD 工作 */
+    struct nos_termios tio;
+    assert(nos_ioctl(fd, TCGETS, (unsigned long)(uintptr_t)&tio) == 0);
+    tio.c_lflag |= ECHO;
+    assert(nos_ioctl(fd, TCSETS, (unsigned long)(uintptr_t)&tio) == 0);
+    assert(nos_ioctl(fd, 0x9999, 0) == -ENOSYS);
+    assert(nos_ioctl(-1, TCGETS, 0) == -EBADF);
+    assert(nos_ioctl(100, TCGETS, 0) == -EBADF);
+
+    /* 写入验证 (通过 nos_write) */
     g_mock_tx_len = 0;
-    loff_t pos = 0;
     const char *hello = "Hello Console!\n";
-    ssize_t written = file.f_op->write(&file, hello, strlen(hello), &pos);
+    ssize_t written = nos_write(fd, hello, strlen(hello));
     assert(written == (ssize_t)strlen(hello));
     assert(g_mock_tx_len == strlen(hello));
     assert(memcmp(g_mock_tx_buf, hello, strlen(hello)) == 0);
 
-    /* 读取验证 */
+    /* 读取验证 (通过 nos_read) */
     g_mock_rx_buf[0] = 'X';
     g_mock_rx_len = 1;
     g_mock_rx_pos = 0;
     char in_buf[4] = { 0 };
-    ssize_t nread = file.f_op->read(&file, in_buf, sizeof(in_buf), &pos);
+    ssize_t nread = nos_read(fd, in_buf, sizeof(in_buf));
     assert(nread == 1);
     assert(in_buf[0] == 'X');
 
-    /* 释放 */
-    assert(file.f_op->release(file.f_inode, &file) == 0);
+    /* 释放与关闭 (通过 nos_close 级联释放 file) */
+    assert(nos_close(fd) == 0);
     nos_vfs_destroy_inode(dentry.d_inode);
 
-    printf("   -> /dev/console 与 TTY fops 读写验证通过\n");
+    printf("   -> /dev/console 与 TTY fops 读写及 nos_ioctl 验证通过\n");
 }
 
 static int mock_filldir(void *dirent, const char *name, int len, loff_t offset, u64 ino, unsigned type)
