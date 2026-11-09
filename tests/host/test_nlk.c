@@ -78,12 +78,6 @@ void kfree(void *ptr)
 int console_write_room(void) { return 0; }
 bool console_is_panic(void) { return false; }
 int console_write(const char *buf, int len) { (void)buf; return len; }
-int console_write_record(const char *buf, int len) { (void)buf; (void)len; return -EAGAIN; }
-int console_write_recordv(const char *f, unsigned int fl, const char *s, unsigned int sl)
-{
-    (void)f; (void)fl; (void)s; (void)sl;
-    return -EAGAIN;
-}
 void console_send_log(void) {}
 static unsigned int global_level_changes, global_enabled_changes;
 void set_log_level(enum log_level level) { (void)level; global_level_changes++; }

@@ -87,7 +87,7 @@ static int console_backend_write(const struct kernel_log_record *record,
     (void)priv;
 #ifdef CONFIG_LOG_BUFFERED
     if (!kernel_running && !console_is_panic()) {
-        written = console_write_record(buf, (int)len);
+        written = console_write(buf, (int)len);
         if (written >= 0) {
             return (unsigned int)written;
         }
@@ -126,7 +126,7 @@ static int console_backend_write(const struct kernel_log_record *record,
     (void)flags;
     (void)timestamp_ms;
 #endif
-    written = console_write_record(buf, (int)len);
+    written = console_write(buf, (int)len);
     return written > 0 ? (unsigned int)written : 0;
 }
 
@@ -160,11 +160,18 @@ void kernel_log_flush(void)
         offset = (g_log_fifo.out + sizeof(record)) & g_log_fifo.mask;
         first_len = (g_log_fifo.mask + 1) - offset;
         if (first_len > record.length) first_len = record.length;
-        written = console_write_recordv((const char *)data + offset, first_len,
-                                        (const char *)data, record.length - first_len);
-        if (written != record.length) {
+        written = console_write((const char *)data + offset, (int)first_len);
+        if (written != (int)first_len) {
             log_unlock(irq_flags);
             return;
+        }
+        if (first_len < record.length) {
+            int second_len = (int)(record.length - first_len);
+            int written2 = console_write((const char *)data, second_len);
+            if (written2 != second_len) {
+                log_unlock(irq_flags);
+                return;
+            }
         }
         (void)kfifo_skip(&g_log_fifo, sizeof(record) + record.length);
         log_unlock(irq_flags);

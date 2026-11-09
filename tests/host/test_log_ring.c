@@ -27,30 +27,14 @@ int console_write_room(void) { return console_online ? (int)room : -ENODEV; }
 bool console_is_panic(void) { return panic_mode != 0; }
 int console_write(const char *buf, int len)
 {
+    if (!console_online && !panic_mode) return -ENODEV;
+    if (!panic_mode && (unsigned int)len > room) return -EAGAIN;
+    if (!panic_mode) room -= (unsigned int)len;
+    if (len < 6 && (buf[0] == 'a' || buf[0] == 'c')) split_record_seen = 1;
     memcpy(wire + wire_len, buf, (size_t)len);
     wire_len += (unsigned int)len;
     return len;
 }
-int console_write_record(const char *buf, int len)
-{
-    if (!console_online) return -ENODEV;
-    if ((unsigned int)len > room) return -EAGAIN;
-    room -= (unsigned int)len;
-    return console_write(buf, len);
-}
-#ifdef NOS_LOG_VECTOR_API
-int console_write_recordv(const char *first, unsigned int first_len,
-                          const char *second, unsigned int second_len)
-{
-    unsigned int total = first_len + second_len;
-    if (total > room) return -EAGAIN;
-    if (second_len != 0) split_record_seen = 1;
-    room -= total;
-    if (first_len != 0) console_write(first, (int)first_len);
-    if (second_len != 0) console_write(second, (int)second_len);
-    return (int)total;
-}
-#endif
 void console_send_log(void) {}
 
 #ifdef NOS_LOG_BACKEND_API

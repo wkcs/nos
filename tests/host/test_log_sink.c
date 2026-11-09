@@ -15,19 +15,14 @@ void enable_irq_save(addr_t flags) { (void)flags; }
 bool console_is_panic(void) { return false; }
 
 static int sink_result;
-static int record_calls;
+static int write_calls;
 
 int console_write(const char *buf, int len)
 {
     (void)buf;
     (void)len;
+    write_calls++;
     return sink_result;
-}
-
-int console_write_record(const char *buf, int len)
-{
-    record_calls++;
-    return console_write(buf, len);
 }
 
 void console_send_log(void) {}
@@ -62,8 +57,8 @@ int main(void)
         fputs("FAIL: synchronous sink must report short writes\n", stderr);
         return 1;
     }
-    if (record_calls != 1) {
-        fputs("FAIL: log output must use record-aware console transport\n", stderr);
+    if (write_calls != 1) {
+        fputs("FAIL: log output must use console write transport\n", stderr);
         return 1;
     }
     sink_result = -1;

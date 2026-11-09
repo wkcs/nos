@@ -18,9 +18,6 @@
 struct console_ops {
     int (* init)(void);
     int (* write)(const char buf[], int len);
-    int (* write_record)(const char buf[], int len);
-    int (* write_recordv)(const char *first, unsigned int first_len,
-                          const char *second, unsigned int second_len);
     int (* write_room)(void);
     int (* getc)(void);
     int (* putc)(char c);
@@ -42,9 +39,6 @@ __console struct console console_##__name = { \
 
 int console_init(void);
 int console_write(const char buf[], int len);
-int console_write_record(const char buf[], int len);
-int console_write_recordv(const char *first, unsigned int first_len,
-                          const char *second, unsigned int second_len);
 int console_write_room(void);
 int console_panic_begin(void);
 bool console_is_panic(void);

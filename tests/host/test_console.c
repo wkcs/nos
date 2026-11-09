@@ -23,14 +23,6 @@ static int read_byte(void)
 #ifdef NOS_CONSOLE_PANIC_API
 static int panic_started;
 static int panic_writes;
-static int record_writes;
-
-static int write_record(const char *buf, int len)
-{
-    (void)buf;
-    record_writes++;
-    return len;
-}
 
 static int start_panic(void)
 {
@@ -73,7 +65,7 @@ int main(void)
 {
     struct console_ops ops = { .write = write_partial, .getc = read_byte,
 #ifdef NOS_CONSOLE_PANIC_API
-        .write_record = write_record, .panic_begin = start_panic,
+        .panic_begin = start_panic,
         .panic_write = write_panic,
 #endif
     };
@@ -99,14 +91,13 @@ int main(void)
         failures++;
     }
 #ifdef NOS_CONSOLE_PANIC_API
-    if (console_write_record("hello", 5) != 5 || record_writes != 1 ||
-        console_panic_begin() != 0 || panic_started != 1 ||
+    if (console_panic_begin() != 0 || panic_started != 1 ||
         console_write("hello", 5) != 5 || panic_writes != 1) {
-        fputs("FAIL: records and panic must select their own transport hooks\n", stderr);
+        fputs("FAIL: panic must select emergency transport hook\n", stderr);
         failures++;
     }
 #else
-    fputs("FAIL: record and panic console transport is unavailable\n", stderr);
+    fputs("FAIL: panic console transport is unavailable\n", stderr);
     failures++;
 #endif
     if (failures != 0) return 1;

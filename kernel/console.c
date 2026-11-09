@@ -112,26 +112,6 @@ int console_write(const char buf[], int len)
     return g_console->ops->write(buf, len);
 }
 
-int console_write_record(const char buf[], int len)
-{
-    if (g_console == NULL) {
-        return -ENODEV;
-    }
-    if (buf == NULL || len < 0) {
-        return -EINVAL;
-    }
-    if (g_console->ops == NULL) {
-        return -ENOSYS;
-    }
-    if (console_is_panic()) {
-        return console_write(buf, len);
-    }
-    if (g_console->ops->write_record != NULL) {
-        return g_console->ops->write_record(buf, len);
-    }
-    return -ENOSYS;
-}
-
 int console_write_room(void)
 {
     if (g_console == NULL) {
@@ -141,22 +121,6 @@ int console_write_room(void)
         return -ENOSYS;
     }
     return g_console->ops->write_room();
-}
-
-int console_write_recordv(const char *first, unsigned int first_len,
-                          const char *second, unsigned int second_len)
-{
-    if (g_console == NULL) {
-        return -ENODEV;
-    }
-    if ((first == NULL && first_len != 0) || (second == NULL && second_len != 0) ||
-        first_len > UINT_MAX - second_len || first_len + second_len > INT_MAX) {
-        return -EINVAL;
-    }
-    if (g_console->ops == NULL || g_console->ops->write_recordv == NULL) {
-        return -ENOSYS;
-    }
-    return g_console->ops->write_recordv(first, first_len, second, second_len);
 }
 
 int console_panic_begin(void)

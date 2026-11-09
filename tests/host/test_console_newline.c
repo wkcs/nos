@@ -68,9 +68,9 @@ int main(void)
         return 1;
     }
     used = 0; room = sizeof(wire);
-    if (uart_console_write_recordv("a\n", 2, "b\n", 2) != 4 || used != 6 ||
-        memcmp(wire, "a\r\nb\r\n", 6)) {
-        fputs("FAIL: split record must expand LF\n", stderr);
+    if (uart_console_write("a\n", 2) != 2 || uart_console_write("b\n", 2) != 2 ||
+        used != 6 || memcmp(wire, "a\r\nb\r\n", 6)) {
+        fputs("FAIL: sequential writes must expand LF\n", stderr);
         return 1;
     }
     used = 0; room = sizeof(wire);

@@ -62,19 +62,6 @@ static int uart_console_text_write(const unsigned char *buf, unsigned int len, b
     }
     return (int)pos;
 }
-
-static int uart_console_record_text(const char *first, unsigned int first_len,
-                                    const char *second, unsigned int second_len)
-{
-    int rc = uart_console_text_write((const unsigned char *)first, first_len, false);
-    if (rc < 0 || (unsigned int)rc != first_len) return rc;
-    if (second_len != 0) {
-        int tail = uart_console_text_write((const unsigned char *)second, second_len, false);
-        if (tail < 0) return rc != 0 ? rc : tail;
-        rc += tail;
-    }
-    return rc;
-}
 #endif
 #ifdef CONFIG_TTY
 static struct nos_tty console_tty;
@@ -131,34 +118,6 @@ static int uart_console_write(const char *buf, int len)
 #endif
 }
 
-static int uart_console_write_record(const char *buf, int len)
-{
-#ifdef CONFIG_CONSOLE_CRLF
-    return uart_console_record_text(buf, (unsigned int)len, NULL, 0);
-#else
-    return (int)uart_write(console_uart, (const unsigned char *)buf, (size_t)len);
-#endif
-}
-
-static int uart_console_write_recordv(const char *first, unsigned int first_len,
-                                      const char *second, unsigned int second_len)
-{
-#ifdef CONFIG_CONSOLE_CRLF
-    return uart_console_record_text(first, first_len, second, second_len);
-#else
-    int rc1 = 0, rc2 = 0;
-    if (first_len > 0) {
-        rc1 = (int)uart_write(console_uart, (const unsigned char *)first, (size_t)first_len);
-        if (rc1 < 0) return rc1;
-    }
-    if (second_len > 0) {
-        rc2 = (int)uart_write(console_uart, (const unsigned char *)second, (size_t)second_len);
-        if (rc2 < 0) return rc1 > 0 ? rc1 : rc2;
-    }
-    return rc1 + rc2;
-#endif
-}
-
 static int uart_console_getc(void)
 {
     unsigned char ch;
@@ -204,8 +163,6 @@ static int uart_console_panic_write(const char *buf, int len)
 static struct console_ops uart_console_ops = {
     .init = uart_console_init,
     .write = uart_console_write,
-    .write_record = uart_console_write_record,
-    .write_recordv = uart_console_write_recordv,
     .write_room = uart_console_write_room,
     .getc = uart_console_getc,
     .putc = uart_console_putc,
