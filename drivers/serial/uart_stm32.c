@@ -49,9 +49,6 @@ extern struct uart_config_t uart_log_dev;
 #ifndef CONFIG_UART_BAUD_RATE
 #define CONFIG_UART_BAUD_RATE 115200
 #endif
-#ifndef CONFIG_LOG_MESSAGE_SIZE
-#define CONFIG_LOG_MESSAGE_SIZE 128
-#endif
 
 _Static_assert(CONFIG_UART_RX_BUFFER_SIZE >= 2 &&
                (CONFIG_UART_RX_BUFFER_SIZE & (CONFIG_UART_RX_BUFFER_SIZE - 1)) == 0,
@@ -59,12 +56,6 @@ _Static_assert(CONFIG_UART_RX_BUFFER_SIZE >= 2 &&
 _Static_assert(CONFIG_UART_TX_BUFFER_SIZE >= 2 &&
                (CONFIG_UART_TX_BUFFER_SIZE & (CONFIG_UART_TX_BUFFER_SIZE - 1)) == 0,
                "UART TX buffer size must be a power of two");
-_Static_assert(CONFIG_LOG_MESSAGE_SIZE <= CONFIG_UART_TX_BUFFER_SIZE + 1,
-               "UART TX buffer must fit a complete log record");
-#ifdef CONFIG_CONSOLE_CRLF
-_Static_assert(2 * (CONFIG_LOG_MESSAGE_SIZE - 1) <= CONFIG_UART_TX_BUFFER_SIZE,
-               "UART TX buffer must fit an expanded console log record");
-#endif
 
 struct uart_stm32_config {
     USART_TypeDef *regs;
@@ -220,134 +211,29 @@ static int uart_stm32_poll_in(const struct device *dev, unsigned char *in)
     return 0;
 }
 
-static int uart_stm32_poll_write(const struct device *dev,
-                                 const unsigned char *buf, unsigned int len)
+static ssize_t uart_stm32_poll_write(const struct device *dev,
+                                     const unsigned char *buf, size_t len)
 {
-    unsigned int written;
+    size_t written;
 
     for (written = 0; written < len; written++) {
         int rc = uart_stm32_poll_out(dev, buf[written]);
         if (rc < 0) {
-            return written != 0 ? (int)written : rc;
+            return written != 0 ? (ssize_t)written : rc;
         }
     }
-    return (int)written;
+    return (ssize_t)written;
 }
 
-static int uart_stm32_write_recordv(const struct device *dev,
-                                    const unsigned char *first, unsigned int first_len,
-                                    const unsigned char *second, unsigned int second_len)
+static ssize_t uart_stm32_write(const struct device *dev,
+                                const unsigned char *buf, size_t len)
 {
     struct uart_stm32_data *data = dev->data;
-    addr_t flags;
-    unsigned int len = first_len + second_len;
+    size_t written = 0;
 
     if (len == 0) {
         return 0;
     }
-#ifdef CONFIG_UART_DMA
-    if (data->dma_stalled && !data->panic) {
-        return -EIO;
-    }
-#endif
-    if (!kernel_running || data->panic) {
-        int written = uart_stm32_poll_write(dev, first, first_len);
-        int tail;
-
-        if (written < 0 || (unsigned int)written != first_len) {
-            return written;
-        }
-        tail = uart_stm32_poll_write(dev, second, second_len);
-        return tail < 0 ? (written != 0 ? written : tail) : written + tail;
-    }
-    if (len > CONFIG_UART_TX_BUFFER_SIZE) {
-        return -EMSGSIZE;
-    }
-    flags = uart_lock(data);
-    if (kfifo_unused(&data->tx_fifo) < len) {
-        data->tx_dropped++;
-        uart_unlock(data, flags);
-        return -EAGAIN;
-    }
-    if (first_len != 0) {
-        (void)kfifo_in(&data->tx_fifo, first, first_len);
-    }
-    if (second_len != 0) {
-        (void)kfifo_in(&data->tx_fifo, second, second_len);
-    }
-    uart_stm32_kick_locked(dev);
-    uart_unlock(data, flags);
-    return (int)len;
-}
-
-static int uart_stm32_write_record(const struct device *dev,
-                                    const unsigned char *buf, unsigned int len)
-{
-    return uart_stm32_write_recordv(dev, buf, len, NULL, 0);
-}
-
-#ifdef CONFIG_CONSOLE_CRLF
-static int uart_stm32_write_text_recordv(const struct device *dev,
-                                        const unsigned char *first, unsigned int first_len,
-                                        const unsigned char *second, unsigned int second_len)
-{
-    struct uart_stm32_data *data = dev->data;
-    unsigned int total = first_len + second_len, wire_len = total, i;
-    unsigned char prev = 0;
-    addr_t flags;
-
-    for (i = 0; i < total; i++) {
-        unsigned char ch = i < first_len ? first[i] : second[i - first_len];
-        if (ch == '\n' && prev != '\r') wire_len++;
-        prev = ch;
-    }
-#ifdef CONFIG_UART_DMA
-    if (data->dma_stalled && !data->panic) return -EIO;
-#endif
-    if (!kernel_running || data->panic) {
-        prev = 0;
-        for (i = 0; i < total; i++) {
-            unsigned char ch = i < first_len ? first[i] : second[i - first_len];
-            int rc;
-            if (ch == '\n' && prev != '\r') {
-                rc = uart_stm32_poll_out(dev, '\r');
-                if (rc < 0) return i != 0 ? (int)i : rc;
-            }
-            rc = uart_stm32_poll_out(dev, ch);
-            if (rc < 0) return i != 0 ? (int)i : rc;
-            prev = ch;
-        }
-        return (int)total;
-    }
-    if (wire_len > CONFIG_UART_TX_BUFFER_SIZE) return -EMSGSIZE;
-    flags = uart_lock(data);
-    if (kfifo_unused(&data->tx_fifo) < wire_len) {
-        data->tx_dropped++;
-        uart_unlock(data, flags);
-        return -EAGAIN;
-    }
-    prev = 0;
-    for (i = 0; i < total; i++) {
-        unsigned char ch = i < first_len ? first[i] : second[i - first_len];
-        if (ch == '\n' && prev != '\r') {
-            const unsigned char cr = '\r';
-            (void)kfifo_in(&data->tx_fifo, &cr, 1);
-        }
-        (void)kfifo_in(&data->tx_fifo, &ch, 1);
-        prev = ch;
-    }
-    uart_stm32_kick_locked(dev);
-    uart_unlock(data, flags);
-    return (int)total;
-}
-#endif
-
-static int uart_stm32_write(const struct device *dev,
-                            const unsigned char *buf, unsigned int len)
-{
-    struct uart_stm32_data *data = dev->data;
-    unsigned int written = 0;
-
 #ifdef CONFIG_UART_DMA
     if (data->dma_stalled && !data->panic) {
         return -EIO;
@@ -360,7 +246,7 @@ static int uart_stm32_write(const struct device *dev,
         uint64_t bits;
         unsigned int accepted;
         addr_t flags = uart_lock(data);
-        accepted = kfifo_in(&data->tx_fifo, buf + written, len - written);
+        accepted = kfifo_in(&data->tx_fifo, buf + written, (unsigned int)(len - written));
         if (accepted != 0) {
             uart_stm32_kick_locked(dev);
         }
@@ -370,41 +256,19 @@ static int uart_stm32_write(const struct device *dev,
             break;
         }
         if (uart_in_interrupt() || flags != 0) {
-            return written != 0 ? (int)written : -EAGAIN;
+            return written != 0 ? (ssize_t)written : -EAGAIN;
         }
         int rc = nos_notify_wait_obj(&data->tx_ready, &bits,
                                      NOS_IPC_TIMEOUT_INFINITE);
         if (rc < 0) {
-            return written != 0 ? (int)written : rc;
+            return written != 0 ? (ssize_t)written : rc;
         }
     }
-    return (int)written;
+    return (ssize_t)written;
 }
 
-static int uart_stm32_write_room(const struct device *dev)
-{
-    struct uart_stm32_data *data = dev->data;
-    addr_t flags = uart_lock(data);
-    unsigned int available = kfifo_unused(&data->tx_fifo);
-
-    uart_unlock(data, flags);
-    return (int)available;
-}
-
-static int uart_stm32_get_stats(const struct device *dev, struct uart_stats *stats)
-{
-    struct uart_stm32_data *data = dev->data;
-    addr_t flags = uart_lock(data);
-
-    stats->rx_dropped = data->rx_dropped;
-    stats->tx_dropped_records = data->tx_dropped;
-    stats->dma_errors = data->dma_errors;
-    uart_unlock(data, flags);
-    return 0;
-}
-
-static int uart_stm32_read(const struct device *dev, unsigned char *buf,
-                           unsigned int len, bool wait)
+static ssize_t uart_stm32_read(const struct device *dev, unsigned char *buf,
+                               size_t len, bool wait)
 {
     struct uart_stm32_data *data = dev->data;
 
@@ -415,10 +279,10 @@ static int uart_stm32_read(const struct device *dev, unsigned char *buf,
         unsigned int received;
         uint64_t bits;
         addr_t flags = uart_lock(data);
-        received = kfifo_out(&data->rx_fifo, buf, len);
+        received = kfifo_out(&data->rx_fifo, buf, (unsigned int)len);
         uart_unlock(data, flags);
         if (received != 0) {
-            return (int)received;
+            return (ssize_t)received;
         }
         if (!wait || uart_in_interrupt() || flags != 0) {
             return -EAGAIN;
@@ -441,13 +305,13 @@ static int uart_stm32_read(const struct device *dev, unsigned char *buf,
     }
 }
 
-static int uart_stm32_panic_begin(const struct device *dev)
+static void uart_stm32_panic_begin(const struct device *dev)
 {
     const struct uart_stm32_config *config = dev->config;
     struct uart_stm32_data *data = dev->data;
     unsigned char ch;
 
-    /* Panic may have interrupted the lock owner; avoid taking ordinary locks. */
+    /* Panic 状态下避免常规自旋锁重入死锁 */
     data->panic = true;
     USART_ITConfig(config->regs, USART_IT_TXE, DISABLE);
 #ifdef CONFIG_UART_DMA
@@ -455,19 +319,20 @@ static int uart_stm32_panic_begin(const struct device *dev)
     if (data->dma_active) {
         unsigned int remaining;
         int rc = uart_stm32_dma_stop();
-        if (rc < 0) return rc;
+        if (rc >= 0) {
 #ifdef CONFIG_SOC_STM32F4
-        remaining = DMA_GetCurrDataCounter(uart_log_dev.dma_config->stream);
+            remaining = DMA_GetCurrDataCounter(uart_log_dev.dma_config->stream);
 #else
-        remaining = DMA_GetCurrDataCounter(uart_log_dev.dma_config->ch);
+            remaining = DMA_GetCurrDataCounter(uart_log_dev.dma_config->ch);
 #endif
-        if (remaining > data->dma_len) remaining = data->dma_len;
-        data->dma_pos = data->dma_len - remaining;
-        data->dma_active = false;
+            if (remaining > data->dma_len) remaining = data->dma_len;
+            data->dma_pos = data->dma_len - remaining;
+            data->dma_active = false;
+        }
     }
     while (data->dma_pos < data->dma_len) {
         int rc = uart_stm32_poll_out(dev, data->dma_buf[data->dma_pos++]);
-        if (rc < 0) return rc;
+        if (rc < 0) break;
     }
     data->dma_len = 0;
     data->dma_pos = 0;
@@ -475,9 +340,67 @@ static int uart_stm32_panic_begin(const struct device *dev)
     while (kfifo_out(&data->tx_fifo, &ch, 1) != 0) {
         int rc = uart_stm32_poll_out(dev, ch);
         if (rc < 0) {
-            return rc;
+            break;
         }
     }
+}
+
+static void uart_stm32_panic_write(const struct device *dev,
+                                   const unsigned char *buf, size_t len)
+{
+    for (size_t i = 0; i < len; i++) {
+        if (uart_stm32_poll_out(dev, buf[i]) < 0) {
+            break;
+        }
+    }
+}
+
+static int uart_stm32_configure(const struct device *dev, const struct uart_config *cfg)
+{
+    const struct uart_stm32_config *config = dev->config;
+    USART_InitTypeDef uart_init;
+
+    if (cfg == NULL || cfg->baud_rate == 0) {
+        return -EINVAL;
+    }
+    if (cfg->data_bits != UART_DATA_BITS_8 ||
+        cfg->stop_bits != UART_STOP_BITS_1 ||
+        cfg->flow_ctrl != UART_FLOW_NONE) {
+        return -ENOTSUP;
+    }
+
+    uart_init.USART_BaudRate = cfg->baud_rate;
+    uart_init.USART_WordLength = USART_WordLength_8b;
+    uart_init.USART_StopBits = USART_StopBits_1;
+    if (cfg->parity == UART_PARITY_ODD) {
+        uart_init.USART_Parity = USART_Parity_Odd;
+    } else if (cfg->parity == UART_PARITY_EVEN) {
+        uart_init.USART_Parity = USART_Parity_Even;
+    } else if (cfg->parity == UART_PARITY_NONE) {
+        uart_init.USART_Parity = USART_Parity_No;
+    } else {
+        return -EINVAL;
+    }
+    uart_init.USART_HardwareFlowControl = USART_HardwareFlowControl_None;
+    uart_init.USART_Mode = USART_Mode_Rx | USART_Mode_Tx;
+    USART_Init(config->regs, &uart_init);
+
+    ((struct uart_stm32_config *)config)->baud_rate = cfg->baud_rate;
+    return 0;
+}
+
+static int uart_stm32_get_config(const struct device *dev, struct uart_config *cfg)
+{
+    const struct uart_stm32_config *config = dev->config;
+
+    if (cfg == NULL) {
+        return -EINVAL;
+    }
+    cfg->baud_rate = config->baud_rate;
+    cfg->data_bits = UART_DATA_BITS_8;
+    cfg->parity = UART_PARITY_NONE;
+    cfg->stop_bits = UART_STOP_BITS_1;
+    cfg->flow_ctrl = UART_FLOW_NONE;
     return 0;
 }
 
@@ -589,16 +512,11 @@ static const struct uart_driver_api uart_stm32_api = {
     .poll_out = uart_stm32_poll_out,
     .poll_in = uart_stm32_poll_in,
     .write = uart_stm32_write,
-    .write_record = uart_stm32_write_record,
-    .write_recordv = uart_stm32_write_recordv,
-#ifdef CONFIG_CONSOLE_CRLF
-    .write_text_recordv = uart_stm32_write_text_recordv,
-#endif
-    .write_room = uart_stm32_write_room,
-    .get_stats = uart_stm32_get_stats,
     .read = uart_stm32_read,
+    .configure = uart_stm32_configure,
+    .get_config = uart_stm32_get_config,
     .panic_begin = uart_stm32_panic_begin,
-    .panic_write = uart_stm32_poll_write,
+    .panic_write = uart_stm32_panic_write,
 };
 
 static struct uart_stm32_config qemu_stm32_uart1_config = {

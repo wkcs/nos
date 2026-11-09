@@ -26,8 +26,12 @@ static int uart_console_text_write(const unsigned char *buf, unsigned int len, b
 
         while (end < len && buf[end] != '\n') end++;
         if (end != pos) {
-            rc = panic ? uart_panic_write(console_uart, buf + pos, end - pos) :
-                         uart_write(console_uart, buf + pos, end - pos);
+            if (panic) {
+                uart_panic_write(console_uart, buf + pos, end - pos);
+                rc = (int)(end - pos);
+            } else {
+                rc = (int)uart_write(console_uart, buf + pos, end - pos);
+            }
             if (rc <= 0) return pos != 0 ? (int)pos : rc;
             pos += (unsigned int)rc;
             if (pos != end) return (int)pos;
@@ -37,12 +41,20 @@ static int uart_console_text_write(const unsigned char *buf, unsigned int len, b
 
             /* Preserve the canonical TTY's explicit CRLF echo. */
             if (pos != 0 && buf[pos - 1] == '\r') {
-                rc = panic ? uart_panic_write(console_uart, buf + pos, 1) :
-                             uart_write(console_uart, buf + pos, 1);
+                if (panic) {
+                    uart_panic_write(console_uart, buf + pos, 1);
+                    rc = 1;
+                } else {
+                    rc = (int)uart_write(console_uart, buf + pos, 1);
+                }
                 if (rc != 1) return pos != 0 ? (int)pos : rc;
             } else {
-                rc = panic ? uart_panic_write(console_uart, crlf, sizeof(crlf)) :
-                             uart_write_record(console_uart, crlf, sizeof(crlf));
+                if (panic) {
+                    uart_panic_write(console_uart, crlf, sizeof(crlf));
+                    rc = (int)sizeof(crlf);
+                } else {
+                    rc = (int)uart_write(console_uart, crlf, sizeof(crlf));
+                }
                 if (rc != (int)sizeof(crlf)) return pos != 0 ? (int)pos : (rc < 0 ? rc : -EIO);
             }
             pos++;
@@ -54,13 +66,7 @@ static int uart_console_text_write(const unsigned char *buf, unsigned int len, b
 static int uart_console_record_text(const char *first, unsigned int first_len,
                                     const char *second, unsigned int second_len)
 {
-    int rc;
-
-    rc = uart_write_text_recordv(console_uart, (const unsigned char *)first, first_len,
-                                 (const unsigned char *)second, second_len);
-    if (rc != -ENOSYS) return rc;
-    /* Polling-only UARTs have no queued record interface. */
-    rc = uart_console_text_write((const unsigned char *)first, first_len, false);
+    int rc = uart_console_text_write((const unsigned char *)first, first_len, false);
     if (rc < 0 || (unsigned int)rc != first_len) return rc;
     if (second_len != 0) {
         int tail = uart_console_text_write((const unsigned char *)second, second_len, false);
@@ -120,7 +126,7 @@ static int uart_console_write(const char *buf, int len)
 #ifdef CONFIG_CONSOLE_CRLF
     return uart_console_text_write((const unsigned char *)buf, (unsigned int)len, false);
 #else
-    return uart_write(console_uart, (const unsigned char *)buf, (unsigned int)len);
+    return (int)uart_write(console_uart, (const unsigned char *)buf, (size_t)len);
 #endif
 #endif
 }
@@ -130,8 +136,7 @@ static int uart_console_write_record(const char *buf, int len)
 #ifdef CONFIG_CONSOLE_CRLF
     return uart_console_record_text(buf, (unsigned int)len, NULL, 0);
 #else
-    return uart_write_record(console_uart, (const unsigned char *)buf,
-                             (unsigned int)len);
+    return (int)uart_write(console_uart, (const unsigned char *)buf, (size_t)len);
 #endif
 }
 
@@ -141,8 +146,16 @@ static int uart_console_write_recordv(const char *first, unsigned int first_len,
 #ifdef CONFIG_CONSOLE_CRLF
     return uart_console_record_text(first, first_len, second, second_len);
 #else
-    return uart_write_recordv(console_uart, (const unsigned char *)first, first_len,
-                              (const unsigned char *)second, second_len);
+    int rc1 = 0, rc2 = 0;
+    if (first_len > 0) {
+        rc1 = (int)uart_write(console_uart, (const unsigned char *)first, (size_t)first_len);
+        if (rc1 < 0) return rc1;
+    }
+    if (second_len > 0) {
+        rc2 = (int)uart_write(console_uart, (const unsigned char *)second, (size_t)second_len);
+        if (rc2 < 0) return rc1 > 0 ? rc1 : rc2;
+    }
+    return rc1 + rc2;
 #endif
 }
 
@@ -152,19 +165,14 @@ static int uart_console_getc(void)
 #ifdef CONFIG_TTY
     int rc = nos_tty_read(&console_tty, &ch, 1, true);
 #else
-    int rc = uart_read(console_uart, &ch, 1, true);
+    int rc = (int)uart_read(console_uart, &ch, 1, true);
 #endif
     return rc < 0 ? rc : (int)ch;
 }
 
 static int uart_console_write_room(void)
 {
-#ifdef CONFIG_CONSOLE_CRLF
-    int room = uart_write_room(console_uart);
-    return room < 0 ? room : room / 2;
-#else
-    return uart_write_room(console_uart);
-#endif
+    return 128;
 }
 
 static int uart_console_putc(char ch)
@@ -172,14 +180,15 @@ static int uart_console_putc(char ch)
 #ifdef CONFIG_CONSOLE_CRLF
     int rc = uart_console_text_write((const unsigned char *)&ch, 1, false);
 #else
-    int rc = uart_write(console_uart, (const unsigned char *)&ch, 1);
+    int rc = (int)uart_write(console_uart, (const unsigned char *)&ch, 1);
 #endif
     return rc == 1 ? 0 : rc;
 }
 
 static int uart_console_panic_begin(void)
 {
-    return uart_panic_begin(console_uart);
+    uart_panic_begin(console_uart);
+    return 0;
 }
 
 static int uart_console_panic_write(const char *buf, int len)
@@ -187,8 +196,8 @@ static int uart_console_panic_write(const char *buf, int len)
 #ifdef CONFIG_CONSOLE_CRLF
     return uart_console_text_write((const unsigned char *)buf, (unsigned int)len, true);
 #else
-    return uart_panic_write(console_uart, (const unsigned char *)buf,
-                            (unsigned int)len);
+    uart_panic_write(console_uart, (const unsigned char *)buf, (size_t)len);
+    return len;
 #endif
 }
 

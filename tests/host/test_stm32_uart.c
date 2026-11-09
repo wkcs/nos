@@ -263,54 +263,21 @@ int main(void)
         fputs("FAIL: initialize IRQ-backed UART\n", stderr);
         return 1;
     }
-#ifdef CONFIG_CONSOLE_CRLF
-#ifdef NOS_UART_TEXT_RECORD_API
-    if (uart_write_text_recordv(dev, (const unsigned char *)"a\n", 2,
-                                (const unsigned char *)"b\n", 2) != 4) return 1;
-    run_tx_interrupts();
-    if (wire_len != 6 || memcmp(wire, "a\r\nb\r\n", 6) != 0) {
-        fputs("FAIL: text record conversion must preserve FIFO and record order\n", stderr);
-        return 1;
-    }
-    wire_len = 0;
-    if (
-#ifdef CONFIG_UART_DMA
-        uart_write_record(dev, (const unsigned char *)"ABCD", 4) != 4 ||
-#endif
-        uart_write_record(dev, (const unsigned char *)"1234567", 7) != 7 ||
-        uart_write_text_recordv(dev, (const unsigned char *)"\n", 1, NULL, 0) != -EAGAIN ||
-        kfifo_used(&uart1_data.tx_fifo) != 7) {
-        fputs("FAIL: expanded record must be rejected without a partial write\n", stderr);
-        return 1;
-    }
-    run_tx_interrupts();
-#ifdef CONFIG_UART_DMA
-    if (wire_len != 11 || memcmp(wire, "ABCD1234567", 11) != 0) return 1;
-#else
-    if (wire_len != 7 || memcmp(wire, "1234567", 7) != 0) return 1;
-#endif
-    uart1_data.tx_dropped = 0;
-    wire_len = 0;
-#else
-    fputs("FAIL: atomic UART text record API unavailable\n", stderr);
-    return 1;
-#endif
-#endif
-    if (uart_write_recordv(dev, message, 1, message + 1, 2) != 3 || wire_len != 0) {
-        fputs("FAIL: enqueue complete binary record\n", stderr);
+    if (uart_write(dev, message, sizeof(message)) != (ssize_t)sizeof(message) || wire_len != 0) {
+        fputs("FAIL: enqueue complete binary stream\n", stderr);
         return 1;
     }
     run_tx_interrupts();
     if (wire_len != sizeof(message) || memcmp(wire, message, sizeof(message)) != 0) {
-        fputs("FAIL: IRQ drains a binary record in order\n", stderr);
+        fputs("FAIL: IRQ drains bytes in order\n", stderr);
         return 1;
     }
-    if (uart_write_record(dev, (const unsigned char *)"12345678", 8) != 8 ||
+    if (uart_write(dev, (const unsigned char *)"12345678", 8) != 8 ||
 #ifdef CONFIG_UART_DMA
-        uart_write_record(dev, (const unsigned char *)"abcd", 4) != 4 ||
+        uart_write(dev, (const unsigned char *)"abcd", 4) != 4 ||
 #endif
-        uart_write_record(dev, (const unsigned char *)"X", 1) != -EAGAIN) {
-        fputs("FAIL: full queue rejects an entire record\n", stderr);
+        uart_write(dev, (const unsigned char *)"X", 1) != -EAGAIN) {
+        fputs("FAIL: full queue rejects under non-blocking backpressure\n", stderr);
         return 1;
     }
     run_tx_interrupts();
@@ -327,31 +294,34 @@ int main(void)
         fputs("FAIL: RX overflow must not generate false notifications\n", stderr);
         return 1;
     }
-#ifdef NOS_UART_STATS_API
-    {
-        struct uart_stats stats;
-        if (uart_get_stats(dev, &stats) != 0 || stats.rx_dropped != 2 ||
-            stats.tx_dropped_records != 1) {
-            fputs("FAIL: expose UART RX and TX drops\n", stderr);
-            return 1;
-        }
+    struct uart_config cfg = {
+        .baud_rate = 115200,
+        .data_bits = UART_DATA_BITS_8,
+        .parity = UART_PARITY_NONE,
+        .stop_bits = UART_STOP_BITS_1,
+        .flow_ctrl = UART_FLOW_NONE,
+    };
+    if (uart_configure(dev, &cfg) != 0) {
+        fputs("FAIL: configure STM32 UART\n", stderr);
+        return 1;
     }
-#else
-    fputs("FAIL: UART overflow statistics are unavailable\n", stderr);
-    return 1;
-#endif
+    struct uart_config read_cfg;
+    if (uart_get_config(dev, &read_cfg) != 0 || read_cfg.baud_rate != 115200) {
+        fputs("FAIL: get_config STM32 UART\n", stderr);
+        return 1;
+    }
 #ifdef CONFIG_UART_DMA
     wire_len = 0;
-    if (uart_write_record(dev, (const unsigned char *)"PNC", 3) != 3 || !dma_enabled) {
+    if (uart_write(dev, (const unsigned char *)"PNC", 3) != 3 || !dma_enabled) {
         fputs("FAIL: start DMA before panic\n", stderr);
         return 1;
     }
     USART_SendData(USART1, uart1_data.dma_buf[0]);
     dma_remaining--;
     dma_disable_delay = 3;
-    if (uart_panic_begin(dev) != 0 ||
-        uart_panic_write(dev, (const unsigned char *)"!", 1) != 1 ||
-        wire_len != 4 || memcmp(wire, "PNC!", 4) != 0) {
+    uart_panic_begin(dev);
+    uart_panic_write(dev, (const unsigned char *)"!", 1);
+    if (wire_len != 4 || memcmp(wire, "PNC!", 4) != 0) {
         fputs("FAIL: panic must drain only the unsent DMA bytes\n", stderr);
         return 1;
     }
@@ -368,8 +338,8 @@ int main(void)
         fputs("FAIL: reinitialize simulated UART\n", stderr);
         return 1;
     }
-    if (uart_write_record(dev, (const unsigned char *)"ERR", 3) != 3 || !dma_enabled) {
-        fputs("FAIL: start DMA for a queued record\n", stderr);
+    if (uart_write(dev, (const unsigned char *)"ERR", 3) != 3 || !dma_enabled) {
+        fputs("FAIL: start DMA for a queued write\n", stderr);
         return 1;
     }
     USART_SendData(USART1, uart1_data.dma_buf[0]);
@@ -381,19 +351,15 @@ int main(void)
         fputs("FAIL: DMA failure must continue unsent bytes using TX IRQ\n", stderr);
         return 1;
     }
-    {
-        struct uart_stats stats;
-        if (uart_get_stats(dev, &stats) != 0 || stats.dma_errors != 1) {
-            fputs("FAIL: expose DMA transfer errors\n", stderr);
-            return 1;
-        }
-    }
 #endif
     wire_len = 0;
-    if (uart_write_record(dev, (const unsigned char *)"abc", 3) != 3 ||
-        uart_panic_begin(dev) != 0 ||
-        uart_panic_write(dev, (const unsigned char *)"!", 1) != 1 ||
-        wire_len != 4 || memcmp(wire, "abc!", 4) != 0) {
+    if (uart_write(dev, (const unsigned char *)"abc", 3) != 3) {
+        fputs("FAIL: write before panic\n", stderr);
+        return 1;
+    }
+    uart_panic_begin(dev);
+    uart_panic_write(dev, (const unsigned char *)"!", 1);
+    if (wire_len != 4 || memcmp(wire, "abc!", 4) != 0) {
         fputs("FAIL: panic drains queued output before polling output\n", stderr);
         return 1;
     }

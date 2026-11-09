@@ -41,6 +41,8 @@ extern int simulated_interrupt_context;
 #define USART_WordLength_8b 0U
 #define USART_StopBits_1 0U
 #define USART_Parity_No 0U
+#define USART_Parity_Even 0x0400U
+#define USART_Parity_Odd 0x0600U
 #define USART_HardwareFlowControl_None 0U
 #define USART_Mode_Rx 1U
 #define USART_Mode_Tx 2U

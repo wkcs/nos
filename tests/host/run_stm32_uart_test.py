@@ -6,18 +6,21 @@ import os
 import subprocess
 import tempfile
 import sys
+import unittest
 
 
 ROOT = Path(__file__).resolve().parents[2]
 TEST_DIR = ROOT / "tests" / "host"
 
 
-def main():
+def run_test(extra_flags=None):
+    if extra_flags is None:
+        extra_flags = []
     with tempfile.TemporaryDirectory(prefix="nos-stm32-uart-test-") as tmp:
         exe = Path(tmp) / "test_stm32_uart"
-        dma = ["-DCONFIG_UART_DMA", "-DCONFIG_UART_DMA_BUFFER_SIZE=4"] if "--dma" in sys.argv else []
-        dt = ["-DCONFIG_DEVICE_TREE", "-DCONFIG_BOARD_QEMU_STM32"] if "--dt" in sys.argv else []
-        crlf = ["-DCONFIG_CONSOLE_CRLF"] if "--crlf" in sys.argv else []
+        dma = ["-DCONFIG_UART_DMA", "-DCONFIG_UART_DMA_BUFFER_SIZE=4"] if "--dma" in extra_flags else []
+        dt = ["-DCONFIG_DEVICE_TREE", "-DCONFIG_BOARD_QEMU_STM32"] if "--dt" in extra_flags else []
+        crlf = ["-DCONFIG_CONSOLE_CRLF"] if "--crlf" in extra_flags else []
         log_size = "4" if crlf else "8"
         subprocess.run(
             [os.environ.get("CC", "cc"), "-std=gnu11", "-O1",
@@ -28,6 +31,21 @@ def main():
              "-o", str(exe)], check=True,
         )
         subprocess.run([str(exe)], check=True)
+
+
+class Stm32UartTest(unittest.TestCase):
+    def test_stm32_uart(self):
+        run_test([])
+
+    def test_stm32_uart_dma(self):
+        run_test(["--dma"])
+
+    def test_stm32_uart_dt(self):
+        run_test(["--dt"])
+
+
+def main():
+    run_test(sys.argv[1:])
 
 
 if __name__ == "__main__":

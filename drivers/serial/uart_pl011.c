@@ -74,26 +74,26 @@ static int uart_pl011_poll_in(const struct device *dev, unsigned char *ch)
     return 0;
 }
 
-static int uart_pl011_write(const struct device *dev, const unsigned char *buf,
-                            unsigned int len)
+static ssize_t uart_pl011_write(const struct device *dev, const unsigned char *buf,
+                                size_t len)
 {
-    unsigned int written;
+    size_t written;
 
     for (written = 0; written < len; written++) {
         int rc = uart_pl011_poll_out(dev, buf[written]);
         if (rc < 0) {
-            return written != 0 ? (int)written : rc;
+            return written != 0 ? (ssize_t)written : rc;
         }
     }
-    return (int)written;
+    return (ssize_t)written;
 }
 
-static int uart_pl011_read(const struct device *dev, unsigned char *buf,
-                           unsigned int len, bool wait)
+static ssize_t uart_pl011_read(const struct device *dev, unsigned char *buf,
+                               size_t len, bool wait)
 {
     const struct uart_pl011_config *config = dev->config;
     uint32_t remaining = config->poll_timeout;
-    unsigned int received = 0;
+    size_t received = 0;
 
     while (received < len) {
         int rc = uart_pl011_poll_in(dev, &buf[received]);
@@ -107,13 +107,44 @@ static int uart_pl011_read(const struct device *dev, unsigned char *buf,
             return -ETIMEDOUT;
         }
     }
-    return (int)received;
+    return (ssize_t)received;
 }
 
-static int uart_pl011_panic_begin(const struct device *dev)
+static void uart_pl011_panic_begin(const struct device *dev)
 {
     const struct uart_pl011_config *config = dev->config;
     *pl011_reg(config, PL011_IMSC) = 0;
+}
+
+static void uart_pl011_panic_write(const struct device *dev, const unsigned char *buf,
+                                   size_t len)
+{
+    for (size_t i = 0; i < len; i++) {
+        if (uart_pl011_poll_out(dev, buf[i]) < 0) {
+            break;
+        }
+    }
+}
+
+static int uart_pl011_configure(const struct device *dev, const struct uart_config *cfg)
+{
+    (void)dev;
+    (void)cfg;
+    return 0;
+}
+
+static int uart_pl011_get_config(const struct device *dev, struct uart_config *cfg)
+{
+    const struct uart_pl011_config *config = dev->config;
+
+    if (cfg == NULL) {
+        return -EINVAL;
+    }
+    cfg->baud_rate = config->baud_rate;
+    cfg->data_bits = UART_DATA_BITS_8;
+    cfg->parity = UART_PARITY_NONE;
+    cfg->stop_bits = UART_STOP_BITS_1;
+    cfg->flow_ctrl = UART_FLOW_NONE;
     return 0;
 }
 
@@ -144,10 +175,11 @@ static const struct uart_driver_api uart_pl011_api = {
     .poll_out = uart_pl011_poll_out,
     .poll_in = uart_pl011_poll_in,
     .write = uart_pl011_write,
-    .write_record = uart_pl011_write,
     .read = uart_pl011_read,
+    .configure = uart_pl011_configure,
+    .get_config = uart_pl011_get_config,
     .panic_begin = uart_pl011_panic_begin,
-    .panic_write = uart_pl011_write,
+    .panic_write = uart_pl011_panic_write,
 };
 
 static const struct uart_pl011_config qemu_virt_pl011_config = {
