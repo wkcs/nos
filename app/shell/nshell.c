@@ -43,6 +43,8 @@
 #include <nos/tty.h>
 #endif
 
+int isatty(int fd);
+
 #define SHELL_PROMPT "nos# "
 #define CMD_MAX_LEN 256
 #define MAX_ARGS 16
@@ -94,9 +96,6 @@ struct nshell {
     char * const *script_argv;
     const char *script_name;
     char argc_buf[8];
-    struct file *input_file;
-    struct file *output_file;
-    struct file *error_file;
     struct shell_stream_pipe *pipe_input;
     struct shell_stream_pipe *pipe_output;
     struct shell_stream_pipe *error_pipe;
@@ -350,19 +349,21 @@ static int nshell_write(const char *buf, int len)
 {
     struct nshell *shell = nshell_current();
     if (shell == NULL || len < 0) return -EINVAL;
-    if (shell->output_file != NULL) {
-        struct file *file = shell->output_file;
-        int total = 0;
-        while (total < len) {
-            int rc = file->f_op->write(file, buf + total, (size_t)(len - total), &file->f_pos);
-            if (rc <= 0) {
-                shell->output_error = rc < 0 ? rc : -EIO;
-                return total ? total : shell->output_error;
-            }
-            total += rc;
-        }
-        return total;
+    if (shell->pipe_output != NULL && isatty(1)) {
+        int rc = shell_stream_pipe_write(shell->pipe_output, buf, (size_t)len);
+        if (rc < 0) shell->output_error = rc;
+        return rc;
     }
+#if defined(CONFIG_VFS) || defined(CONFIG_FS)
+    ssize_t ret = nos_write(1, buf, (size_t)len);
+    if (ret >= 0) {
+        return (int)ret;
+    }
+    if (ret != -EBADF) {
+        shell->output_error = (int)ret;
+        return (int)ret;
+    }
+#endif
     if (shell->pipe_output != NULL) {
         int rc = shell_stream_pipe_write(shell->pipe_output, buf, (size_t)len);
         if (rc < 0) shell->output_error = rc;
@@ -403,24 +404,21 @@ static int shell_error(const char *fmt, ...)
     va_end(args);
     if (len < 0) return len;
     if ((size_t)len >= sizeof(buf)) len = sizeof(buf) - 1;
-    if (shell->error_file != NULL || shell->error_pipe != NULL) {
-        struct file *file = shell->error_file;
-        int total = 0;
-        if (file == NULL) {
-            int rc = shell_stream_pipe_write(shell->error_pipe, buf, (size_t)len);
-            if (rc < 0) shell->output_error = rc;
-            return rc;
-        }
-        while (total < len) {
-            int rc = file->f_op->write(file, buf + total, (size_t)(len - total), &file->f_pos);
-            if (rc <= 0) {
-                shell->output_error = rc < 0 ? rc : -EIO;
-                return total != 0 ? total : shell->output_error;
-            }
-            total += rc;
-        }
-        return total;
+    if (shell->error_pipe != NULL) {
+        int rc = shell_stream_pipe_write(shell->error_pipe, buf, (size_t)len);
+        if (rc < 0) shell->output_error = rc;
+        return rc;
     }
+#if defined(CONFIG_VFS) || defined(CONFIG_FS)
+    ssize_t ret = nos_write(2, buf, (size_t)len);
+    if (ret >= 0) {
+        return (int)ret;
+    }
+    if (ret != -EBADF) {
+        shell->output_error = (int)ret;
+        return (int)ret;
+    }
+#endif
     return shell_session_write(&shell->session, buf, (unsigned int)len);
 }
 
@@ -2019,7 +2017,34 @@ static int cat_stdin(void)
     struct nshell *shell = nshell_current();
 
     if (shell == NULL) return -EINVAL;
-    if (shell->input_file != NULL) return cat_stream(shell->input_file);
+    if (shell->pipe_input != NULL && isatty(0)) {
+        char buf[64];
+        int n;
+        while ((n = shell_stream_pipe_read(shell->pipe_input, buf, sizeof(buf))) > 0) {
+            int pos = 0;
+            while (pos < n) {
+                int rc = nshell_write(buf + pos, n - pos);
+                if (rc <= 0) return rc < 0 ? rc : -EIO;
+                pos += rc;
+            }
+        }
+        return n;
+    }
+#if defined(CONFIG_VFS) || defined(CONFIG_FS)
+    if (isatty(0) == 0) {
+        char buf[64];
+        ssize_t n;
+        while ((n = nos_read(0, buf, sizeof(buf))) > 0) {
+            int pos = 0;
+            while (pos < n) {
+                int rc = nshell_write(buf + pos, (int)(n - pos));
+                if (rc <= 0) return rc < 0 ? rc : -EIO;
+                pos += rc;
+            }
+        }
+        return n < 0 ? (int)n : 0;
+    }
+#endif
     if (shell->pipe_input != NULL) {
         char buf[64];
         int n;
@@ -2165,10 +2190,14 @@ static int wc_read(struct file *file, char *buf, size_t size)
     int ch;
 
     if (file != NULL) return file->f_op->read(file, buf, size, &file->f_pos);
-    if (shell->input_file != NULL) {
-        file = shell->input_file;
-        return file->f_op->read(file, buf, size, &file->f_pos);
+    if (shell->pipe_input != NULL && isatty(0)) {
+        return shell_stream_pipe_read(shell->pipe_input, buf, size);
     }
+#if defined(CONFIG_VFS) || defined(CONFIG_FS)
+    if (isatty(0) == 0) {
+        return (int)nos_read(0, buf, size);
+    }
+#endif
     if (shell->pipe_input != NULL) {
         return shell_stream_pipe_read(shell->pipe_input, buf, size);
     }
@@ -3981,15 +4010,6 @@ static int nshell_open_input(struct nshell *shell, const char *path, struct file
     return 0;
 }
 
-static void nshell_close_input(struct nshell *shell)
-{
-    struct file *file = shell->input_file;
-    if (file == NULL) return;
-    shell->input_file = NULL;
-    if (file->f_op->release != NULL) (void)file->f_op->release(file->f_inode, file);
-    kfree(file);
-}
-
 static int nshell_open_output(struct nshell *shell, const char *path, bool append,
                               struct file **destination)
 {
@@ -4071,43 +4091,125 @@ static int nshell_close_output(struct file **destination)
     return rc;
 }
 
-static int nshell_drop_stream(struct nshell *shell, bool error_stream,
-                              struct file *keep_output, struct file *keep_error)
+static void nshell_init_standard_fds(void)
 {
-    struct file **destination = error_stream ? &shell->error_file : &shell->output_file;
-    struct file *other = error_stream ? shell->output_file : shell->error_file;
-    if (error_stream) shell->error_pipe = NULL;
-    if (*destination != NULL &&
-        (*destination == other || *destination == keep_output || *destination == keep_error)) {
-        *destination = NULL;
-        return 0;
+    struct file *f0 = vfs_fd_get(0);
+    if (f0 != NULL) {
+        vfs_fd_put(f0);
+        struct file *f1 = vfs_fd_get(1);
+        if (f1 != NULL) {
+            vfs_fd_put(f1);
+        } else {
+            nos_dup2(0, 1);
+        }
+        struct file *f2 = vfs_fd_get(2);
+        if (f2 != NULL) {
+            vfs_fd_put(f2);
+        } else {
+            nos_dup2(0, 2);
+        }
+        return;
     }
-    return nshell_close_output(destination);
+
+    int con_fd = nos_open("/dev/console", O_RDWR);
+    if (con_fd < 0) {
+        return;
+    }
+    if (con_fd != 0) {
+        nos_dup2(con_fd, 0);
+        nos_close(con_fd);
+    }
+    nos_dup2(0, 1);
+    nos_dup2(0, 2);
 }
 
-static int nshell_restore_streams(struct nshell *shell, struct file *saved_input,
-                                  struct file *saved_output, struct file *saved_error,
-                                  struct shell_stream_pipe *saved_error_pipe)
+static int nshell_resolve_path(struct nshell *shell, const char *path, char *buf, size_t size)
 {
-    int rc = 0;
+    if (path == NULL || *path == '\0' || buf == NULL || size == 0) return -EINVAL;
+    if (path[0] == '/') {
+        if (strlen(path) >= size) return -ENAMETOOLONG;
+        strncpy(buf, path, size - 1);
+        buf[size - 1] = '\0';
+        return 0;
+    }
+    struct dentry *cwd_dentry = shell->session.cwd ? shell->session.cwd : vfs_get_root();
+    shell_dentry_path(cwd_dentry, buf, size);
+    size_t cwd_len = strlen(buf);
+    size_t path_len = strlen(path);
+    if (strcmp(buf, "/") == 0) {
+        if (1 + path_len >= size) return -ENAMETOOLONG;
+        memcpy(buf + 1, path, path_len + 1);
+    } else {
+        if (cwd_len + 1 + path_len >= size) return -ENAMETOOLONG;
+        buf[cwd_len] = '/';
+        memcpy(buf + cwd_len + 1, path, path_len + 1);
+    }
+    return 0;
+}
 
-    if (shell->input_file != NULL && shell->input_file != saved_input) {
-        nshell_close_input(shell);
+static noinline int nshell_apply_redirection(struct nshell *shell,
+                                                              const struct shell_redirection *redir,
+                                                              int *saved_stdin,
+                                                              int *saved_stdout,
+                                                              int *saved_stderr)
+{
+    char full_path[SHELL_SESSION_INPUT_MAX + 1];
+    int j;
+
+    for (j = 0; j < redir->count; j++) {
+        const struct shell_redirection_op *op = &redir->ops[j];
+        const char *path = op->path;
+        int rc;
+
+        if (op->kind == SHELL_REDIRECT_INPUT) {
+            if (*saved_stdin < 0) {
+                *saved_stdin = nos_dup(0);
+            }
+            rc = nshell_resolve_path(shell, path, full_path, sizeof(full_path));
+            int fd = (rc == 0) ? nos_open(full_path, O_RDONLY) : rc;
+            if (fd < 0) {
+                shell_error("shell: %s: cannot redirect (error %d)\n", path, fd);
+                return fd;
+            }
+            nos_dup2(fd, 0);
+            nos_close(fd);
+        } else if (op->kind == SHELL_REDIRECT_OUTPUT) {
+            if (*saved_stdout < 0) {
+                *saved_stdout = nos_dup(1);
+            }
+            rc = nshell_resolve_path(shell, path, full_path, sizeof(full_path));
+            int flags = O_WRONLY | O_CREAT | (op->append ? O_APPEND : O_TRUNC);
+            int fd = (rc == 0) ? nos_open(full_path, flags, 0644) : rc;
+            if (fd < 0) {
+                shell_error("shell: %s: cannot redirect (error %d)\n", path, fd);
+                return fd;
+            }
+            nos_dup2(fd, 1);
+            nos_close(fd);
+        } else if (op->kind == SHELL_REDIRECT_ERROR) {
+            if (*saved_stderr < 0) {
+                *saved_stderr = nos_dup(2);
+            }
+            if (op->to_output) {
+                nos_dup2(1, 2);
+                if (shell->pipe_output != NULL) {
+                    shell->error_pipe = shell->pipe_output;
+                }
+            } else {
+                rc = nshell_resolve_path(shell, path, full_path, sizeof(full_path));
+                int flags = O_WRONLY | O_CREAT | (op->append ? O_APPEND : O_TRUNC);
+                int fd = (rc == 0) ? nos_open(full_path, flags, 0644) : rc;
+                if (fd < 0) {
+                    shell_error("shell: %s: cannot redirect (error %d)\n", path, fd);
+                    return fd;
+                }
+                nos_dup2(fd, 2);
+                nos_close(fd);
+                shell->error_pipe = NULL;
+            }
+        }
     }
-    shell->input_file = saved_input;
-    if (shell->error_file == shell->output_file ||
-        shell->error_file == saved_output || shell->error_file == saved_error) {
-        shell->error_file = NULL;
-    }
-    if (shell->output_file == saved_output || shell->output_file == saved_error) {
-        shell->output_file = NULL;
-    }
-    if (nshell_close_output(&shell->output_file) != 0) rc = -EIO;
-    if (nshell_close_output(&shell->error_file) != 0) rc = -EIO;
-    shell->output_file = saved_output;
-    shell->error_file = saved_error;
-    shell->error_pipe = saved_error_pipe;
-    return rc;
+    return 0;
 }
 
 static int cmd_tee(int argc, char *argv[])
@@ -4737,8 +4839,12 @@ static int cmd_mv(int argc, char *argv[])
                 rc = rm_path(workspace->source, true, false, false, false);
             }
         }
-        if (rc == 0) continue;
+        if (rc == 0) {
+            pr_info("cmd_mv: successfully moved %s to %s\n", argv[i], workspace->target);
+            continue;
+        }
 error:
+        pr_info("cmd_mv error: src=%s target=%s rc=%d\n", argv[i], workspace->target, rc);
         shell_error("mv: cannot move '%s': error %d\n", argv[i], rc);
         status = 1;
     }
@@ -4922,12 +5028,14 @@ static int cmd_eval(int argc, char *argv[])
 static int nshell_read_char(struct nshell *shell, char *ch)
 {
     if (shell == NULL) return -EINVAL;
-    if (shell->input_file != NULL) {
-        if (shell->input_file->f_op == NULL || shell->input_file->f_op->read == NULL)
-            return -EINVAL;
-        return (int)shell->input_file->f_op->read(shell->input_file, ch, 1U,
-                                                  &shell->input_file->f_pos);
+    if (shell->pipe_input != NULL && isatty(0))
+        return shell_stream_pipe_read(shell->pipe_input, ch, 1U);
+#if defined(CONFIG_VFS) || defined(CONFIG_FS)
+    if (isatty(0) == 0) {
+        ssize_t n = nos_read(0, ch, 1U);
+        return (int)n;
     }
+#endif
     if (shell->pipe_input != NULL)
         return shell_stream_pipe_read(shell->pipe_input, ch, 1U);
     {
@@ -5157,7 +5265,6 @@ struct xargs_workspace {
 static int xargs_run_batch(struct nshell *shell, const struct shell_cmd *cmd,
                            struct xargs_workspace *ws, int total_argc, bool trace)
 {
-    struct file *saved_in = shell->input_file;
     struct shell_stream_pipe *saved_pipe = shell->pipe_input;
     int rc, i;
 
@@ -5167,10 +5274,8 @@ static int xargs_run_batch(struct nshell *shell, const struct shell_cmd *cmd,
             shell_error("%s%s", i > 0 ? " " : "", ws->exec_argv[i]);
         shell_error("\n");
     }
-    shell->input_file = NULL;
     shell->pipe_input = NULL;
     rc = cmd->func(total_argc, ws->exec_argv);
-    shell->input_file = saved_in;
     shell->pipe_input = saved_pipe;
     return rc;
 }
@@ -5779,9 +5884,6 @@ static noinline int shell_run_pipeline(struct nshell *parent, struct shell_comma
         child->pipeline_worker = true;
         child->variables = NULL;
         child->aliases = NULL;
-        child->input_file = NULL;
-        child->output_file = NULL;
-        child->error_file = NULL;
         child->error_pipe = NULL;
         child->pipe_input = i > 0 ? &pipes[i - 1] : NULL;
         child->pipe_output = i + 1 < count ? &pipes[i] : NULL;
@@ -5966,6 +6068,8 @@ static void nshell_exec_cmd(struct nshell *shell)
     if (shell->session.input_len == 0 && strlen(shell->session.input) == 0)
         return;
 
+    nshell_init_standard_fds();
+
     workspace = kmalloc(sizeof(*workspace), GFP_KERNEL);
     if (workspace == NULL) {
         shell_printf("shell: out of memory\n");
@@ -5991,9 +6095,9 @@ static void nshell_exec_cmd(struct nshell *shell)
     }
     for (i = 0; i < count; i++) {
         const struct shell_cmd *curr = NULL;
-        struct file *saved_input = shell->input_file;
-        struct file *saved_output = shell->output_file;
-        struct file *saved_error = shell->error_file;
+        int saved_stdin = -1;
+        int saved_stdout = -1;
+        int saved_stderr = -1;
         struct shell_stream_pipe *saved_error_pipe = shell->error_pipe;
         struct glob_state {
             struct shell_glob_result *results[MAX_ARGS];
@@ -6097,39 +6201,10 @@ static void nshell_exec_cmd(struct nshell *shell)
             if (glob != NULL) for (j = 0; j < argc; j++) argv[j] = glob->argv[j];
             argv[argc] = NULL;
         }
-        {
-            int j;
-            for (j = 0; j < redir->count; j++) {
-                const struct shell_redirection_op *op = &redir->ops[j];
-                bool input_stream = op->kind == SHELL_REDIRECT_INPUT;
-                bool error_stream = op->kind == SHELL_REDIRECT_ERROR;
-                const char *path = op->path;
-                struct file **destination = error_stream ? &shell->error_file : &shell->output_file;
-                struct file *new_file = NULL;
-                int rc;
-                if (error_stream && op->to_output) {
-                    (void)nshell_drop_stream(shell, true, saved_output, saved_error);
-                    shell->error_file = shell->output_file;
-                    if (shell->error_file == NULL) shell->error_pipe = shell->pipe_output;
-                    continue;
-                }
-                rc = input_stream ? nshell_open_input(shell, path, &new_file) :
-                                    nshell_open_output(shell, path, op->append, &new_file);
-                if (rc < 0) {
-                    shell_error("shell: %s: cannot redirect (error %d)\n", path, rc);
-                    shell->last_status = 1;
-                    (void)nshell_restore_streams(shell, saved_input, saved_output,
-                                                 saved_error, saved_error_pipe);
-                    goto next_command;
-                }
-                if (input_stream) {
-                    if (shell->input_file != NULL && shell->input_file != saved_input)
-                        nshell_close_input(shell);
-                    shell->input_file = new_file;
-                } else {
-                    (void)nshell_drop_stream(shell, error_stream, saved_output, saved_error);
-                    *destination = new_file;
-                }
+        if (redir->count > 0) {
+            if (nshell_apply_redirection(shell, redir, &saved_stdin, &saved_stdout, &saved_stderr) != 0) {
+                shell->last_status = 1;
+                goto next_command;
             }
         }
         assignment_only = assignments == argc;
@@ -6195,10 +6270,20 @@ static void nshell_exec_cmd(struct nshell *shell)
         variable_restore(shell, workspace->saved, saved_count,
                          !assignment_only && !assignment_error && curr != NULL &&
                          curr->func == cmd_cd && shell->last_status == 0);
-        if (nshell_restore_streams(shell, saved_input, saved_output,
-                                   saved_error, saved_error_pipe) != 0)
-            shell->last_status = 1;
 next_command:
+        if (saved_stdin >= 0) {
+            nos_dup2(saved_stdin, 0);
+            nos_close(saved_stdin);
+        }
+        if (saved_stdout >= 0) {
+            nos_dup2(saved_stdout, 1);
+            nos_close(saved_stdout);
+        }
+        if (saved_stderr >= 0) {
+            nos_dup2(saved_stderr, 2);
+            nos_close(saved_stderr);
+        }
+        shell->error_pipe = saved_error_pipe;
         if (glob != NULL) {
             for (int j = 0; j < MAX_ARGS; j++) shell_glob_free(glob->results[j]);
             kfree(glob);
@@ -6597,6 +6682,8 @@ static void nshell_run_non_interactive(struct nshell *shell)
 static void nshell_task_entry(void *parameter)
 {
     struct nshell *shell = parameter;
+
+    nshell_init_standard_fds();
 
     while (true) {
         uint32_t gen = 0U;

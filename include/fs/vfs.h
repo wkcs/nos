@@ -250,6 +250,10 @@ int vfs_get_mount_entry(int index, struct vfs_mount_entry *entry);
 int vfs_list_filesystems(char *buf, size_t size);
 void vfs_setup_standard_mounts(void);
 
+/* 文件描述符表操作 */
+struct file *vfs_fd_get(int fd);
+int vfs_fd_put(struct file *file);
+
 /* DevFS 字符设备注册与内置设备 */
 int init_devfs(void);
 int devfs_register_chrdev(const char *name, const struct file_operations *fops, void *priv);

@@ -899,6 +899,12 @@ int nos_open(const char *path, int flags, ...)
     goto release_fd;
   }
 
+  if (S_ISDIR(dentry->d_inode->i_mode) &&
+      ((flags & O_ACCMODE) == O_WRONLY || (flags & O_ACCMODE) == O_RDWR)) {
+    ret = -EISDIR;
+    goto release_fd;
+  }
+
   file = kzalloc(sizeof(*file), GFP_KERNEL);
   if (!file) {
     ret = -ENOMEM;
