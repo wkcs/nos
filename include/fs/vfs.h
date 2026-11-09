@@ -79,6 +79,7 @@ struct file_operations {
   /* Compare open files: 1 if identical, 0 if distinct, negative on error. */
   int (*same_file)(struct file *, struct file *);
   loff_t (*llseek)(struct file *, loff_t, int);
+  int (*ioctl)(struct file *, unsigned int, unsigned long);
 };
 
 /*

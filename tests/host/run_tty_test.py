@@ -5,13 +5,14 @@ from pathlib import Path
 import os
 import subprocess
 import tempfile
+import unittest
 
 
 ROOT = Path(__file__).resolve().parents[2]
 TEST_DIR = ROOT / "tests" / "host"
 
 
-def main():
+def run_test():
     with tempfile.TemporaryDirectory(prefix="nos-tty-test-") as tmp:
         exe = Path(tmp) / "test_tty"
         tty = ROOT / "kernel/tty/tty.c"
@@ -24,6 +25,15 @@ def main():
              *sources, "-o", str(exe)], check=True,
         )
         subprocess.run([str(exe)], check=True)
+
+
+class TtyTest(unittest.TestCase):
+    def test_tty(self):
+        run_test()
+
+
+def main():
+    run_test()
 
 
 if __name__ == "__main__":

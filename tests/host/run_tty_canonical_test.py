@@ -5,13 +5,14 @@ from pathlib import Path
 import os
 import subprocess
 import tempfile
+import unittest
 
 
 ROOT = Path(__file__).resolve().parents[2]
 TEST_DIR = ROOT / "tests" / "host"
 
 
-def main():
+def run_test():
     with tempfile.TemporaryDirectory(prefix="nos-tty-canonical-test-") as tmp:
         exe = Path(tmp) / "test_tty_canonical"
         subprocess.run(
@@ -21,6 +22,15 @@ def main():
              str(ROOT / "kernel/tty/tty.c"), "-o", str(exe)], check=True,
         )
         subprocess.run([str(exe)], check=True)
+
+
+class TtyCanonicalTest(unittest.TestCase):
+    def test_tty_canonical(self):
+        run_test()
+
+
+def main():
+    run_test()
 
 
 if __name__ == "__main__":
