@@ -998,6 +998,16 @@ int nos_close(int fd)
   return vfs_fd_close(fd);
 }
 
+int nos_dup(int oldfd)
+{
+  return vfs_fd_dup(oldfd);
+}
+
+int nos_dup2(int oldfd, int newfd)
+{
+  return vfs_fd_dup2(oldfd, newfd);
+}
+
 int vfs_bind_mount(struct dentry *target, struct dentry *mnt_root)
 {
     char *name;

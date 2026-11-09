@@ -22,6 +22,12 @@
 #include <nos/refcount.h>
 #include <nos/wait.h>
 
+#ifndef CONFIG_TASK_MAX_FDS
+#define CONFIG_TASK_MAX_FDS 8
+#endif
+
+struct file;
+
 enum task_status {
     TASK_RUNNING   = 0x01,
     TASK_READY     = 0x02,
@@ -119,6 +125,9 @@ struct task_struct {
     uint8_t              ipc_state;
     uint64_t             notify_bits;
 
+    /* 进程级打开文件描述符表 (Per-Task FDs) */
+    struct file *files[CONFIG_TASK_MAX_FDS];
+
     /* 通用等待底座记录与原子引用计数 */
     nos_refcount_t       refcount;
     struct nos_wait_entry wait_entry;
@@ -212,6 +221,10 @@ bool task_stack_is_healthy(struct task_struct *task);
 void task_get_stack_bounds(struct task_struct *task, uintptr_t *low, uintptr_t *high);
 const char *task_state_short_str(uint8_t status);
 const char *task_policy_short_str(uint8_t policy);
+
+/* 任务文件描述符表初始化与清理 */
+void vfs_task_files_init(struct task_struct *task, struct task_struct *parent);
+void vfs_task_files_cleanup(struct task_struct *task);
 
 #define task_list_lock(lock_func, lock) \
 do {                                    \

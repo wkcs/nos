@@ -181,6 +181,14 @@ config CORE_TASK_STACK_SIZE
 	help
 	  核心任务的栈大小（字节）。
 
+config TASK_MAX_FDS
+	int "Maximum open files per task"
+	default 4 if BOARD_WL_001
+	default 8
+	range 2 64
+	help
+	  每个任务拥有的最大打开文件描述符数量 (Per-Task FDs)。
+
 endmenu
 
 # 内存管理配置

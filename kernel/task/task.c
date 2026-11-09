@@ -251,6 +251,9 @@ static int __task_create(struct task_struct *task,
                            (uint32_t)task->pid,
                            NULL);
 
+    /* 继承父任务文件描述符表或初始化为空 (Per-Task FDs) */
+    vfs_task_files_init(task, parent);
+
     spin_lock_irq(&g_task_list_lock);
     list_add_tail(&task->tlist, &g_task_list);
     g_nr_tasks++;
@@ -402,6 +405,9 @@ void task_del(struct task_struct *task)
         pr_err("task struct is NULL\n");
         return;
     }
+
+    /* 关闭并释放任务持有的全部文件描述符 (Per-Task FDs) */
+    vfs_task_files_cleanup(task);
 
     pr_info("del %s task\n", task->name);
     spin_lock_irq(&task->lock);
@@ -941,6 +947,7 @@ const char *task_policy_short_str(uint8_t policy)
 
 static void task_free(struct task_struct *task)
 {
+    vfs_task_files_cleanup(task);
     hal_vm_space_destroy(&task->vm_space);
     nos_cap_table_destroy(&task->cap_table);
     pid_free(task->pid);

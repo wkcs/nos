@@ -178,6 +178,8 @@ struct path {
 /* VFS Public API */
 int nos_open(const char *path, int flags, ...);
 int nos_close(int fd);
+int nos_dup(int oldfd);
+int nos_dup2(int oldfd, int newfd);
 ssize_t nos_read(int fd, void *buf, size_t count);
 ssize_t nos_write(int fd, const void *buf, size_t count);
 loff_t nos_lseek(int fd, loff_t offset, int whence);

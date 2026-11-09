@@ -7,6 +7,7 @@
 #include <fs/fs.h>
 #include <kernel/init.h>
 #include <kernel/printk.h>
+#include <kernel/task.h>
 #include <string.h>
 
 static int vfs_smoke(void)
@@ -111,9 +112,9 @@ static int vfs_smoke(void)
     }
 
     {
-        int descriptors[16];
+        int descriptors[CONFIG_TASK_MAX_FDS];
         int i;
-        for (i = 0; i < 16; i++) {
+        for (i = 0; i < CONFIG_TASK_MAX_FDS; i++) {
             descriptors[i] = nos_open("/sys/arch", O_RDONLY);
             if (descriptors[i] < 0) {
                 while (--i >= 0) nos_close(descriptors[i]);
@@ -121,7 +122,7 @@ static int vfs_smoke(void)
             }
         }
         fd = nos_open("/smoke.txt", O_WRONLY | O_TRUNC);
-        for (i = 0; i < 16; i++) nos_close(descriptors[i]);
+        for (i = 0; i < CONFIG_TASK_MAX_FDS; i++) nos_close(descriptors[i]);
         if (fd != -EMFILE) {
             pr_err("vfs_smoke: expected descriptor exhaustion: %d\n", fd);
             if (fd >= 0) nos_close(fd);
