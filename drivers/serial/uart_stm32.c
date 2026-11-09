@@ -85,6 +85,11 @@ struct uart_stm32_data {
     uint32_t tx_dropped;
     uint32_t dma_errors;
     bool panic;
+    uint32_t baud_rate;
+    uint8_t data_bits;
+    uint8_t parity;
+    uint8_t stop_bits;
+    uint8_t flow_ctrl;
 #ifdef CONFIG_UART_DMA
     unsigned char dma_buf[CONFIG_UART_DMA_BUFFER_SIZE];
     unsigned int dma_len;
@@ -358,6 +363,7 @@ static void uart_stm32_panic_write(const struct device *dev,
 static int uart_stm32_configure(const struct device *dev, const struct uart_config *cfg)
 {
     const struct uart_stm32_config *config = dev->config;
+    struct uart_stm32_data *data = dev->data;
     USART_InitTypeDef uart_init;
 
     if (cfg == NULL || cfg->baud_rate == 0) {
@@ -385,22 +391,27 @@ static int uart_stm32_configure(const struct device *dev, const struct uart_conf
     uart_init.USART_Mode = USART_Mode_Rx | USART_Mode_Tx;
     USART_Init(config->regs, &uart_init);
 
-    ((struct uart_stm32_config *)config)->baud_rate = cfg->baud_rate;
+    data->baud_rate = cfg->baud_rate;
+    data->data_bits = cfg->data_bits;
+    data->parity = cfg->parity;
+    data->stop_bits = cfg->stop_bits;
+    data->flow_ctrl = cfg->flow_ctrl;
     return 0;
 }
 
 static int uart_stm32_get_config(const struct device *dev, struct uart_config *cfg)
 {
     const struct uart_stm32_config *config = dev->config;
+    struct uart_stm32_data *data = dev->data;
 
     if (cfg == NULL) {
         return -EINVAL;
     }
-    cfg->baud_rate = config->baud_rate;
-    cfg->data_bits = UART_DATA_BITS_8;
-    cfg->parity = UART_PARITY_NONE;
-    cfg->stop_bits = UART_STOP_BITS_1;
-    cfg->flow_ctrl = UART_FLOW_NONE;
+    cfg->baud_rate = data->baud_rate != 0 ? data->baud_rate : config->baud_rate;
+    cfg->data_bits = data->data_bits != 0 ? data->data_bits : UART_DATA_BITS_8;
+    cfg->parity = data->parity;
+    cfg->stop_bits = data->stop_bits != 0 ? data->stop_bits : UART_STOP_BITS_1;
+    cfg->flow_ctrl = data->flow_ctrl;
     return 0;
 }
 
@@ -476,6 +487,12 @@ static int uart_stm32_init(struct device *dev)
     uart_init.USART_HardwareFlowControl = USART_HardwareFlowControl_None;
     uart_init.USART_Mode = USART_Mode_Rx | USART_Mode_Tx;
     USART_Init(config->regs, &uart_init);
+
+    data->baud_rate = config->baud_rate;
+    data->data_bits = UART_DATA_BITS_8;
+    data->parity = UART_PARITY_NONE;
+    data->stop_bits = UART_STOP_BITS_1;
+    data->flow_ctrl = UART_FLOW_NONE;
 #ifdef CONFIG_UART_DMA
     if (uart_log_dev.dma_config == NULL) return -ENODEV;
 #ifdef CONFIG_SOC_STM32F4

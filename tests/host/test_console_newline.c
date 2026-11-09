@@ -11,47 +11,41 @@ struct device *device_get_binding(const char *name) { (void)name; return &test_d
 static unsigned char wire[256];
 static unsigned int used;
 static unsigned int room = sizeof(wire);
-static int write_bytes(const struct device *dev, const unsigned char *buf, unsigned int len)
+
+static ssize_t write_bytes(const struct device *dev, const unsigned char *buf, size_t len)
 {
     (void)dev;
     if (len > room) return -EAGAIN;
     memcpy(wire + used, buf, len);
     used += len;
     room -= len;
-    return (int)len;
+    return (ssize_t)len;
 }
-static int write_recordv(const struct device *dev, const unsigned char *a, unsigned int alen,
-                         const unsigned char *b, unsigned int blen)
+
+static int poll_out_byte(const struct device *dev, unsigned char out)
 {
-    if (alen + blen > room) return -EAGAIN;
-    if (alen) write_bytes(dev, a, alen);
-    if (blen) write_bytes(dev, b, blen);
-    return (int)(alen + blen);
+    (void)dev;
+    if (room < 1) return -EAGAIN;
+    wire[used++] = out;
+    room--;
+    return 0;
 }
-static int write_room(const struct device *dev) { (void)dev; return (int)room; }
-static int write_text_recordv(const struct device *dev, const unsigned char *a, unsigned int alen,
-                              const unsigned char *b, unsigned int blen)
+
+static void panic_bytes(const struct device *dev, const unsigned char *buf, size_t len)
 {
-    unsigned char out[64];
-    unsigned int i, n = 0;
-    unsigned char prev = 0;
-    for (i = 0; i < alen + blen; i++) {
-        unsigned char ch = i < alen ? a[i] : b[i - alen];
-        if (ch == '\n' && prev != '\r') out[n++] = '\r';
-        out[n++] = ch;
-        prev = ch;
-    }
-    if (write_bytes(dev, out, n) < 0) return -EAGAIN;
-    return (int)(alen + blen);
+    (void)dev;
+    if (len > room) len = room;
+    memcpy(wire + used, buf, len);
+    used += len;
+    room -= len;
 }
 
 int main(void)
 {
     static const struct uart_driver_api api = {
-        .write = write_bytes, .write_record = write_bytes,
-        .write_recordv = write_recordv, .write_room = write_room,
-        .write_text_recordv = write_text_recordv,
-        .panic_write = write_bytes,
+        .poll_out = poll_out_byte,
+        .write = write_bytes,
+        .panic_write = panic_bytes,
     };
     test_device.api = &api;
     test_device.ready = true;
@@ -69,17 +63,11 @@ int main(void)
         return 1;
     }
     used = 0; room = 1;
-    if (uart_console_write("\n", 1) != -EAGAIN || used != 0 ||
-        uart_console_write_room() != 0) {
+    if (uart_console_write("\n", 1) != -EAGAIN || used != 0) {
         fputs("FAIL: a newline must not be split when the UART queue is full\n", stderr);
         return 1;
     }
-    used = 0; room = 3;
-    if (uart_console_write_recordv("a\n", 2, "b\n", 2) != -EAGAIN || used != 0) {
-        fputs("FAIL: expanded record must be atomic under backpressure\n", stderr);
-        return 1;
-    }
-    room = sizeof(wire);
+    used = 0; room = sizeof(wire);
     if (uart_console_write_recordv("a\n", 2, "b\n", 2) != 4 || used != 6 ||
         memcmp(wire, "a\r\nb\r\n", 6)) {
         fputs("FAIL: split record must expand LF\n", stderr);

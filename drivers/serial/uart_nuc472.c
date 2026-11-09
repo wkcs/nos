@@ -110,7 +110,9 @@ static void nuc472_panic_write(const struct device *dev, const unsigned char *bu
 static int nuc472_configure(const struct device *dev, const struct uart_config *cfg)
 {
     (void)dev;
-    (void)cfg;
+    if (cfg == NULL) {
+        return -EINVAL;
+    }
     return 0;
 }
 

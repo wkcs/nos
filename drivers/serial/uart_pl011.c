@@ -129,7 +129,9 @@ static void uart_pl011_panic_write(const struct device *dev, const unsigned char
 static int uart_pl011_configure(const struct device *dev, const struct uart_config *cfg)
 {
     (void)dev;
-    (void)cfg;
+    if (cfg == NULL) {
+        return -EINVAL;
+    }
     return 0;
 }
 
