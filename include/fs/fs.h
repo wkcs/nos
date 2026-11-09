@@ -195,6 +195,7 @@ int nos_fdatasync(int fd);
 
 /* Filesystem Initialization */
 int init_ramfs(void);
+int init_devfs(void);
 int init_fatfs(void);
 int init_procfs(void);
 int init_sysfs(void);

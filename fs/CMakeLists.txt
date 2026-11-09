@@ -3,6 +3,7 @@ set(FS_SRCS
     vfs_fd.c
     vfs_io.c
     ramfs.c
+    devfs.c
 )
 
 if(CONFIG_PROCFS)

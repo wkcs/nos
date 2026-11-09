@@ -250,4 +250,11 @@ int vfs_get_mount_entry(int index, struct vfs_mount_entry *entry);
 int vfs_list_filesystems(char *buf, size_t size);
 void vfs_setup_standard_mounts(void);
 
+/* DevFS 字符设备注册与内置设备 */
+int init_devfs(void);
+int devfs_register_chrdev(const char *name, const struct file_operations *fops, void *priv);
+extern struct file_system_type devfs_fs_type;
+extern const struct file_operations devfs_null_fops;
+extern const struct file_operations devfs_zero_fops;
+
 #endif /* __NOS_FS_VFS_H__ */

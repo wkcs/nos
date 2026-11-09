@@ -15,6 +15,9 @@
 #include <limits.h>
 #include <string.h>
 #include "vfs_fd.h"
+#ifdef CONFIG_TTY
+#include <nos/tty.h>
+#endif
 
 static struct file_system_type *file_systems;
 SPINLOCK(file_systems_lock);
@@ -204,6 +207,12 @@ int vfs_init(void) {
   ret = init_ramfs();
   if (ret) {
     pr_err("VFS: Failed to register ramfs\n");
+    return ret;
+  }
+
+  ret = init_devfs();
+  if (ret) {
+    pr_err("VFS: Failed to register devfs\n");
     return ret;
   }
 
@@ -1166,6 +1175,46 @@ int vfs_list_filesystems(char *buf, size_t size)
     return pos;
 }
 
+static struct dentry *vfs_create_mount_point(struct dentry *parent, const char *name)
+{
+    unsigned int len;
+    struct dentry *dentry;
+    struct inode *inode;
+
+    if (parent == NULL || name == NULL) {
+        return NULL;
+    }
+    len = (unsigned int)strlen(name);
+    spin_lock(&vfs_mount_lock);
+    dentry = vfs_find_cached_child(parent, name, len);
+    spin_unlock(&vfs_mount_lock);
+    if (dentry != NULL) {
+        return dentry;
+    }
+
+    dentry = vfs_alloc_dentry(parent, name, len);
+    if (dentry == NULL) {
+        return NULL;
+    }
+
+    inode = nos_vfs_alloc_inode(parent->d_sb);
+    if (inode == NULL) {
+        kfree(dentry);
+        return NULL;
+    }
+
+    inode->i_ino = 0;
+    inode->i_mode = S_IFDIR | 0755;
+    dentry->d_inode = inode;
+
+    spin_lock(&vfs_mount_lock);
+    vfs_ensure_dentry_lists(parent);
+    list_add_tail(&dentry->d_child, &parent->d_subdirs);
+    spin_unlock(&vfs_mount_lock);
+
+    return dentry;
+}
+
 void vfs_setup_standard_mounts(void)
 {
     struct dentry *root = vfs_get_root();
@@ -1175,10 +1224,27 @@ void vfs_setup_standard_mounts(void)
     if (root == NULL) {
         return;
     }
-    (void)vfs_make_dir(root, "proc", 0755, &dir);
-    if (dir == NULL) {
-        dir = vfs_lookup_path(root, "/proc");
+
+    dir = vfs_create_mount_point(root, "dev");
+    if (dir != NULL) {
+        mnt_root = vfs_mount("devfs", 0, "devfs", NULL);
+        if (mnt_root != NULL) {
+            (void)vfs_bind_mount(dir, mnt_root);
+        }
     }
+
+    /* 注册标准设备 */
+    devfs_register_chrdev("null", &devfs_null_fops, NULL);
+    devfs_register_chrdev("zero", &devfs_zero_fops, NULL);
+#ifdef CONFIG_TTY
+    struct nos_tty *console_tty = nos_console_tty();
+    if (console_tty != NULL) {
+        devfs_register_chrdev("console", &nos_tty_fops, console_tty);
+        devfs_register_chrdev("ttyS0", &nos_tty_fops, console_tty);
+    }
+#endif
+
+    dir = vfs_create_mount_point(root, "proc");
     if (dir != NULL) {
         mnt_root = vfs_mount("procfs", 0, "proc", NULL);
         if (mnt_root != NULL) {
@@ -1186,11 +1252,7 @@ void vfs_setup_standard_mounts(void)
         }
     }
 
-    dir = NULL;
-    (void)vfs_make_dir(root, "sys", 0755, &dir);
-    if (dir == NULL) {
-        dir = vfs_lookup_path(root, "/sys");
-    }
+    dir = vfs_create_mount_point(root, "sys");
     if (dir != NULL) {
         mnt_root = vfs_mount("sysfs", 0, "sysfs", NULL);
         if (mnt_root != NULL) {

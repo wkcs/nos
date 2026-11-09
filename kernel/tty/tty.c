@@ -339,6 +339,11 @@ static int tty_fop_open(struct inode *inode, struct file *file)
     if (file->private_data == NULL && inode != NULL) {
         file->private_data = inode->i_private;
     }
+#ifdef CONFIG_TTY
+    if (file->private_data == NULL) {
+        file->private_data = nos_console_tty();
+    }
+#endif
     return 0;
 }
 
