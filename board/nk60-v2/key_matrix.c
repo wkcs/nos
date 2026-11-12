@@ -53,7 +53,13 @@ typedef struct {
 #define NK60_KEY_WORDS      KEY_RAW_WORDS(NK60_KEY_NUM)
 
 #ifndef NK60_KEY_SETTLE_LOOPS
-#define NK60_KEY_SETTLE_LOOPS 15U
+/* 上一位未拉低时的短建立循环数（3~4 周期/次 @ 84MHz，约 1.0~1.3 us） */
+#define NK60_KEY_SETTLE_LOOPS 28U
+#endif
+
+#ifndef NK60_KEY_RECOVER_LOOPS
+/* 上一位被拉低后的 RC 上拉恢复循环数（3~4 周期/次 @ 84MHz，>= 15 us） */
+#define NK60_KEY_RECOVER_LOOPS 420U
 #endif
 
 /* 74HC595 硬件扫描位到 NK60 逻辑按键序号的私有走线映射表 */
@@ -81,34 +87,44 @@ struct nk60_key {
 static inline void hc595_pulse_clk(void)
 {
     GPIOB->BSRR = HC595_CLK_PIN;
-    __asm__ volatile("nop\n\tnop\n\t");
+    __asm__ volatile("nop\n\tnop\n\tnop\n\tnop\n\t");
     GPIOB->BSRR = (uint32_t)HC595_CLK_PIN << 16U;
 }
 
 static inline void hc595_pulse_load(void)
 {
     GPIOB->BSRR = HC595_EN_PIN;
-    __asm__ volatile("nop\n\tnop\n\t");
+    __asm__ volatile("nop\n\tnop\n\tnop\n\tnop\n\t");
     GPIOB->BSRR = (uint32_t)HC595_EN_PIN << 16U;
 }
 
-static inline void key_matrix_settle_delay(void)
+static inline void nk60_delay_loops(uint32_t loops)
 {
-    /*
-     * 矩阵回路 RC 充放电建立延时：
-     * 约 60~70 个周期，在 84MHz 主频下约为 700~800 ns，
-     * 保证 PB14 内部上拉电平在按键释放时充分恢复到高电平阈值。
-     */
-    for (volatile uint32_t i = 0; i < NK60_KEY_SETTLE_LOOPS; i++) {
-        __asm__ volatile("nop");
+    if (loops == 0U) {
+        return;
     }
+    __asm__ volatile(
+        "1:\n\t"
+        "subs %0, %0, #1\n\t"
+        "bne 1b\n\t"
+        : "+r"(loops)
+        :
+        : "cc"
+    );
 }
 
 static noinline void nk60_v2_key_scan_once(uint32_t *raw_data)
 {
     int i;
+    bool prev_low;
 
     memset(raw_data, 0, HC595_RAW_DATA_NUM * sizeof(uint32_t));
+
+    /*
+     * 若扫描开始前 PB14 仍处于低电平（例如上一轮末尾位 71 按键被按下），
+     * 首位切换后同样需要等待完整的 RC 上拉恢复时间，避免误判串扰到第 0 位。
+     */
+    prev_low = ((GPIOB->IDR & KEY_DATA_PIN) == 0U);
 
     for (i = 0; i < (int)HC595_BIT_NUM; i++) {
         if (i == 0) {
@@ -116,14 +132,27 @@ static noinline void nk60_v2_key_scan_once(uint32_t *raw_data)
         } else {
             GPIOB->BSRR = HC595_DATA_PIN;                  /* 送 1 */
         }
-        __asm__ volatile("nop\n\t");
+        __asm__ volatile("nop\n\tnop\n\tnop\n\tnop\n\t");
 
         hc595_pulse_clk();
         hc595_pulse_load();
-        key_matrix_settle_delay();
+
+        /*
+         * 按键未按下时 PB14 保持高电平，仅需短暂等待主动下拉建立；
+         * 若上一位刚将 PB14 拉低，因二极管反向截止，只能依靠 40kΩ 弱上拉
+         * 对矩阵寄生电容缓慢充电，必须给予 >= 15us 恢复延时防止相邻键位串扰。
+         */
+        if (prev_low) {
+            nk60_delay_loops(NK60_KEY_RECOVER_LOOPS);
+        } else {
+            nk60_delay_loops(NK60_KEY_SETTLE_LOOPS);
+        }
 
         if ((GPIOB->IDR & KEY_DATA_PIN) == 0U) {
             raw_data[KEY_RAW_GROUP(i)] |= (1UL << KEY_RAW_BIT(i));
+            prev_low = true;
+        } else {
+            prev_low = false;
         }
     }
 }
