@@ -9,12 +9,11 @@
 #ifndef __NOS_DISPLAY_H__
 #define __NOS_DISPLAY_H__
 
-#include <kernel/kernel.h>
+#include <kernel/device.h>
 #include <kernel/list.h>
-#include <kernel/spinlock.h>
+#include <kernel/mutex.h>
 
-#define BACKGROUND_LAYER 255
-#define TOP_LAYER        0
+#define DS_LAYER_OPAQUE 255U
 
 enum ds_data_type {
     DS_COLOR_G = 0,
@@ -66,13 +65,64 @@ struct ds_draw_info {
         struct ds_draw_area area;
         struct ds_draw_point *point;
     };
-    bool point_num;
+    int point_num;
+    int16_t z_order;
+    uint8_t opacity;
     struct list_head list;
     struct mutex lock;
     uint8_t buf[];
 };
 
 struct display_server;
+
+struct ds_frame {
+    uint8_t *pixels;
+    uint16_t width;
+    uint16_t height;
+};
+
+struct ds_render_layer {
+    int16_t z_order;
+    uint8_t opacity;
+    /* Called under the composition lock. Render without blocking or reentering the server. */
+    void (*render)(struct ds_frame *frame, uint8_t opacity, void *ctx);
+    void *ctx;
+};
+
+struct ds_layer_source {
+    /* Return a frame snapshot sorted by z-order, valid until the next prepare. */
+    const struct ds_render_layer *(*prepare)(void *ctx, size_t *count);
+    void *ctx;
+};
+
+/*
+ * Register before scheduling starts. The source, layers and contexts must live
+ * for the lifetime of the output. Higher z-order values are composited later.
+ * At equal z-order, buffered drawings cover render callbacks, and older buffered
+ * drawings cover newer ones to preserve existing callers' stacking order.
+ */
+int display_server_register_layers(const char *output, const struct ds_layer_source *source);
+void display_server_set_draw_layer(struct display_server *ds, struct ds_draw_info *info,
+                                   int16_t z_order, uint8_t opacity);
+
+static inline void display_frame_blend_pixel(struct ds_frame *frame, uint16_t x, uint16_t y,
+                                             const uint8_t pixel[DS_COLOR_DATA_MAX],
+                                             uint8_t opacity)
+{
+    size_t index;
+    unsigned int channel;
+
+    if (x >= frame->width || y >= frame->height || opacity == 0U) {
+        return;
+    }
+    index = ((size_t)y * frame->width + x) * DS_COLOR_DATA_MAX;
+    for (channel = 0U; channel < DS_COLOR_DATA_MAX; channel++) {
+        unsigned int below = frame->pixels[index + channel];
+        frame->pixels[index + channel] =
+            (uint8_t)((pixel[channel] * opacity +
+                       below * (DS_LAYER_OPAQUE - opacity) + 127U) / DS_LAYER_OPAQUE);
+    }
+}
 
 int ds_set_draw_point_loc(struct display_server *ds, struct ds_draw_info *info, struct ds_draw_point *point, uint16_t x, uint16_t y);
 struct ds_draw_info *display_server_alloc_draw_point_info(struct display_server *ds, int point_num);

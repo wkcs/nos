@@ -84,7 +84,9 @@ static size_t config_max_size(const struct nlk_keyboard_ctx *ctx)
                NLK_KB_MAX_MACRO_STEPS * sizeof(struct nlk_kb_macro_step)) +
            sizeof(struct nlk_kb_light_cfg) + NLK_KB_LIGHT_EFFECT_NAME_MAX + 1U +
            NLK_KB_MAX_LIGHT_ZONES * (sizeof(struct nlk_kb_zone_light_cfg) +
-                                    NLK_KB_LIGHT_EFFECT_NAME_MAX);
+                                    NLK_KB_LIGHT_EFFECT_NAME_MAX) + 1U +
+           CONFIG_KEYBOARD_LIGHT_MAX_LAYERS *
+               (sizeof(struct nlk_kb_light_layer) + NLK_KB_LIGHT_EFFECT_NAME_MAX);
 }
 
 static int config_write_file(const struct nlk_keyboard_ctx *ctx, const char *hardware,
@@ -246,7 +248,7 @@ int keyboard_config_file_next(const char *dir, const char *hardware, uint8_t kin
         ret = (int)nos_read(fd, &header, sizeof(header));
         (void)nos_close(fd);
         if (ret != (int)sizeof(header) || header.magic != KEYBOARD_CONFIG_MAGIC ||
-            (header.version != 1U && header.version != 2U) || header.kind != kind ||
+            (header.version < 1U || header.version > 3U) || header.kind != kind ||
             memchr(header.hardware, '\0', sizeof(header.hardware)) == NULL ||
             memchr(header.name, '\0', sizeof(header.name)) == NULL ||
             (header.version >= 2U && memchr(header.desc, '\0', sizeof(header.desc)) == NULL) ||

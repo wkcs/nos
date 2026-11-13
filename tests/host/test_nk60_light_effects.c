@@ -34,7 +34,9 @@ int main(void)
     assert(g_nk60_light_effects[NK60_EFFECT_BREATH].render == nk60_effect_breath);
     assert(g_nk60_kb_profile.led_count == 61U);
     assert(g_nk60_kb_profile.underglow_leds == 0U);
-    assert(g_nk60_kb_profile.light_zone_count == 1U);
+    assert(g_nk60_kb_profile.light_zone_count == 2U);
+    assert(g_nk60_light_zones[1].type == NLK_KB_LIGHT_TYPE_RGB_MATRIX);
+    assert(g_nk60_light_zones[1].led_start == 28U);
     assert((g_nk60_kb_profile.kb_flags & NLK_KB_FLAG_LIGHT_UNDERGLOW) == 0U);
     return 0;
 }

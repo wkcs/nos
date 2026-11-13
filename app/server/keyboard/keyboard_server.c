@@ -45,7 +45,8 @@
 
 #define KS_MAX_KEY_WORDS    KEY_RAW_WORDS(KEY_MAX_NUM)
 #define KS_NLK_HID_QUEUE_LEN 8U
-#define KS_ACTIVE_SNAPSHOT_SIZE 1280U
+#define KS_ACTIVE_SNAPSHOT_SIZE (1280U + CONFIG_KEYBOARD_LIGHT_MAX_LAYERS * \
+    (sizeof(struct nlk_kb_light_layer) + NLK_KB_LIGHT_EFFECT_NAME_MAX))
 
 struct keyboard_server {
     struct task_struct     *task;
@@ -62,7 +63,6 @@ struct keyboard_server {
     struct nos_completion   sync_comp;
     struct mutex            lock;
     bool                    enable;
-    bool                    caps_lock_active;
     bool                    config_dirty;
     bool                    sync_pending;
     bool                    sync_busy;
@@ -81,8 +81,13 @@ struct keyboard_server {
 };
 
 static struct keyboard_server *g_keyboard_server;
+static struct keyboard_light_state g_light_state;
+static SPINLOCK(g_light_state_lock);
 
 static int ks_persistent_store_ready(struct keyboard_server *ks);
+static void ks_on_light_cfg(const struct nlk_kb_light_cfg *cfg,
+                            const struct nlk_kb_light_sync_beacon *beacon,
+                            uint8_t indicators, void *priv);
 static void ks_trigger_config_snapshot(struct keyboard_server *ks);
 
 static const struct keyboard_profile *g_registered_kb_profile;
@@ -329,55 +334,54 @@ uint8_t keyboard_config_get_saved_mask(void)
     return 0x0FU; /* 向上层虚拟返回支持掩码 */
 }
 
-bool keyboard_server_is_caps_lock_active(void)
+static void ks_publish_light_state(const struct nlk_keyboard_ctx *kb)
 {
-    if (g_keyboard_server != NULL) {
-        return g_keyboard_server->caps_lock_active ||
-               ((g_keyboard_server->kb_cap.indicator_leds & NLK_KB_IND_CAPS_LOCK) != 0U);
-    }
-    return false;
-}
-
-int keyboard_server_get_light_state(struct nlk_kb_light_cfg *cfg, uint8_t *indicators)
-{
-    if (g_keyboard_server == NULL) {
-        return -ENODEV;
-    }
-    if (cfg != NULL) {
-        *cfg = g_keyboard_server->kb_cap.light_cfg;
-    }
-    if (indicators != NULL) {
-        *indicators = g_keyboard_server->kb_cap.indicator_leds;
-    }
-    return 0;
-}
-
-int keyboard_server_render_light(uint8_t x, uint8_t y, uint32_t phase,
-                                 uint8_t rgb[3])
-{
-    struct nlk_keyboard_ctx *kb;
-    const struct nlk_kb_effect_entry *entry;
-    uint8_t effect;
+    struct keyboard_light_state state = {0};
     uint8_t i;
 
-    if (g_keyboard_server == NULL || rgb == NULL) {
-        return -ENODEV;
+    spin_lock_irq(&g_light_state_lock);
+    state.enabled = kb->light_cfg.enable != 0U;
+    state.count = kb->light_layer_count;
+    state.generation = kb->light_layer_generation;
+    for (i = 0U; i < state.count; i++) {
+        struct keyboard_light_layer_state *output = &state.layers[i];
+        const struct nlk_kb_effect_entry *effect;
+
+        output->layer = kb->light_layers[i];
+        output->active = kb->light_layer_active[i];
+        if (output->layer.zone_id != NLK_KB_LIGHT_LAYER_OWN_CFG) {
+            const struct nlk_kb_zone_light_cfg *zone = &kb->zone_cfgs[output->layer.zone_id];
+
+            if (output->layer.zone_id == 0U) {
+                output->layer.cfg = kb->light_cfg;
+            } else {
+                output->layer.cfg.enable = zone->enable;
+                output->layer.cfg.effect_id = zone->effect_id;
+                output->layer.cfg.brightness = zone->brightness;
+                output->layer.cfg.speed = zone->speed;
+                output->layer.cfg.color_r = zone->color_r;
+                output->layer.cfg.color_g = zone->color_g;
+                output->layer.cfg.color_b = zone->color_b;
+            }
+        }
+        effect = nlk_cap_keyboard_find_light_effect(kb, output->layer.cfg.effect_id);
+        if (effect != NULL) {
+            output->render = effect->render;
+            output->priv = effect->priv;
+        }
     }
-    kb = &g_keyboard_server->kb_cap;
-    if (kb->light_cfg.enable == 0U) {
-        memset(rgb, 0, 3U);
-        return 0;
+    g_light_state = state;
+    spin_unlock_irq(&g_light_state_lock);
+}
+
+void keyboard_server_get_light_state(struct keyboard_light_state *state)
+{
+    if (state == NULL) {
+        return;
     }
-    effect = kb->light_cfg.effect_id;
-    entry = nlk_cap_keyboard_find_light_effect(kb, effect);
-    if (entry == NULL || entry->render == NULL) {
-        return -EINVAL;
-    }
-    entry->render(&kb->light_cfg, x, y, phase, rgb, entry->priv);
-    for (i = 0U; i < 3U; i++) {
-        rgb[i] = (uint8_t)(((uint16_t)rgb[i] * kb->light_cfg.brightness) / 255U);
-    }
-    return 0;
+    spin_lock_irq(&g_light_state_lock);
+    *state = g_light_state;
+    spin_unlock_irq(&g_light_state_lock);
 }
 
 static int ks_on_profile_save(uint8_t slot_id, void *priv)
@@ -797,15 +801,10 @@ static void ks_on_zone_light_cfg(uint8_t zone_id,
                                  const struct nlk_kb_zone_light_cfg *cfg,
                                  void *priv)
 {
-    struct keyboard_server *ks = (struct keyboard_server *)priv;
-    if (ks != NULL && cfg != NULL && zone_id == 0U) {
-        if (ks->ds_dev == NULL) {
-            ks->ds_dev = device_find_by_name("display-server");
-        }
-        if (ks->ds_dev != NULL && ks->ds_dev->ops.control != NULL) {
-            int cmd = (cfg->enable != 0U) ? DS_CTRL_ENABLE : DS_CTRL_DISABLE;
-            (void)ks->ds_dev->ops.control(ks->ds_dev, cmd, NULL);
-        }
+    struct keyboard_server *ks = priv;
+
+    if (ks != NULL && cfg != NULL && zone_id != 0U) {
+        ks_publish_light_state(&ks->kb_cap);
     }
 }
 
@@ -814,25 +813,15 @@ static int ks_action_light_toggle(const struct key_action_context *ctx, void *pr
     struct keyboard_server *ks = (struct keyboard_server *)priv;
 
     if (ks != NULL && ctx != NULL && ctx->event_type == 1U) {
-        if (ks->ds_dev == NULL) {
-            ks->ds_dev = device_find_by_name("display-server");
+        ks->kb_cap.light_cfg.enable = !ks->kb_cap.light_cfg.enable;
+        if (ks->kb_cap.light_zone_count > 0U) {
+            ks->kb_cap.zone_cfgs[0].enable = ks->kb_cap.light_cfg.enable;
         }
-        if (ks->ds_dev != NULL && ks->ds_dev->ops.control != NULL) {
-            int status = ks->ds_dev->ops.control(ks->ds_dev,
-                                                 DS_CTRL_GET_ENABLE_STATUS, NULL);
-            int cmd = (status > 0) ? DS_CTRL_DISABLE : DS_CTRL_ENABLE;
-            (void)ks->ds_dev->ops.control(ks->ds_dev, cmd, NULL);
-            ks->kb_cap.light_cfg.enable = (status > 0) ? 0U : 1U;
-            if (ks->kb_cap.light_zone_count > 0U) {
-                ks->kb_cap.zone_cfgs[0].enable = ks->kb_cap.light_cfg.enable;
-            }
-            if (ks_persistent_store_ready(ks) == 0) {
-                uint32_t now_ms = (uint32_t)tick_to_msec_64(cpu_run_ticks());
-                mutex_lock(&ks->lock);
-                ks->config_dirty = true;
-                ks->sync_deadline_ms = now_ms + 1000U;
-                mutex_unlock(&ks->lock);
-            }
+        ks_on_light_cfg(&ks->kb_cap.light_cfg, NULL, ks->kb_cap.indicator_leds, ks);
+        if (ks_persistent_store_ready(ks) == 0) {
+            uint32_t now_ms = (uint32_t)tick_to_msec_64(cpu_run_ticks());
+            ks->config_dirty = true;
+            ks->sync_deadline_ms = now_ms + 1000U;
         }
     }
     return KEY_ACTION_PASS; /* 未返回按键值，保持原有按键值 */
@@ -883,38 +872,6 @@ static int ks_action_config_select(const struct key_action_context *ctx, void *p
     return KEY_ACTION_PASS;
 }
 
-static int ks_action_caps_lock(const struct key_action_context *ctx, void *priv)
-{
-    struct keyboard_server *ks = (struct keyboard_server *)priv;
-    static uint64_t last_caps_tick = 0;
-    uint64_t now;
-
-    if (ks != NULL && ctx != NULL && ctx->event_type == 1U) {
-        now = cpu_run_ticks();
-        if (last_caps_tick != 0 && (now - last_caps_tick) < msec_to_tick_64(150)) {
-            return KEY_ACTION_PASS;
-        }
-        last_caps_tick = now;
-
-        ks->caps_lock_active = !ks->caps_lock_active;
-        pr_info("Action caps_lock: active=%d\n", ks->caps_lock_active ? 1 : 0);
-
-        if (ks->caps_lock_active) {
-            ks->kb_cap.indicator_leds |= NLK_KB_IND_CAPS_LOCK;
-        } else {
-            ks->kb_cap.indicator_leds &= (uint8_t)~NLK_KB_IND_CAPS_LOCK;
-        }
-
-        if (ks->kb_cap.light_cb != NULL) {
-            ks->kb_cap.light_cb(&ks->kb_cap.light_cfg,
-                                &ks->kb_cap.last_light_beacon,
-                                ks->kb_cap.indicator_leds,
-                                ks->kb_cap.light_priv);
-        }
-    }
-    return KEY_ACTION_PASS; /* 未修改按键值，原有按键值 0x39 (KC_CAPS) 正常传递上报给主机 */
-}
-
 static void ks_on_light_cfg(const struct nlk_kb_light_cfg *cfg,
                             const struct nlk_kb_light_sync_beacon *beacon,
                             uint8_t indicators, void *priv)
@@ -926,6 +883,7 @@ static void ks_on_light_cfg(const struct nlk_kb_light_cfg *cfg,
     if (ks == NULL || cfg == NULL) {
         return;
     }
+    ks_publish_light_state(&ks->kb_cap);
     if (ks->ds_dev == NULL) {
         ks->ds_dev = device_find_by_name("display-server");
     }
@@ -1040,6 +998,23 @@ static int ks_register_nlk_capability(struct keyboard_server *ks)
         ks->kb_cap.light_cfg.color_b = cfg->color_b;
     }
 
+    if (ks->profile.light_layer_count > CONFIG_KEYBOARD_LIGHT_MAX_LAYERS ||
+        (ks->profile.light_layer_count != 0U && ks->profile.light_layers == NULL)) {
+        return -EINVAL;
+    }
+    for (i = 0U; i < ks->profile.light_layer_count; i++) {
+        struct nlk_kb_light_layer layer = ks->profile.light_layers[i].layer;
+        if (ks->profile.light_layers[i].action != NULL) {
+            layer.trigger = nlk_fnv1a_24(ks->profile.light_layers[i].action);
+        }
+        ks->kb_cap.light_layers[i] = layer;
+    }
+    ret = nlk_cap_keyboard_set_light_layers(&ks->kb_cap, ks->kb_cap.light_layers,
+                                             ks->profile.light_layer_count);
+    if (ret != 0) {
+        return ret;
+    }
+
     /* Register custom actions */
     if (ks->profile.action_count > 0U && ks->profile.action_descs != NULL) {
         for (i = 0U; i < ks->profile.action_count; i++) {
@@ -1065,9 +1040,7 @@ static int ks_register_nlk_capability(struct keyboard_server *ks)
     (void)nlk_cap_keyboard_register_action(&ks->kb_cap, "config_select",
                                            "Select config/prof",
                                            ks_action_config_select, ks);
-    (void)nlk_cap_keyboard_register_action(&ks->kb_cap, "caps_lock",
-                                           "Caps Lock light",
-                                           ks_action_caps_lock, ks);
+
 
     /* Bind default profile actions by capability name */
     if (ks->profile.default_action_binding_count > 0U &&
@@ -1308,6 +1281,7 @@ static void keyboard_server_task_entry(void *parameter)
     }
     g_keyboard_server = ks;
     ks_init_filesystem_profiles(ks);
+    ks_on_light_cfg(&ks->kb_cap.light_cfg, NULL, ks->kb_cap.indicator_leds, ks);
 
     ks->hid_dev = device_find_by_name("hidd");
     ks->ds_dev = device_find_by_name("display-server");

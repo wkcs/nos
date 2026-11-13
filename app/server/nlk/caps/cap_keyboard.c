@@ -272,6 +272,87 @@ static void kb_sync_active_config(struct nlk_keyboard_ctx *ctx)
     }
 }
 
+int nlk_cap_keyboard_validate_light_layer(const struct nlk_keyboard_ctx *ctx,
+                                          const struct nlk_kb_light_layer *layer)
+{
+    uint16_t width;
+    uint16_t height;
+
+    if (ctx == NULL || layer == NULL) {
+        return -EINVAL;
+    }
+    width = ctx->desc.led_matrix_cols != 0U ? ctx->desc.led_matrix_cols : ctx->desc.matrix_cols;
+    height = ctx->desc.led_matrix_rows != 0U ? ctx->desc.led_matrix_rows : ctx->desc.matrix_rows;
+    if (layer->width == 0U || layer->height == 0U ||
+        (uint16_t)layer->x + layer->width > width ||
+        (uint16_t)layer->y + layer->height > height ||
+        layer->activation > NLK_KB_LIGHT_HOLD ||
+        (layer->trigger == 0U) != (layer->activation == NLK_KB_LIGHT_ALWAYS) ||
+        layer->trigger > 0xFFFFFFU) {
+        return -EINVAL;
+    }
+    if (layer->zone_id != NLK_KB_LIGHT_LAYER_OWN_CFG) {
+        return layer->zone_id < ctx->light_zone_count ? 0 : -EINVAL;
+    }
+    return nlk_cap_keyboard_find_light_effect(ctx, layer->cfg.effect_id) != NULL ? 0 : -EINVAL;
+}
+
+int nlk_cap_keyboard_set_light_layers(struct nlk_keyboard_ctx *ctx,
+                                      const struct nlk_kb_light_layer *layers, uint8_t count)
+{
+    uint8_t i;
+
+    if (ctx == NULL || (count != 0U && layers == NULL) ||
+        count > CONFIG_KEYBOARD_LIGHT_MAX_LAYERS ||
+        sizeof(struct nlk_kb_light_layers_hdr) + (size_t)count * sizeof(*layers) >
+            CONFIG_NLK_PACKET_MTU - sizeof(int16_t)) {
+        return -EINVAL;
+    }
+    for (i = 0U; i < count; i++) {
+        if (nlk_cap_keyboard_validate_light_layer(ctx, &layers[i]) != 0) {
+            return -EINVAL;
+        }
+    }
+    if (count != 0U) {
+        memmove(ctx->light_layers, layers, (size_t)count * sizeof(*layers));
+    }
+    ctx->light_layer_count = count;
+    for (i = 0U; i < CONFIG_KEYBOARD_LIGHT_MAX_LAYERS; i++) {
+        ctx->light_layer_active[i] = i < count && ctx->light_layers[i].trigger == 0U;
+    }
+    ctx->light_layer_generation++;
+    if (ctx->light_cb != NULL) {
+        ctx->light_cb(&ctx->light_cfg, NULL, ctx->indicator_leds, ctx->light_priv);
+    }
+    return 0;
+}
+
+static void kb_light_action(struct nlk_keyboard_ctx *ctx, const char *action, bool pressed)
+{
+    uint32_t trigger = nlk_fnv1a_24(action);
+    bool changed = false;
+    uint8_t i;
+
+    for (i = 0U; i < ctx->light_layer_count; i++) {
+        const struct nlk_kb_light_layer *layer = &ctx->light_layers[i];
+        bool active = ctx->light_layer_active[i];
+
+        if (layer->trigger != trigger) {
+            continue;
+        }
+        if (layer->activation == NLK_KB_LIGHT_HOLD) {
+            active = pressed;
+        } else if (layer->activation == NLK_KB_LIGHT_TOGGLE && pressed) {
+            active = !active;
+        }
+        changed |= active != ctx->light_layer_active[i];
+        ctx->light_layer_active[i] = active;
+    }
+    if (changed && ctx->light_cb != NULL) {
+        ctx->light_cb(&ctx->light_cfg, NULL, ctx->indicator_leds, ctx->light_priv);
+    }
+}
+
 static int kb_on_rpc(struct nlk_node *node, struct nlk_capability *cap,
                      const struct nlk_pkt_hdr *hdr,
                      const void *req, uint16_t req_len,
@@ -371,6 +452,41 @@ static int kb_on_rpc(struct nlk_node *node, struct nlk_capability *cap,
             *resp_len = 1U;
         }
         return 0;
+
+    case NLK_KB_OP_GET_LIGHT_LAYERS: {
+        struct nlk_kb_light_layers_hdr header = {
+            .count = ctx->light_layer_count,
+            .capacity = CONFIG_KEYBOARD_LIGHT_MAX_LAYERS,
+        };
+        size_t size = (size_t)header.count * sizeof(ctx->light_layers[0]);
+
+        if (resp == NULL) {
+            return -EINVAL;
+        }
+        memcpy(resp, &header, sizeof(header));
+        memcpy((uint8_t *)resp + sizeof(header), ctx->light_layers, size);
+        *resp_len = sizeof(header) + size;
+        return 0;
+    }
+    case NLK_KB_OP_SET_LIGHT_LAYERS: {
+        struct nlk_kb_light_layers_hdr header;
+        int rc;
+
+        if (req == NULL || req_len < sizeof(header)) {
+            return -EINVAL;
+        }
+        memcpy(&header, req, sizeof(header));
+        if (header.reserved != 0U ||
+            req_len != sizeof(header) + (size_t)header.count * sizeof(ctx->light_layers[0])) {
+            return -EINVAL;
+        }
+        rc = nlk_cap_keyboard_set_light_layers(ctx,
+            (const struct nlk_kb_light_layer *)((const uint8_t *)req + sizeof(header)), header.count);
+        if (rc == 0) {
+            kb_sync_active_config(ctx);
+        }
+        return rc;
+    }
 
     case NLK_KB_OP_GET_LIGHT_CFG:
         if (resp == NULL) {
@@ -1354,6 +1470,7 @@ static uint32_t kb_execute_action_chain(struct nlk_keyboard_ctx *ctx, uint8_t la
                          * 不覆盖已有按键值，保持原有键码继续流转 */
                     }
                 }
+                kb_light_action(ctx, ctx->action_descs[a].name, pressed != 0U);
                 break;
             }
         }

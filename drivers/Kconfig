@@ -220,6 +220,15 @@ config KEYBOARD
 	help
 	  启用键盘系统服务（负责按键扫描消抖、层切换、HID 上报及 NLK keyboard 能力注册管理）。
 
+config KEYBOARD_LIGHT_MAX_LAYERS
+    int "Maximum active keyboard lighting layers"
+    depends on KEYBOARD
+    range 1 8
+    default 8
+    help
+      Runtime lighting configurations can use up to this many composited layers.
+      Eight layers fit in one NLK configuration RPC at the default packet MTU.
+
 # 显示驱动
 menu "Display Support"
 

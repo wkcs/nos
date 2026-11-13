@@ -647,6 +647,8 @@ enum nlk_kb_opcode {
     NLK_KB_OP_CONFIG_FILES_DELETE   = 0x2DU,
     NLK_KB_OP_MACRO_CONTROL         = 0x2EU,
     NLK_KB_OP_MACRO_STATUS          = 0x2FU,
+    NLK_KB_OP_GET_LIGHT_LAYERS      = 0x30U,
+    NLK_KB_OP_SET_LIGHT_LAYERS      = 0x31U,
     NLK_KB_EVT_SWITCH_DELTA         = 0x20U,
     NLK_KB_EVT_HID_REPORT           = 0x21U,
     NLK_KB_EVT_LIGHT_SYNC_BEACON    = 0x22U,
@@ -780,6 +782,38 @@ struct nlk_kb_light_cfg {
     uint8_t  color_g;
     uint8_t  color_b;
 } __attribute__((packed));
+
+enum nlk_kb_light_activation {
+    NLK_KB_LIGHT_ALWAYS = 0U,
+    NLK_KB_LIGHT_TOGGLE = 1U,
+    NLK_KB_LIGHT_HOLD = 2U,
+};
+
+#define NLK_KB_LIGHT_LAYER_OWN_CFG 0xFFU
+
+/* A named action starts/stops all layers with its FNV-1a-24 trigger hash. */
+struct nlk_kb_light_layer {
+    uint32_t trigger;       /* Zero for automatic playback. */
+    int16_t z_order;       /* Higher values are composited later. */
+    uint8_t x;
+    uint8_t y;
+    uint8_t width;
+    uint8_t height;
+    uint8_t opacity;
+    uint8_t activation;    /* enum nlk_kb_light_activation */
+    uint8_t zone_id;       /* Inherit a zone style, or use cfg with OWN_CFG. */
+    struct nlk_kb_light_cfg cfg;
+} __attribute__((packed));
+
+/* Followed by count light_layer records. capacity is reported by GET. */
+struct nlk_kb_light_layers_hdr {
+    uint8_t count;
+    uint8_t capacity;
+    uint16_t reserved;
+} __attribute__((packed));
+
+_Static_assert(sizeof(struct nlk_kb_light_layer) == 21, "nlk_kb_light_layer must be 21 bytes");
+_Static_assert(sizeof(struct nlk_kb_light_layers_hdr) == 4, "nlk_kb_light_layers_hdr must be 4 bytes");
 
 struct nlk_kb_light_frame_hdr {
     uint16_t start_led;

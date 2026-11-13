@@ -404,6 +404,11 @@ struct keyboard_light_effect {
     nlk_kb_effect_render_fn_t render;
 };
 
+struct keyboard_light_layer_default {
+    const char *action; /* Optional action name controlling this ordinary effect. */
+    struct nlk_kb_light_layer layer;
+};
+
 /* Keyboard Profile (Default Keymap/Action Layout managed by Keyboard Server) */
 struct keyboard_profile {
     const char                               *name;
@@ -440,6 +445,10 @@ struct keyboard_profile {
     const struct nlk_kb_light_zone_desc  *light_zones;
     const struct nlk_kb_zone_light_cfg   *default_zone_cfgs;
 
+    /* Factory configuration, replaced by saved lighting configurations at runtime. */
+    uint8_t light_layer_count;
+    const struct keyboard_light_layer_default *light_layers;
+
     /* Dynamic Action Registration */
     uint8_t                               action_count;
     const struct nlk_kb_action_desc      *action_descs;
@@ -470,10 +479,21 @@ enum ks_ctrl_cmd {
     KS_CTRL_GET_INDICATORS,
 };
 
-bool keyboard_server_is_caps_lock_active(void);
-int keyboard_server_render_light(uint8_t x, uint8_t y, uint32_t phase,
-                                 uint8_t rgb[3]);
-int keyboard_server_get_light_state(struct nlk_kb_light_cfg *cfg, uint8_t *indicators);
+struct keyboard_light_layer_state {
+    struct nlk_kb_light_layer layer;
+    nlk_kb_effect_render_fn_t render;
+    void *priv;
+    bool active;
+};
+
+struct keyboard_light_state {
+    struct keyboard_light_layer_state layers[CONFIG_KEYBOARD_LIGHT_MAX_LAYERS];
+    uint32_t generation;
+    uint8_t count;
+    bool enabled;
+};
+
+void keyboard_server_get_light_state(struct keyboard_light_state *state);
 
 /* Persistent Storage Format for Flash Filesystem */
 #define KS_CONFIG_MAGIC             0x4E4B4346UL /* "NKCF" */

@@ -45,6 +45,7 @@ TESTS = [
     ("run_pl011_uart_test.py",),
     ("run_nlk_test.py",),
     ("run_nk60_light_effects_test.py",),
+    ("run_display_layers_test.py",),
     ("run_nk60_key_matrix_test.py",),
     ("run_shell_session_test.py",),
     ("run_shell_parse_test.py",),

@@ -318,8 +318,44 @@ static void config_light_item(struct config_cursor *c, struct nlk_keyboard_ctx *
     *effect = (uint8_t)id;
 }
 
+static void config_light_layers(struct config_cursor *c, struct nlk_keyboard_ctx *ctx,
+                                 int write, int apply)
+{
+    uint8_t count = write ? ctx->light_layer_count : 0U;
+    uint8_t i;
+
+    config_io(c, &count, sizeof(count), write);
+    if (c->error != 0 || count > CONFIG_KEYBOARD_LIGHT_MAX_LAYERS ||
+        sizeof(struct nlk_kb_light_layers_hdr) + (size_t)count * sizeof(struct nlk_kb_light_layer) >
+            CONFIG_NLK_PACKET_MTU - sizeof(int16_t)) {
+        c->error = -EINVAL;
+        return;
+    }
+    for (i = 0U; i < count; i++) {
+        struct nlk_kb_light_layer layer = {0};
+
+        if (write) {
+            layer = ctx->light_layers[i];
+        }
+        config_io(c, &layer, sizeof(layer), write);
+        if (layer.zone_id == NLK_KB_LIGHT_LAYER_OWN_CFG) {
+            config_light_item(c, ctx, &layer.cfg.effect_id, write, 0);
+        }
+        if (c->error != 0 || nlk_cap_keyboard_validate_light_layer(ctx, &layer) != 0) {
+            c->error = -EINVAL;
+            return;
+        }
+        if (!write && apply) {
+            ctx->light_layers[i] = layer;
+        }
+    }
+    if (!write && apply) {
+        c->error = nlk_cap_keyboard_set_light_layers(ctx, ctx->light_layers, count);
+    }
+}
+
 static void config_light(struct config_cursor *c, struct nlk_keyboard_ctx *ctx,
-                         int write, int apply, int allow_empty)
+                         int write, int apply, int allow_empty, uint16_t version)
 {
     struct nlk_kb_light_cfg light;
     struct nlk_kb_zone_light_cfg zone;
@@ -332,7 +368,8 @@ static void config_light(struct config_cursor *c, struct nlk_keyboard_ctx *ctx,
     config_io(c, &light, sizeof(light), write);
     config_light_item(c, ctx, &light.effect_id, write, allow_empty);
     config_io(c, &count, 1U, write);
-    if (c->error != 0 || count != ctx->light_zone_count || count > NLK_KB_MAX_LIGHT_ZONES) {
+    /* Older profiles may omit zones added after they were saved. */
+    if (c->error != 0 || count > ctx->light_zone_count || count > NLK_KB_MAX_LIGHT_ZONES) {
         c->error = -EINVAL;
         return;
     }
@@ -352,6 +389,9 @@ static void config_light(struct config_cursor *c, struct nlk_keyboard_ctx *ctx,
         if (!write && apply) {
             ctx->zone_cfgs[i] = zone;
         }
+    }
+    if (version >= 3U && c->error == 0) {
+        config_light_layers(c, ctx, write, apply);
     }
     if (!write && apply && c->error == 0) {
         if (ctx->light_cb != NULL) {
@@ -392,7 +432,7 @@ static void config_active(struct config_cursor *c, struct nlk_keyboard_ctx *ctx,
     if (c->error != 0) {
         return;
     }
-    config_light(c, ctx, write, apply, 1);
+    config_light(c, ctx, write, apply, 1, version);
     if (!write && apply && c->error == 0) {
         memcpy(ctx->active_keyboard_id, kb_id, sizeof(kb_id));
         memcpy(ctx->active_light_id, light_id, sizeof(light_id));
@@ -406,7 +446,7 @@ static void config_body(struct config_cursor *c, struct nlk_keyboard_ctx *ctx,
     if (kind == KEYBOARD_CONFIG_KEYBOARD) {
         config_keyboard(c, ctx, write, apply, version);
     } else if (kind == KEYBOARD_CONFIG_LIGHT) {
-        config_light(c, ctx, write, apply, 0);
+        config_light(c, ctx, write, apply, 0, version);
     } else if (kind == KEYBOARD_CONFIG_MACRO) {
         config_macro(c, ctx, macro_id, write, apply);
     } else if (kind == KEYBOARD_CONFIG_ACTIVE) {
@@ -429,7 +469,7 @@ int keyboard_config_encode(const struct nlk_keyboard_ctx *ctx, const char *hardw
     }
     memset(&header, 0, sizeof(header));
     header.magic = KEYBOARD_CONFIG_MAGIC;
-    header.version = 2U;
+    header.version = 3U;
     header.kind = kind;
     header.key_count = ctx->desc.key_count;
     header.layer_count = ctx->desc.layer_count;
@@ -472,7 +512,7 @@ int keyboard_config_decode(struct nlk_keyboard_ctx *ctx, const char *hardware,
     }
     memcpy(&header, buffer, sizeof(header));
     if (header.magic != KEYBOARD_CONFIG_MAGIC ||
-        (header.version != 1U && header.version != 2U) ||
+        (header.version < 1U || header.version > 3U) ||
         header.kind != kind || header.length != length ||
         header.key_count != ctx->desc.key_count || header.layer_count != ctx->desc.layer_count ||
         !config_string_ok(header.hardware, sizeof(header.hardware)) ||

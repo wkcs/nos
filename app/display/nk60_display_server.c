@@ -1,151 +1,94 @@
 /**
- * Copyright (C) 2024-2024 胡启航<Nick Hu>
+ * Copyright (C) 2024-2026 胡启航<Nick Hu>
  *
  * Author: 胡启航<Nick Hu>
  *
  * Email: huqihan@live.com
  */
 
-#define pr_fmt(fmt) "[NK60-DISPLAY]:%s[%d]:"fmt, __func__, __LINE__
-
-#include <kernel/task.h>
-#include <kernel/errno.h>
-#include <kernel/sleep.h>
-#include <kernel/cpu.h>
-#include <kernel/irq.h>
-#include <kernel/device.h>
+#include <kernel/clk.h>
 #include <kernel/init.h>
-#include <kernel/spinlock.h>
-#include <kernel/mm.h>
-#include <string.h>
-#include <kernel/console.h>
-
 #include <nos/display.h>
 #include <nos/keyboard.h>
 
-#define LED_WIDTH  14
-#define LED_HEIGHT 5
+#define KEYBOARD_LIGHT_FRAME_MS 30U
 
-struct nk60_display_server {
-    struct task_struct *task;
-    struct device *ds_dev;
-    struct display_server *ds;
-    struct ds_draw_info *draw_info;
-};
+static struct keyboard_light_state g_frame_state;
+/* Per-frame workspace. Layer definitions and ordering come from the active configuration. */
+static struct ds_render_layer g_frame_layers[CONFIG_KEYBOARD_LIGHT_MAX_LAYERS];
+static uint32_t g_phase[CONFIG_KEYBOARD_LIGHT_MAX_LAYERS];
 
-static int nk60_display_server_draw_info_init(struct nk60_display_server *nk60_ds)
+static void keyboard_render_light_layer(struct ds_frame *frame, uint8_t opacity, void *ctx)
 {
-    struct ds_draw_area *area;
-    struct ds_data *data;
-    int i;
+    const struct keyboard_light_layer_state *state = ctx;
+    const struct nlk_kb_light_layer *layer = &state->layer;
+    size_t index = state - g_frame_state.layers;
+    uint16_t y;
 
-    nk60_ds->draw_info = display_server_alloc_draw_area_info(nk60_ds->ds,
-        0, 0, LED_WIDTH, LED_HEIGHT);
-    if (nk60_ds->draw_info == NULL) {
-        pr_err("alloc draw_info buf error\n");
-        return -ENOMEM;
+    for (y = 0U; y < layer->height; y++) {
+        uint16_t x;
+
+        for (x = 0U; x < layer->width; x++) {
+            uint8_t rgb[3];
+            uint8_t pixel[DS_COLOR_DATA_MAX];
+
+            state->render(&layer->cfg, layer->x + x, layer->y + y, g_phase[index],
+                          rgb, state->priv);
+            pixel[DS_COLOR_R] = (uint8_t)((uint16_t)rgb[0] * layer->cfg.brightness / 255U);
+            pixel[DS_COLOR_G] = (uint8_t)((uint16_t)rgb[1] * layer->cfg.brightness / 255U);
+            pixel[DS_COLOR_B] = (uint8_t)((uint16_t)rgb[2] * layer->cfg.brightness / 255U);
+            display_frame_blend_pixel(frame, layer->x + x, layer->y + y, pixel, opacity);
+        }
     }
-    area = &nk60_ds->draw_info->area;
-
-    for (i = 0; i < LED_WIDTH * LED_HEIGHT; i++) {
-        data = &area->data[i];
-        data->data[DS_COLOR_R] = 0;
-        data->data[DS_COLOR_G] = 0;
-        data->data[DS_COLOR_B] = 0;
-    }
-
-    return 0;
 }
 
-static void nk60_display_server_data_update(struct nk60_display_server *nk60_ds)
+static const struct ds_render_layer *keyboard_prepare_light_layers(void *ctx, size_t *count)
 {
-    struct nlk_kb_light_cfg cfg;
-    struct ds_draw_area *area = &nk60_ds->draw_info->area;
-    static uint32_t phase;
-    uint8_t rgb[3];
-    int i;
+    static uint32_t last_update_ms;
+    static bool was_active[CONFIG_KEYBOARD_LIGHT_MAX_LAYERS];
+    uint32_t generation = g_frame_state.generation;
+    uint32_t now_ms = (uint32_t)tick_to_msec_64(cpu_run_ticks());
+    uint32_t frames = (now_ms - last_update_ms) / KEYBOARD_LIGHT_FRAME_MS;
+    uint8_t i;
 
-    if (keyboard_server_get_light_state(&cfg, NULL) < 0) {
-        return;
-    }
-    phase += (uint32_t)cfg.speed + 1U;
-    mutex_lock(&nk60_ds->draw_info->lock);
-    for (i = 0; i < LED_WIDTH * LED_HEIGHT; i++) {
-        struct ds_data *data = &area->data[i];
-        if (keyboard_server_render_light((uint8_t)(i % LED_WIDTH),
-                                         (uint8_t)(i / LED_WIDTH), phase, rgb) < 0) {
-            rgb[0] = 0U;
-            rgb[1] = 0U;
-            rgb[2] = 0U;
+    (void)ctx;
+    keyboard_server_get_light_state(&g_frame_state);
+    last_update_ms += frames * KEYBOARD_LIGHT_FRAME_MS;
+    *count = 0U;
+    for (i = 0U; i < g_frame_state.count; i++) {
+        struct keyboard_light_layer_state *state = &g_frame_state.layers[i];
+        struct ds_render_layer draw = {
+            .z_order = state->layer.z_order, .opacity = state->layer.opacity,
+            .render = keyboard_render_light_layer, .ctx = state,
+        };
+        size_t pos = *count;
+
+        if (generation != g_frame_state.generation || !was_active[i]) {
+            g_phase[i] = 0U;
+        } else if (state->active) {
+            g_phase[i] += frames * ((uint32_t)state->layer.cfg.speed + 1U);
         }
-        if (cfg.enable != 0U && keyboard_server_is_caps_lock_active() && i == 28) {
-            rgb[0] = 255U;
-            rgb[1] = 255U;
-            rgb[2] = 255U;
-        }
-        data->data[DS_COLOR_R] = rgb[0];
-        data->data[DS_COLOR_G] = rgb[1];
-        data->data[DS_COLOR_B] = rgb[2];
-    }
-    mutex_unlock(&nk60_ds->draw_info->lock);
-}
-
-static void nk60_display_server_task_entry(void* parameter)
-{
-    struct nk60_display_server *nk60_ds = parameter;
-    int i;
-    int rc;
-
-    nk60_ds->ds_dev = NULL;
-    for (i = 0; i < 100; i ++) {
-        nk60_ds->ds_dev = device_find_by_name("display-server");
-        if (nk60_ds->ds_dev == NULL) {
-            i++;
-            pr_err("%s device not found, retry=%d\n", "display-server", i);
-            sleep(1);
+        was_active[i] = state->active;
+        if (!g_frame_state.enabled || !state->active ||
+            !state->layer.cfg.enable || state->render == NULL) {
             continue;
-        } else {
-            pr_info("%s device found\n", "display-server");
-            break;
         }
+        while (pos > 0U && g_frame_layers[pos - 1U].z_order > draw.z_order) {
+            g_frame_layers[pos] = g_frame_layers[pos - 1U];
+            pos--;
+        }
+        g_frame_layers[pos] = draw;
+        (*count)++;
     }
-    if (i >= 100) {
-        pr_err("%s device not found, exit\n", "display-server");
-        return;
-    }
-
-    nk60_ds->ds = display_dev_to_server(nk60_ds->ds_dev);
-    rc = nk60_display_server_draw_info_init(nk60_ds);
-    if (rc < 0) {
-        pr_err("init draw_info buf error\n");
-        return;
-    }
-
-    while (true) {
-        msleep(30);
-        nk60_display_server_data_update(nk60_ds);
-    }
+    return g_frame_layers;
 }
+
+static const struct ds_layer_source g_layer_source = {
+    .prepare = keyboard_prepare_light_layers,
+};
 
 static int nk60_display_server_init(void)
 {
-    struct nk60_display_server *nk60_ds;
-
-    nk60_ds = kmalloc(sizeof(struct nk60_display_server), GFP_KERNEL);
-    if (nk60_ds == NULL) {
-        pr_err("alloc nk60_display_server buf error\n");
-        return -ENOMEM;
-    }
-
-    nk60_ds->task = task_create("nk60_display_server",
-        nk60_display_server_task_entry, nk60_ds, 20, 1024, 10, NULL);
-    if (nk60_ds->task == NULL) {
-        pr_fatal("creat nk60_display_server task err\n");
-
-        return -EINVAL;
-    }
-    task_ready(nk60_ds->task);
-
-    return 0;
+    return display_server_register_layers(CONFIG_LED_DEV, &g_layer_source);
 }
-task_init(nk60_display_server_init);
+SYS_INIT(nk60_display_server_init, INIT_LEVEL_APPLICATION);

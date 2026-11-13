@@ -27,8 +27,7 @@
 enum {
     NLK_KB_LIGHT_EFF_OFF, NLK_KB_LIGHT_EFF_STATIC, NLK_KB_LIGHT_EFF_BREATH,
     NLK_KB_LIGHT_EFF_GRADIENT_WAVE, NLK_KB_LIGHT_EFF_REACTIVE,
-    NLK_KB_LIGHT_EFF_RIPPLE, NLK_KB_LIGHT_EFF_DIRECT_STREAM,
-    NLK_KB_LIGHT_EFF_CAPS_LOCK
+    NLK_KB_LIGHT_EFF_RIPPLE, NLK_KB_LIGHT_EFF_DIRECT_STREAM
 };
 #include "include/nlk_bearers.h"
 
@@ -382,13 +381,7 @@ static int mock_caps_lock_action(const struct key_action_context *ctx, void *pri
     struct nlk_keyboard_ctx *kb = (struct nlk_keyboard_ctx *)priv;
     if (ctx != NULL && ctx->event_type == 1U && kb != NULL) {
         g_mock_caps_active = !g_mock_caps_active;
-        if (g_mock_caps_active) {
-            kb->light_cfg.effect_id = NLK_KB_LIGHT_EFF_CAPS_LOCK;
-            kb->indicator_leds |= NLK_KB_IND_CAPS_LOCK;
-        } else {
-            kb->light_cfg.effect_id = NLK_KB_LIGHT_EFF_STATIC;
-            kb->indicator_leds &= (uint8_t)~NLK_KB_IND_CAPS_LOCK;
-        }
+        kb->indicator_leds ^= NLK_KB_IND_CAPS_LOCK;
     }
     return KEY_ACTION_PASS;
 }
@@ -818,8 +811,100 @@ static void nk60_on_hid_report(const struct nlk_kb_hid_report *report, void *pri
                               NLK_KB_EVT_HID_REPORT, report, sizeof(*report), false);
 }
 
+static void test_light_action_lifecycle(void)
+{
+    struct nlk_keyboard_ctx kb;
+    struct nlk_kb_light_layer layers[3] = {
+        { .width = 2U, .height = 1U, .opacity = 255U, .zone_id = NLK_KB_LIGHT_LAYER_OWN_CFG },
+        { .x = 1U, .width = 1U, .height = 1U, .opacity = 128U,
+          .zone_id = NLK_KB_LIGHT_LAYER_OWN_CFG, .activation = NLK_KB_LIGHT_TOGGLE },
+        { .width = 1U, .height = 1U, .opacity = 255U,
+          .zone_id = NLK_KB_LIGHT_LAYER_OWN_CFG, .activation = NLK_KB_LIGHT_HOLD },
+    };
+    uint32_t held = 1U;
+
+    assert(nlk_cap_keyboard_init_sized(NULL, &kb, 1U, 2U, 2U, 1U, NULL, NULL) == 0);
+    assert(nlk_cap_keyboard_register_light_effect(&kb, "static", "", NULL, NULL) == 0);
+    layers[1].trigger = nlk_fnv1a_24("caps_lock");
+    layers[2].trigger = nlk_fnv1a_24("test_hold");
+    assert(nlk_cap_keyboard_register_action(&kb, "test_hold", "", NULL, NULL) == 0);
+    assert(nlk_cap_keyboard_bind_key_action(&kb, 0U, 0U, "caps_lock", false) == 0);
+    assert(nlk_cap_keyboard_bind_key_action(&kb, 0U, 1U, "test_hold", false) == 0);
+    kb.keymap[0][0] = 0x39U;
+    assert(nlk_cap_keyboard_set_light_layers(&kb, layers, 3U) == 0);
+    assert(kb.light_layer_active[0] && !kb.light_layer_active[1]);
+    assert(nlk_cap_keyboard_update_local_keys(&kb, &held, 2U) == 0);
+    assert(kb.light_layer_active[1]);
+    assert(kb.indicator_leds == 0U);
+    assert(kb.last_report.keys[0] == 0x39U);
+    held = 0U;
+    assert(nlk_cap_keyboard_update_local_keys(&kb, &held, 2U) == 0);
+    assert(kb.light_layer_active[1]);
+    held = 1U;
+    assert(nlk_cap_keyboard_update_local_keys(&kb, &held, 2U) == 0);
+    assert(!kb.light_layer_active[1]);
+    held = 2U;
+    assert(nlk_cap_keyboard_update_local_keys(&kb, &held, 2U) == 0);
+    assert(kb.light_layer_active[2]);
+    held = 0U;
+    assert(nlk_cap_keyboard_update_local_keys(&kb, &held, 2U) == 0);
+    assert(!kb.light_layer_active[2]);
+    layers[1].width = 3U;
+    assert(nlk_cap_keyboard_set_light_layers(&kb, layers, 3U) == -EINVAL);
+    assert(kb.light_layers[1].width == 1U);
+    {
+        struct nlk_keyboard_ctx restored;
+        struct nlk_pkt_hdr hdr = { .cmd_op = NLK_KB_OP_GET_LIGHT_LAYERS };
+        uint8_t wire[CONFIG_NLK_PACKET_MTU];
+        uint16_t wire_len = 0U;
+        uint8_t file[1024];
+        size_t file_len;
+
+        kb.light_cfg.effect_id = 0U;
+        assert(keyboard_config_encode(&kb, "test", "layers", "", KEYBOARD_CONFIG_LIGHT,
+                                      0U, file, sizeof(file), &file_len) == 0);
+        assert(nlk_cap_keyboard_init_sized(NULL, &restored, 1U, 2U, 2U, 1U, NULL, NULL) == 0);
+        assert(nlk_cap_keyboard_register_light_effect(&restored, "other", "", NULL, NULL) == 0);
+        assert(nlk_cap_keyboard_register_light_effect(&restored, "static", "", NULL, NULL) == 0);
+        assert(keyboard_config_decode(&restored, "test", KEYBOARD_CONFIG_LIGHT,
+                                      0U, file, file_len) == 0);
+        assert(restored.light_layer_count == 3U);
+        assert(restored.light_layers[1].trigger == nlk_fnv1a_24("caps_lock"));
+        assert(restored.light_layers[1].cfg.effect_id == 1U);
+        assert(!restored.light_layer_active[1]);
+        assert(restored.cap.ops->on_rpc(NULL, &restored.cap, &hdr, NULL, 0U,
+                                       wire, &wire_len) == 0);
+        assert(wire_len == sizeof(struct nlk_kb_light_layers_hdr) + 3U * sizeof(layers[0]));
+        hdr.cmd_op = NLK_KB_OP_SET_LIGHT_LAYERS;
+        ((struct nlk_kb_light_layer *)(wire + sizeof(struct nlk_kb_light_layers_hdr)))[0].opacity = 31U;
+        assert(restored.cap.ops->on_rpc(NULL, &restored.cap, &hdr, wire, wire_len,
+                                       NULL, &wire_len) == 0);
+        assert(restored.light_layers[0].opacity == 31U);
+        assert(restored.cap.ops->on_rpc(NULL, &restored.cap, &hdr, wire, wire_len - 1U,
+                                       NULL, &wire_len) == -EINVAL);
+        assert(restored.light_layers[0].opacity == 31U);
+
+        /* A version-2 lighting file leaves the factory layer configuration available. */
+        assert(nlk_cap_keyboard_set_light_layers(&kb, NULL, 0U) == 0);
+        assert(keyboard_config_encode(&kb, "test", "legacy", "", KEYBOARD_CONFIG_LIGHT,
+                                      0U, file, sizeof(file), &file_len) == 0);
+        file_len--; /* Version 2 ends before the new layer-count byte. */
+        struct keyboard_config_header *header = (struct keyboard_config_header *)file;
+        header->version = 2U;
+        header->length = file_len;
+        header->checksum = 0U;
+        header->checksum = nlk_crc32(0U, file, file_len);
+        assert(keyboard_config_decode(&restored, "test", KEYBOARD_CONFIG_LIGHT,
+                                      0U, file, file_len) == 0);
+        assert(restored.light_layer_count == 3U && restored.light_layers[0].opacity == 31U);
+        nlk_cap_keyboard_deinit(&restored);
+    }
+    nlk_cap_keyboard_deinit(&kb);
+}
+
 int main(void)
 {
+    test_light_action_lifecycle();
     /* 7 Nodes in the 4-tier cascade tree */
     static struct nlk_node node_host;
     static struct nlk_node node_nk60;
@@ -1221,6 +1306,21 @@ int main(void)
                                       0U, buf, len) == 0);
         assert(dst.light_cfg.effect_id == 0U && dst.light_cfg.brightness == 53U);
         assert(dst.zone_cfgs[0].effect_id == 0U && dst.zone_cfgs[0].brightness == 77U);
+        {
+            struct nlk_kb_light_zone_desc indicator = {
+                .type = NLK_KB_LIGHT_TYPE_INDICATOR,
+            };
+            struct nlk_kb_zone_light_cfg defaults = {
+                .enable = 1U, .effect_id = 1U, .brightness = 123U,
+            };
+
+            assert(nlk_cap_keyboard_register_light_zone(&dst, &indicator, &defaults) == 0);
+            dst.zone_cfgs[0].brightness = 0U;
+            assert(keyboard_config_decode(&dst, "NK60-v2", KEYBOARD_CONFIG_LIGHT,
+                                          0U, buf, len) == 0);
+            assert(dst.zone_cfgs[0].brightness == 77U);
+            assert(dst.zone_cfgs[1].effect_id == 1U && dst.zone_cfgs[1].brightness == 123U);
+        }
         nlk_cap_keyboard_deinit(&src);
         nlk_cap_keyboard_deinit(&dst);
     }
@@ -2789,7 +2889,9 @@ int main(void)
             act_bm[0] = 0U;
             assert(nlk_cap_keyboard_update_local_keys(&nk60_kb, act_bm, 16U) == 0);
 
-            /* 步骤 4: 验证 caps_lock 动作触发大写锁定特殊灯效及解除 */
+            /* Caps toggles the indicator binding while preserving the base effect. */
+            nk60_kb.indicator_leds &= (uint8_t)~NLK_KB_IND_CAPS_LOCK;
+            g_mock_caps_active = false;
             assert(nlk_cap_keyboard_register_action(&nk60_kb, "caps_lock", "Caps Lock Action",
                                                    mock_caps_lock_action, &nk60_kb) == 0);
             breq.append = 0U;
@@ -2799,22 +2901,24 @@ int main(void)
                                      NLK_KB_OP_BIND_ACTION, &breq, sizeof(breq),
                                      NULL, &rlen, 100U) == 0);
 
-            /* 第一次按下：开启大写锁定，触发特殊灯效，且原键码 0x04 正常上报 */
+            uint8_t base_effect = nk60_kb.light_cfg.effect_id;
+
+            /* Activate the indicator while forwarding the original HID key. */
             act_bm[0] = (1UL << 0U);
             assert(nlk_cap_keyboard_update_local_keys(&nk60_kb, act_bm, 16U) == 0);
             assert(g_mock_caps_active == true);
-            assert(nk60_kb.light_cfg.effect_id == NLK_KB_LIGHT_EFF_CAPS_LOCK);
+            assert(nk60_kb.light_cfg.effect_id == base_effect);
             assert((nk60_kb.indicator_leds & NLK_KB_IND_CAPS_LOCK) != 0U);
             assert(nk60_kb.last_report.keys[0] == 0x04U);
 
             act_bm[0] = 0U;
             assert(nlk_cap_keyboard_update_local_keys(&nk60_kb, act_bm, 16U) == 0);
 
-            /* 第二次按下：关闭大写锁定，恢复常规灯效 */
+            /* Deactivate the indicator binding. */
             act_bm[0] = (1UL << 0U);
             assert(nlk_cap_keyboard_update_local_keys(&nk60_kb, act_bm, 16U) == 0);
             assert(g_mock_caps_active == false);
-            assert(nk60_kb.light_cfg.effect_id != NLK_KB_LIGHT_EFF_CAPS_LOCK);
+            assert(nk60_kb.light_cfg.effect_id == base_effect);
             assert((nk60_kb.indicator_leds & NLK_KB_IND_CAPS_LOCK) == 0U);
 
             act_bm[0] = 0U;

@@ -7,7 +7,6 @@
  *     1. "bootloader" -> 直接擦写 STM32F401 内部 Flash Sector 0 (0x08000000, 16 KB)
  *     2. "kernel"     -> STM32F401 内部 Flash Sector 1~5 (0x08004000, 240 KB, 需进入 Bootloader 直刷)
  *     3. "assets"     -> 外部 W25QXX SPI Flash (0x048000, 736 KB FatFs 资源区)
- * - 扩展能力注册 (Encoder, Display, Wireless Bridge)
  * - 上行 WinUSB Bearer 挂载
  */
 
@@ -46,9 +45,6 @@ struct nk60_nlk_board {
     uint32_t                 erased_up_to;
     struct nlk_winusb_bearer winusb_bearer;
     struct nlk_flash_ctx     flash_cap;
-    struct nlk_encoder_ctx   enc_cap;
-    struct nlk_display_ctx   disp_cap;
-    struct nlk_wireless_ctx  wl_cap;
 };
 
 static struct nk60_nlk_board g_nk60_nlk;
@@ -335,7 +331,7 @@ static int nk60_nlk_board_setup(struct nlk_node *node)
                                 NLK_DEV_CLASS_KEYBOARD, "NK60-V2");
     nlk_node_set_reboot_handler(node, nk60_on_reboot, brd);
 
-    /* 1. 初始化 NLK_CAP_FLASH 并注册板级分区表 */
+    /* 初始化 NLK_CAP_FLASH 并注册板级分区表 */
     (void)nlk_cap_flash_init(node, &brd->flash_cap, BOOT_NORMAL, ver_code);
 
     assets_wl = nk60_flash_get_assets_wl();
@@ -382,18 +378,7 @@ static int nk60_nlk_board_setup(struct nlk_node *node)
         (void)nlk_cap_flash_register_part(&brd->flash_cap, &assets_part);
     }
 
-    /* 2. 注册可选外设扩展能力 (Encoder, Display, Wireless Bridge) */
-    (void)nlk_cap_encoder_init(node, &brd->enc_cap, 24U, false, NULL, brd);
-    (void)nlk_cap_display_init(node, &brd->disp_cap, 128U, 64U,
-                               NLK_PIXEL_FMT_MONO_1BPP, NULL, brd);
-    (void)nlk_cap_wireless_init(node, &brd->wl_cap,
-                                (1U << NLK_WL_CHAN_USB_WIRED) |
-                                (1U << NLK_WL_CHAN_BLE_SLOT1) |
-                                (1U << NLK_WL_CHAN_BLE_SLOT2) |
-                                (1U << NLK_WL_CHAN_BLE_SLOT3) |
-                                (1U << NLK_WL_CHAN_RF_24G), 4U);
-
-    /* 3. 挂载上行 WinUSB Bearer */
+    /* 挂载上行 WinUSB Bearer */
     for (i = 0; i < 20; i++) {
         if (nlk_winusb_bearer_init(node, &brd->winusb_bearer, 0U) == 0) {
             pr_info("NK60 WinUSB bearer attached on port 0\n");

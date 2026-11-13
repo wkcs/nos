@@ -152,6 +152,10 @@ int nlk_cap_vfs_init(struct nlk_node *node, struct nlk_vfs_ctx *ctx);
 #endif
 #define NLK_KB_MAX_KEYS             128U
 
+#ifndef CONFIG_KEYBOARD_LIGHT_MAX_LAYERS
+#define CONFIG_KEYBOARD_LIGHT_MAX_LAYERS 8
+#endif
+
 typedef void (*nlk_kb_effect_render_fn_t)(const struct nlk_kb_light_cfg *cfg,
                                           uint8_t x, uint8_t y, uint32_t phase,
                                           uint8_t rgb[3], void *priv);
@@ -196,6 +200,10 @@ struct nlk_keyboard_ctx {
     struct nlk_kb_nkro_report       last_nkro;
     struct nlk_kb_analog_cfg        analog_cfg;
     struct nlk_kb_light_cfg         light_cfg;
+    uint8_t                         light_layer_count;
+    struct nlk_kb_light_layer       light_layers[CONFIG_KEYBOARD_LIGHT_MAX_LAYERS];
+    bool                            light_layer_active[CONFIG_KEYBOARD_LIGHT_MAX_LAYERS];
+    uint32_t                        light_layer_generation;
     struct nlk_kb_light_sync_beacon last_light_beacon;
 
     /* Multi-layout management */
@@ -311,6 +319,10 @@ int nlk_cap_keyboard_register_light_effect(struct nlk_keyboard_ctx *ctx,
 int nlk_cap_keyboard_register_light_zone(struct nlk_keyboard_ctx *ctx,
                                          const struct nlk_kb_light_zone_desc *zone,
                                          const struct nlk_kb_zone_light_cfg *initial_cfg);
+int nlk_cap_keyboard_validate_light_layer(const struct nlk_keyboard_ctx *ctx,
+                                          const struct nlk_kb_light_layer *layer);
+int nlk_cap_keyboard_set_light_layers(struct nlk_keyboard_ctx *ctx,
+                                      const struct nlk_kb_light_layer *layers, uint8_t count);
 int nlk_cap_keyboard_set_layer_desc(struct nlk_keyboard_ctx *ctx, uint8_t layer,
                                     const char *name, uint8_t flags);
 int nlk_cap_keyboard_register_action(struct nlk_keyboard_ctx *ctx,

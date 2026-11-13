@@ -40,7 +40,7 @@ static const uint8_t g_nk60_def_key_code_layout[NK60_KEY_LAYER_NUM][NK60_KEY_NUM
 };
 
 static const struct key_action_default_binding g_nk60_default_action_bindings[] = {
-    { 0U, 28U, "caps_lock" },    /* Layer 0 Key 28: 大小写切换及特殊灯效动作 */
+    { 0U, 28U, "caps_lock" },    /* Layer 0 Key 28: 普通动作，可绑定灯效 */
     { 2U, 47U, "light_toggle" }, /* Layer 2 Key 47: 背光开关动作 */
 };
 
@@ -66,6 +66,14 @@ static const struct nlk_kb_light_zone_desc g_nk60_light_zones[] = {
         .supported_effects = 0x0FU,
         .name              = "Key-RGB",
     },
+    {
+        .zone_id           = 1U,
+        .type              = NLK_KB_LIGHT_TYPE_RGB_MATRIX,
+        .led_start         = 28U,
+        .led_count         = 1U,
+        .supported_effects = 0x0FU,
+        .name              = "Accent",
+    },
 };
 
 static const struct nlk_kb_zone_light_cfg g_nk60_default_zone_cfgs[] = {
@@ -78,6 +86,33 @@ static const struct nlk_kb_zone_light_cfg g_nk60_default_zone_cfgs[] = {
         .color_r    = 255U,
         .color_g    = 128U,
         .color_b    = 0U,
+    },
+    {
+        .zone_id    = 1U,
+        .enable     = 1U,
+        .effect_id  = NK60_EFFECT_STATIC,
+        .brightness = 255U,
+        .speed      = 128U,
+        .color_r    = 255U,
+        .color_g    = 255U,
+        .color_b    = 255U,
+    },
+};
+
+/* Factory lighting configuration. Runtime profiles can replace the entire list. */
+static const struct keyboard_light_layer_default g_nk60_factory_light_layers[] = {
+    {
+        .layer = {
+            .z_order = -2, .width = 14U, .height = 5U,
+            .opacity = 255U, .zone_id = 0U,
+        },
+    },
+    {
+        .action = "caps_lock",
+        .layer = {
+            .z_order = -1, .y = 2U, .width = 1U, .height = 1U,
+            .opacity = 255U, .zone_id = 1U, .activation = NLK_KB_LIGHT_TOGGLE,
+        },
     },
 };
 
@@ -179,9 +214,12 @@ static const struct keyboard_profile g_nk60_kb_profile = {
     .light_effects      = g_nk60_light_effects,
 
     /* Multi-Zone Backlight Registration */
-    .light_zone_count   = 1U,
+    .light_zone_count   = sizeof(g_nk60_light_zones) / sizeof(g_nk60_light_zones[0]),
     .light_zones        = g_nk60_light_zones,
     .default_zone_cfgs  = g_nk60_default_zone_cfgs,
+
+    .light_layer_count = sizeof(g_nk60_factory_light_layers) / sizeof(g_nk60_factory_light_layers[0]),
+    .light_layers = g_nk60_factory_light_layers,
 
     /* Dynamic Action Registration */
     .action_count       = 6U,
