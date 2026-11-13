@@ -253,6 +253,8 @@ void vfs_setup_standard_mounts(void);
 /* 文件描述符表操作 */
 struct file *vfs_fd_get(int fd);
 int vfs_fd_put(struct file *file);
+struct nos_tty;
+int vfs_open_tty(struct nos_tty *tty);
 
 /* DevFS 字符设备注册与内置设备 */
 int init_devfs(void);

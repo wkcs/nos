@@ -345,6 +345,24 @@ static int nshell_transport_write(void *context, const char *buf, unsigned int l
     return (int)total;
 }
 
+static ssize_t nshell_write_fd(struct nshell *shell, int fd, const char *buf, size_t len)
+{
+    struct file *file = vfs_fd_get(fd);
+    bool session_tty;
+
+    if (file == NULL) {
+        return -EBADF;
+    }
+    session_tty = (file->f_flags & O_ACCMODE) != O_RDONLY &&
+                  file->f_op == &nos_tty_fops && file->private_data == shell->session.tty;
+    vfs_fd_put(file);
+
+    if (session_tty) {
+        return nshell_transport_write(shell, buf, (unsigned int)len);
+    }
+    return nos_write(fd, buf, len);
+}
+
 static int nshell_write(const char *buf, int len)
 {
     struct nshell *shell = nshell_current();
@@ -355,7 +373,7 @@ static int nshell_write(const char *buf, int len)
         return rc;
     }
 #if defined(CONFIG_VFS) || defined(CONFIG_FS)
-    ssize_t ret = nos_write(1, buf, (size_t)len);
+    ssize_t ret = nshell_write_fd(shell, 1, buf, (size_t)len);
     if (ret >= 0) {
         return (int)ret;
     }
@@ -410,7 +428,7 @@ static int shell_error(const char *fmt, ...)
         return rc;
     }
 #if defined(CONFIG_VFS) || defined(CONFIG_FS)
-    ssize_t ret = nos_write(2, buf, (size_t)len);
+    ssize_t ret = nshell_write_fd(shell, 2, buf, (size_t)len);
     if (ret >= 0) {
         return (int)ret;
     }
@@ -4091,7 +4109,7 @@ static int nshell_close_output(struct file **destination)
     return rc;
 }
 
-static void nshell_init_standard_fds(void)
+static void nshell_init_standard_fds(struct nshell *shell)
 {
     struct file *f0 = vfs_fd_get(0);
     if (f0 != NULL) {
@@ -4111,13 +4129,13 @@ static void nshell_init_standard_fds(void)
         return;
     }
 
-    int con_fd = nos_open("/dev/console", O_RDWR);
-    if (con_fd < 0) {
+    int tty_fd = vfs_open_tty(shell->session.tty);
+    if (tty_fd < 0) {
         return;
     }
-    if (con_fd != 0) {
-        nos_dup2(con_fd, 0);
-        nos_close(con_fd);
+    if (tty_fd != 0) {
+        nos_dup2(tty_fd, 0);
+        nos_close(tty_fd);
     }
     nos_dup2(0, 1);
     nos_dup2(0, 2);
@@ -6069,7 +6087,7 @@ static void nshell_exec_cmd(struct nshell *shell)
     if (shell->session.input_len == 0 && strlen(shell->session.input) == 0)
         return;
 
-    nshell_init_standard_fds();
+    nshell_init_standard_fds(shell);
 
     workspace = kmalloc(sizeof(*workspace), GFP_KERNEL);
     if (workspace == NULL) {
@@ -6684,7 +6702,7 @@ static void nshell_task_entry(void *parameter)
 {
     struct nshell *shell = parameter;
 
-    nshell_init_standard_fds();
+    nshell_init_standard_fds(shell);
 
     while (true) {
         uint32_t gen = 0U;

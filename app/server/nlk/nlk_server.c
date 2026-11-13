@@ -68,6 +68,10 @@ static void nlk_server_task_entry(void *parameter)
 {
     struct nlk_server *srv = (struct nlk_server *)parameter;
     uint32_t tick_cnt = 0U;
+#ifdef CONFIG_SHELL
+    struct nlk_shell_ctx *shell_frontend;
+    uint64_t shell_retry_ms = 0U;
+#endif
 
     srv->node = nlk_default_node();
     srv->pending_boot_flag = BOOT_NORMAL;
@@ -87,13 +91,7 @@ static void nlk_server_task_entry(void *parameter)
         (void)nlk_cap_shell_init(srv->node, &srv->shell_cap);
     }
 #ifdef CONFIG_SHELL
-    if (nlk_cap_shell_default_ctx() != NULL) {
-        int sh_rc = nshell_spawn(nlk_cap_shell_tty(nlk_cap_shell_default_ctx()),
-                                 "nshell_nlk", false);
-        if (sh_rc < 0) {
-            pr_err("cannot start NLK shell frontend: %d\n", sh_rc);
-        }
-    }
+    shell_frontend = nlk_cap_shell_default_ctx();
 #endif
 #ifdef CONFIG_VFS
     if (nlk_node_find_cap_by_type(srv->node, NLK_CAP_VFS) == NULL) {
@@ -106,6 +104,21 @@ static void nlk_server_task_entry(void *parameter)
             srv->node->cap_count, srv->node->bearer_count);
 
     while (true) {
+#ifdef CONFIG_SHELL
+        uint64_t now_ms = tick_to_msec_64(cpu_run_ticks());
+        if (shell_frontend != NULL && now_ms >= shell_retry_ms) {
+            int sh_rc = nshell_spawn(nlk_cap_shell_tty(shell_frontend), "nshell_nlk", false);
+
+            if (sh_rc == 0) {
+                nlk_cap_shell_frontend_ready(shell_frontend);
+                shell_frontend = NULL;
+            } else {
+                /* The boot task's stack may still be awaiting reclamation. */
+                shell_retry_ms = now_ms + 1000U;
+                pr_err("cannot start NLK shell frontend: %d\n", sh_rc);
+            }
+        }
+#endif
         int rc = nlk_node_poll_bearers(srv->node, 20U);
         if (rc <= 0) {
             msleep(20);
@@ -116,7 +129,7 @@ static void nlk_server_task_entry(void *parameter)
                 nlk_node_find_cap_by_type(srv->node, NLK_CAP_SHELL);
             struct nlk_shell_ctx *ctx = nlk_cap_shell_default_ctx();
             if (shell_cap != NULL && ctx != NULL && shell_cap->priv == ctx) {
-                nlk_cap_shell_tick(ctx, (uint32_t)(cpu_run_ticks() * CONFIG_SYS_TICK_MS));
+                nlk_cap_shell_tick(ctx, (uint32_t)tick_to_msec_64(cpu_run_ticks()));
                 (void)nlk_cap_shell_flush_pending(ctx);
             }
         }

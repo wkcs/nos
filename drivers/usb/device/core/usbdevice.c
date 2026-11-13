@@ -8,6 +8,7 @@
 
 #define pr_fmt(fmt) "[USB_DEVICE]:%s[%d]:"fmt, __func__, __LINE__
 
+#include <kernel/errno.h>
 #include <kernel/printk.h>
 #include <drivers/usb/usb_common.h>
 #include <drivers/usb/usb_device.h>
@@ -178,6 +179,10 @@ int usb_device_init(udcd_t udc)
     list_for_each_entry(udclass, &class_list, list) {
         /* create a function object */
         func = udclass->usbd_function_create(udevice);
+        if (func == NULL) {
+            pr_err("cannot create USB function\n");
+            return -ENOMEM;
+        }
         /* add the function to the configuration */
         usbd_config_add_function(cfg, func);
     }

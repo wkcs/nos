@@ -23,7 +23,8 @@
 
 #include "winusb.h"
 
-#define WINUSB_EP_BUFSIZE   512
+#define WINUSB_BULK_MPS_FS  64U
+#define WINUSB_BULK_MPS_HS  512U
 #define WINUSB_RX_FIFOSIZE  512
 #ifndef CONFIG_WINUSB_TX_BUFSIZE
 #define CONFIG_WINUSB_TX_BUFSIZE    512
@@ -41,7 +42,6 @@ struct winusb_device {
     struct ufunction *func;
     struct ufunction *cmd_func;
     uint8_t cmd_buff[512];
-    uint8_t ep_rx_buf[WINUSB_EP_BUFSIZE];
     /*
      * IN 方向发送缓冲：一次 write 对应一个完整的 USB 传输（多个 MPS 包 + 必要时的 ZLP）。
      * 传输未完成前该缓冲与端点请求状态归硬件/USB 核心所有，任何人不得改写。
@@ -58,6 +58,7 @@ struct winusb_device {
     volatile bool zlp_pending;  /* 本次传输长度为 MPS 整数倍，完成后需补发 ZLP */
     bool connected;             /* USB 连接使能状态 */
     bool rx_paused;             /* Bulk OUT 接收暂停状态 (背压) */
+    uint8_t ep_rx_buf[] __aligned(4); /* Only one OUT packet is armed at a time. */
 };
 
 struct winusb_device *winusb_dev;
@@ -346,8 +347,8 @@ static int _winusb_descriptor_config(winusb_desc_t winusb, uint8_t cintf_nr, uin
 #ifdef CONFIG_USB_DEVICE_COMPOSITE
     winusb->iad_desc.bFirstInterface = cintf_nr;
 #endif
-    winusb->ep_out_desc.wMaxPacketSize = device_is_hs ? 512 : 64;
-    winusb->ep_in_desc.wMaxPacketSize = device_is_hs ? 512 : 64;
+    winusb->ep_out_desc.wMaxPacketSize = device_is_hs ? WINUSB_BULK_MPS_HS : WINUSB_BULK_MPS_FS;
+    winusb->ep_in_desc.wMaxPacketSize = winusb->ep_out_desc.wMaxPacketSize;
     winusb_func_comp_id_desc.bFirstInterfaceNumber = cintf_nr;
     return 0;
 }
@@ -544,18 +545,24 @@ ufunction_t usbd_function_winusb_create(udevice_t device)
     uintf_t             winusb_intf;
     ualtsetting_t       winusb_setting;
     winusb_desc_t       winusb_desc;
+    size_t out_mps = device->dcd->device_is_hs ? WINUSB_BULK_MPS_HS : WINUSB_BULK_MPS_FS;
+
+    winusb_device = kzalloc(sizeof(*winusb_device) + out_mps, GFP_KERNEL);
+    if (winusb_device == NULL) {
+        return NULL;
+    }
 
     /* set usb device string description */
     usbd_device_set_string(device, _ustring);
 
-    /* create a cdc function */
     func = usbd_function_new(device, &dev_desc, &ops);
+    if (func == NULL) {
+        kfree(winusb_device);
+        return NULL;
+    }
     usbd_device_set_qualifier(device, &dev_qualifier);
 
-    /* allocate memory for cdc vcom data */
-    winusb_device = kmalloc(sizeof(*winusb_device), GFP_KERNEL);
     winusb_dev = winusb_device;
-    memset((void *)winusb_device, 0, sizeof(*winusb_device));
     nos_completion_init(&winusb_device->read_sem);
     nos_completion_init(&winusb_device->write_sem);
     mutex_init(&winusb_device->write_lock);

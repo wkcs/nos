@@ -872,6 +872,34 @@ static struct dentry *vfs_resolve_path(const char *path, int create)
     return dentry;
 }
 
+#ifdef CONFIG_TTY
+int vfs_open_tty(struct nos_tty *tty)
+{
+    static struct inode tty_inode = { .i_mode = S_IFCHR | 0600 };
+    struct file *file;
+    int fd;
+
+    if (tty == NULL) {
+        return -EINVAL;
+    }
+    fd = vfs_fd_reserve();
+    if (fd < 0) {
+        return fd;
+    }
+    file = kzalloc(sizeof(*file), GFP_KERNEL);
+    if (file == NULL) {
+        vfs_fd_cancel(fd);
+        return -ENOMEM;
+    }
+    file->f_inode = &tty_inode;
+    file->f_op = &nos_tty_fops;
+    file->f_flags = O_RDWR;
+    file->private_data = tty;
+    vfs_fd_publish(fd, file);
+    return fd;
+}
+#endif
+
 int nos_open(const char *path, int flags, ...)
 {
   struct dentry *dentry = NULL;
@@ -1260,6 +1288,7 @@ void vfs_setup_standard_mounts(void)
     }
 #endif
 
+#ifdef CONFIG_PROCFS
     dir = vfs_create_mount_point(root, "proc");
     if (dir != NULL) {
         mnt_root = vfs_mount("procfs", 0, "proc", NULL);
@@ -1267,7 +1296,9 @@ void vfs_setup_standard_mounts(void)
             (void)vfs_bind_mount(dir, mnt_root);
         }
     }
+#endif
 
+#ifdef CONFIG_SYSFS
     dir = vfs_create_mount_point(root, "sys");
     if (dir != NULL) {
         mnt_root = vfs_mount("sysfs", 0, "sysfs", NULL);
@@ -1275,6 +1306,7 @@ void vfs_setup_standard_mounts(void)
             (void)vfs_bind_mount(dir, mnt_root);
         }
     }
+#endif
 
     (void)vfs_make_dir(root, "tmp", 0777, NULL);
 }

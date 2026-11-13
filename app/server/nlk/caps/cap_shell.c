@@ -201,6 +201,9 @@ static int cap_shell_on_rpc(struct nlk_node *node, struct nlk_capability *cap,
     *resp_len = 0U;
 
     if (hdr == NULL) return -EINVAL;
+    if (!__atomic_load_n(&ctx->frontend_ready, __ATOMIC_ACQUIRE)) {
+        return -ENODEV;
+    }
     switch (hdr->cmd_op) {
     case NLK_SHELL_OP_OPEN: {
         const struct nlk_shell_open_msg *open_msg =
@@ -524,6 +527,11 @@ int nlk_cap_shell_init(struct nlk_node *node, struct nlk_shell_ctx *ctx)
 struct nos_tty *nlk_cap_shell_tty(struct nlk_shell_ctx *ctx)
 {
     return (ctx != NULL) ? &ctx->tty : NULL;
+}
+
+void nlk_cap_shell_frontend_ready(struct nlk_shell_ctx *ctx)
+{
+    __atomic_store_n(&ctx->frontend_ready, true, __ATOMIC_RELEASE);
 }
 
 struct nlk_shell_ctx *nlk_cap_shell_default_ctx(void)

@@ -90,6 +90,7 @@ int nlk_cap_log_flush_pending(struct nlk_log_ctx *ctx);
 #define NLK_SHELL_LEASE_MS 30000U
 
 struct nlk_shell_ctx {
+    bool                  frontend_ready;
     bool                  session_open;
     bool                  non_interactive;
     bool                  exit_pending;
@@ -125,6 +126,7 @@ struct nlk_shell_ctx {
 };
 
 int nlk_cap_shell_init(struct nlk_node *node, struct nlk_shell_ctx *ctx);
+void nlk_cap_shell_frontend_ready(struct nlk_shell_ctx *ctx);
 int nlk_cap_shell_flush_pending(struct nlk_shell_ctx *ctx);
 void nlk_cap_shell_tick(struct nlk_shell_ctx *ctx, uint32_t now_ms);
 int nlk_cap_shell_read_session(struct nlk_shell_ctx *ctx, uint32_t generation,

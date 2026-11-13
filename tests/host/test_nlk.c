@@ -1721,6 +1721,15 @@ int main(void)
 
         assert(nlk_node_rpc_call(&node_host, 0x0001U, 3U,
                                  NLK_SHELL_OP_OPEN, &open_req, sizeof(open_req),
+                                 NULL, &rlen, 100U) == -ENODEV);
+        assert(nlk_node_rpc_call(&node_host, 0x0001U, 3U,
+                                 NLK_SHELL_OP_EXEC, "ver", 3U,
+                                 NULL, &rlen, 100U) == -ENODEV);
+        assert(!nk60_shell.session_open);
+
+        nlk_cap_shell_frontend_ready(&nk60_shell);
+        assert(nlk_node_rpc_call(&node_host, 0x0001U, 3U,
+                                 NLK_SHELL_OP_OPEN, &open_req, sizeof(open_req),
                                  NULL, &rlen, 100U) == 0);
         assert(nk60_shell.session_open);
 
