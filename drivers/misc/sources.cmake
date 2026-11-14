@@ -1,1 +1,27 @@
-# drivers/misc 构建源列表，由 Task 6B 填充
+#
+# NUC472 片上功能外设驱动源文件列表
+#
+
+if(CONFIG_PWM_NUC472)
+    list(APPEND DRIVERS_SRCS "${CMAKE_CURRENT_LIST_DIR}/pwm_nuc472.c")
+endif()
+
+if(CONFIG_EADC_NUC472)
+    list(APPEND DRIVERS_SRCS "${CMAKE_CURRENT_LIST_DIR}/adc_nuc472.c")
+endif()
+
+if(CONFIG_TIMER_NUC472)
+    list(APPEND DRIVERS_SRCS "${CMAKE_CURRENT_LIST_DIR}/timer_nuc472.c")
+endif()
+
+if(CONFIG_RTC_NUC472)
+    list(APPEND DRIVERS_SRCS "${CMAKE_CURRENT_LIST_DIR}/rtc_nuc472.c")
+endif()
+
+if(CONFIG_WDT_NUC472)
+    list(APPEND DRIVERS_SRCS "${CMAKE_CURRENT_LIST_DIR}/wdt_nuc472.c")
+endif()
+
+if(CONFIG_EMAC_PROBE_NUC472)
+    list(APPEND DRIVERS_SRCS "${CMAKE_CURRENT_LIST_DIR}/emac_probe_nuc472.c")
+endif()

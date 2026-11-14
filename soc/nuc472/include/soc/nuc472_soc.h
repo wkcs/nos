@@ -35,6 +35,11 @@ NUC472_SYS_Type *nuc472_test_sys(void);
 NUC472_CLK_Type *nuc472_test_clk(void);
 NUC472_FMC_Type *nuc472_test_fmc(void);
 NUC472_RTC_Type *nuc472_test_rtc(void);
+NUC472_PWM_Type *nuc472_test_pwm0(void);
+NUC472_EADC_Type *nuc472_test_eadc(void);
+NUC472_TIMER_Type *nuc472_test_tmr0(void);
+NUC472_WDT_Type *nuc472_test_wdt(void);
+NUC472_EMAC_Type *nuc472_test_emac(void);
 #ifndef NUC472_SYS
 #define NUC472_SYS        (nuc472_test_sys())
 #endif
@@ -46,6 +51,21 @@ NUC472_RTC_Type *nuc472_test_rtc(void);
 #endif
 #ifndef NUC472_RTC
 #define NUC472_RTC        (nuc472_test_rtc())
+#endif
+#ifndef NUC472_PWM0
+#define NUC472_PWM0       (nuc472_test_pwm0())
+#endif
+#ifndef NUC472_EADC
+#define NUC472_EADC       (nuc472_test_eadc())
+#endif
+#ifndef NUC472_TMR0
+#define NUC472_TMR0       (nuc472_test_tmr0())
+#endif
+#ifndef NUC472_WDT
+#define NUC472_WDT        (nuc472_test_wdt())
+#endif
+#ifndef NUC472_EMAC
+#define NUC472_EMAC       (nuc472_test_emac())
 #endif
 #endif
 

@@ -388,4 +388,50 @@ config FLASH_DEV
 
 endmenu
 
+menu "NUC472 Miscellaneous Peripherals"
+
+config PWM_NUC472
+	bool "NUC472 PWM output driver"
+	depends on SOC_NUC472
+	default y if BOARD_NUTINY_NUC472
+	help
+	  启用新唐 NUC472 PWM 波形输出驱动 (PA.5/PA.6)。
+
+config EADC_NUC472
+	bool "NUC472 EADC driver (VBG/VTEMP)"
+	depends on SOC_NUC472
+	default y if BOARD_NUTINY_NUC472
+	help
+	  启用新唐 NUC472 增强型 ADC 驱动，支持内部带隙基准与温度传感器采样。
+
+config TIMER_NUC472
+	bool "NUC472 TIMER driver"
+	depends on SOC_NUC472
+	default y if BOARD_NUTINY_NUC472
+	help
+	  启用新唐 NUC472 TIMER0 周期定时器与微秒时间戳驱动。
+
+config RTC_NUC472
+	bool "NUC472 RTC driver"
+	depends on SOC_NUC472
+	default y if BOARD_NUTINY_NUC472
+	help
+	  启用新唐 NUC472 RTC 实时日历时钟驱动。
+
+config WDT_NUC472
+	bool "NUC472 WDT driver"
+	depends on SOC_NUC472
+	default y if BOARD_NUTINY_NUC472
+	help
+	  启用新唐 NUC472 看门狗定时器驱动 (基于 10 kHz LIRC)。
+
+config EMAC_PROBE_NUC472
+	bool "NUC472 EMAC MDIO PHY probe driver"
+	depends on SOC_NUC472
+	default y if BOARD_NUTINY_NUC472
+	help
+	  启用新唐 NUC472 CON1 EMAC + IP101GR PHY 链路探测驱动。
+
+endmenu
+
 endmenu
