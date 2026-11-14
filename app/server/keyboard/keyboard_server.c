@@ -45,6 +45,7 @@
 
 #define KS_MAX_KEY_WORDS    KEY_RAW_WORDS(KEY_MAX_NUM)
 #define KS_NLK_HID_QUEUE_LEN 8U
+#define KS_CONFIG_SAVE_DELAY_MS 5000U
 
 
 struct keyboard_server {
@@ -229,7 +230,7 @@ int ks_switch_keyboard_config(struct keyboard_server *ks, const char *target_id)
     /* 触发防抖更新 active.nkc */
     uint32_t now_ms = (uint32_t)tick_to_msec_64(cpu_run_ticks());
     ks->config_dirty = true;
-    ks->sync_deadline_ms = now_ms + 1000U;
+    ks->sync_deadline_ms = now_ms + KS_CONFIG_SAVE_DELAY_MS;
     pr_info("Keyboard switched to config: %s\n", target_id);
     return 0;
 }
@@ -467,44 +468,6 @@ static bool ks_valid_config_id(const char *id)
     return false;
 }
 
-/* 将内存配置快照安全写入 /assets/keyboard/active.nkc（临时文件重命名原子覆写） */
-static int ks_write_active_snapshot(struct keyboard_server *ks,
-                                    const void *buf, size_t len)
-{
-    char temp[48];
-    char path[48];
-    int fd;
-    ssize_t count;
-    int ret;
-
-    if (ks == NULL || buf == NULL || len == 0U) {
-        return -EINVAL;
-    }
-
-    snprintf(temp, sizeof(temp), "/assets/keyboard/active.tmp");
-    snprintf(path, sizeof(path), "/assets/keyboard/active.nkc");
-
-    fd = nos_open(temp, O_WRONLY | O_CREAT | O_TRUNC, 0644);
-    if (fd < 0) {
-        return fd;
-    }
-    count = nos_write(fd, buf, len);
-    ret = nos_close(fd);
-    if (count != (ssize_t)len || ret != 0) {
-        (void)nos_unlink(temp);
-        return count < 0 ? (int)count : -EIO;
-    }
-    ret = nos_rename(temp, path);
-    /* LittleFS replaces atomically. FAT may require removing the target first. */
-    if (ret == -EEXIST && nos_unlink(path) == 0) {
-        ret = nos_rename(temp, path);
-    }
-    if (ret != 0) {
-        (void)nos_unlink(temp);
-    }
-    return ret;
-}
-
 /*
  * 低优先级后台持久化工作任务：
  * 优先级 7，栈 1536 字节。专职执行 Flash 写盘与 nos_sync()，
@@ -533,12 +496,12 @@ static void kb_config_worker_task_entry(void *parameter)
                 rc = -EBUSY;
             } else {
                 rc = keyboard_config_encode(&ks->kb_cap, ks->profile.hardware_id,
-                                            "active", "Active configuration", KEYBOARD_CONFIG_ACTIVE,
+                                            "active", "", KEYBOARD_CONFIG_ACTIVE,
                                             0U, NULL, 0U, &len);
                 if (rc == 0) {
                     snapshot = kmalloc(len, GFP_KERNEL);
                     rc = snapshot != NULL ? keyboard_config_encode(&ks->kb_cap, ks->profile.hardware_id,
-                          "active", "Active configuration", KEYBOARD_CONFIG_ACTIVE,
+                          "active", "", KEYBOARD_CONFIG_ACTIVE,
                           0U, snapshot, len, &len) : -ENOMEM;
                 }
             }
@@ -547,10 +510,12 @@ static void kb_config_worker_task_entry(void *parameter)
 
         if (rc == 0 && snapshot != NULL) {
             rc = ks_persistent_store_ready(ks);
-            if (rc == 0) rc = ks_write_active_snapshot(ks, snapshot, len);
+            if (rc == 0) {
+                rc = keyboard_config_snapshot_write("/assets/keyboard", snapshot, len);
+                if (rc > 0) rc = nos_sync();
+            }
             kfree(snapshot);
             snapshot = NULL;
-            if (rc == 0) rc = nos_sync();
             if (rc == 0) {
                 pr_info("config save complete bytes=%u heap_free=%u\n",
                         (unsigned int)len, (unsigned int)mm_block_free_size());
@@ -567,7 +532,7 @@ static void kb_config_worker_task_entry(void *parameter)
         ks->sync_busy = false;
         if (retry && !ks->config_dirty) {
             ks->config_dirty = true;
-            ks->sync_deadline_ms = (uint32_t)tick_to_msec_64(cpu_run_ticks()) + 1000U;
+            ks->sync_deadline_ms = (uint32_t)tick_to_msec_64(cpu_run_ticks()) + KS_CONFIG_SAVE_DELAY_MS;
         }
         mutex_unlock(&ks->lock);
     }
@@ -673,12 +638,20 @@ static noinline int ks_load_config_file(struct keyboard_server *ks,
                    sizeof(ks->kb_cap.active_light_id));
         }
 
-        ks->config_dirty = true;
-        ks->sync_deadline_ms = (uint32_t)tick_to_msec_64(cpu_run_ticks());
-
     }
     mutex_unlock(&ks->lock);
     kfree(file_buf);
+
+    if (ret == 0 && file_req->kind == NLK_KB_CONFIG_KEYBOARD) {
+        ret = keyboard_config_activate_macros(&ks->kb_cap, ks->profile.hardware_id,
+                                              "/assets/keyboard", &ks->lock);
+    }
+    if (ret == 0) {
+        mutex_lock(&ks->lock);
+        ks->config_dirty = true;
+        ks->sync_deadline_ms = (uint32_t)tick_to_msec_64(cpu_run_ticks()) + KS_CONFIG_SAVE_DELAY_MS;
+        mutex_unlock(&ks->lock);
+    }
 
     if (ret == 0) {
         if (file_req->kind == NLK_KB_CONFIG_KEYBOARD) {
@@ -726,14 +699,14 @@ static int ks_on_config_files(uint8_t op, const void *req, uint16_t req_len,
 
     /*
      * RPC 改灯、改键、调参在 cap_keyboard 中已在 RAM 完成更新。
-     * op == 0 (kb_sync_active_config) 仅标记脏位并刷新 1000ms 写回防抖截止时间，
+     * op == 0 (kb_sync_active_config) 仅标记脏位并刷新 5000ms 写回防抖截止时间，
      * 避免持锁同步写 Flash 挂起按键扫描任务（时延 < 1ms 返回 ACK）。
      */
     if (op == 0U) {
         uint32_t now_ms = (uint32_t)tick_to_msec_64(cpu_run_ticks());
         mutex_lock(&ks->lock);
         ks->config_dirty = true;
-        ks->sync_deadline_ms = now_ms + 1000U;
+        ks->sync_deadline_ms = now_ms + KS_CONFIG_SAVE_DELAY_MS;
         mutex_unlock(&ks->lock);
         if (resp_len != NULL) {
             *resp_len = 0U;
@@ -767,7 +740,9 @@ static int ks_on_config_files(uint8_t op, const void *req, uint16_t req_len,
     ret = keyboard_config_file_rpc(&ks->kb_cap, ks->profile.hardware_id,
                                    "/assets/keyboard", op, req, req_len,
                                    resp, resp_len);
-    if (ret == 0 && op == NLK_KB_OP_CONFIG_FILES_SAVE) {
+    if (ret == 0 && op == NLK_KB_OP_CONFIG_FILES_SAVE && req != NULL &&
+        req_len >= sizeof(struct nlk_kb_config_file_req) &&
+        ((const struct nlk_kb_config_file_req *)req)->kind != KEYBOARD_CONFIG_MACRO) {
         /*
          * SAVE 操作已经在 keyboard_config_file_rpc 中完成了文件写入与 active 配置同步，
          * 清除 config_dirty 标记，严禁冗余触发二次落盘。
@@ -831,7 +806,7 @@ static int ks_action_light_toggle(const struct key_action_context *ctx, void *pr
         if (ks_persistent_store_ready(ks) == 0) {
             uint32_t now_ms = (uint32_t)tick_to_msec_64(cpu_run_ticks());
             ks->config_dirty = true;
-            ks->sync_deadline_ms = now_ms + 1000U;
+            ks->sync_deadline_ms = now_ms + KS_CONFIG_SAVE_DELAY_MS;
         }
     }
     return KEY_ACTION_PASS; /* 未返回按键值，保持原有按键值 */
@@ -1169,7 +1144,7 @@ static int keyboard_server_control(struct device *dev, int cmd, void *args)
             if (rc == 0 && ks_persistent_store_ready(ks) == 0) {
                 uint32_t now_ms = (uint32_t)tick_to_msec_64(cpu_run_ticks());
                 ks->config_dirty = true;
-                ks->sync_deadline_ms = now_ms + 1000U;
+                ks->sync_deadline_ms = now_ms + KS_CONFIG_SAVE_DELAY_MS;
             }
             mutex_unlock(&ks->lock);
             return rc;
@@ -1187,7 +1162,7 @@ static int keyboard_server_control(struct device *dev, int cmd, void *args)
             if (rc == 0 && ks_persistent_store_ready(ks) == 0) {
                 uint32_t now_ms = (uint32_t)tick_to_msec_64(cpu_run_ticks());
                 ks->config_dirty = true;
-                ks->sync_deadline_ms = now_ms + 1000U;
+                ks->sync_deadline_ms = now_ms + KS_CONFIG_SAVE_DELAY_MS;
             }
             mutex_unlock(&ks->lock);
             return rc;
@@ -1347,7 +1322,7 @@ static void keyboard_server_task_entry(void *parameter)
                     if (recording != 0xFFU &&
                         ks->kb_cap.recording_macro_id == 0xFFU) {
                         ks->config_dirty = true;
-                        ks->sync_deadline_ms = now_ms + 1000U;
+                        ks->sync_deadline_ms = now_ms + KS_CONFIG_SAVE_DELAY_MS;
                     }
                     mutex_unlock(&ks->lock);
                 }

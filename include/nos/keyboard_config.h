@@ -53,12 +53,16 @@ struct keyboard_config_file_info {
 int keyboard_config_file_save(const struct nlk_keyboard_ctx *ctx, const char *hardware,
                               const char *dir, const char *id, const char *name,
                               const char *desc, uint8_t kind, uint8_t macro_id);
+int keyboard_config_activate_macros(struct nlk_keyboard_ctx *ctx, const char *hardware,
+                                    const char *dir, struct mutex *lock);
 int keyboard_config_file_load(struct nlk_keyboard_ctx *ctx, const char *hardware,
                               const char *dir, const char *id, uint8_t kind,
                               uint8_t macro_id);
 int keyboard_config_file_next(const char *dir, const char *hardware, uint8_t kind,
                               uint32_t *cursor, struct keyboard_config_file_info *info);
 int keyboard_config_file_delete(const char *dir, const char *id, uint8_t kind);
+/* Returns 1 when written, 0 when unchanged, or a negative errno. */
+int keyboard_config_snapshot_write(const char *dir, const void *buffer, size_t length);
 int keyboard_config_active_save(const struct nlk_keyboard_ctx *ctx,
                                 const char *hardware, const char *dir);
 int keyboard_config_file_restore(struct nlk_keyboard_ctx *ctx, const char *hardware,

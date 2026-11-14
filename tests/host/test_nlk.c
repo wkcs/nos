@@ -453,6 +453,7 @@ static int                  g_vfs_fd_node[8] = { -1, -1, -1, -1, -1, -1, -1, -1 
 static loff_t               g_vfs_fd_pos[8];
 static bool                 g_vfs_fail_selection_write;
 static bool                 g_vfs_fail_close;
+static unsigned int         g_vfs_write_count;
 
 static int mock_vfs_dir_readdir(struct file *file, void *dirent, filldir_t filldir)
 {
@@ -656,6 +657,7 @@ ssize_t nos_write(int fd, const void *buf, size_t count)
     n = &g_vfs_nodes[g_vfs_fd_node[fd]];
     if (g_vfs_fail_selection_write && strstr(n->path, "/active.") != NULL) return -ENOSPC;
     if ((size_t)g_vfs_fd_pos[fd] + count > sizeof(n->data)) return -ENOSPC;
+    g_vfs_write_count++;
     memcpy(n->data + g_vfs_fd_pos[fd], buf, count);
     g_vfs_fd_pos[fd] += (loff_t)count;
     if ((size_t)g_vfs_fd_pos[fd] > n->size) {
@@ -1502,6 +1504,59 @@ int main(void)
         list.kind = NLK_KB_CONFIG_KEYBOARD;
         assert(kb.cap.ops->on_rpc(NULL, &kb.cap, &hdr, &list, sizeof(list), &page, &resp_len) == 0);
         assert(resp_len == sizeof(page) && page.eof == 0U && page.id[0] != '\0');
+        /* Explicit macro saves create/update a library file, without rewriting active. */
+        {
+            struct nlk_kb_macro_step step = { NLK_KB_MACRO_ACT_KEY_TAP, 4U, 10U };
+            unsigned int writes;
+            assert(nlk_cap_keyboard_set_macro_meta(&kb, 7U, "copy", "Copy", "Library",
+                                                   &step, 1U, 1U) == 0);
+            req.kind = KEYBOARD_CONFIG_MACRO;
+            req.macro_id = 7U;
+            strcpy(req.id, "copy");
+            strcpy(req.name, "Copy");
+            strcpy(req.desc, "Library");
+            hdr.cmd_op = NLK_KB_OP_CONFIG_FILES_SAVE;
+            assert(kb.cap.ops->on_rpc(NULL, &kb.cap, &hdr, &req, sizeof(req), NULL, &resp_len) == 0);
+            writes = g_vfs_write_count;
+            assert(kb.cap.ops->on_rpc(NULL, &kb.cap, &hdr, &req, sizeof(req), NULL, &resp_len) == 0);
+            assert(g_vfs_write_count == writes);
+            step.key_code = 5U;
+            assert(nlk_cap_keyboard_set_macro_meta(&kb, 7U, "copy", "Copy", "Library",
+                                                   &step, 1U, 1U) == 0);
+            assert(kb.cap.ops->on_rpc(NULL, &kb.cap, &hdr, &req, sizeof(req), NULL, &resp_len) == 0);
+            assert(g_vfs_write_count == writes + 1U);
+            assert(keyboard_config_file_load(&kb, "NK60-v2", "/profiles", "copy",
+                                             KEYBOARD_CONFIG_MACRO, 7U) == 0);
+            assert(nlk_cap_keyboard_find_macro(&kb, 7U)->steps[0].key_code == 5U);
+            writes = g_vfs_write_count;
+            assert(keyboard_config_active_save(&kb, "NK60-v2", "/profiles") == 0);
+            assert(keyboard_config_active_save(&kb, "NK60-v2", "/profiles") == 0);
+            assert(g_vfs_write_count == writes + 1U);
+        }
+        /* Catalog scans retain no macro payloads; activation loads only bindings. */
+        {
+            struct nlk_kb_macro_step step = { NLK_KB_MACRO_ACT_KEY_TAP, 9U, 0U };
+            assert(nlk_cap_keyboard_set_macro_meta(&kb, 8U, "unused", "Unused", "",
+                                                   &step, 1U, 1U) == 0);
+            assert(keyboard_config_file_save(&kb, "NK60-v2", "/profiles", "unused", "Unused", "",
+                                             KEYBOARD_CONFIG_MACRO, 8U) == 0);
+            nlk_cap_keyboard_replace_macros(&kb, NULL, 0U);
+            assert(keyboard_config_manifest_build("/profiles", "NK60-v2", &kb.manifest) == 0);
+            assert(kb.macro_count == 0U && kb.manifest.macro_count == 2U);
+            kb.keymap[0][0] = nlk_fnv1a_24("copy") << 8;
+            assert(nlk_cap_keyboard_bind_key_action(&kb, 0U, 0U, "macro_play", false) == 0);
+            assert(keyboard_config_file_save(&kb, "NK60-v2", "/profiles", "bound", "Bound", "",
+                                             KEYBOARD_CONFIG_KEYBOARD, 0U) == 0);
+            assert(keyboard_config_file_load(&kb, "NK60-v2", "/profiles", "bound",
+                                             KEYBOARD_CONFIG_KEYBOARD, 0U) == 0);
+            assert(kb.macro_count == 1U);
+            assert(strcmp(kb.macros->info.id, "copy") == 0);
+            assert(kb.macros->steps[0].key_code == 5U);
+            /* A different active profile must release the previous macro. */
+            assert(keyboard_config_file_load(&kb, "NK60-v2", "/profiles", "profile0",
+                                             KEYBOARD_CONFIG_KEYBOARD, 0U) == 0);
+            assert(kb.macro_count == 0U);
+        }
         /* 测试 Manifest 清单构建与查找 */
         assert(keyboard_config_manifest_build("/profiles", "NK60-v2", &kb.manifest) == 0);
         assert(kb.manifest.config_count >= 6U);
