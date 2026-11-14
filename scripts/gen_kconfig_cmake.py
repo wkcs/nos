@@ -22,6 +22,7 @@ import kconfiglib  # noqa: E402
 
 LEGACY_BOARD_MAP = {
     "nk60-v2": ("BOARD_NK60", "ARM_CORTEX_M4", "SOC_STM32F4"),
+    "nk60-v1": ("BOARD_NK60_V1", "ARM_CORTEX_M4", "SOC_STM32F4"),
     "nk60": ("BOARD_NK60", "ARM_CORTEX_M4", "SOC_STM32F4"),
     "qemu-stm32": ("BOARD_QEMU_STM32", "ARM_CORTEX_M3", "SOC_STM32F1"),
     "wl-001": ("BOARD_WL_001", "ARM_CORTEX_M3", "SOC_STM32F1"),

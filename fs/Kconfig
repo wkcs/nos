@@ -71,7 +71,7 @@ config FATFS_CODEPAGE
 
 config LITTLEFS
 	bool "LittleFS file system"
-	default y if BOARD_NK60
+	default y if BOARD_NK60 || BOARD_NK60_V1
 	default n
 	depends on VFS
 	help
@@ -79,7 +79,7 @@ config LITTLEFS
 
 config ASSETS_FS_LITTLEFS
 	bool "Mount LittleFS on /assets"
-	default y if LITTLEFS && BOARD_NK60
+	default y if LITTLEFS && (BOARD_NK60 || BOARD_NK60_V1)
 	default n
 	depends on LITTLEFS
 	help

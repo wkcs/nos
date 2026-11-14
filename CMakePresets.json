@@ -22,6 +22,15 @@
       }
     },
     {
+      "name": "nk60-v1",
+      "displayName": "NK60-V1 (STM32F401 / Cortex-M4F)",
+      "inherits": "arm-base",
+      "binaryDir": "${sourceDir}/build/nk60-v1",
+      "cacheVariables": {
+        "NOS_DEFCONFIG": "${sourceDir}/configs/nk60-v1_defconfig"
+      }
+    },
+    {
       "name": "qemu-stm32",
       "displayName": "QEMU STM32 (STM32F405 / Cortex-M4F)",
       "inherits": "arm-base",
@@ -92,6 +101,10 @@
     {
       "name": "nk60-v2",
       "configurePreset": "nk60-v2"
+    },
+    {
+      "name": "nk60-v1",
+      "configurePreset": "nk60-v1"
     },
     {
       "name": "qemu-stm32",

@@ -86,10 +86,10 @@ config BLOCK_CACHE_SECTORS
 	int "Number of cached sectors"
 	depends on BLOCK_CACHE
 	range 2 64
-	default 8 if BOARD_NK60
+	default 8 if BOARD_NK60 || BOARD_NK60_V1
 	default 4
 	help
-	  块缓存保留的扇区条目数。NK60-V2 上默认为 8（对应 4KB Flash 扇区缓存）。
+	  块缓存保留的扇区条目数。NK60 上默认为 8（对应 4KB Flash 扇区缓存）。
 
 endmenu
 
@@ -278,12 +278,26 @@ config NK60_V2_KEY
 	help
 	  NK60 V2 板级键盘驱动。
 
+config NK60_V1_KEY
+	bool "NK60 V1 keyboard driver"
+	default y
+	depends on KEYBOARD && BOARD_NK60_V1 && SOC_STM32F4
+	help
+	  NK60 V1 板级键盘驱动。
+
 config NK60_V2_LED
 	bool "NK60 V2 LED driver"
 	depends on BOARD_NK60 && SOC_STM32F4
 	default n
 	help
 	  NK60 V2 板级 LED 驱动。
+
+config NK60_V1_LED
+	bool "NK60 V1 LED backlight driver (74HC595 + TIM PWM)"
+	depends on BOARD_NK60_V1 && SOC_STM32F4
+	default y
+	help
+	  NK60 V1 板级 LED 驱动（74HC595 行扫描 + TIM2/3/4/5 PWM 列驱动）。
 
 config NK60_V2_W25QXX
 	bool "NK60 V2 W25Qxx flash driver"
@@ -293,20 +307,31 @@ config NK60_V2_W25QXX
 	help
 	  NK60 V2 板级 W25Qxx Flash 驱动。
 
+config NK60_V1_W25QXX
+	bool "NK60 V1 W25Qxx flash driver"
+	depends on BOARD_NK60_V1 && SOC_STM32F4
+	select STM32F4_SPI
+	default y
+	help
+	  NK60 V1 板级 W25Qxx Flash 驱动。
+
 config KEY_DEV
 	string "Keyboard matrix device name"
+	default "nk60_v1-key" if BOARD_NK60_V1
 	default "nk60_v2-key"
 	help
 	  底层键盘矩阵硬件驱动设备名称。
 
 config LED_DEV
 	string "LED device name"
+	default "nk60_v1-led" if BOARD_NK60_V1
 	default "nk60_v2-led"
 	help
 	  LED 设备名称。
 
 config FLASH_DEV
 	string "Flash device name"
+	default "nk60_v1-flash" if BOARD_NK60_V1
 	default "nk60_v2-flash"
 	help
 	  Flash 设备名称。

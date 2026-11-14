@@ -283,8 +283,11 @@ int keyboard_config_save_profile(uint8_t slot_id)
     }
     snprintf(id, sizeof(id), "slot_%u", (unsigned int)slot_id);
     dir = (ks_persistent_store_ready(ks) == 0) ? "/assets/keyboard" : "/keyboard";
-    return keyboard_config_file_save(&ks->kb_cap, "nk60_v2-rev1", dir, id, id, "",
-                                     KEYBOARD_CONFIG_KEYBOARD, 0U);
+    return keyboard_config_file_save(&ks->kb_cap,
+                                     (ks->profile.hardware_id != NULL && ks->profile.hardware_id[0] != '\0')
+                                         ? ks->profile.hardware_id
+                                         : "nk60_v2-rev1",
+                                     dir, id, id, "", KEYBOARD_CONFIG_KEYBOARD, 0U);
 }
 
 int keyboard_config_load_profile(uint8_t slot_id)
@@ -433,7 +436,8 @@ static int ks_persistent_store_ready(struct keyboard_server *ks)
             mount.fs_name != NULL && mount.dev_name != NULL &&
             strcmp(mount.mount_path, "/assets") == 0 &&
             (strcmp(mount.fs_name, "fatfs") == 0 || strcmp(mount.fs_name, "littlefs") == 0) &&
-            strcmp(mount.dev_name, "nk60_v2-assets") == 0) {
+            (strcmp(mount.dev_name, "nk60_v2-assets") == 0 ||
+             strcmp(mount.dev_name, "nk60_v1-assets") == 0)) {
             mounted = true;
             break;
         }

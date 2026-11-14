@@ -170,7 +170,7 @@
 
 
 #define	_MIN_SS		512
-#ifdef CONFIG_BOARD_NK60
+#if defined(CONFIG_BOARD_NK60) || defined(CONFIG_BOARD_NK60_V1)
 #define	_MAX_SS		512
 #else
 #define	_MAX_SS		4096

@@ -14,14 +14,14 @@ config SOC_STM32F1
 config SOC_STM32F4
 	bool "STMicroelectronics STM32F4 Series (Cortex-M4)"
 	depends on ARCH_ARM
-	default y if BOARD_NK60 || BOARD_QEMU_STM32
+	default y if BOARD_NK60 || BOARD_NK60_V1 || BOARD_QEMU_STM32
 	help
 	  启用 STM32F4xx 系列 SoC 外设与 CMSIS 支持。
 
 # Part selections describe the silicon independently of the board name.
 config SOC_STM32F401
 	bool
-	default y if BOARD_NK60 && SOC_STM32F4
+	default y if (BOARD_NK60 || BOARD_NK60_V1) && SOC_STM32F4
 
 config SOC_STM32F405
 	bool

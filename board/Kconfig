@@ -14,6 +14,12 @@ config BOARD_NK60
 	help
 	  NK60 V2 键盘板。
 
+config BOARD_NK60_V1
+	bool "NK60 V1"
+	depends on ARCH_ARM
+	help
+	  NK60 V1 键盘板。
+
 config BOARD_QEMU_STM32
 	bool "QEMU STM32"
 	depends on ARCH_ARM
@@ -47,6 +53,7 @@ endchoice
 config BOARD
 	string
 	default "nk60-v2" if BOARD_NK60
+	default "nk60-v1" if BOARD_NK60_V1
 	default "qemu-stm32" if BOARD_QEMU_STM32
 	default "wl-001" if BOARD_WL_001
 	default "zj-v3" if BOARD_ZJ_V3
@@ -65,7 +72,7 @@ menu "Server Configuration"
 
 config NLK_SERVER
 	bool "NLK (NOS Link Kit) distributed soft-bus server"
-	default y if BOARD_NK60
+	default y if BOARD_NK60 || BOARD_NK60_V1
 	default n
 	help
 	  启用 NLK (NOS Link Kit) 分布式软总线协议栈与能力服务（替代原 NDK 与 Connect Server）。
