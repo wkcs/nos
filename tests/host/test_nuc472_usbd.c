@@ -423,12 +423,24 @@ static void test_ep_write_and_zlp(void)
 
     /* 3. Bulk IN 短包测试：发送 13 字节 (< MPS 64)，在 MODE_AUTO 下必须置位 SHORTTXEN */
     g_test_usbd.EP[0].EPRSPCTL &= ~NUC472_USBD_EPRSPCTL_SHORTTXEN;
+    /* 模拟当前端点处于 DATA1 (TOGGLE=1) 状态 */
+    g_test_usbd.EP[0].EPRSPCTL |= NUC472_USBD_EPRSPCTL_TOGGLE;
     uint8_t short_data[13] = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13};
     size_t short_wr = g_nuc472_udcd.ops->ep_write(0x81, short_data, 13);
     assert(short_wr == 13);
     assert((g_test_usbd.EP[0].EPRSPCTL & NUC472_USBD_EPRSPCTL_SHORTTXEN) != 0);
+    /* 核心安全验证：写短包时严禁 RMW 误写 TOGGLE=1 翻转硬件 Data Toggle */
+    assert((g_test_usbd.EP[0].EPRSPCTL & NUC472_USBD_EPRSPCTL_TOGGLE) == 0);
 
-    /* 4. Bulk IN 整包测试：发送 64 字节 (= MPS 64)，不应置位 SHORTTXEN */
+    /* 4. Bulk IN 非 EP0 ZLP 测试：模拟当前 DATA1 (TOGGLE=1) 状态下发送 0 字节包 */
+    g_test_usbd.EP[0].EPRSPCTL |= NUC472_USBD_EPRSPCTL_TOGGLE;
+    size_t zlp81 = g_nuc472_udcd.ops->ep_write(0x81, NULL, 0);
+    assert(zlp81 == 0);
+    assert((g_test_usbd.EP[0].EPRSPCTL & NUC472_USBD_EPRSPCTL_ZEROLEN) != 0);
+    /* 核心安全验证：写 ZLP 时严禁 RMW 误写 TOGGLE=1 翻转硬件 Data Toggle */
+    assert((g_test_usbd.EP[0].EPRSPCTL & NUC472_USBD_EPRSPCTL_TOGGLE) == 0);
+
+    /* 5. Bulk IN 整包测试：发送 64 字节 (= MPS 64)，不应置位 SHORTTXEN */
     g_test_usbd.EP[0].EPRSPCTL &= ~NUC472_USBD_EPRSPCTL_SHORTTXEN;
     size_t full_wr = g_nuc472_udcd.ops->ep_write(0x81, tx_data, 64);
     assert(full_wr == 64);
@@ -476,6 +488,11 @@ static void test_bus_reset_behavior(void)
     g_test_usbd.FADDR = 0x2A;
     g_test_usbd.OPER |= NUC472_USBD_OPER_HISPDEN; /* 恶意置位高速 */
 
+    /* 模拟已使能的端点当前处于 DATA1 (TOGGLE=1) 状态 */
+    for (int i = 0; i < NUC472_USBD_SLOT_NUM; i++) {
+        g_test_usbd.EP[i].EPRSPCTL |= NUC472_USBD_EPRSPCTL_TOGGLE;
+    }
+
     set_ro_reg(&g_test_usbd.GINTSTS, NUC472_USBD_GINTSTS_USBIF);
     g_test_usbd.BUSINTSTS = NUC472_USBD_BUSINTSTS_RSTIF;
 
@@ -485,6 +502,14 @@ static void test_bus_reset_behavior(void)
     assert(g_test_usbd.FADDR == 0);
     assert((g_test_usbd.OPER & NUC472_USBD_OPER_HISPDEN) == 0); /* 必须强制保持全速 */
     assert((g_test_usbd.BUSINTSTS & NUC472_USBD_BUSINTSTS_RSTIF) == 0);
+
+    /* 核心安全验证：总线复位清空 FIFO 时，严禁 RMW 误写 TOGGLE=1 */
+    for (int i = 0; i < NUC472_USBD_SLOT_NUM; i++) {
+        if (g_ep_slots[i].in_use) {
+            assert((g_test_usbd.EP[i].EPRSPCTL & NUC472_USBD_EPRSPCTL_FLUSH) != 0);
+            assert((g_test_usbd.EP[i].EPRSPCTL & NUC472_USBD_EPRSPCTL_TOGGLE) == 0);
+        }
+    }
 
     printf("  [PASS] test_bus_reset_behavior\n");
 }
@@ -581,6 +606,37 @@ static void test_ep_read_buffer_overflow_defense(void)
     printf("  [PASS] test_ep_read_buffer_overflow_defense\n");
 }
 
+/* 测试 10: EPRSPCTL RMW 硬件隐患防护全链路验证 (STALL, Clear STALL, 模式保持) */
+static void test_ep_toggle_rmw_hazard_prevention(void)
+{
+    /* 针对 slot 0 (0x81, Bulk IN 端点) 验证 STALL 设置与清除 */
+    /* 1. 设置 STALL：在 TOGGLE=1 状态下置位 STALL，验证 HALT 置位且 TOGGLE 强制为 0 */
+    g_test_usbd.EP[0].EPRSPCTL = NUC472_USBD_EPRSPCTL_MODE_AUTO | NUC472_USBD_EPRSPCTL_TOGGLE;
+    g_nuc472_udcd.ops->ep_set_stall(0x81);
+    assert((g_test_usbd.EP[0].EPRSPCTL & NUC472_USBD_EPRSPCTL_HALT) != 0);
+    assert((g_test_usbd.EP[0].EPRSPCTL & NUC472_USBD_EPRSPCTL_TOGGLE) == 0);
+    assert((g_test_usbd.EP[0].EPRSPCTL & 0x06) == NUC472_USBD_EPRSPCTL_MODE_AUTO);
+
+    /* 2. 清除 STALL：清除 HALT 并显式写 1 复位 TOGGLE，同时保留 MODE */
+    g_nuc472_udcd.ops->ep_clear_stall(0x81);
+    assert((g_test_usbd.EP[0].EPRSPCTL & NUC472_USBD_EPRSPCTL_HALT) == 0);
+    assert((g_test_usbd.EP[0].EPRSPCTL & NUC472_USBD_EPRSPCTL_TOGGLE) != 0);
+    assert((g_test_usbd.EP[0].EPRSPCTL & 0x06) == NUC472_USBD_EPRSPCTL_MODE_AUTO);
+
+    /* 3. 针对 slot 2 (0x82, INT IN 端点，MODE_MANUAL) 验证短包发送不误触发 SHORTTXEN */
+    /* INT 端点在 ep_write 时由 EPTXCNT 触发，严禁向 EPRSPCTL 置位 SHORTTXEN，
+     * 且驱动直接利用内存 type 判断完全不访问 EPRSPCTL，因此寄存器保持原样 */
+    g_test_usbd.EP[2].EPRSPCTL = NUC472_USBD_EPRSPCTL_MODE_MANUAL | NUC472_USBD_EPRSPCTL_TOGGLE;
+    uint8_t int_data[8] = {1, 2, 3, 4, 5, 6, 7, 8};
+    size_t int_wr = g_nuc472_udcd.ops->ep_write(0x82, int_data, 8);
+    assert(int_wr == 8);
+    assert((g_test_usbd.EP[2].EPRSPCTL & NUC472_USBD_EPRSPCTL_SHORTTXEN) == 0);
+    assert((g_test_usbd.EP[2].EPRSPCTL & 0x06) == NUC472_USBD_EPRSPCTL_MODE_MANUAL);
+    assert((g_test_usbd.EP[2].EPRSPCTL & NUC472_USBD_EPRSPCTL_TOGGLE) != 0);
+
+    printf("  [PASS] test_ep_toggle_rmw_hazard_prevention\n");
+}
+
 int main(void)
 {
     printf("=== NUC472 USBD Controller & Endpoint State Machine Tests ===\n");
@@ -593,6 +649,7 @@ int main(void)
     test_bus_reset_behavior();
     test_ep0_control_out_data_stage();
     test_ep_read_buffer_overflow_defense();
+    test_ep_toggle_rmw_hazard_prevention();
     printf("All NUC472 USBD host tests passed successfully!\n");
     return 0;
 }

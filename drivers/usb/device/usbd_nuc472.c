@@ -99,6 +99,24 @@ static int nuc472_usbd_set_config(__maybe_unused uint8_t address)
     return 0;
 }
 
+/**
+ * @brief 安全向 EPRSPCTL 写入触发动作位，消除 RMW (|=) 误写 TOGGLE 或动作位隐患
+ *
+ * EPRSPCTL 寄存器中 Bit 3 (TOGGLE) 读出为当前 Data Toggle 状态 (DATA0/DATA1)，
+ * 但写 1 会强制翻转/复位 Data Toggle。FLUSH、ZEROLEN、SHORTTXEN 也是写 1 触发动作。
+ * 因此严禁使用 EPRSPCTL |= action。本函数保留当前的 MODE[2:1] 与 HALT[4] 状态，
+ * 严格清零所有写 1 动作位后再或上本次指定的 action。
+ */
+static inline void nuc472_ep_trigger_action(int slot, uint32_t action)
+{
+    uint32_t ctl = NUC472_USBD->EP[slot].EPRSPCTL;
+    ctl &= ~(NUC472_USBD_EPRSPCTL_FLUSH |
+             NUC472_USBD_EPRSPCTL_TOGGLE |
+             NUC472_USBD_EPRSPCTL_ZEROLEN |
+             NUC472_USBD_EPRSPCTL_SHORTTXEN);
+    NUC472_USBD->EP[slot].EPRSPCTL = ctl | action;
+}
+
 /* 端点 STALL 握手 */
 static int nuc472_usbd_ep_set_stall(uint8_t address)
 {
@@ -108,14 +126,14 @@ static int nuc472_usbd_ep_set_stall(uint8_t address)
     } else {
         int slot = nuc472_find_slot_by_addr(address);
         if (slot >= 0) {
-            NUC472_USBD->EP[slot].EPRSPCTL |= NUC472_USBD_EPRSPCTL_HALT;
+            nuc472_ep_trigger_action(slot, NUC472_USBD_EPRSPCTL_HALT);
         }
     }
     enable_irq_save(flags);
     return 0;
 }
 
-/* 端点 STALL 清除与 Toggle 翻转 */
+/* 端点 STALL 清除与 Toggle 复位 */
 static int nuc472_usbd_ep_clear_stall(uint8_t address)
 {
     addr_t flags = disable_irq_save();
@@ -124,8 +142,14 @@ static int nuc472_usbd_ep_clear_stall(uint8_t address)
     } else {
         int slot = nuc472_find_slot_by_addr(address);
         if (slot >= 0) {
-            NUC472_USBD->EP[slot].EPRSPCTL &= ~NUC472_USBD_EPRSPCTL_HALT;
-            NUC472_USBD->EP[slot].EPRSPCTL |= NUC472_USBD_EPRSPCTL_TOGGLE;
+            uint32_t ctl = NUC472_USBD->EP[slot].EPRSPCTL;
+            /* 清除 HALT[4] 以及所有写 1 动作位，保留 MODE[2:1]，写 1 到 TOGGLE 复位数据序列 */
+            ctl &= ~(NUC472_USBD_EPRSPCTL_HALT |
+                     NUC472_USBD_EPRSPCTL_FLUSH |
+                     NUC472_USBD_EPRSPCTL_TOGGLE |
+                     NUC472_USBD_EPRSPCTL_ZEROLEN |
+                     NUC472_USBD_EPRSPCTL_SHORTTXEN);
+            NUC472_USBD->EP[slot].EPRSPCTL = ctl | NUC472_USBD_EPRSPCTL_TOGGLE;
         }
     }
     enable_irq_save(flags);
@@ -304,7 +328,7 @@ static size_t nuc472_usbd_ep_write(uint8_t address, void *buffer, size_t size)
 
     g_ep_slots[slot].last_tx_len = size;
     if (size == 0 || buffer == NULL) {
-        NUC472_USBD->EP[slot].EPRSPCTL |= NUC472_USBD_EPRSPCTL_ZEROLEN;
+        nuc472_ep_trigger_action(slot, NUC472_USBD_EPRSPCTL_ZEROLEN);
     } else {
         const uint8_t *src = (const uint8_t *)buffer;
         for (size_t k = 0; k < size; k++) {
@@ -318,14 +342,16 @@ static size_t nuc472_usbd_ep_write(uint8_t address, void *buffer, size_t size)
         }
 
         /*
-         * NUC472 硬件在 MODE_AUTO (自动模式，MODE[1]=0) 下：
+         * NUC472 硬件在 Bulk 端点（MODE_AUTO 自动模式）下：
          * 写入 FIFO 达到最大包长 (MPS) 时硬件自动触发发送；
-         * 若发送 0 < size < ep_mps 的短包，硬件无法自动成包，必须手动置位 SHORTTXEN，
+         * 若发送 0 < size < ep_mps 的短包，硬件无法自动成包，必须置位 SHORTTXEN，
          * 否则硬件将对主机的 IN 令牌持续回 NAK 挂死。
-         * 对于 MODE_MANUAL 端点，由软件直接通过写 EPTXCNT 触发，不需要置位 SHORTTXEN。
+         * 直接利用内存中记录的 g_ep_slots[slot].type == USB_EP_ATTR_BULK 判断，
+         * 省去对 EPRSPCTL 的无意义 MMIO 读取（Minor #1）。
+         * 对于 MODE_MANUAL 端点 (INT)，由软件直接写 EPTXCNT 触发，不需要置位 SHORTTXEN。
          */
-        if ((NUC472_USBD->EP[slot].EPRSPCTL & 0x02) == NUC472_USBD_EPRSPCTL_MODE_AUTO && size < ep_mps) {
-            NUC472_USBD->EP[slot].EPRSPCTL |= NUC472_USBD_EPRSPCTL_SHORTTXEN;
+        if (g_ep_slots[slot].type == USB_EP_ATTR_BULK && size < ep_mps) {
+            nuc472_ep_trigger_action(slot, NUC472_USBD_EPRSPCTL_SHORTTXEN);
         }
     }
     NUC472_USBD->EP[slot].EPINTEN |= NUC472_USBD_EPINT_TXPK;
@@ -480,7 +506,7 @@ void USBD_IRQHandler(void)
             NUC472_USBD->CEPCTL = NUC472_USBD_CEPCTL_FLUSH;
             for (int i = 0; i < NUC472_USBD_SLOT_NUM; i++) {
                 if (g_ep_slots[i].in_use) {
-                    NUC472_USBD->EP[i].EPRSPCTL |= NUC472_USBD_EPRSPCTL_FLUSH;
+                    nuc472_ep_trigger_action(i, NUC472_USBD_EPRSPCTL_FLUSH);
                 }
             }
             /* 保证复位后强制保持全速 */
