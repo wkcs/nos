@@ -15,6 +15,7 @@ struct config_cursor {
     int error;
     struct nlk_kb_macro *macros;
     uint8_t macro_count;
+    int bound_macros;
 };
 
 static void config_io(struct config_cursor *c, void *item, size_t size, int write)
@@ -163,17 +164,64 @@ static void config_macro(struct config_cursor *c, struct nlk_keyboard_ctx *ctx,
     }
 }
 
+/* Only macro_play actions interpret the high 24 keycode bits as a macro hash. */
+int keyboard_config_macro_bound(const struct nlk_keyboard_ctx *ctx, uint8_t slot,
+                               uint32_t hash, uint32_t name_hash)
+{
+    uint8_t layer, key, action;
+
+    if (ctx == NULL) return 0;
+    for (layer = 0U; layer < ctx->desc.layer_count; layer++) {
+        for (key = 0U; key < ctx->desc.key_count; key++) {
+            const struct nlk_kb_key_action_chain *chain = &ctx->action_chains[layer][key];
+            uint32_t code = ctx->keymap[layer][key];
+            for (action = 0U; action < chain->count; action++) {
+                uint8_t id = chain->action_ids[action];
+                if (id == 0U || id > ctx->action_count ||
+                    strcmp(ctx->action_descs[id - 1U].name, "macro_play") != 0) continue;
+                if ((code >> 8) != 0U) {
+                    if ((hash != 0U && (code >> 8) == hash) ||
+                        (name_hash != 0U && (code >> 8) == name_hash)) return 1;
+                } else if (slot != NLK_KB_MACRO_NEW) {
+                    uint8_t bound_slot = code >= NLK_KB_MACRO_KEYCODE_BASE && code <= 0xFFU ?
+                        (uint8_t)(code - NLK_KB_MACRO_KEYCODE_BASE) : 0U;
+                    if (slot == bound_slot) return 1;
+                }
+            }
+        }
+    }
+    return 0;
+}
+
+static int config_include_macro(const struct config_cursor *c,
+                                 const struct nlk_keyboard_ctx *ctx,
+                                 const struct nlk_kb_macro *macro)
+{
+    if (!c->bound_macros) return 1;
+    return keyboard_config_macro_bound(ctx, macro->info.macro_id,
+             macro->info.id[0] != '\0' ? nlk_fnv1a_24(macro->info.id) : 0U,
+             macro->info.name[0] != '\0' ? nlk_fnv1a_24(macro->info.name) : 0U);
+}
+
 static void config_macros(struct config_cursor *c, struct nlk_keyboard_ctx *ctx,
                           int write, int apply)
 {
     const struct nlk_kb_macro *macro = ctx->macros;
-    uint8_t count = write ? ctx->macro_count : 0U;
+    uint8_t count = 0U;
     uint8_t seen[32] = {0};
     unsigned int i;
 
+    if (write) {
+        for (macro = ctx->macros; macro != NULL; macro = macro->next) {
+            if (config_include_macro(c, ctx, macro)) count++;
+        }
+        macro = ctx->macros;
+    }
     config_io(c, &count, 1U, write);
     for (i = 0U; i < count && c->error == 0; i++) {
-        uint8_t id = write ? macro->info.macro_id : 0U;
+        uint8_t id;
+        while (write && macro != NULL && !config_include_macro(c, ctx, macro)) macro = macro->next;
+        id = write ? macro->info.macro_id : 0U;
         config_io(c, &id, 1U, write);
         if (c->error != 0 || id == NLK_KB_MACRO_NEW ||
             (seen[id / 8U] & (1U << (id % 8U))) != 0U) {
@@ -462,9 +510,9 @@ static void config_body(struct config_cursor *c, struct nlk_keyboard_ctx *ctx,
     }
 }
 
-int keyboard_config_encode(const struct nlk_keyboard_ctx *ctx, const char *hardware,
-                           const char *name, const char *desc, uint8_t kind, uint8_t macro_id,
-                           void *buffer, size_t capacity, size_t *length)
+static int config_encode(const struct nlk_keyboard_ctx *ctx, const char *hardware,
+                          const char *name, const char *desc, uint8_t kind, uint8_t macro_id,
+                          void *buffer, size_t capacity, size_t *length, int bound_macros)
 {
     struct keyboard_config_header header;
     struct config_cursor c = {0};
@@ -490,6 +538,7 @@ int keyboard_config_encode(const struct nlk_keyboard_ctx *ctx, const char *hardw
     c.size = buffer != NULL ? capacity : (size_t)-1;
     c.pos = sizeof(header);
     c.error = 0;
+    c.bound_macros = bound_macros;
     config_body(&c, (struct nlk_keyboard_ctx *)ctx, kind, macro_id, 1, 0, header.version);
     if (c.error != 0) {
         return c.error;
@@ -504,6 +553,22 @@ int keyboard_config_encode(const struct nlk_keyboard_ctx *ctx, const char *hardw
     memcpy(buffer, &header, sizeof(header));
     *length = c.pos;
     return 0;
+}
+
+int keyboard_config_encode(const struct nlk_keyboard_ctx *ctx, const char *hardware,
+                           const char *name, const char *desc, uint8_t kind, uint8_t macro_id,
+                           void *buffer, size_t capacity, size_t *length)
+{
+    return config_encode(ctx, hardware, name, desc, kind, macro_id,
+                          buffer, capacity, length, 0);
+}
+
+int keyboard_config_encode_persistent(const struct nlk_keyboard_ctx *ctx, const char *hardware,
+                                      const char *name, const char *desc, uint8_t kind, uint8_t macro_id,
+                                      void *buffer, size_t capacity, size_t *length)
+{
+    return config_encode(ctx, hardware, name, desc, kind, macro_id,
+                          buffer, capacity, length, 1);
 }
 
 int keyboard_config_decode(struct nlk_keyboard_ctx *ctx, const char *hardware,

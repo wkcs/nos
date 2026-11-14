@@ -159,11 +159,11 @@ static int config_write_file(const struct nlk_keyboard_ctx *ctx, const char *har
 
     if (config_path(path, dir, id, kind, 0) != 0) return -EINVAL;
     if (!replace && vfs_lookup_path(vfs_get_root(), path) != NULL) return -EEXIST;
-    ret = keyboard_config_encode(ctx, hardware, name, desc, kind, macro_id, NULL, 0U, &length);
+    ret = keyboard_config_encode_persistent(ctx, hardware, name, desc, kind, macro_id, NULL, 0U, &length);
     if (ret != 0) return ret;
     buffer = kmalloc(length, GFP_KERNEL);
     if (buffer == NULL) return -ENOMEM;
-    ret = keyboard_config_encode(ctx, hardware, name, desc, kind, macro_id, buffer, length, &length);
+    ret = keyboard_config_encode_persistent(ctx, hardware, name, desc, kind, macro_id, buffer, length, &length);
     if (ret == 0) ret = config_write_buffer(dir, id, kind, buffer, length);
     kfree(buffer);
     return ret < 0 ? ret : 0;
@@ -217,35 +217,6 @@ static int config_read_file(const struct nlk_keyboard_ctx *ctx, const char *dir,
     return 0;
 }
 
-/* Only macro_play actions interpret the high 24 keycode bits as a macro hash. */
-static int config_macro_bound(const struct nlk_keyboard_ctx *ctx, uint8_t slot,
-                               uint32_t hash, uint32_t name_hash)
-{
-    uint8_t layer, key, action;
-
-    for (layer = 0U; layer < ctx->desc.layer_count; layer++) {
-        for (key = 0U; key < ctx->desc.key_count; key++) {
-            const struct nlk_kb_key_action_chain *chain = &ctx->action_chains[layer][key];
-            uint32_t code = ctx->keymap[layer][key];
-            for (action = 0U; action < chain->count; action++) {
-                uint8_t id = chain->action_ids[action];
-                if (id == 0U || id > ctx->action_count ||
-                    strcmp(ctx->action_descs[id - 1U].name, "macro_play") != 0) continue;
-                if ((code >> 8) != 0U) {
-                    if ((hash != 0U && (code >> 8) == hash) ||
-                        (name_hash != 0U && (code >> 8) == name_hash)) return 1;
-                } else if (slot != NLK_KB_MACRO_NEW &&
-                           code >= NLK_KB_MACRO_KEYCODE_BASE &&
-                           code <= 0xFFU &&
-                           code - NLK_KB_MACRO_KEYCODE_BASE == slot) {
-                    return 1;
-                }
-            }
-        }
-    }
-    return 0;
-}
-
 int keyboard_config_activate_macros(struct nlk_keyboard_ctx *ctx, const char *hardware,
                                     const char *dir, struct mutex *lock)
 {
@@ -264,14 +235,24 @@ int keyboard_config_activate_macros(struct nlk_keyboard_ctx *ctx, const char *ha
         int needed;
 
         if (lock != NULL) mutex_lock(lock);
-        needed = config_macro_bound(ctx, NLK_KB_MACRO_NEW, hash, nlk_fnv1a_24(info.name));
+        needed = keyboard_config_macro_bound(ctx, NLK_KB_MACRO_NEW, hash, nlk_fnv1a_24(info.name));
+        if (needed) {
+            const struct nlk_kb_macro *macro;
+            /* Embedded profile/active snapshots preserve edits newer than the library. */
+            for (macro = ctx->macros; macro != NULL; macro = macro->next) {
+                if (strcmp(macro->info.id, info.id) == 0) {
+                    needed = 0;
+                    break;
+                }
+            }
+        }
         if (lock != NULL) mutex_unlock(lock);
         if (!needed) continue;
         ret = config_read_file(ctx, dir, info.id, KEYBOARD_CONFIG_MACRO, &buffer, &length);
         if (ret != 0) return ret;
         if (lock != NULL) mutex_lock(lock);
         /* A key-triggered profile switch may have happened during file I/O. */
-        if (config_macro_bound(ctx, NLK_KB_MACRO_NEW, hash, nlk_fnv1a_24(info.name))) {
+        if (keyboard_config_macro_bound(ctx, NLK_KB_MACRO_NEW, hash, nlk_fnv1a_24(info.name))) {
             struct nlk_kb_macro *macro;
             uint8_t slot = NLK_KB_MACRO_NEW;
             for (macro = ctx->macros; macro != NULL; macro = macro->next) {
@@ -293,7 +274,7 @@ int keyboard_config_activate_macros(struct nlk_keyboard_ctx *ctx, const char *ha
         struct nlk_kb_macro *macro = *link;
         uint32_t hash = macro->info.id[0] != '\0' ? nlk_fnv1a_24(macro->info.id) : 0U;
         uint32_t name_hash = macro->info.name[0] != '\0' ? nlk_fnv1a_24(macro->info.name) : 0U;
-        if (config_macro_bound(ctx, macro->info.macro_id, hash, name_hash)) {
+        if (keyboard_config_macro_bound(ctx, macro->info.macro_id, hash, name_hash)) {
             link = &macro->next;
         } else {
             *link = macro->next;
@@ -310,16 +291,35 @@ int keyboard_config_file_load(struct nlk_keyboard_ctx *ctx, const char *hardware
                               const char *dir, const char *id, uint8_t kind,
                               uint8_t macro_id)
 {
-    void *buffer = NULL;
-    size_t length = 0U;
+    void *buffer = NULL, *backup = NULL;
+    size_t length = 0U, backup_len = 0U;
+    int activation = kind == KEYBOARD_CONFIG_KEYBOARD || kind == KEYBOARD_CONFIG_ACTIVE;
     int ret = config_read_file(ctx, dir, id, kind, &buffer, &length);
 
     if (ret != 0) return ret;
+    if (activation) {
+        ret = keyboard_config_encode(ctx, hardware, "active", "", KEYBOARD_CONFIG_ACTIVE,
+                                      0U, NULL, 0U, &backup_len);
+        if (ret != 0) goto out;
+        backup = kmalloc(backup_len, GFP_KERNEL);
+        if (backup == NULL) { ret = -ENOMEM; goto out; }
+        ret = keyboard_config_encode(ctx, hardware, "active", "", KEYBOARD_CONFIG_ACTIVE,
+                                      0U, backup, backup_len, &backup_len);
+        if (ret != 0) goto out;
+    }
     ret = keyboard_config_decode(ctx, hardware, kind, macro_id, buffer, length);
     kfree(buffer);
-    if (ret == 0 && (kind == KEYBOARD_CONFIG_KEYBOARD || kind == KEYBOARD_CONFIG_ACTIVE)) {
+    buffer = NULL;
+    if (ret == 0 && activation) {
         ret = keyboard_config_activate_macros(ctx, hardware, dir, NULL);
     }
+    if (ret != 0 && backup != NULL) {
+        nlk_cap_keyboard_replace_macros(ctx, NULL, 0U);
+        (void)keyboard_config_decode(ctx, hardware, KEYBOARD_CONFIG_ACTIVE, 0U, backup, backup_len);
+    }
+out:
+    kfree(buffer);
+    kfree(backup);
     return ret;
 }
 

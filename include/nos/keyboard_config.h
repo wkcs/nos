@@ -39,6 +39,12 @@ struct keyboard_config_header {
 int keyboard_config_encode(const struct nlk_keyboard_ctx *ctx, const char *hardware,
                            const char *name, const char *desc, uint8_t kind, uint8_t macro_id,
                            void *buffer, size_t capacity, size_t *length);
+/* Persistent profiles retain only their bound macros; backups use encode(). */
+int keyboard_config_encode_persistent(const struct nlk_keyboard_ctx *ctx, const char *hardware,
+                                      const char *name, const char *desc, uint8_t kind, uint8_t macro_id,
+                                      void *buffer, size_t capacity, size_t *length);
+int keyboard_config_macro_bound(const struct nlk_keyboard_ctx *ctx, uint8_t slot,
+                                uint32_t hash, uint32_t name_hash);
 int keyboard_config_decode(struct nlk_keyboard_ctx *ctx, const char *hardware,
                            uint8_t kind, uint8_t macro_id,
                            const void *buffer, size_t length);

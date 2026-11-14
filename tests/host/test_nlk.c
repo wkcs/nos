@@ -1529,6 +1529,10 @@ int main(void)
                                              KEYBOARD_CONFIG_MACRO, 7U) == 0);
             assert(nlk_cap_keyboard_find_macro(&kb, 7U)->steps[0].key_code == 5U);
             writes = g_vfs_write_count;
+            /* Editing an unbound library macro must not rewrite active.nkc. */
+            assert(keyboard_config_active_save(&kb, "NK60-v2", "/profiles") == 0);
+            assert(g_vfs_write_count == writes);
+            kb.keymap[0][0] = 89U;
             assert(keyboard_config_active_save(&kb, "NK60-v2", "/profiles") == 0);
             assert(keyboard_config_active_save(&kb, "NK60-v2", "/profiles") == 0);
             assert(g_vfs_write_count == writes + 1U);
@@ -1552,10 +1556,29 @@ int main(void)
             assert(kb.macro_count == 1U);
             assert(strcmp(kb.macros->info.id, "copy") == 0);
             assert(kb.macros->steps[0].key_code == 5U);
+            /* Auto-saved active edits take precedence over an older library copy. */
+            step.key_code = 7U;
+            assert(nlk_cap_keyboard_set_macro_meta(&kb, kb.macros->info.macro_id, "copy", "Copy", "",
+                                                   &step, 1U, 1U) == 0);
+            assert(keyboard_config_active_save(&kb, "NK60-v2", "/profiles") == 0);
+            nlk_cap_keyboard_replace_macros(&kb, NULL, 0U);
+            assert(keyboard_config_file_restore(&kb, "NK60-v2", "/profiles", KEYBOARD_CONFIG_ACTIVE) == 0);
+            assert(kb.macro_count == 1U && kb.macros->steps[0].key_code == 7U);
             /* A different active profile must release the previous macro. */
             assert(keyboard_config_file_load(&kb, "NK60-v2", "/profiles", "profile0",
                                              KEYBOARD_CONFIG_KEYBOARD, 0U) == 0);
             assert(kb.macro_count == 0U);
+            /* A broken referenced macro must not leave a failed profile active. */
+            for (i = 0; i < MOCK_VFS_MAX_NODES; i++) {
+                if (strcmp(g_vfs_nodes[i].path, "/profiles/macro/copy.nkc") == 0) {
+                    g_vfs_nodes[i].data[g_vfs_nodes[i].size - 1U] ^= 1U;
+                    break;
+                }
+            }
+            assert(i < MOCK_VFS_MAX_NODES);
+            assert(keyboard_config_file_load(&kb, "NK60-v2", "/profiles", "bound",
+                                             KEYBOARD_CONFIG_KEYBOARD, 0U) == -EIO);
+            assert(kb.keymap[0][0] == 10U && kb.macro_count == 0U);
         }
         /* 测试 Manifest 清单构建与查找 */
         assert(keyboard_config_manifest_build("/profiles", "NK60-v2", &kb.manifest) == 0);
