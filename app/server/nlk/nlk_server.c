@@ -160,8 +160,11 @@ static void nlk_server_task_entry(void *parameter)
 static int nlk_server_init(void)
 {
     memset(&g_nlk_srv, 0, sizeof(g_nlk_srv));
+    /* VFS/LittleFS/SPI calls execute synchronously on this RPC task. Board
+     * stress tests reach ~3 KiB during archive saves; leave room for uncached
+     * paths and exception frames as well as the small enumeration workspace. */
     g_nlk_srv.task = task_create("nlk_server", nlk_server_task_entry,
-                                 &g_nlk_srv, 6, 3072, 10, NULL);
+                                 &g_nlk_srv, 6, 4096, 10, NULL);
     if (g_nlk_srv.task == NULL) {
         pr_fatal("create nlk_server task failed\n");
         BUG_ON(true);

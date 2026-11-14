@@ -454,10 +454,6 @@ struct keyboard_profile {
     const struct nlk_kb_action_desc      *action_descs;
     const key_action_handler_fn_t        *action_handlers;
 
-    /* Predefined Macros */
-    uint8_t                               macro_count;
-    const struct nlk_kb_macro_info       *macro_infos;
-    const struct nlk_kb_macro_step      (*default_macros)[NLK_KB_MAX_MACRO_STEPS];
 };
 
 /* Keyboard Server Control Commands */

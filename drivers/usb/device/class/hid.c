@@ -480,8 +480,10 @@ static int _interface_handler(ufunction_t func, ureq_t setup)
         break;
     case USB_HID_REQ_SET_REPORT:
 
-        if((setup->wLength == 0) || (setup->wLength > MAX_REPORT_SIZE))
+        if ((setup->wLength == 0) || (setup->wLength > MAX_REPORT_SIZE)) {
             usbd_ep0_set_stall(func->device);
+            break;
+        }
 
         usbd_ep0_read(func->device, data->report_buf, setup->wLength, _hid_set_report_callback);
         break;

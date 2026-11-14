@@ -1,6 +1,7 @@
 #define pr_fmt(fmt) "[USB]:%s[%d]:"fmt, __func__, __LINE__
 
 #include "stm32f4xx_hal_pcd.h"
+#include "usb_rx_fifo.h"
 
 /** @defgroup PCD_Private_Macros PCD Private Macros
   * @{
@@ -558,14 +559,14 @@ void HAL_PCD_IRQHandler(PCD_HandleTypeDef *hpcd)
         if((temp & USB_OTG_GRXSTSP_BCNT) != 0U)
         {
           uint16_t size = (temp & USB_OTG_GRXSTSP_BCNT) >> 4U;
-          if (size > ep->xfer_len) {
-            pr_err("data too long, size=%u, max=%u\n", size, ep->xfer_len);
-            size = ep->xfer_len;
+          uint32_t remaining = ep->xfer_count < ep->xfer_len
+                             ? ep->xfer_len - ep->xfer_count : 0U;
+          uint16_t copied = nk60_usb_read_rx_fifo(&USBx_DFIFO(0U),
+                                                   ep->xfer_buff, size, remaining);
+          if (copied != 0U) {
+            ep->xfer_buff += copied;
+            ep->xfer_count += copied;
           }
-          USB_ReadPacket(USBx, ep->xfer_buff, size);
-          ep->xfer_buff += size;
-          ep->xfer_count += size;
-          //pr_info("ep %u, xfer_buff=0x%08lx\n", ep->num, (addr_t)ep->xfer_buff);
         }
       }
       else if (((temp & USB_OTG_GRXSTSP_PKTSTS) >> 17U) ==  STS_SETUP_UPDT)

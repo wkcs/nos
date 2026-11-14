@@ -11,6 +11,8 @@
 #include <nos/nlk_caps.h>
 #include <kernel/printk.h>
 #include <kernel/mm.h>
+#include <kernel/irq.h>
+#include <kernel/mutex.h>
 #include <uapi/nos/errno.h>
 #include <nos/keyboard_config.h>
 #include <string.h>
@@ -260,6 +262,9 @@ static bool kb_macro_steps_valid(const struct nlk_kb_macro_step *steps, uint8_t 
     return true;
 }
 
+static int kb_record_control(struct nlk_keyboard_ctx *ctx,
+                             const struct nlk_kb_macro_record_req *req,
+                             void *resp, uint16_t *resp_len);
 static void kb_play_macro(struct nlk_keyboard_ctx *ctx, uint8_t macro_id);
 static void kb_record_event(struct nlk_keyboard_ctx *ctx, uint8_t type, uint8_t key_code);
 static uint32_t kb_execute_action_chain(struct nlk_keyboard_ctx *ctx, uint8_t layer,
@@ -452,7 +457,12 @@ static int kb_on_rpc(struct nlk_node *node, struct nlk_capability *cap,
 
     case NLK_KB_OP_GET_SET_PARAM:
         if (req != NULL && req_len >= 1U) {
-            ctx->desc.debounce_ms = ((const uint8_t *)req)[0];
+            struct nlk_kb_params params = ctx->params;
+            params.debounce_ms = *(const uint8_t *)req;
+            if (params.debounce_ms == 0U) {
+                return -EINVAL;
+            }
+            (void)nlk_cap_keyboard_set_params(ctx, &params);
             kb_sync_active_config(ctx);
         }
         if (resp != NULL) {
@@ -540,6 +550,9 @@ static int kb_on_rpc(struct nlk_node *node, struct nlk_capability *cap,
         return 0;
 
     case NLK_KB_OP_GET_ANALOG_CFG:
+        if ((ctx->desc.kb_flags & NLK_KB_FLAG_ANALOG_RT) == 0U) {
+            return -ENOTSUP;
+        }
         if (resp == NULL) {
             return -EINVAL;
         }
@@ -548,6 +561,9 @@ static int kb_on_rpc(struct nlk_node *node, struct nlk_capability *cap,
         return 0;
 
     case NLK_KB_OP_SET_ANALOG_CFG:
+        if ((ctx->desc.kb_flags & NLK_KB_FLAG_ANALOG_RT) == 0U) {
+            return -ENOTSUP;
+        }
         if (req == NULL || req_len < sizeof(ctx->analog_cfg)) {
             return -EINVAL;
         }
@@ -754,132 +770,88 @@ static int kb_on_rpc(struct nlk_node *node, struct nlk_capability *cap,
 
     case NLK_KB_OP_GET_MACRO_LIST: {
         struct nlk_kb_macro_list_resp *mresp = (struct nlk_kb_macro_list_resp *)resp;
-        if (resp == NULL) {
+        const struct nlk_kb_macro *macro = ctx->macros;
+        uint8_t start = req != NULL && req_len != 0U ? *(const uint8_t *)req : 0U;
+        uint8_t i;
+
+        if (resp == NULL || start > ctx->macro_count) {
             return -EINVAL;
         }
         memset(mresp, 0, sizeof(*mresp));
-        mresp->macro_count = NLK_KB_MAX_MACROS;
         mresp->recording_macro_id = ctx->recording_macro_id;
-        memcpy(mresp->macros, ctx->macro_info, sizeof(struct nlk_kb_macro_info) * NLK_KB_MAX_MACROS);
+        mresp->total_count = ctx->macro_count;
+        mresp->start_index = start;
+        for (i = 0U; i < start; i++) {
+            macro = macro->next;
+        }
+        while (macro != NULL && mresp->macro_count < NLK_KB_MACROS_PER_PAGE) {
+            mresp->macros[mresp->macro_count++] = macro->info;
+            macro = macro->next;
+        }
         *resp_len = sizeof(*mresp);
         return 0;
     }
 
     case NLK_KB_OP_GET_MACRO: {
-        uint8_t mid;
         struct nlk_kb_macro_cfg_hdr *mhdr = (struct nlk_kb_macro_cfg_hdr *)resp;
-        uint8_t steps_cnt;
-        size_t total_sz;
+        const struct nlk_kb_macro *macro;
+        size_t bytes;
 
         if (req == NULL || req_len < 1U || resp == NULL) {
             return -EINVAL;
         }
-        mid = *(const uint8_t *)req;
-        if (mid >= NLK_KB_MAX_MACROS) {
-            return -EINVAL;
+        macro = nlk_cap_keyboard_find_macro(ctx, *(const uint8_t *)req);
+        if (macro == NULL) {
+            return -ENOENT;
         }
-        steps_cnt = ctx->macro_info[mid].step_count;
-        if (steps_cnt > NLK_KB_MAX_MACRO_STEPS) {
-            steps_cnt = NLK_KB_MAX_MACRO_STEPS;
-        }
-        total_sz = sizeof(*mhdr) + (size_t)steps_cnt * sizeof(struct nlk_kb_macro_step);
-        if (total_sz > CONFIG_NLK_PACKET_MTU) {
-            return -ENOSPC;
-        }
+        bytes = (size_t)macro->info.step_count * sizeof(macro->steps[0]);
         memset(mhdr, 0, sizeof(*mhdr));
-        mhdr->macro_id = mid;
-        mhdr->step_count = steps_cnt;
-        mhdr->repeat_count = ctx->macro_info[mid].repeat_count;
-        memcpy(mhdr->id, ctx->macro_info[mid].id, sizeof(mhdr->id));
-        memcpy(mhdr->name, ctx->macro_info[mid].name, sizeof(mhdr->name));
-        memcpy(mhdr->desc, ctx->macro_desc[mid], sizeof(mhdr->desc));
-        if (steps_cnt > 0U) {
-            memcpy((uint8_t *)resp + sizeof(*mhdr),
-                   ctx->macro_steps[mid],
-                   (size_t)steps_cnt * sizeof(struct nlk_kb_macro_step));
-        }
-        *resp_len = (uint16_t)total_sz;
+        mhdr->macro_id = macro->info.macro_id;
+        mhdr->step_count = macro->info.step_count;
+        mhdr->repeat_count = macro->info.repeat_count;
+        memcpy(mhdr->id, macro->info.id, sizeof(mhdr->id));
+        memcpy(mhdr->name, macro->info.name, sizeof(mhdr->name));
+        memcpy(mhdr->desc, macro->desc, sizeof(mhdr->desc));
+        memcpy(mhdr + 1, macro->steps, bytes);
+        *resp_len = sizeof(*mhdr) + bytes;
         return 0;
     }
 
     case NLK_KB_OP_SET_MACRO: {
         const struct nlk_kb_macro_cfg_hdr *mhdr = (const struct nlk_kb_macro_cfg_hdr *)req;
         const struct nlk_kb_macro_step *steps;
-        uint8_t mid;
+        uint8_t id;
 
-        if (req == NULL || req_len < sizeof(*mhdr)) {
+        if (req == NULL || req_len < sizeof(*mhdr) ||
+            req_len < sizeof(*mhdr) + (size_t)mhdr->step_count * sizeof(*steps) ||
+            memchr(mhdr->id, '\0', sizeof(mhdr->id)) == NULL ||
+            memchr(mhdr->name, '\0', sizeof(mhdr->name)) == NULL ||
+            memchr(mhdr->desc, '\0', sizeof(mhdr->desc)) == NULL) {
             return -EINVAL;
         }
-        mid = mhdr->macro_id;
-        if (mid >= NLK_KB_MAX_MACROS || mhdr->step_count > NLK_KB_MAX_MACRO_STEPS) {
-            return -EINVAL;
+        id = mhdr->macro_id == NLK_KB_MACRO_NEW ? nlk_cap_keyboard_next_macro_id(ctx) : mhdr->macro_id;
+        if (id == NLK_KB_MACRO_NEW) {
+            return -ENOSPC;
         }
-        if (req_len < sizeof(*mhdr) + (size_t)mhdr->step_count * sizeof(struct nlk_kb_macro_step)) {
-            return -EINVAL;
+        steps = (const struct nlk_kb_macro_step *)(mhdr + 1);
+        rc = nlk_cap_keyboard_set_macro_meta(ctx, id, mhdr->id, mhdr->name, mhdr->desc,
+                                               steps, mhdr->step_count, mhdr->repeat_count);
+        if (rc == 0) {
+            if (mhdr->macro_id == NLK_KB_MACRO_NEW && resp != NULL) {
+                *(uint8_t *)resp = id;
+                *resp_len = 1U;
+            }
         }
-        steps = (const struct nlk_kb_macro_step *)((const uint8_t *)req + sizeof(*mhdr));
-        if (!kb_macro_steps_valid(steps, mhdr->step_count)) {
-            return -EINVAL;
-        }
-        if (ctx->macro_playing != 0U && ctx->macro_play_id == mid) {
-            (void)nlk_cap_keyboard_macro_cancel(ctx);
-        }
-        ctx->macro_info[mid].macro_id = mid;
-        ctx->macro_info[mid].step_count = mhdr->step_count;
-        ctx->macro_info[mid].repeat_count = (mhdr->repeat_count == 0U) ? 1U : mhdr->repeat_count;
-        memcpy(ctx->macro_info[mid].id, mhdr->id, sizeof(ctx->macro_info[mid].id));
-        memcpy(ctx->macro_info[mid].name, mhdr->name, sizeof(ctx->macro_info[mid].name));
-        memcpy(ctx->macro_desc[mid], mhdr->desc, sizeof(ctx->macro_desc[mid]));
-        if (mhdr->step_count > 0U) {
-            memcpy(ctx->macro_steps[mid], steps,
-                   (size_t)mhdr->step_count * sizeof(struct nlk_kb_macro_step));
-        }
-        kb_sync_active_config(ctx);
-        return 0;
+        return rc;
     }
 
     case NLK_KB_OP_RECORD_MACRO: {
-        const struct nlk_kb_macro_record_req *rreq =
-            (const struct nlk_kb_macro_record_req *)req;
+        const struct nlk_kb_macro_record_req *rreq = req;
+
         if (req == NULL || req_len < sizeof(*rreq)) {
             return -EINVAL;
         }
-        if (rreq->macro_id >= NLK_KB_MAX_MACROS) {
-            return -EINVAL;
-        }
-        if (rreq->record_cmd == 1U) {
-            /* Start recording */
-            if (ctx->macro_playing != 0U) {
-                (void)nlk_cap_keyboard_macro_cancel(ctx);
-            }
-            ctx->recording_macro_id = rreq->macro_id;
-            ctx->macro_info[rreq->macro_id].macro_id = rreq->macro_id;
-            ctx->macro_info[rreq->macro_id].step_count = 0U;
-            if (ctx->macro_info[rreq->macro_id].name[0] == '\0') {
-                memcpy(ctx->macro_info[rreq->macro_id].name, "Recorded", 9);
-            }
-            ctx->macro_info[rreq->macro_id].flags = 0U;
-            ctx->macro_info[rreq->macro_id].repeat_count = 1U;
-            ctx->last_rec_tick = ctx->macro_clock_ms;
-        } else if (rreq->record_cmd == 0U) {
-            /* Stop recording */
-            ctx->recording_macro_id = 0xFFU;
-            kb_sync_active_config(ctx);
-        } else if (rreq->record_cmd == 2U) {
-            /* Clear */
-            if (ctx->macro_playing != 0U && ctx->macro_play_id == rreq->macro_id) {
-                (void)nlk_cap_keyboard_macro_cancel(ctx);
-            }
-            ctx->macro_info[rreq->macro_id].step_count = 0U;
-            memset(ctx->macro_steps[rreq->macro_id], 0, sizeof(ctx->macro_steps[rreq->macro_id]));
-            if (ctx->recording_macro_id == rreq->macro_id) {
-                ctx->recording_macro_id = 0xFFU;
-            }
-            kb_sync_active_config(ctx);
-        } else {
-            return -EINVAL;
-        }
-        return 0;
+        return kb_record_control(ctx, rreq, resp, resp_len);
     }
 
     case NLK_KB_OP_MACRO_CONTROL: {
@@ -1154,7 +1126,7 @@ static int kb_on_event(struct nlk_node *node, struct nlk_capability *cap,
                     if (old_st != 0U) {
                         (void)kb_execute_action_chain(ctx, ehdr->active_layer, (uint8_t)idx,
                                                       ctx->active_code[idx], 0U);
-                        if (ctx->recording_macro_id < NLK_KB_MAX_MACROS) {
+                        if (ctx->recording_macro_id != 0xFFU) {
                             kb_record_event(ctx, NLK_KB_MACRO_ACT_KEY_UP, (uint8_t)(ctx->active_code[idx] & 0xFFU));
                         }
                     }
@@ -1164,7 +1136,7 @@ static int kb_on_event(struct nlk_node *node, struct nlk_capability *cap,
                         uint32_t final_kc = kb_execute_action_chain(ctx, ehdr->active_layer, (uint8_t)idx,
                                                                     (uint32_t)items[i].key_code, 1U);
                         ctx->active_code[idx] = final_kc;
-                        if (ctx->recording_macro_id < NLK_KB_MAX_MACROS) {
+                        if (ctx->recording_macro_id != 0xFFU) {
                             kb_record_event(ctx, NLK_KB_MACRO_ACT_KEY_DOWN, (uint8_t)(final_kc & 0xFFU));
                         }
                     }
@@ -1251,9 +1223,31 @@ static int kb_on_stream(struct nlk_node *node, struct nlk_capability *cap,
     return 0;
 }
 
+static int kb_rpc_dispatch(struct nlk_node *node, struct nlk_capability *cap,
+                           const struct nlk_pkt_hdr *hdr, const void *req, uint16_t req_len,
+                           void *resp, uint16_t *resp_len)
+{
+    struct nlk_keyboard_ctx *ctx = cap->priv;
+    uint8_t op = hdr->cmd_op;
+    bool macro_op = (op >= NLK_KB_OP_GET_MACRO_LIST && op <= NLK_KB_OP_RECORD_MACRO) ||
+                    op == NLK_KB_OP_MACRO_CONTROL || op == NLK_KB_OP_MACRO_STATUS;
+    int rc;
+
+    if (macro_op && ctx->macro_rpc_lock != NULL) mutex_lock(ctx->macro_rpc_lock);
+    rc = kb_on_rpc(node, cap, hdr, req, req_len, resp, resp_len);
+    if (macro_op && ctx->macro_rpc_lock != NULL) mutex_unlock(ctx->macro_rpc_lock);
+
+    if (rc == 0 && (op == NLK_KB_OP_SET_MACRO ||
+        (op == NLK_KB_OP_RECORD_MACRO &&
+         ((const struct nlk_kb_macro_record_req *)req)->record_cmd != 1U))) {
+        kb_sync_active_config(ctx);
+    }
+    return rc;
+}
+
 static const struct nlk_cap_ops g_kb_ops = {
     .get_desc  = kb_get_desc,
-    .on_rpc    = kb_on_rpc,
+    .on_rpc    = kb_rpc_dispatch,
     .on_event  = kb_on_event,
     .on_stream = kb_on_stream,
 };
@@ -1309,17 +1303,19 @@ int nlk_cap_keyboard_macro_cancel(struct nlk_keyboard_ctx *ctx)
 int nlk_cap_keyboard_macro_start(struct nlk_keyboard_ctx *ctx, uint8_t macro_id,
                                  uint32_t now_ms)
 {
+    const struct nlk_kb_macro *macro;
     uint8_t count;
-    if (ctx == NULL || macro_id >= NLK_KB_MAX_MACROS) return -EINVAL;
-    if (ctx->macro_playing != 0U || ctx->recording_macro_id < NLK_KB_MAX_MACROS) return -EBUSY;
-    count = ctx->macro_info[macro_id].step_count;
-    if (count == 0U || !kb_macro_steps_valid(ctx->macro_steps[macro_id], count)) return -EINVAL;
-    memcpy(ctx->macro_play_steps, ctx->macro_steps[macro_id],
-           (size_t)count * sizeof(ctx->macro_play_steps[0]));
+
+    if (ctx == NULL) return -EINVAL;
+    if (ctx->macro_playing != 0U || ctx->recording_macro_id != 0xFFU) return -EBUSY;
+    macro = nlk_cap_keyboard_find_macro(ctx, macro_id);
+    if (macro == NULL || macro->info.step_count == 0U) return -EINVAL;
+    count = macro->info.step_count;
+    memcpy(ctx->macro_play_steps, macro->steps, (size_t)count * sizeof(macro->steps[0]));
     ctx->macro_play_count = count;
     ctx->macro_play_index = 0U;
     ctx->macro_play_id = macro_id;
-    ctx->macro_repeats_left = ctx->macro_info[macro_id].repeat_count;
+    ctx->macro_repeats_left = macro->info.repeat_count;
     if (ctx->macro_repeats_left == 0U) ctx->macro_repeats_left = 1U;
     ctx->macro_tap_pending = 0U;
     ctx->macro_playing = 1U;
@@ -1387,35 +1383,19 @@ static int kb_action_macro_play(const struct key_action_context *ctx, void *priv
         bool found = false;
 
         if (hash != 0U) {
-            /* 1. 先在内存已加载的宏池中按 Hash 匹配 */
-            for (uint8_t i = 0U; i < NLK_KB_MAX_MACROS; i++) {
-                if (kb->macro_info[i].step_count != 0U) {
-                    if (nlk_fnv1a_24(kb->macro_info[i].id) == hash ||
-                        nlk_fnv1a_24(kb->macro_info[i].name) == hash) {
-                        macro_id = i;
-                        found = true;
-                        break;
-                    }
-                }
-            }
-            /* 2. 若未直接命中，通过 Manifest 查找目标宏 ID 并匹配 */
-            if (!found && kb->manifest.macro_count > 0U) {
-                const char *mid = keyboard_config_manifest_lookup_macro(&kb->manifest, hash);
-                if (mid != NULL) {
-                    for (uint8_t i = 0U; i < NLK_KB_MAX_MACROS; i++) {
-                        if (strcmp(kb->macro_info[i].id, mid) == 0 ||
-                            strcmp(kb->macro_info[i].name, mid) == 0) {
-                            macro_id = i;
-                            found = true;
-                            break;
-                        }
-                    }
+            const struct nlk_kb_macro *macro;
+            for (macro = kb->macros; macro != NULL; macro = macro->next) {
+                if (macro->info.step_count != 0U &&
+                    (nlk_fnv1a_24(macro->info.id) == hash ||
+                     nlk_fnv1a_24(macro->info.name) == hash)) {
+                    macro_id = macro->info.macro_id;
+                    found = true;
+                    break;
                 }
             }
         } else {
-            /* 向下兼容：根据 0xF0 + slot 解析 */
             if (ctx->initial_code >= NLK_KB_MACRO_KEYCODE_BASE &&
-                ctx->initial_code < NLK_KB_MACRO_KEYCODE_BASE + NLK_KB_MAX_MACROS) {
+                ctx->initial_code <= 0xFFU) {
                 macro_id = (uint8_t)(ctx->initial_code - NLK_KB_MACRO_KEYCODE_BASE);
             }
             found = true;
@@ -1524,7 +1504,9 @@ void nlk_cap_keyboard_deinit(struct nlk_keyboard_ctx *ctx)
     }
     memset(ctx->keymap, 0, sizeof(ctx->keymap));
     memset(ctx->action_chains, 0, sizeof(ctx->action_chains));
-    memset(ctx->macro_desc, 0, sizeof(ctx->macro_desc));
+    nlk_cap_keyboard_free_macros(ctx->macros);
+    ctx->macros = NULL;
+    ctx->macro_count = 0U;
     ctx->key_state = NULL;
     ctx->active_code = NULL;
     ctx->key_capacity = 0U;
@@ -2041,69 +2023,179 @@ int nlk_cap_keyboard_bind_all_keys(struct nlk_keyboard_ctx *ctx,
     return 0;
 }
 
+struct nlk_kb_macro *nlk_cap_keyboard_find_macro(const struct nlk_keyboard_ctx *ctx, uint8_t id)
+{
+    struct nlk_kb_macro *macro;
+
+    for (macro = ctx->macros; macro != NULL; macro = macro->next) {
+        if (macro->info.macro_id == id) return macro;
+    }
+    return NULL;
+}
+
+struct nlk_kb_macro *nlk_cap_keyboard_alloc_macro(uint8_t capacity)
+{
+    size_t size = sizeof(struct nlk_kb_macro) + (size_t)capacity * sizeof(struct nlk_kb_macro_step);
+    struct nlk_kb_macro *macro = kmalloc(size, GFP_KERNEL);
+
+    if (macro != NULL) memset(macro, 0, size);
+    return macro;
+}
+
+void nlk_cap_keyboard_free_macros(struct nlk_kb_macro *macro)
+{
+    while (macro != NULL) {
+        struct nlk_kb_macro *next = macro->next;
+        kfree(macro);
+        macro = next;
+    }
+}
+
+uint8_t nlk_cap_keyboard_next_macro_id(const struct nlk_keyboard_ctx *ctx)
+{
+    uint8_t id;
+    for (id = 0U; id != NLK_KB_MACRO_NEW; id++) {
+        if (nlk_cap_keyboard_find_macro(ctx, id) == NULL) break;
+    }
+    return id;
+}
+
+void nlk_cap_keyboard_replace_macros(struct nlk_keyboard_ctx *ctx, struct nlk_kb_macro *macros,
+                                     uint8_t count)
+{
+    (void)nlk_cap_keyboard_macro_cancel(ctx);
+    ctx->recording_macro_id = 0xFFU;
+    nlk_cap_keyboard_free_macros(ctx->macros);
+    ctx->macros = macros;
+    ctx->macro_count = count;
+}
+
+static void kb_install_macro(struct nlk_keyboard_ctx *ctx, uint8_t id,
+                             struct nlk_kb_macro *macro)
+{
+    struct nlk_kb_macro **link = &ctx->macros;
+    struct nlk_kb_macro *old;
+    addr_t flags = disable_irq_save();
+
+    while (*link != NULL && (*link)->info.macro_id < id) link = &(*link)->next;
+    old = *link;
+    if (old != NULL && old->info.macro_id == id) {
+        *link = old->next;
+        ctx->macro_count--;
+    } else {
+        old = NULL;
+    }
+    if (macro != NULL) {
+        macro->next = *link;
+        *link = macro;
+        ctx->macro_count++;
+    }
+    enable_irq_save(flags);
+    if (old != NULL) kfree(old);
+}
+
 int nlk_cap_keyboard_set_macro_meta(struct nlk_keyboard_ctx *ctx, uint8_t macro_id,
-                                    const char *id,
-                                    const char *name,
-                                    const char *desc,
+                                    const char *id, const char *name, const char *desc,
                                     const struct nlk_kb_macro_step *steps,
                                     uint8_t step_count, uint8_t repeat_count)
 {
-    if (ctx == NULL || macro_id >= NLK_KB_MAX_MACROS ||
-        !kb_macro_steps_valid(steps, step_count)) {
-        return -EINVAL;
-    }
-    if (ctx->macro_playing != 0U && ctx->macro_play_id == macro_id) {
+    struct nlk_kb_macro *macro;
+
+    if (ctx == NULL || macro_id == NLK_KB_MACRO_NEW ||
+        !kb_macro_steps_valid(steps, step_count)) return -EINVAL;
+    if (ctx->recording_macro_id != 0xFFU) return -EBUSY;
+    macro = nlk_cap_keyboard_alloc_macro(step_count);
+    if (macro == NULL) return -ENOMEM;
+    macro->info.macro_id = macro_id;
+    macro->info.step_count = step_count;
+    macro->info.repeat_count = repeat_count != 0U ? repeat_count : 1U;
+    if (id != NULL) strncpy(macro->info.id, id, sizeof(macro->info.id) - 1U);
+    if (name != NULL) strncpy(macro->info.name, name, sizeof(macro->info.name) - 1U);
+    if (desc != NULL) strncpy(macro->desc, desc, sizeof(macro->desc) - 1U);
+    if (step_count != 0U) memcpy(macro->steps, steps, (size_t)step_count * sizeof(*steps));
+    if (ctx->macro_playing && ctx->macro_play_id == macro_id) {
         (void)nlk_cap_keyboard_macro_cancel(ctx);
     }
-    ctx->macro_info[macro_id].macro_id = macro_id;
-    ctx->macro_info[macro_id].step_count = step_count;
-    ctx->macro_info[macro_id].repeat_count = (repeat_count == 0U) ? 1U : repeat_count;
-    if (id != NULL) {
-        strncpy(ctx->macro_info[macro_id].id, id, NLK_KB_MACRO_ID_MAX - 1);
-        ctx->macro_info[macro_id].id[NLK_KB_MACRO_ID_MAX - 1] = '\0';
-    }
-    if (name != NULL) {
-        strncpy(ctx->macro_info[macro_id].name, name, NLK_KB_MACRO_NAME_MAX - 1);
-        ctx->macro_info[macro_id].name[NLK_KB_MACRO_NAME_MAX - 1] = '\0';
-    }
-    if (desc != NULL) {
-        strncpy(ctx->macro_desc[macro_id], desc, NLK_KB_MACRO_DESC_MAX - 1);
-        ctx->macro_desc[macro_id][NLK_KB_MACRO_DESC_MAX - 1] = '\0';
-    }
-    if (steps != NULL && step_count > 0U) {
-        memcpy(ctx->macro_steps[macro_id], steps,
-               (size_t)step_count * sizeof(struct nlk_kb_macro_step));
-    }
+    kb_install_macro(ctx, macro_id, macro);
     return 0;
 }
 
 int nlk_cap_keyboard_set_macro(struct nlk_keyboard_ctx *ctx, uint8_t macro_id,
-                               const char *name,
-                               const struct nlk_kb_macro_step *steps,
+                               const char *name, const struct nlk_kb_macro_step *steps,
                                uint8_t step_count, uint8_t repeat_count)
 {
-    return nlk_cap_keyboard_set_macro_meta(ctx, macro_id, name, name, "", steps, step_count, repeat_count);
+    return nlk_cap_keyboard_set_macro_meta(ctx, macro_id, NULL, name, "", steps, step_count, repeat_count);
+}
+
+static int kb_record_control(struct nlk_keyboard_ctx *ctx,
+                             const struct nlk_kb_macro_record_req *req,
+                             void *resp, uint16_t *resp_len)
+{
+    uint8_t id = req->macro_id;
+    struct nlk_kb_macro *macro;
+    const struct nlk_kb_macro *old;
+
+    if (req->record_cmd == 1U) {
+        if (ctx->recording_macro_id != 0xFFU) return -EBUSY;
+        if (id == NLK_KB_MACRO_NEW) id = nlk_cap_keyboard_next_macro_id(ctx);
+        if (id == NLK_KB_MACRO_NEW) return -ENOSPC;
+        macro = nlk_cap_keyboard_alloc_macro(NLK_KB_MAX_MACRO_STEPS);
+        if (macro == NULL) return -ENOMEM;
+        old = nlk_cap_keyboard_find_macro(ctx, id);
+        if (old != NULL) {
+            macro->info = old->info;
+            memcpy(macro->desc, old->desc, sizeof(macro->desc));
+        }
+        macro->info.macro_id = id;
+        macro->info.step_count = 0U;
+        macro->info.flags = 0U;
+        macro->info.repeat_count = 1U;
+        if (macro->info.id[0] == '\0') {
+            memcpy(macro->info.id, "rec_", 4U);
+            macro->info.id[4] = (char)('0' + id / 100U);
+            macro->info.id[5] = (char)('0' + id / 10U % 10U);
+            macro->info.id[6] = (char)('0' + id % 10U);
+        }
+        if (macro->info.name[0] == '\0') memcpy(macro->info.name, "Recorded", 9U);
+        (void)nlk_cap_keyboard_macro_cancel(ctx);
+        kb_install_macro(ctx, id, macro);
+        ctx->last_rec_tick = ctx->macro_clock_ms;
+        ctx->recording_macro_id = id;
+        if (req->macro_id == NLK_KB_MACRO_NEW && resp != NULL) {
+            *(uint8_t *)resp = id;
+            *resp_len = 1U;
+        }
+        return 0;
+    }
+
+    if (id == NLK_KB_MACRO_NEW || req->record_cmd > 2U) return -EINVAL;
+    if (ctx->recording_macro_id != 0xFFU && ctx->recording_macro_id != id) return -EBUSY;
+    old = nlk_cap_keyboard_find_macro(ctx, id);
+    if (old == NULL) return -ENOENT;
+    ctx->recording_macro_id = 0xFFU;
+    if (req->record_cmd == 2U) {
+        if (ctx->macro_playing && ctx->macro_play_id == id) (void)nlk_cap_keyboard_macro_cancel(ctx);
+        kb_install_macro(ctx, id, NULL);
+    } else {
+        macro = nlk_cap_keyboard_alloc_macro(old->info.step_count);
+        if (macro != NULL) {
+            macro->info = old->info;
+            memcpy(macro->desc, old->desc, sizeof(macro->desc));
+            memcpy(macro->steps, old->steps, (size_t)old->info.step_count * sizeof(old->steps[0]));
+            kb_install_macro(ctx, id, macro);
+        }
+    }
+    return 0;
 }
 
 int nlk_cap_keyboard_record_macro_step(struct nlk_keyboard_ctx *ctx,
-                                       uint8_t type, uint8_t key_code,
-                                       uint16_t delay_ms)
+                                       uint8_t type, uint8_t key_code, uint16_t delay_ms)
 {
-    uint8_t mid;
-    uint8_t cur_cnt;
-
-    if (ctx == NULL || ctx->recording_macro_id >= NLK_KB_MAX_MACROS) {
-        return -EINVAL;
-    }
-    mid = ctx->recording_macro_id;
-    cur_cnt = ctx->macro_info[mid].step_count;
-    if (cur_cnt >= NLK_KB_MAX_MACRO_STEPS) {
-        return -ENOSPC;
-    }
-    ctx->macro_steps[mid][cur_cnt].type = type;
-    ctx->macro_steps[mid][cur_cnt].key_code = key_code;
-    ctx->macro_steps[mid][cur_cnt].delay_ms = delay_ms;
-    ctx->macro_info[mid].step_count = (uint8_t)(cur_cnt + 1U);
+    struct nlk_kb_macro *macro;
+    if (ctx == NULL || ctx->recording_macro_id == 0xFFU) return -EINVAL;
+    macro = nlk_cap_keyboard_find_macro(ctx, ctx->recording_macro_id);
+    if (macro == NULL || macro->info.step_count >= NLK_KB_MAX_MACRO_STEPS) return -ENOSPC;
+    macro->steps[macro->info.step_count++] = (struct nlk_kb_macro_step){ type, key_code, delay_ms };
     return 0;
 }
 
@@ -2111,7 +2203,7 @@ static void kb_record_event(struct nlk_keyboard_ctx *ctx, uint8_t type, uint8_t 
 {
     uint32_t elapsed;
     uint8_t id;
-    if (ctx->recording_macro_id >= NLK_KB_MAX_MACROS || key_code == 0U ||
+    if (ctx->recording_macro_id == 0xFFU || key_code == 0U ||
         key_code >= NLK_KC_FN) return;
     id = ctx->recording_macro_id;
     elapsed = ctx->macro_clock_ms - ctx->last_rec_tick;
@@ -2126,7 +2218,7 @@ static void kb_record_event(struct nlk_keyboard_ctx *ctx, uint8_t type, uint8_t 
     ctx->last_rec_tick = ctx->macro_clock_ms;
     return;
 overflow:
-    ctx->macro_info[id].flags |= NLK_KB_MACRO_FLAG_RECORD_OVERFLOW;
+    nlk_cap_keyboard_find_macro(ctx, id)->info.flags |= NLK_KB_MACRO_FLAG_RECORD_OVERFLOW;
     ctx->recording_macro_id = 0xFFU;
 }
 
@@ -2237,7 +2329,7 @@ int nlk_cap_keyboard_update_local_keys(struct nlk_keyboard_ctx *ctx,
                 if (first_down) {
                     uint32_t final_code = kb_execute_action_chain(ctx, layer, i, code, 1U);
                     ctx->active_code[i] = final_code;
-                    if (ctx->recording_macro_id < NLK_KB_MAX_MACROS) {
+                    if (ctx->recording_macro_id != 0xFFU) {
                         kb_record_event(ctx, NLK_KB_MACRO_ACT_KEY_DOWN, (uint8_t)(final_code & 0xFFU));
                     }
                 } else {
@@ -2247,7 +2339,7 @@ int nlk_cap_keyboard_update_local_keys(struct nlk_keyboard_ctx *ctx,
         } else {
             if (ctx->key_state[i] != 0U) {
                 (void)kb_execute_action_chain(ctx, layer, i, ctx->active_code[i], 0U);
-                if (ctx->recording_macro_id < NLK_KB_MAX_MACROS) {
+                if (ctx->recording_macro_id != 0xFFU) {
                     kb_record_event(ctx, NLK_KB_MACRO_ACT_KEY_UP, (uint8_t)(ctx->active_code[i] & 0xFFU));
                 }
             }

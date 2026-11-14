@@ -184,6 +184,13 @@ typedef int (*nlk_kb_profile_info_cb_t)(uint8_t *active_slot, uint8_t *saved_mas
 typedef int (*nlk_kb_config_files_cb_t)(uint8_t op, const void *req, uint16_t req_len,
                                         void *resp, uint16_t *resp_len, void *priv);
 
+struct nlk_kb_macro {
+    struct nlk_kb_macro *next;
+    struct nlk_kb_macro_info info;
+    char desc[NLK_KB_MACRO_DESC_MAX];
+    struct nlk_kb_macro_step steps[];
+};
+
 struct nlk_keyboard_ctx {
     struct nlk_kb_desc              desc;
     uint8_t                         active_layer;
@@ -242,9 +249,9 @@ struct nlk_keyboard_ctx {
     uint8_t                         macro_modifiers;
     uint8_t                         macro_keys[6];
     struct nlk_kb_macro_step        macro_play_steps[NLK_KB_MAX_MACRO_STEPS];
-    struct nlk_kb_macro_info        macro_info[NLK_KB_MAX_MACROS];
-    struct nlk_kb_macro_step        macro_steps[NLK_KB_MAX_MACROS][NLK_KB_MAX_MACRO_STEPS];
-    char                            macro_desc[NLK_KB_MAX_MACROS][NLK_KB_MACRO_DESC_MAX];
+    struct nlk_kb_macro            *macros;
+    uint8_t                         macro_count;
+    struct mutex                   *macro_rpc_lock;
 
     /* Dynamic Action Bindings */
     uint8_t                         action_count;
@@ -343,6 +350,12 @@ int nlk_cap_keyboard_bind_all_keys(struct nlk_keyboard_ctx *ctx,
                                    uint8_t layer_mask,
                                    const char *action_name,
                                    bool append);
+struct nlk_kb_macro *nlk_cap_keyboard_find_macro(const struct nlk_keyboard_ctx *ctx, uint8_t id);
+struct nlk_kb_macro *nlk_cap_keyboard_alloc_macro(uint8_t capacity);
+void nlk_cap_keyboard_free_macros(struct nlk_kb_macro *macro);
+uint8_t nlk_cap_keyboard_next_macro_id(const struct nlk_keyboard_ctx *ctx);
+void nlk_cap_keyboard_replace_macros(struct nlk_keyboard_ctx *ctx, struct nlk_kb_macro *macros,
+                                     uint8_t count);
 int nlk_cap_keyboard_set_macro(struct nlk_keyboard_ctx *ctx, uint8_t macro_id,
                                const char *name,
                                const struct nlk_kb_macro_step *steps,

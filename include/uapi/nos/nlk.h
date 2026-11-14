@@ -945,7 +945,8 @@ struct nlk_kb_set_active_layer_req {
 } __attribute__((packed));
 
 /* Keyboard Macro Recording & Configuration */
-#define NLK_KB_MAX_MACROS               8U
+#define NLK_KB_MACRO_NEW                0xFFU /* Allocate an ID on write or recording start */
+#define NLK_KB_MACROS_PER_PAGE          8U
 #define NLK_KB_MAX_MACRO_STEPS          32U
 #define NLK_KB_MACRO_ID_MAX             12U
 #define NLK_KB_MACRO_NAME_MAX           14U
@@ -984,7 +985,7 @@ struct nlk_kb_macro_step {
 } __attribute__((packed));
 
 struct nlk_kb_macro_info {
-    uint8_t  macro_id;             /* Macro slot 0..NLK_KB_MAX_MACROS-1 */
+    uint8_t  macro_id;             /* Macro handle (0..254) */
     uint8_t  step_count;           /* Number of active steps (0=empty) */
     uint8_t  repeat_count;         /* Playback loops (1..255) */
     uint8_t  flags;                /* Reserved flags */
@@ -993,10 +994,11 @@ struct nlk_kb_macro_info {
 } __attribute__((packed));
 
 struct nlk_kb_macro_list_resp {
-    uint8_t  macro_count;          /* Total macro slots */
+    uint8_t  macro_count;          /* Entries on this page */
     uint8_t  recording_macro_id;   /* ID of macro currently recording (0xFF if none) */
-    uint16_t reserved;
-    struct nlk_kb_macro_info macros[NLK_KB_MAX_MACROS];
+    uint8_t  total_count;          /* Macro count (legacy firmware sent zero) */
+    uint8_t  start_index;          /* Optional request byte, defaults to 0 */
+    struct nlk_kb_macro_info macros[NLK_KB_MACROS_PER_PAGE];
 } __attribute__((packed));
 
 struct nlk_kb_macro_cfg_hdr {

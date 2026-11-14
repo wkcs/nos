@@ -67,12 +67,13 @@ static const struct nlk_kb_light_zone_desc g_nk60_light_zones[] = {
         .name              = "Key-RGB",
     },
     {
+        /* Keep ID 1 for saved profiles. Caps Lock shares one LED with Key-RGB. */
         .zone_id           = 1U,
-        .type              = NLK_KB_LIGHT_TYPE_RGB_MATRIX,
+        .type              = NLK_KB_LIGHT_TYPE_INDICATOR,
         .led_start         = 28U,
         .led_count         = 1U,
         .supported_effects = 0x0FU,
-        .name              = "Accent",
+        .name              = "Caps Lock",
     },
 };
 
@@ -161,25 +162,6 @@ static const struct nlk_kb_action_desc g_nk60_actions[6] = {
     },
 };
 
-static const struct nlk_kb_macro_info g_nk60_default_macro_info[1] = {
-    {
-        .macro_id     = 0U,
-        .step_count   = 3U,
-        .repeat_count = 1U,
-        .flags        = 0U,
-        .id           = "paste",
-        .name         = "Quick-Paste",
-    },
-};
-
-static const struct nlk_kb_macro_step g_nk60_default_macro_steps[1][NLK_KB_MAX_MACRO_STEPS] = {
-    {
-        { .type = NLK_KB_MACRO_ACT_KEY_DOWN, .key_code = KC_LCTRL, .delay_ms = 10U },
-        { .type = NLK_KB_MACRO_ACT_KEY_TAP,  .key_code = KC_V,     .delay_ms = 20U },
-        { .type = NLK_KB_MACRO_ACT_KEY_UP,   .key_code = KC_LCTRL, .delay_ms = 10U },
-    },
-};
-
 static const struct keyboard_profile g_nk60_kb_profile = {
     .name               = "NK60-V2",
     .hardware_id        = "NK60-V2-ANSI61-v1",
@@ -213,7 +195,7 @@ static const struct keyboard_profile g_nk60_kb_profile = {
     .light_effect_count = (uint8_t)(sizeof(g_nk60_light_effects) / sizeof(g_nk60_light_effects[0])),
     .light_effects      = g_nk60_light_effects,
 
-    /* Multi-Zone Backlight Registration */
+    /* Per-key RGB backlight and shared Caps Lock indicator */
     .light_zone_count   = sizeof(g_nk60_light_zones) / sizeof(g_nk60_light_zones[0]),
     .light_zones        = g_nk60_light_zones,
     .default_zone_cfgs  = g_nk60_default_zone_cfgs,
@@ -226,10 +208,6 @@ static const struct keyboard_profile g_nk60_kb_profile = {
     .action_descs       = g_nk60_actions,
     .action_handlers    = NULL,
 
-    /* Predefined Macros */
-    .macro_count        = 1U,
-    .macro_infos        = g_nk60_default_macro_info,
-    .default_macros     = g_nk60_default_macro_steps,
 };
 
 static int nk60_keyboard_profile_init(void)

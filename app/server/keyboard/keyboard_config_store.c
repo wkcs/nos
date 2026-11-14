@@ -80,7 +80,7 @@ static size_t config_max_size(const struct nlk_keyboard_ctx *ctx)
            sizeof(struct nlk_kb_analog_cfg) +
            sizeof(struct nlk_kb_light_override) +
            cells * (sizeof(uint32_t) + 1U + NLK_KB_MAX_KEY_ACTIONS * NLK_KB_ACTION_NAME_MAX) + 1U +
-           NLK_KB_MAX_MACROS * (1U + sizeof(struct nlk_kb_macro_info) +
+           255U * (1U + sizeof(struct nlk_kb_macro_info) + NLK_KB_MACRO_DESC_MAX +
                NLK_KB_MAX_MACRO_STEPS * sizeof(struct nlk_kb_macro_step)) +
            sizeof(struct nlk_kb_light_cfg) + NLK_KB_LIGHT_EFFECT_NAME_MAX + 1U +
            NLK_KB_MAX_LIGHT_ZONES * (sizeof(struct nlk_kb_zone_light_cfg) +
@@ -119,10 +119,10 @@ static int config_write_file(const struct nlk_keyboard_ctx *ctx, const char *har
         (void)nos_unlink(temp);
         goto out;
     }
-    if (replace) {
-        (void)nos_unlink(path);
-    }
     ret = nos_rename(temp, path);
+    if (replace && ret == -EEXIST && nos_unlink(path) == 0) {
+        ret = nos_rename(temp, path);
+    }
     if (ret != 0) (void)nos_unlink(temp);
 out:
     kfree(buffer);
@@ -203,15 +203,21 @@ static int config_filldir(void *arg, const char *name, int len, loff_t offset,
     return 1;
 }
 
-int keyboard_config_file_next(const char *dir, const char *hardware, uint8_t kind,
-                              uint32_t *cursor, struct keyboard_config_file_info *info)
-{
-    struct dentry *dentry;
+/* These buffers stay live across VFS -> LittleFS -> SPI calls. Keep them
+ * off the small RPC task stack and never reserve them between requests. */
+struct config_file_workspace {
     struct file file;
     struct config_dir_cursor scan;
     struct keyboard_config_header header;
     char sub_dir[CONFIG_PATH_SIZE];
     char path[CONFIG_PATH_SIZE];
+};
+
+static int config_file_next(const char *dir, const char *hardware, uint8_t kind,
+                            uint32_t *cursor, struct keyboard_config_file_info *info,
+                            struct config_file_workspace *work)
+{
+    struct dentry *dentry;
     const char *sub = config_subdir(kind);
     int fd, n, ret;
 
@@ -220,48 +226,63 @@ int keyboard_config_file_next(const char *dir, const char *hardware, uint8_t kin
     dentry = vfs_lookup_path(vfs_get_root(), dir);
     if (dentry == NULL || dentry->d_inode == NULL) return -ENOENT;
     if (!S_ISDIR(dentry->d_inode->i_mode)) return -ENOTDIR;
-    n = snprintf(sub_dir, sizeof(sub_dir), "%s/%s", dir, sub);
-    if (n < 0 || (size_t)n >= sizeof(sub_dir)) return -EINVAL;
-    dentry = vfs_lookup_path(vfs_get_root(), sub_dir);
+    n = snprintf(work->sub_dir, sizeof(work->sub_dir), "%s/%s", dir, sub);
+    if (n < 0 || (size_t)n >= sizeof(work->sub_dir)) return -EINVAL;
+    dentry = vfs_lookup_path(vfs_get_root(), work->sub_dir);
     if (dentry == NULL || dentry->d_inode == NULL) return 0;
     if (!S_ISDIR(dentry->d_inode->i_mode)) return -ENOTDIR;
     if (dentry->d_inode->i_fop == NULL || dentry->d_inode->i_fop->readdir == NULL) return -ENOTSUP;
     for (;;) {
-        memset(&file, 0, sizeof(file));
-        file.f_inode = dentry->d_inode;
-        file.f_op = file.f_inode->i_fop;
-        file.f_path.dentry = dentry;
-        if (file.f_op->open != NULL) {
-            ret = file.f_op->open(file.f_inode, &file);
+        memset(&work->file, 0, sizeof(work->file));
+        work->file.f_inode = dentry->d_inode;
+        work->file.f_op = work->file.f_inode->i_fop;
+        work->file.f_path.dentry = dentry;
+        if (work->file.f_op->open != NULL) {
+            ret = work->file.f_op->open(work->file.f_inode, &work->file);
             if (ret != 0) return ret;
         }
-        memset(&scan, 0, sizeof(scan));
-        scan.wanted = *cursor;
-        ret = file.f_op->readdir(&file, &scan, config_filldir);
-        if (file.f_op->release != NULL) (void)file.f_op->release(file.f_inode, &file);
+        memset(&work->scan, 0, sizeof(work->scan));
+        work->scan.wanted = *cursor;
+        ret = work->file.f_op->readdir(&work->file, &work->scan, config_filldir);
+        if (work->file.f_op->release != NULL) (void)work->file.f_op->release(work->file.f_inode, &work->file);
         if (ret < 0) return ret;
-        if (!scan.found) return 0;
+        if (!work->scan.found) return 0;
         (*cursor)++;
-        if (config_path(path, dir, scan.id, kind, 0) != 0) continue;
-        fd = nos_open(path, O_RDONLY, 0);
+        if (config_path(work->path, dir, work->scan.id, kind, 0) != 0) continue;
+        fd = nos_open(work->path, O_RDONLY, 0);
         if (fd < 0) continue;
-        ret = (int)nos_read(fd, &header, sizeof(header));
+        ret = (int)nos_read(fd, &work->header, sizeof(work->header));
         (void)nos_close(fd);
-        if (ret != (int)sizeof(header) || header.magic != KEYBOARD_CONFIG_MAGIC ||
-            (header.version < 1U || header.version > 3U) || header.kind != kind ||
-            memchr(header.hardware, '\0', sizeof(header.hardware)) == NULL ||
-            memchr(header.name, '\0', sizeof(header.name)) == NULL ||
-            (header.version >= 2U && memchr(header.desc, '\0', sizeof(header.desc)) == NULL) ||
-            strcmp(header.hardware, hardware) != 0) continue;
+        if (ret != (int)sizeof(work->header) || work->header.magic != KEYBOARD_CONFIG_MAGIC ||
+            (work->header.version < 1U || work->header.version > 5U) || work->header.kind != kind ||
+            memchr(work->header.hardware, '\0', sizeof(work->header.hardware)) == NULL ||
+            memchr(work->header.name, '\0', sizeof(work->header.name)) == NULL ||
+            (work->header.version >= 2U && memchr(work->header.desc, '\0', sizeof(work->header.desc)) == NULL) ||
+            strcmp(work->header.hardware, hardware) != 0) continue;
         memset(info, 0, sizeof(*info));
-        memcpy(info->id, scan.id, strlen(scan.id) + 1U);
-        memcpy(info->name, header.name, sizeof(info->name));
-        if (header.version >= 2U) {
-            memcpy(info->desc, header.desc, sizeof(info->desc));
+        memcpy(info->id, work->scan.id, strlen(work->scan.id) + 1U);
+        memcpy(info->name, work->header.name, sizeof(info->name));
+        if (work->header.version >= 2U) {
+            memcpy(info->desc, work->header.desc, sizeof(info->desc));
         }
-        info->size = header.length;
+        info->size = work->header.length;
         return 1;
     }
+}
+
+int keyboard_config_file_next(const char *dir, const char *hardware, uint8_t kind,
+                              uint32_t *cursor, struct keyboard_config_file_info *info)
+{
+    struct config_file_workspace *work;
+    int ret;
+
+    if (dir == NULL || hardware == NULL || cursor == NULL || info == NULL ||
+        config_subdir(kind) == NULL) return -EINVAL;
+    work = kmalloc(sizeof(*work), GFP_KERNEL);
+    if (work == NULL) return -ENOMEM;
+    ret = config_file_next(dir, hardware, kind, cursor, info, work);
+    kfree(work);
+    return ret;
 }
 
 int keyboard_config_file_delete(const char *dir, const char *id, uint8_t kind)
@@ -303,7 +324,7 @@ int keyboard_config_file_rpc(struct nlk_keyboard_ctx *ctx, const char *hardware,
         details->version = 1U;
         details->key_count = ctx->desc.key_count;
         details->layer_count = ctx->desc.layer_count;
-        details->macro_slots = NLK_KB_MAX_MACROS;
+        details->macro_slots = 0U; /* Macros are allocated on demand. */
         details->macro_steps = NLK_KB_MAX_MACRO_STEPS;
         details->light_zones = ctx->light_zone_count;
         memcpy(details->hardware, hardware, strlen(hardware) + 1U);

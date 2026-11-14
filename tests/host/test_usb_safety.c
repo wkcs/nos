@@ -161,6 +161,20 @@ static void *f4_sim_read_packet(const uint32_t *fifo, uint8_t *dest, uint16_t le
     return ((void *)dest);
 }
 
+#include "../../board/nk60-v2/usb/usb_rx_fifo.h"
+
+static void test_stm32f4_out_capacity(void)
+{
+    volatile uint32_t fifo = 0x44332211U;
+    uint8_t data[4] = {0xaa, 0xaa, 0xaa, 0xaa};
+
+    assert(nk60_usb_read_rx_fifo(&fifo, NULL, 1U, 64U) == 0U);
+    assert(nk60_usb_read_rx_fifo(&fifo, data, 4U, 1U) == 1U);
+    assert(data[0] == 0x11U && data[1] == 0xaaU && data[3] == 0xaaU);
+    assert(nk60_usb_read_rx_fifo(&fifo, data + 1, 3U, 3U) == 3U);
+    assert(data[1] == 0x11U && data[2] == 0x22U && data[3] == 0x33U);
+}
+
 static void test_stm32f4_otg_rw_safety(void)
 {
     const uint16_t test_lens[] = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 63, 64};
@@ -1048,6 +1062,7 @@ int main(void)
     printf("================================================================\n");
 
     test_stm32f4_otg_rw_safety();
+    test_stm32f4_out_capacity();
     test_stm32f1_pma_rw_safety();
     test_ep0_zlp_state_machine();
     test_control_transfer_length_clamp();

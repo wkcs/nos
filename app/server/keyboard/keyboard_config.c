@@ -13,6 +13,8 @@ struct config_cursor {
     size_t size;
     size_t pos;
     int error;
+    struct nlk_kb_macro *macros;
+    uint8_t macro_count;
 };
 
 static void config_io(struct config_cursor *c, void *item, size_t size, int write)
@@ -99,58 +101,92 @@ static int config_effect_id(const struct nlk_keyboard_ctx *ctx, const char *name
 }
 
 static void config_macro(struct config_cursor *c, struct nlk_keyboard_ctx *ctx,
-                         uint8_t slot, int write, int apply)
+                         uint8_t id, int write, int apply, bool collection)
 {
     struct nlk_kb_macro_info info;
+    struct nlk_kb_macro_step steps[NLK_KB_MAX_MACRO_STEPS];
     char desc[NLK_KB_MACRO_DESC_MAX];
-    struct nlk_kb_macro_step step;
     uint8_t i;
 
-    if (slot >= NLK_KB_MAX_MACROS) {
-        c->error = -EINVAL;
-        return;
-    }
-    memset(&info, 0, sizeof(info));
-    memset(desc, 0, sizeof(desc));
     if (write) {
-        info = ctx->macro_info[slot];
-        info.macro_id = slot;
-        memcpy(desc, ctx->macro_desc[slot], sizeof(desc));
+        const struct nlk_kb_macro *macro = nlk_cap_keyboard_find_macro(ctx, id);
+        if (macro == NULL) { c->error = -ENOENT; return; }
+        info = macro->info;
+        memcpy(desc, macro->desc, sizeof(desc));
+        memcpy(steps, macro->steps, (size_t)info.step_count * sizeof(*steps));
     }
     config_io(c, &info, sizeof(info), write);
     config_io(c, desc, sizeof(desc), write);
     if (c->error != 0 || info.step_count > NLK_KB_MAX_MACRO_STEPS ||
-        (info.step_count != 0U &&
-         (!config_string_ok(info.name, sizeof(info.name)) ||
-          !config_optional_id_ok(info.id, sizeof(info.id)) ||
-          !config_optional_string_ok(desc, sizeof(desc))))) {
+        !config_optional_id_ok(info.id, sizeof(info.id)) ||
+        !config_optional_string_ok(info.name, sizeof(info.name)) ||
+        !config_optional_string_ok(desc, sizeof(desc))) {
         c->error = -EINVAL;
         return;
     }
-    if (!write && apply) {
-        if (ctx->macro_playing != 0U && ctx->macro_play_id == slot) {
-            (void)nlk_cap_keyboard_macro_cancel(ctx);
+    config_io(c, steps, (size_t)info.step_count * sizeof(*steps), write);
+    for (i = 0U; i < info.step_count && c->error == 0; i++) {
+        if (steps[i].type < NLK_KB_MACRO_ACT_KEY_DOWN ||
+            steps[i].type > NLK_KB_MACRO_ACT_DELAY_MS ||
+            (steps[i].type != NLK_KB_MACRO_ACT_DELAY_MS &&
+             (steps[i].key_code == 0U || steps[i].key_code >= 0xE8U))) {
+            c->error = -EINVAL;
         }
-        info.macro_id = slot;
-        ctx->macro_info[slot] = info;
-        memcpy(ctx->macro_desc[slot], desc, sizeof(desc));
-        memset(ctx->macro_steps[slot], 0, sizeof(ctx->macro_steps[slot]));
     }
-    for (i = 0U; i < info.step_count; i++) {
-        if (write) {
-            step = ctx->macro_steps[slot][i];
+    if (write || c->error != 0) return;
+    if (!collection && apply) {
+        const struct nlk_kb_macro *existing;
+        if (id == NLK_KB_MACRO_NEW) {
+            for (existing = ctx->macros; existing != NULL; existing = existing->next) {
+                if (info.id[0] != '\0' && strcmp(info.id, existing->info.id) == 0) {
+                    c->error = -EEXIST;
+                    return;
+                }
+            }
+            id = nlk_cap_keyboard_next_macro_id(ctx);
         }
-        config_io(c, &step, sizeof(step), write);
-        if (c->error != 0 || step.type < NLK_KB_MACRO_ACT_KEY_DOWN ||
-            step.type > NLK_KB_MACRO_ACT_DELAY_MS ||
-            (step.type != NLK_KB_MACRO_ACT_DELAY_MS &&
-             (step.key_code == 0U || step.key_code >= 0xE8U))) {
+        c->error = id == NLK_KB_MACRO_NEW ? -ENOSPC :
+            nlk_cap_keyboard_set_macro_meta(ctx, id, info.id, info.name, desc,
+                                           steps, info.step_count, info.repeat_count);
+    } else if (collection && !apply) {
+        struct nlk_kb_macro *macro = nlk_cap_keyboard_alloc_macro(info.step_count);
+        struct nlk_kb_macro **link = &c->macros;
+        if (macro == NULL) { c->error = -ENOMEM; return; }
+        macro->info = info;
+        macro->info.macro_id = id;
+        memcpy(macro->desc, desc, sizeof(desc));
+        memcpy(macro->steps, steps, (size_t)info.step_count * sizeof(*steps));
+        while (*link != NULL && (*link)->info.macro_id < id) link = &(*link)->next;
+        macro->next = *link;
+        *link = macro;
+        c->macro_count++;
+    }
+}
+
+static void config_macros(struct config_cursor *c, struct nlk_keyboard_ctx *ctx,
+                          int write, int apply)
+{
+    const struct nlk_kb_macro *macro = ctx->macros;
+    uint8_t count = write ? ctx->macro_count : 0U;
+    uint8_t seen[32] = {0};
+    unsigned int i;
+
+    config_io(c, &count, 1U, write);
+    for (i = 0U; i < count && c->error == 0; i++) {
+        uint8_t id = write ? macro->info.macro_id : 0U;
+        config_io(c, &id, 1U, write);
+        if (c->error != 0 || id == NLK_KB_MACRO_NEW ||
+            (seen[id / 8U] & (1U << (id % 8U))) != 0U) {
             c->error = -EINVAL;
             return;
         }
-        if (!write && apply) {
-            ctx->macro_steps[slot][i] = step;
-        }
+        seen[id / 8U] |= (uint8_t)(1U << (id % 8U));
+        config_macro(c, ctx, id, write, apply, true);
+        if (write) macro = macro->next;
+    }
+    if (!write && apply && c->error == 0) {
+        nlk_cap_keyboard_replace_macros(ctx, c->macros, c->macro_count);
+        c->macros = NULL;
     }
 }
 
@@ -160,8 +196,7 @@ static void config_keyboard(struct config_cursor *c, struct nlk_keyboard_ctx *ct
     struct nlk_kb_params params;
     struct nlk_kb_analog_cfg analog;
     struct nlk_kb_light_override light_override;
-    uint8_t layer, key, i, macro_count = 0U;
-    uint8_t seen = 0U;
+    uint8_t layer, key, i;
     int layout_valid = 0;
 
     if (write) {
@@ -241,43 +276,8 @@ static void config_keyboard(struct config_cursor *c, struct nlk_keyboard_ctx *ct
             }
         }
     }
-    /* Version 2: 宏已解耦为全局独立资源，键盘配置不再内嵌宏 */
     if (version < 2U) {
-        if (write) {
-            for (i = 0U; i < NLK_KB_MAX_MACROS; i++) {
-                if (ctx->macro_info[i].step_count != 0U) {
-                    macro_count++;
-                }
-            }
-        }
-        config_io(c, &macro_count, 1U, write);
-        if (c->error != 0 || macro_count > NLK_KB_MAX_MACROS) {
-            c->error = -EINVAL;
-            return;
-        }
-        if (!write && apply) {
-            if (ctx->macro_playing != 0U) {
-                (void)nlk_cap_keyboard_macro_cancel(ctx);
-            }
-            memset(ctx->macro_info, 0, sizeof(ctx->macro_info));
-            memset(ctx->macro_steps, 0, sizeof(ctx->macro_steps));
-        }
-        for (i = 0U; i < macro_count; i++) {
-            uint8_t slot = 0U;
-            if (write) {
-                while (slot < NLK_KB_MAX_MACROS &&
-                       (ctx->macro_info[slot].step_count == 0U || (seen & (1U << slot)) != 0U)) {
-                    slot++;
-                }
-            }
-            config_io(c, &slot, 1U, write);
-            if (c->error != 0 || slot >= NLK_KB_MAX_MACROS || (seen & (1U << slot)) != 0U) {
-                c->error = -EINVAL;
-                return;
-            }
-            seen |= (uint8_t)(1U << slot);
-            config_macro(c, ctx, slot, write, apply);
-        }
+        config_macros(c, ctx, write, apply);
     }
     if (!write && apply && c->error == 0) {
         (void)nlk_cap_keyboard_set_params(ctx, &params);
@@ -433,6 +433,9 @@ static void config_active(struct config_cursor *c, struct nlk_keyboard_ctx *ctx,
         return;
     }
     config_light(c, ctx, write, apply, 1, version);
+    if (version >= 4U && c->error == 0) {
+        config_macros(c, ctx, write, apply);
+    }
     if (!write && apply && c->error == 0) {
         memcpy(ctx->active_keyboard_id, kb_id, sizeof(kb_id));
         memcpy(ctx->active_light_id, light_id, sizeof(light_id));
@@ -445,10 +448,13 @@ static void config_body(struct config_cursor *c, struct nlk_keyboard_ctx *ctx,
 {
     if (kind == KEYBOARD_CONFIG_KEYBOARD) {
         config_keyboard(c, ctx, write, apply, version);
+        if (version >= 5U && c->error == 0) {
+            config_macros(c, ctx, write, apply);
+        }
     } else if (kind == KEYBOARD_CONFIG_LIGHT) {
         config_light(c, ctx, write, apply, 0, version);
     } else if (kind == KEYBOARD_CONFIG_MACRO) {
-        config_macro(c, ctx, macro_id, write, apply);
+        config_macro(c, ctx, macro_id, write, apply, false);
     } else if (kind == KEYBOARD_CONFIG_ACTIVE) {
         config_active(c, ctx, write, apply, version);
     } else {
@@ -461,7 +467,7 @@ int keyboard_config_encode(const struct nlk_keyboard_ctx *ctx, const char *hardw
                            void *buffer, size_t capacity, size_t *length)
 {
     struct keyboard_config_header header;
-    struct config_cursor c;
+    struct config_cursor c = {0};
     if (ctx == NULL || length == NULL || (buffer != NULL && capacity < sizeof(header)) ||
         !config_string_ok(hardware, sizeof(header.hardware)) ||
         !config_string_ok(name, sizeof(header.name))) {
@@ -470,6 +476,8 @@ int keyboard_config_encode(const struct nlk_keyboard_ctx *ctx, const char *hardw
     memset(&header, 0, sizeof(header));
     header.magic = KEYBOARD_CONFIG_MAGIC;
     header.version = 3U;
+    if (kind == KEYBOARD_CONFIG_ACTIVE) header.version = 4U;
+    if (kind == KEYBOARD_CONFIG_KEYBOARD) header.version = 5U;
     header.kind = kind;
     header.key_count = ctx->desc.key_count;
     header.layer_count = ctx->desc.layer_count;
@@ -503,7 +511,7 @@ int keyboard_config_decode(struct nlk_keyboard_ctx *ctx, const char *hardware,
                            const void *buffer, size_t length)
 {
     struct keyboard_config_header header, check;
-    struct config_cursor c;
+    struct config_cursor c = {0};
     uint32_t crc;
     int pass;
     if (ctx == NULL || buffer == NULL || length < sizeof(header) ||
@@ -512,7 +520,9 @@ int keyboard_config_decode(struct nlk_keyboard_ctx *ctx, const char *hardware,
     }
     memcpy(&header, buffer, sizeof(header));
     if (header.magic != KEYBOARD_CONFIG_MAGIC ||
-        (header.version < 1U || header.version > 3U) ||
+        (header.version < 1U || header.version > 5U ||
+         (header.version == 4U && kind != KEYBOARD_CONFIG_ACTIVE) ||
+         (header.version == 5U && kind != KEYBOARD_CONFIG_KEYBOARD)) ||
         header.kind != kind || header.length != length ||
         header.key_count != ctx->desc.key_count || header.layer_count != ctx->desc.layer_count ||
         !config_string_ok(header.hardware, sizeof(header.hardware)) ||
@@ -536,7 +546,8 @@ int keyboard_config_decode(struct nlk_keyboard_ctx *ctx, const char *hardware,
         c.error = 0;
         config_body(&c, ctx, kind, macro_id, 0, pass, header.version);
         if (c.error != 0 || c.pos != length) {
-            return -EINVAL;
+            nlk_cap_keyboard_free_macros(c.macros);
+            return c.error != 0 ? c.error : -EINVAL;
         }
     }
     return 0;
