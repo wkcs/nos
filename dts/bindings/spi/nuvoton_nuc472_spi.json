@@ -1,0 +1,11 @@
+{
+  "compatible": "nuvoton,nuc472-spi",
+  "properties": {
+    "reg": {"type": "uint32-array", "required": true, "min-items": 2, "max-items": 2},
+    "interrupts": {"type": "uint32-array", "required": false, "min-items": 1},
+    "cs-gpios": {"type": "phandle-array"},
+    "#address-cells": {"type": "uint32-array", "min-items": 1, "max-items": 1},
+    "#size-cells": {"type": "uint32-array", "min-items": 1, "max-items": 1},
+    "status": {"type": "string", "enum": ["okay", "ok", "disabled", "reserved", "fail", "fail-sss"]}
+  }
+}

@@ -1,7 +1,9 @@
 set(DRIVERS_SRCS "")
 
-foreach(_driver base block display i2c serial spi flash usb)
-    include("${CMAKE_CURRENT_SOURCE_DIR}/${_driver}/sources.cmake")
+foreach(_driver base block display gpio i2c misc serial spi flash usb)
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${_driver}/sources.cmake")
+        include("${CMAKE_CURRENT_SOURCE_DIR}/${_driver}/sources.cmake")
+    endif()
 endforeach()
 
 add_library(nos_drivers OBJECT ${DRIVERS_SRCS})

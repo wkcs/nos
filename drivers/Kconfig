@@ -134,6 +134,14 @@ config ZJ_V3_SD_BLOCK
 	  Initialize the ZJ-V3 SD socket as block device sd0 after scheduling
 	  starts.
 
+config NUC472_SPI
+	bool "NUC472 SPI controller"
+	depends on SOC_NUC472
+	select SPI
+	default n
+	help
+	  Enable the Nuvoton NUC472 SPI controller driver.
+
 endmenu
 
 # I2C 与 PWM 驱动
@@ -151,6 +159,26 @@ config I2C_GPIO
 	default n
 	help
 	  Enable the single-master GPIO I2C controller, including clock stretching.
+
+config NUC472_I2C
+	bool "NUC472 I2C controller"
+	depends on SOC_NUC472
+	select I2C_CORE
+	default n
+	help
+	  Enable the Nuvoton NUC472 hardware I2C controller driver.
+
+endmenu
+
+# GPIO 驱动
+menu "GPIO Drivers"
+
+config NUC472_GPIO
+	bool "NUC472 GPIO and EXTI driver"
+	depends on SOC_NUC472
+	default y if BOARD_NUTINY_NUC472
+	help
+	  Enable the Nuvoton NUC472 GPIO port control and external interrupt driver.
 
 endmenu
 

@@ -87,6 +87,7 @@ TESTS = [
     ("run_nuc472_fmc_rtc_test.py",),
     ("run_nuc472_uart_test.py",),
     ("run_nuc472_usbd_test.py",),
+    ("run_nuc472_bus_test.py",),
 ]
 
 

@@ -5,4 +5,7 @@ endif()
 if(CONFIG_STM32F4_SPI OR CONFIG_STM32F1_SPI)
     list(APPEND DRIVERS_SRCS spi/spi_stm32.c)
 endif()
+if(CONFIG_NUC472_SPI)
+    list(APPEND DRIVERS_SRCS spi/spi_nuc472.c)
+endif()
 

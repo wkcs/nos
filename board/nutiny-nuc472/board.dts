@@ -1,0 +1,43 @@
+/*
+ * Copyright (C) 2026 Nick Hu <huqihan@live.com>
+ *
+ * Nuvoton NuTiny-EVB-NUC472 板级设备树
+ */
+
+/dts-v1/;
+#include <arm/nuvoton/nuc472.dtsi>
+
+/ {
+    model = "Nuvoton NuTiny-EVB-NUC472";
+    compatible = "nuvoton,nutiny-nuc472", "nuvoton,nuc472";
+
+    chosen {
+        nos,console = <&uart0>;
+    };
+
+    leds {
+        compatible = "gpio-leds";
+
+        led0: led_0 {
+            label = "board:led";
+            gpios = <&gpiob 10 0>;
+            default-state = "off";
+        };
+    };
+};
+
+&uart0 {
+    status = "okay";
+};
+
+&spi0 {
+    status = "okay";
+};
+
+&i2c3 {
+    status = "okay";
+};
+
+&usbd {
+    status = "okay";
+};

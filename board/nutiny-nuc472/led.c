@@ -1,39 +1,34 @@
 /**
  * Copyright (C) 2026 Nick Hu <huqihan@live.com>
- * Author: Nick Hu <huqihan@live.com>
  *
- * PB.10 drives the board I/O LED.
+ * PB.10 驱动 NuTiny-NUC472 板载用户指示 LED (复用 gpio_nuc472 驱动)
  */
+#include <stdint.h>
+#include <stdbool.h>
 #include <kernel/init.h>
 #include <kernel/sleep.h>
 #include <kernel/task.h>
-#include <stdint.h>
+#include <soc/nuc472_soc.h>
+#include <drivers/gpio_nuc472.h>
 
-#define REG32(addr) (*(volatile uint32_t *)(addr))
-#define SYS_REGLCTL REG32(0x40000100UL)
-#define SYS_GPB_MFPH REG32(0x4000003cUL)
-#define GPIOB_MODE REG32(0x40004040UL)
-#define GPIOB_PIN10 REG32(0x40004868UL)
 #define LED_BLINK_INTERVAL_MS 500U
 
 static void nutiny_led_task(void *parameter)
 {
-    uint32_t level = 0;
     (void)parameter;
 
-    SYS_REGLCTL = 0x59;
-    SYS_REGLCTL = 0x16;
-    SYS_REGLCTL = 0x88;
-    SYS_GPB_MFPH &= ~(0xfU << 8);
-    SYS_REGLCTL = 0;
+    /* 配置 PB.10 为 GPIO 功能 (清空 GPB_MFPH 引脚复用位) */
+    nuc472_sys_unlock();
+    NUC472_SYS->GPB_MFPH &= ~(0xFU << 8);
+    nuc472_sys_lock();
 
-    GPIOB_PIN10 = level;
-    GPIOB_MODE = (GPIOB_MODE & ~(3U << 20)) | (1U << 20);
+    /* 使用 NUC472 GPIO 驱动配置 PB.10 为推挽输出，默认低电平 */
+    nuc472_gpio_config(NUC472_PORT_B, 10, NUC472_GPIO_MODE_OUTPUT);
+    nuc472_gpio_write(NUC472_PORT_B, 10, 0);
 
     while (true) {
         msleep(LED_BLINK_INTERVAL_MS);
-        level ^= 1U;
-        GPIOB_PIN10 = level;
+        nuc472_gpio_toggle(NUC472_PORT_B, 10);
     }
 }
 

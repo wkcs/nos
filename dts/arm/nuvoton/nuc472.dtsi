@@ -1,0 +1,152 @@
+/*
+ * Copyright (C) 2026 Nick Hu <huqihan@live.com>
+ *
+ * Nuvoton NUC472 SoC 设备树描述
+ */
+
+/ {
+    #address-cells = <1>;
+    #size-cells = <1>;
+    compatible = "nuvoton,nuc472";
+
+    cpus {
+        #address-cells = <1>;
+        #size-cells = <0>;
+
+        cpu@0 {
+            compatible = "arm,cortex-m4";
+            device_type = "cpu";
+            reg = <0>;
+        };
+    };
+
+    memory@20000000 {
+        device_type = "memory";
+        reg = <0x20000000 0x10000>;
+    };
+
+    flash@0 {
+        device_type = "flash";
+        reg = <0x00000000 0x80000>;
+    };
+
+    soc {
+        compatible = "simple-bus";
+        #address-cells = <1>;
+        #size-cells = <1>;
+        ranges;
+
+        gpioa: gpio@40004000 {
+            compatible = "nuvoton,nuc472-gpio";
+            reg = <0x40004000 0x40>;
+            interrupts = <16>;
+            gpio-controller;
+            #gpio-cells = <2>;
+            status = "okay";
+        };
+
+        gpiob: gpio@40004040 {
+            compatible = "nuvoton,nuc472-gpio";
+            reg = <0x40004040 0x40>;
+            interrupts = <17>;
+            gpio-controller;
+            #gpio-cells = <2>;
+            status = "okay";
+        };
+
+        gpioc: gpio@40004080 {
+            compatible = "nuvoton,nuc472-gpio";
+            reg = <0x40004080 0x40>;
+            interrupts = <18>;
+            gpio-controller;
+            #gpio-cells = <2>;
+            status = "okay";
+        };
+
+        gpiod: gpio@400040c0 {
+            compatible = "nuvoton,nuc472-gpio";
+            reg = <0x400040c0 0x40>;
+            interrupts = <19>;
+            gpio-controller;
+            #gpio-cells = <2>;
+            status = "okay";
+        };
+
+        gpioe: gpio@40004100 {
+            compatible = "nuvoton,nuc472-gpio";
+            reg = <0x40004100 0x40>;
+            interrupts = <20>;
+            gpio-controller;
+            #gpio-cells = <2>;
+            status = "okay";
+        };
+
+        gpiof: gpio@40004140 {
+            compatible = "nuvoton,nuc472-gpio";
+            reg = <0x40004140 0x40>;
+            interrupts = <21>;
+            gpio-controller;
+            #gpio-cells = <2>;
+            status = "okay";
+        };
+
+        gpiog: gpio@40004180 {
+            compatible = "nuvoton,nuc472-gpio";
+            reg = <0x40004180 0x40>;
+            interrupts = <22>;
+            gpio-controller;
+            #gpio-cells = <2>;
+            status = "okay";
+        };
+
+        gpioh: gpio@400041c0 {
+            compatible = "nuvoton,nuc472-gpio";
+            reg = <0x400041c0 0x40>;
+            interrupts = <23>;
+            gpio-controller;
+            #gpio-cells = <2>;
+            status = "okay";
+        };
+
+        gpioi: gpio@40004200 {
+            compatible = "nuvoton,nuc472-gpio";
+            reg = <0x40004200 0x40>;
+            interrupts = <24>;
+            gpio-controller;
+            #gpio-cells = <2>;
+            status = "okay";
+        };
+
+        usbd: usbd@40019000 {
+            compatible = "nuvoton,nuc472-usbd";
+            reg = <0x40019000 0x1000>;
+            interrupts = <88>;
+            status = "disabled";
+        };
+
+        spi0: spi@40060000 {
+            compatible = "nuvoton,nuc472-spi";
+            reg = <0x40060000 0x1000>;
+            interrupts = <96>;
+            #address-cells = <1>;
+            #size-cells = <0>;
+            status = "disabled";
+        };
+
+        uart0: serial@40070000 {
+            compatible = "nuvoton,nuc472-uart";
+            reg = <0x40070000 0x1000>;
+            interrupts = <104>;
+            status = "disabled";
+        };
+
+        i2c3: i2c@40083000 {
+            compatible = "nuvoton,nuc472-i2c";
+            reg = <0x40083000 0x1000>;
+            interrupts = <115>;
+            #address-cells = <1>;
+            #size-cells = <0>;
+            status = "disabled";
+        };
+    };
+};

@@ -35,10 +35,18 @@ NUC472_SYS_Type *nuc472_test_sys(void);
 NUC472_CLK_Type *nuc472_test_clk(void);
 NUC472_FMC_Type *nuc472_test_fmc(void);
 NUC472_RTC_Type *nuc472_test_rtc(void);
+#ifndef NUC472_SYS
 #define NUC472_SYS        (nuc472_test_sys())
+#endif
+#ifndef NUC472_CLK
 #define NUC472_CLK        (nuc472_test_clk())
+#endif
+#ifndef NUC472_FMC
 #define NUC472_FMC        (nuc472_test_fmc())
+#endif
+#ifndef NUC472_RTC
 #define NUC472_RTC        (nuc472_test_rtc())
+#endif
 #endif
 
 extern uint32_t SystemCoreClock;
