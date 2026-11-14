@@ -17,6 +17,7 @@
 
 static struct {
     bool     active;
+    bool     committed;
     bool     reboot_pending;
     uint32_t reboot_flag;
     uint32_t total_size;
@@ -25,6 +26,14 @@ static struct {
     uint32_t acked_offset;
     uint32_t first_word;
 } g_bl_flash;
+
+/* One bounded L3 transaction; USB requests are serialized by the class driver. */
+static struct {
+    struct nlk_pkt_hdr header;
+    uint16_t total;
+    uint16_t filled;
+    uint8_t data[BL_NLK_MTU];
+} g_frag;
 
 static void bl_memcpy(void *dst, const void *src, uint32_t n)
 {
@@ -97,6 +106,7 @@ uint32_t nlk_crc32(uint32_t init_crc, const void *data, uint32_t len)
 void nlk_bl_init(void)
 {
     bl_memset(&g_bl_flash, 0, sizeof(g_bl_flash));
+    bl_memset(&g_frag, 0, sizeof(g_frag));
 }
 
 bool nlk_bl_is_reboot_pending(uint32_t *out_flag)
@@ -113,7 +123,7 @@ bool nlk_bl_is_reboot_pending(uint32_t *out_flag)
 void nlk_bl_trigger_reboot(uint32_t flag)
 {
     /* 写入目标启动标志并触发系统复位 */
-    backup_write_flag(flag);
+    backup_write_flag(get_boot_flag_data(flag));
     delay_ms(20U);
     NVIC_SystemReset();
 }
@@ -133,6 +143,8 @@ static int bl_kernel_prepare(uint32_t total_size, uint32_t expected_crc32)
         return -27; /* -EFBIG */
     }
 
+    g_bl_flash.active = false;
+    g_bl_flash.committed = false;
     /* 亮起蓝灯指示擦除开始 */
     rgb_set_solid(0U, 0U, 255U);
     flash_unlock();
@@ -164,7 +176,28 @@ static int bl_kernel_write_chunk(uint32_t offset, const uint8_t *data, uint16_t 
         ack->status = -1;
         return -1;
     }
+    if (len == 0U || len > 256U || (offset & 3U) != 0U ||
+        offset > g_bl_flash.total_size || len > g_bl_flash.total_size - offset ||
+        ((len & 3U) != 0U && offset + len != g_bl_flash.total_size) ||
+        (offset == 0U && len < 8U)) {
+        ack->status = -22;
+        return -22;
+    }
     if (offset < g_bl_flash.acked_offset) {
+        /* Only replay completely acknowledged, identical data. */
+        if (offset + len > g_bl_flash.acked_offset) {
+            ack->status = -22;
+            return -22;
+        }
+        for (uint16_t i = 0U; i < len; i++) {
+            uint8_t stored = offset + i < 4U
+                ? ((const uint8_t *)&g_bl_flash.first_word)[offset + i]
+                : *(const uint8_t *)(uintptr_t)(NK60_KERNEL_FLASH_BASE + offset + i);
+            if (stored != data[i]) {
+                ack->status = -74;
+                return -74;
+            }
+        }
         ack->acked_offset = g_bl_flash.acked_offset;
         ack->rx_window_bitmap = 1U;
         return 0;
@@ -218,10 +251,17 @@ static int bl_kernel_write_chunk(uint32_t offset, const uint8_t *data, uint16_t 
     return 0;
 }
 
-static int bl_kernel_commit(void)
+static int bl_kernel_commit(const struct nlk_flash_commit_req *req)
 {
     uint32_t int_crc;
 
+    if (req->part_id != 1U || req->total_size != g_bl_flash.total_size ||
+        req->expected_crc32 != g_bl_flash.expected_crc32) {
+        return -22;
+    }
+    if (g_bl_flash.committed) {
+        return 0;
+    }
     if (!g_bl_flash.active || g_bl_flash.acked_offset != g_bl_flash.total_size) {
         return -22;
     }
@@ -252,6 +292,7 @@ static int bl_kernel_commit(void)
     flash_lock_and_flush();
 
     g_bl_flash.active = false;
+    g_bl_flash.committed = true;
     rgb_set_solid(0U, 255U, 0U); /* 绿灯成功 */
     uart_puts("[BL] Kernel flashed to internal Flash OK\n");
     return 0;
@@ -281,24 +322,89 @@ static void bl_fill_flash_query(struct nlk_flash_query_resp *q)
 uint16_t nlk_bl_handle_packet(const uint8_t *rx_pkt, uint16_t rx_len, uint8_t *tx_pkt)
 {
     const struct nlk_pkt_hdr *in_hdr = (const struct nlk_pkt_hdr *)rx_pkt;
-    const uint8_t *payload = rx_pkt + sizeof(*in_hdr);
+    const uint8_t *payload;
+    struct nlk_pkt_hdr assembled;
     uint16_t payload_len;
     struct nlk_pkt_hdr *out_hdr = (struct nlk_pkt_hdr *)tx_pkt;
-    uint8_t *out_pay = tx_pkt + sizeof(*out_hdr);
+    uint8_t *out_pay;
     uint16_t out_len = 0U;
     int rc = 0;
     uint8_t mode;
 
-    if (rx_len < sizeof(*in_hdr)) {
+    if (rx_pkt == NULL || tx_pkt == NULL || rx_len < sizeof(*in_hdr) || rx_len > BL_NLK_MTU) {
         return 0U;
     }
+    if ((in_hdr->ver_flags & NLK_PROTO_VER_MASK) != NLK_PROTO_VER_1 ||
+        (in_hdr->ver_flags & (NLK_FLAG_IS_ACK | NLK_FLAG_IS_ERR)) != 0U ||
+        (in_hdr->dst_addr != 1U && in_hdr->dst_addr != 0xFFFEU && in_hdr->dst_addr != 0xFFFFU)) {
+        return 0U;
+    }
+    out_pay = tx_pkt + sizeof(*out_hdr);
     payload_len = in_hdr->payload_len;
-    if ((uint32_t)sizeof(*in_hdr) + payload_len > rx_len) {
+    if ((uint32_t)sizeof(*in_hdr) + payload_len != rx_len) {
+        return 0U;
+    }
+    payload = rx_pkt + sizeof(*in_hdr);
+    if ((in_hdr->ver_flags & NLK_FLAG_FRAG) != 0U) {
+        uint16_t total;
+        uint16_t offset;
+        if (payload_len < 4U) {
+            g_frag.total = 0U;
+            return 0U;
+        }
+        bl_memcpy(&total, payload, 2U);
+        bl_memcpy(&offset, payload + 2U, 2U);
+        uint16_t len = payload_len - 4U;
+        if (total == 0U || total > BL_NLK_MTU - sizeof(*in_hdr) || len == 0U ||
+            (uint32_t)offset + len > total) {
+            g_frag.total = 0U;
+            return 0U;
+        }
+        if (offset == 0U) {
+            g_frag.header = *in_hdr;
+            g_frag.total = total;
+            g_frag.filled = 0U;
+        }
+        if (g_frag.total != total || g_frag.filled != offset ||
+            g_frag.header.src_addr != in_hdr->src_addr ||
+            g_frag.header.dst_addr != in_hdr->dst_addr ||
+            g_frag.header.dst_cap != in_hdr->dst_cap ||
+            g_frag.header.msg_type != in_hdr->msg_type ||
+            g_frag.header.cmd_op != in_hdr->cmd_op ||
+            g_frag.header.seq_id != in_hdr->seq_id) {
+            g_frag.total = 0U;
+            return 0U;
+        }
+        bl_memcpy(g_frag.data + offset, payload + 4U, len);
+        g_frag.filled += len;
+        if ((in_hdr->ver_flags & NLK_FLAG_MORE_FRAG) != 0U) {
+            if (g_frag.filled == total) {
+                g_frag.total = 0U;
+            }
+            return 0U;
+        }
+        if (g_frag.filled != total) {
+            g_frag.total = 0U;
+            return 0U;
+        }
+        assembled = g_frag.header;
+        assembled.ver_flags &= (uint8_t)~(NLK_FLAG_FRAG | NLK_FLAG_MORE_FRAG);
+        assembled.payload_len = total;
+        in_hdr = &assembled;
+        payload = g_frag.data;
+        payload_len = total;
+        g_frag.total = 0U;
+    } else if ((in_hdr->ver_flags & NLK_FLAG_MORE_FRAG) != 0U) {
         return 0U;
     }
     mode = (uint8_t)((in_hdr->msg_type >> 4U) & 0x0FU);
 
-    if (in_hdr->dst_cap == NLK_CAP_ID_CORE) {
+    if (mode != NLK_MODE_RPC && mode != NLK_MODE_SYS && mode != NLK_MODE_BULK) {
+        rc = -95;
+    } else if (mode == NLK_MODE_BULK &&
+               (in_hdr->dst_cap != NLK_CAP_ID_FLASH || in_hdr->cmd_op != NLK_FLASH_OP_WRITE_CHUNK)) {
+        rc = -95;
+    } else if (in_hdr->dst_cap == NLK_CAP_ID_CORE) {
         switch (in_hdr->cmd_op) {
         case NLK_CORE_OP_GET_DEV_DESC: {
             struct nlk_device_desc *d = (struct nlk_device_desc *)out_pay;
@@ -311,7 +417,7 @@ uint16_t nlk_bl_handle_packet(const uint8_t *rx_pkt, uint16_t rx_len, uint8_t *t
             d->fw_ver[1] = (uint8_t)BL_VER_MINOR;
             d->fw_ver[2] = (uint8_t)BL_VER_PATCH;
             bl_memcpy(d->name, "NK60-V2-BL", 11U);
-            d->max_payload_size = BL_NLK_MTU;
+            d->max_payload_size = BL_NLK_MTU - sizeof(struct nlk_pkt_hdr);
             d->cap_count = 1U;
             out_len = sizeof(*d);
             break;
@@ -328,8 +434,14 @@ uint16_t nlk_bl_handle_packet(const uint8_t *rx_pkt, uint16_t rx_len, uint8_t *t
             break;
         }
         case NLK_CORE_OP_GET_CAP_DESC:
-            bl_fill_flash_query((struct nlk_flash_query_resp *)out_pay);
-            out_len = sizeof(struct nlk_flash_query_resp);
+            if (payload_len != 1U) {
+                rc = -22;
+            } else if (payload[0] != NLK_CAP_ID_FLASH) {
+                rc = -2;
+            } else {
+                bl_fill_flash_query((struct nlk_flash_query_resp *)out_pay);
+                out_len = sizeof(struct nlk_flash_query_resp);
+            }
             break;
         case NLK_CORE_OP_GET_TOPOLOGY: {
             struct nlk_topo_node_entry *node = (struct nlk_topo_node_entry *)out_pay;
@@ -350,11 +462,20 @@ uint16_t nlk_bl_handle_packet(const uint8_t *rx_pkt, uint16_t rx_len, uint8_t *t
             break;
         case NLK_CORE_OP_RESET:
             g_bl_flash.active = false;
+            g_bl_flash.committed = false;
             break;
         case NLK_CORE_OP_REBOOT: {
             uint32_t flag = BOOT_NORMAL;
-            if (payload_len >= sizeof(struct nlk_core_reboot_req)) {
+            if (payload_len != 0U && payload_len != sizeof(struct nlk_core_reboot_req)) {
+                rc = -22;
+                break;
+            }
+            if (payload_len != 0U) {
                 bl_memcpy(&flag, payload, sizeof(flag));
+            }
+            if (flag > BOOT_RECOVERY) {
+                rc = -22;
+                break;
             }
             g_bl_flash.reboot_pending = true;
             g_bl_flash.reboot_flag = flag;
@@ -365,7 +486,7 @@ uint16_t nlk_bl_handle_packet(const uint8_t *rx_pkt, uint16_t rx_len, uint8_t *t
             break;
         }
     } else if (in_hdr->dst_cap == NLK_CAP_ID_FLASH) {
-        if (mode == NLK_MODE_BULK || in_hdr->cmd_op == NLK_FLASH_OP_WRITE_CHUNK) {
+        if (in_hdr->cmd_op == NLK_FLASH_OP_WRITE_CHUNK) {
             struct nlk_flash_chunk_hdr chdr;
             struct nlk_flash_chunk_ack *ack = (struct nlk_flash_chunk_ack *)out_pay;
             if (payload_len < sizeof(chdr)) {
@@ -387,22 +508,30 @@ uint16_t nlk_bl_handle_packet(const uint8_t *rx_pkt, uint16_t rx_len, uint8_t *t
             case NLK_FLASH_OP_PREPARE: {
                 const struct nlk_flash_prepare_req *prep =
                     (const struct nlk_flash_prepare_req *)payload;
-                if (payload_len < sizeof(*prep) || prep->part_id != 1U) {
+                if (payload_len != sizeof(*prep) || prep->part_id != 1U) {
                     rc = -22;
                 } else {
                     rc = bl_kernel_prepare(prep->total_size, prep->expected_crc32);
                 }
                 break;
             }
-            case NLK_FLASH_OP_COMMIT:
-                rc = bl_kernel_commit();
+            case NLK_FLASH_OP_COMMIT: {
+                struct nlk_flash_commit_req req;
+                if (payload_len != sizeof(req)) {
+                    rc = -22;
+                    break;
+                }
+                bl_memcpy(&req, payload, sizeof(req));
+                rc = bl_kernel_commit(&req);
                 if (rc == 0) {
                     bl_memcpy(out_pay, &g_bl_flash.running_crc32, 4U);
                     out_len = 4U;
                 }
                 break;
+            }
             case NLK_FLASH_OP_ABORT:
                 g_bl_flash.active = false;
+                g_bl_flash.committed = false;
                 break;
             default:
                 rc = -95;
@@ -420,7 +549,7 @@ uint16_t nlk_bl_handle_packet(const uint8_t *rx_pkt, uint16_t rx_len, uint8_t *t
     out_hdr->ver_flags = (uint8_t)(NLK_PROTO_VER_1 | NLK_FLAG_IS_ACK |
                                    ((rc < 0) ? NLK_FLAG_IS_ERR : 0U));
     out_hdr->msg_type = in_hdr->msg_type;
-    out_hdr->src_addr = in_hdr->dst_addr;
+    out_hdr->src_addr = 1U;
     out_hdr->dst_addr = in_hdr->src_addr;
     out_hdr->dst_cap = in_hdr->dst_cap;
     out_hdr->cmd_op = in_hdr->cmd_op;

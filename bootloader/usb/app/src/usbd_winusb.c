@@ -7,6 +7,7 @@
 #include "usbd_winusb.h"
 #include <usbd_ctlreq.h>
 #include <boot_proto.h>
+#include <stm32f4xx.h>
 #include "nlk_bl.h"
 #include "clock.h"
 #include "uart.h"
@@ -116,11 +117,17 @@ __ALIGN_BEGIN static const uint8_t USBD_WinUSB_DeviceQualifierDesc[USB_LEN_DEV_Q
 
 static USBD_HandleTypeDef *g_pusbd_dev = NULL;
 static volatile bool g_tx_busy = false;
+static volatile bool g_tx_zlp = false;
+static volatile bool g_rx_ready = false;
+static uint16_t g_reply_len = 0U;
+static volatile uint32_t g_usb_generation;
 
 /* 报文收发缓冲区 */
 __ALIGN_BEGIN static uint8_t g_ep_rx_temp[WINUSB_DATA_FS_MAX_PACKET_SIZE] __ALIGN_END;
 __ALIGN_BEGIN static uint8_t g_nlk_rx_buf[BL_NLK_MTU] __ALIGN_END;
 __ALIGN_BEGIN static uint8_t g_nlk_tx_buf[BL_NLK_MTU] __ALIGN_END;
+/* Keep a request immutable if USB resets and rearms OUT during Flash writes. */
+__ALIGN_BEGIN static uint8_t g_nlk_req_buf[BL_NLK_MTU] __ALIGN_END;
 static uint16_t g_nlk_rx_pos = 0U;
 
 static uint8_t *USBD_WinUSB_GetCfgDesc(uint16_t *length)
@@ -138,6 +145,7 @@ static uint8_t *USBD_WinUSB_GetDeviceQualifierDesc(uint16_t *length)
 static uint8_t USBD_WinUSB_Init(USBD_HandleTypeDef *pdev, uint8_t cfgidx)
 {
     (void)cfgidx;
+    ++g_usb_generation;
     g_pusbd_dev = pdev;
 
     /* 打开 Bulk IN / OUT 端点 */
@@ -149,6 +157,9 @@ static uint8_t USBD_WinUSB_Init(USBD_HandleTypeDef *pdev, uint8_t cfgidx)
 
     g_nlk_rx_pos = 0U;
     g_tx_busy = false;
+    g_tx_zlp = false;
+    g_rx_ready = false;
+    g_reply_len = 0U;
 
     /* 启动首次 OUT 端点监听 */
     USBD_LL_PrepareReceive(pdev, WINUSB_EPOUT_ADDR, g_ep_rx_temp, WINUSB_DATA_FS_MAX_PACKET_SIZE);
@@ -165,8 +176,13 @@ static uint8_t USBD_WinUSB_DeInit(USBD_HandleTypeDef *pdev, uint8_t cfgidx)
     USBD_LL_CloseEP(pdev, WINUSB_EPOUT_ADDR);
     pdev->ep_out[WINUSB_EPOUT_ADDR & 0x7FU].is_used = 0U;
 
+    ++g_usb_generation;
     g_pusbd_dev = NULL;
     g_tx_busy = false;
+    g_tx_zlp = false;
+    g_rx_ready = false;
+    g_reply_len = 0U;
+    g_nlk_rx_pos = 0U;
     return USBD_OK;
 }
 
@@ -226,7 +242,14 @@ static uint8_t USBD_WinUSB_DataIn(USBD_HandleTypeDef *pdev, uint8_t epnum)
 {
     (void)pdev;
     if (epnum == (WINUSB_EPIN_ADDR & 0x7FU)) {
-        g_tx_busy = false;
+        if (g_tx_zlp) {
+            g_tx_zlp = false;
+            if (USBD_LL_Transmit(pdev, WINUSB_EPIN_ADDR, g_nlk_tx_buf, 0U) != USBD_OK) {
+                g_tx_busy = false;
+            }
+        } else {
+            g_tx_busy = false;
+        }
     }
     return USBD_OK;
 }
@@ -243,26 +266,25 @@ static uint8_t USBD_WinUSB_DataOut(USBD_HandleTypeDef *pdev, uint8_t epnum)
             }
         }
 
-        /* 判断是否构成完整 NLK 报文 (包头为 12 字节) */
+        /* Only assemble in IRQ context. Flash erase and response handling run
+         * in Poll(), with OUT NAKed until the response buffer is free. */
         if (g_nlk_rx_pos >= sizeof(struct nlk_pkt_hdr)) {
             const struct nlk_pkt_hdr *hdr = (const struct nlk_pkt_hdr *)g_nlk_rx_buf;
-            if ((hdr->ver_flags & 0xF0U) == NLK_PROTO_VER_1) {
-                uint32_t expected_total = sizeof(struct nlk_pkt_hdr) + hdr->payload_len;
-                if (g_nlk_rx_pos >= expected_total) {
-                    /* 收到完整有效请求，调用 NLK 处理引擎 */
-                    uint16_t tx_len = nlk_bl_handle_packet(g_nlk_rx_buf, (uint16_t)expected_total, g_nlk_tx_buf);
-                    if (tx_len > 0U) {
-                        USBD_WinUSB_Transmit(g_nlk_tx_buf, tx_len);
-                    }
-                    g_nlk_rx_pos = 0U;
-                }
-            } else {
-                /* 非法版本标志，同步复位 */
+            uint32_t total = sizeof(*hdr) + hdr->payload_len;
+            if ((hdr->ver_flags & NLK_PROTO_VER_MASK) != NLK_PROTO_VER_1 ||
+                total > sizeof(g_nlk_rx_buf)) {
+                g_nlk_rx_pos = 0U;
+            } else if (g_nlk_rx_pos >= total) {
+                g_rx_ready = true;
+                return USBD_OK;
+            } else if (rx_cnt < WINUSB_DATA_FS_MAX_PACKET_SIZE) {
+                /* A short USB transfer cannot leave a partial NLK packet. */
                 g_nlk_rx_pos = 0U;
             }
+        } else if (rx_cnt < WINUSB_DATA_FS_MAX_PACKET_SIZE) {
+            g_nlk_rx_pos = 0U;
         }
 
-        /* 重新监听下一个 OUT 包 */
         USBD_LL_PrepareReceive(pdev, WINUSB_EPOUT_ADDR, g_ep_rx_temp, WINUSB_DATA_FS_MAX_PACKET_SIZE);
     }
     return USBD_OK;
@@ -270,31 +292,91 @@ static uint8_t USBD_WinUSB_DataOut(USBD_HandleTypeDef *pdev, uint8_t epnum)
 
 uint8_t USBD_WinUSB_Transmit(const uint8_t *buf, uint16_t len)
 {
-    if (g_pusbd_dev == NULL || len == 0U) {
-        return USBD_FAIL;
+    uint8_t status = USBD_FAIL;
+    uint32_t primask = __get_PRIMASK();
+    __disable_irq();
+    USBD_HandleTypeDef *pdev = g_pusbd_dev;
+    if (pdev != NULL && buf != NULL && len != 0U) {
+        if (g_tx_busy) {
+            status = USBD_BUSY;
+        } else {
+            g_tx_busy = true;
+            g_tx_zlp = (len % WINUSB_DATA_FS_MAX_PACKET_SIZE) == 0U;
+            if (USBD_LL_Transmit(pdev, WINUSB_EPIN_ADDR, (uint8_t *)buf, len) == USBD_OK) {
+                status = USBD_OK;
+            } else {
+                g_tx_busy = false;
+                g_tx_zlp = false;
+            }
+        }
     }
-
-    /* 等待上一次传输完成 (100ms 超时) */
-    uint32_t timeout = 100000UL;
-    while (g_tx_busy && (--timeout > 0UL)) {
-        delay_us(1U);
-    }
-
-    g_tx_busy = true;
-    USBD_LL_Transmit(g_pusbd_dev, WINUSB_EPIN_ADDR, (uint8_t *)buf, len);
-    return USBD_OK;
+    __set_PRIMASK(primask);
+    return status;
 }
 
 void USBD_WinUSB_Poll(void)
 {
     uint32_t flag = 0UL;
-    if (nlk_bl_is_reboot_pending(&flag)) {
-        /* 如果此时正在发送最后一包应答，先等待其通过 USB 发送完成 */
-        uint32_t timeout = 50000UL;
-        while (g_tx_busy && (--timeout > 0UL)) {
-            delay_us(1U);
-        }
-        delay_ms(30U); /* 确保主机 USB 控制器接收到应答数据 */
-        nlk_bl_trigger_reboot(flag);
+    uint32_t primask = __get_PRIMASK();
+    __disable_irq();
+    if (g_pusbd_dev == NULL || g_tx_busy) {
+        __set_PRIMASK(primask);
+        return;
     }
+    if (g_reply_len != 0U) {
+        if (USBD_WinUSB_Transmit(g_nlk_tx_buf, g_reply_len) == USBD_OK) {
+            g_reply_len = 0U;
+        }
+        __set_PRIMASK(primask);
+        return;
+    }
+    if (nlk_bl_is_reboot_pending(&flag)) {
+        /* DataIn has completed both the ACK and any terminating ZLP. */
+        __set_PRIMASK(primask);
+        delay_ms(30U);
+        nlk_bl_trigger_reboot(flag);
+        return;
+    }
+    if (g_rx_ready) {
+        const struct nlk_pkt_hdr *hdr = (const struct nlk_pkt_hdr *)g_nlk_rx_buf;
+        uint16_t total = (uint16_t)(sizeof(*hdr) + hdr->payload_len);
+        uint16_t remaining = g_nlk_rx_pos - total;
+        uint32_t generation = g_usb_generation;
+        for (uint16_t i = 0U; i < total; i++) {
+            g_nlk_req_buf[i] = g_nlk_rx_buf[i];
+        }
+        __set_PRIMASK(primask);
+        /* Never mask USB interrupts during Flash erase/program/CRC work. */
+        uint16_t reply_len = nlk_bl_handle_packet(g_nlk_req_buf, total, g_nlk_tx_buf);
+        __disable_irq();
+        if (generation != g_usb_generation || g_pusbd_dev == NULL) {
+            /* A reset may already have queued a request for the new session. */
+            __set_PRIMASK(primask);
+            return;
+        }
+        g_reply_len = reply_len;
+        for (uint16_t i = 0U; i < remaining; i++) {
+            g_nlk_rx_buf[i] = g_nlk_rx_buf[total + i];
+        }
+        g_nlk_rx_pos = remaining;
+        g_rx_ready = false;
+        if (remaining >= sizeof(*hdr)) {
+            uint32_t next_total = sizeof(*hdr) + hdr->payload_len;
+            if ((hdr->ver_flags & NLK_PROTO_VER_MASK) != NLK_PROTO_VER_1 || next_total > BL_NLK_MTU) {
+                g_nlk_rx_pos = 0U;
+            } else {
+                g_rx_ready = remaining >= next_total;
+            }
+        }
+        if (g_reply_len != 0U) {
+            if (USBD_WinUSB_Transmit(g_nlk_tx_buf, g_reply_len) == USBD_OK) {
+                g_reply_len = 0U;
+            }
+        }
+        /* Protect both the device pointer and LL submission from reset IRQs. */
+        if (!g_rx_ready) {
+            USBD_LL_PrepareReceive(g_pusbd_dev, WINUSB_EPOUT_ADDR, g_ep_rx_temp, WINUSB_DATA_FS_MAX_PACKET_SIZE);
+        }
+    }
+    __set_PRIMASK(primask);
 }

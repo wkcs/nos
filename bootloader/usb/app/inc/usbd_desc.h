@@ -14,7 +14,8 @@
 #define USB_LANGID_STRING               0x0409U
 #define USB_MANUFACTURER_STRING         "NOS Embedded"
 #define USB_PRODUCT_STRING              "NK60-V2-BL"
-#define USB_SERIALNUMBER_STRING         "00000001"
+/* Match the NK60 composite runtime identity so WebUSB grants survive reboot. */
+#define USB_SERIALNUMBER_STRING         "320219198301"
 
 extern USBD_DescriptorsTypeDef WINUSB_Desc;
 

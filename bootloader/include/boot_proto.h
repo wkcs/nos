@@ -47,6 +47,8 @@ enum boot_flag {
 #define NLK_FLAG_ACK_REQ            (1U << 0)
 #define NLK_FLAG_IS_ACK             (1U << 1)
 #define NLK_FLAG_IS_ERR             (1U << 2)
+#define NLK_FLAG_FRAG               (1U << 3)
+#define NLK_FLAG_MORE_FRAG          (1U << 4)
 #define NLK_FLAG_MASK               0x1FU
 
 #define NLK_MODE_SYS                0x0U
