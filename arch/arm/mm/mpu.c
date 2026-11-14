@@ -28,7 +28,11 @@ struct armv7m_mpu_regs {
 };
 
 #define ARMV7M_MPU_BASE         ((struct armv7m_mpu_regs *)0xE000ED90UL)
+#ifdef ARMV7M_MPU_TEST_HOST
+#define ARMV7M_SCB_VTOR         ARMV7M_TEST_SCB_VTOR
+#else
 #define ARMV7M_SCB_VTOR         (*(volatile uint32_t *)0xE000ED08UL)
+#endif
 #define ARMV7M_SCB_SHCSR        (*(volatile uint32_t *)0xE000ED24UL)
 #define ARMV7M_SCB_CFSR         (*(volatile uint32_t *)0xE000ED28UL)
 #define ARMV7M_SCB_MMFAR        (*(volatile uint32_t *)0xE000ED34UL)
@@ -46,6 +50,19 @@ static inline void armv7m_dsb_isb(void)
 #endif
 }
 
+#ifndef CONFIG_ARM_MPU_FLASH_BASE
+#define CONFIG_ARM_MPU_FLASH_BASE 0x08000000UL
+#endif
+#ifndef CONFIG_ARM_MPU_FLASH_SIZE
+#define CONFIG_ARM_MPU_FLASH_SIZE (1024UL * 1024UL)
+#endif
+#ifndef CONFIG_ARM_MPU_SRAM_BASE
+#define CONFIG_ARM_MPU_SRAM_BASE  0x20000000UL
+#endif
+#ifndef CONFIG_ARM_MPU_SRAM_SIZE
+#define CONFIG_ARM_MPU_SRAM_SIZE  (128UL * 1024UL)
+#endif
+
 static void mpu_write_static_region(uint32_t region,
                                     uintptr_t base,
                                     size_t size,
@@ -55,10 +72,52 @@ static void mpu_write_static_region(uint32_t region,
     uint32_t rasr = 0U;
 
     if (nos_mpu_encode_region(region, base, size, prot, &rbar, &rasr) == 0) {
+#ifdef ARMV7M_MPU_TEST_HOST
+        ARMV7M_TEST_MPU_RNR = region;
+        ARMV7M_TEST_MPU_RBAR = rbar;
+        ARMV7M_TEST_MPU_RASR = rasr;
+#else
         ARMV7M_MPU_BASE->rbar = rbar;
         ARMV7M_MPU_BASE->rasr = rasr;
+#endif
     }
 }
+
+static void mpu_setup_static_regions(void)
+{
+    /* 仅当 VTOR 与 Flash 均不在 0x00000000 时设置 Region 0 空指针陷阱，
+     * 避免拦截 NUC472 位于 0 地址的中断向量表与片内 Flash 代码执行。 */
+    if ((ARMV7M_SCB_VTOR != 0U) && ((uint32_t)CONFIG_ARM_MPU_FLASH_BASE != 0x00000000UL)) {
+        mpu_write_static_region(NOS_MPU_REGION_NULL_TRAP, 0x00000000UL, 64U, 0U);
+    }
+
+    /* Region 1: 片内 Flash 区域 (只读 + 可执行 + 用户可读) */
+    mpu_write_static_region(NOS_MPU_REGION_FLASH,
+                            (uint32_t)CONFIG_ARM_MPU_FLASH_BASE,
+                            (size_t)CONFIG_ARM_MPU_FLASH_SIZE,
+                            HAL_VM_PROT_READ | HAL_VM_PROT_EXEC | HAL_VM_PROT_USER);
+
+    /* Region 2: 片内 SRAM 区域 (读写 + 不可执行 XN=1，守护 W^X) */
+    mpu_write_static_region(NOS_MPU_REGION_SRAM,
+                            (uint32_t)CONFIG_ARM_MPU_SRAM_BASE,
+                            (size_t)CONFIG_ARM_MPU_SRAM_SIZE,
+                            HAL_VM_PROT_READ | HAL_VM_PROT_WRITE | HAL_VM_PROT_USER);
+
+    /* Region 3: 外设寄存器区域 (512MB, 设备读写 + 不可执行) */
+    mpu_write_static_region(NOS_MPU_REGION_PERIPH, 0x40000000UL, 512U * 1024U * 1024U,
+                            HAL_VM_PROT_READ | HAL_VM_PROT_WRITE | HAL_VM_PROT_DEV);
+
+    /* Region 4: 外部 FSMC SRAM 区域 (256MB, 读写 + 不可执行) */
+    mpu_write_static_region(NOS_MPU_REGION_EXT_SRAM, 0x60000000UL, 256U * 1024U * 1024U,
+                            HAL_VM_PROT_READ | HAL_VM_PROT_WRITE | HAL_VM_PROT_USER);
+}
+
+#ifdef ARMV7M_MPU_TEST_HOST
+void arch_mm_init_static_regions_for_test(void)
+{
+    mpu_setup_static_regions();
+}
+#endif
 
 void arch_mpu_init(void)
 {
@@ -81,26 +140,7 @@ void arch_mpu_init(void)
         ARMV7M_MPU_BASE->rasr = 0U;
     }
 
-    /* Region 0: NULL pointer trap (0x00000000, 64B, No-Access) if vectors relocated */
-    if (ARMV7M_SCB_VTOR != 0U) {
-        mpu_write_static_region(NOS_MPU_REGION_NULL_TRAP, 0x00000000UL, 64U, 0U);
-    }
-
-    /* Region 1: Internal Flash (0x08000000, 1MB, Read-Only + Executable) */
-    mpu_write_static_region(NOS_MPU_REGION_FLASH, 0x08000000UL, 1024U * 1024U,
-                            HAL_VM_PROT_READ | HAL_VM_PROT_EXEC | HAL_VM_PROT_USER);
-
-    /* Region 2: Internal SRAM (0x20000000, 128KB, Read-Write + Execute-Never) */
-    mpu_write_static_region(NOS_MPU_REGION_SRAM, 0x20000000UL, 128U * 1024U,
-                            HAL_VM_PROT_READ | HAL_VM_PROT_WRITE | HAL_VM_PROT_USER);
-
-    /* Region 3: Peripherals (0x40000000, 512MB, Device Read-Write + Execute-Never) */
-    mpu_write_static_region(NOS_MPU_REGION_PERIPH, 0x40000000UL, 512U * 1024U * 1024U,
-                            HAL_VM_PROT_READ | HAL_VM_PROT_WRITE | HAL_VM_PROT_DEV);
-
-    /* Region 4: External FSMC SRAM (0x60000000, 256MB, Read-Write + Execute-Never) */
-    mpu_write_static_region(NOS_MPU_REGION_EXT_SRAM, 0x60000000UL, 256U * 1024U * 1024U,
-                            HAL_VM_PROT_READ | HAL_VM_PROT_WRITE | HAL_VM_PROT_USER);
+    mpu_setup_static_regions();
 
     /* Enable MemManage Fault Handler in SCB->SHCSR */
     ARMV7M_SCB_SHCSR |= ARMV7M_SHCSR_MEMFAULTENA;

@@ -70,4 +70,23 @@ config KERNEL_ADDR
 	  内核加载地址（十六进制）。
 	  通常为 Flash 起始地址。
 
+config ARM_MPU_FLASH_BASE
+	hex "ARMv7-M MPU static flash region base address"
+	default 0x00000000 if SOC_NUC472
+	default 0x08000000
+
+config ARM_MPU_FLASH_SIZE
+	hex "ARMv7-M MPU static flash region size in bytes"
+	default 0x80000 if SOC_NUC472
+	default 0x100000
+
+config ARM_MPU_SRAM_BASE
+	hex "ARMv7-M MPU static SRAM region base address"
+	default 0x20000000
+
+config ARM_MPU_SRAM_SIZE
+	hex "ARMv7-M MPU static SRAM region size in bytes"
+	default 0x10000 if SOC_NUC472
+	default 0x20000
+
 endif # ARCH_ARM
