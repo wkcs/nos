@@ -29,9 +29,18 @@ int nuc472_emac_phy_init(void)
     /* 开启 AHBCLK EMAC 外设时钟 */
     NUC472_CLK->AHBCLK |= NUC472_CLK_AHBCLK_EMACCKEN;
 
-    /* 配置 CLKDIV3 中的 EMACDIV，确保 MDC 时钟频率 <= 2.5 MHz (符合 IEEE 802.3) */
+    /*
+     * 配置 CLKDIV3 中的 EMACDIV 为 127U：
+     * F_MDC = HCLK / (EMACDIV + 1) = 84 MHz / 128 = 656.25 kHz <= 2.5 MHz (符合 IEEE 802.3 规范)
+     */
     NUC472_CLK->CLKDIV3 = (NUC472_CLK->CLKDIV3 & ~NUC472_CLK_CLKDIV3_EMACDIV_Msk) |
-                          (1U << NUC472_CLK_CLKDIV3_EMACDIV_Pos);
+                          (127U << NUC472_CLK_CLKDIV3_EMACDIV_Pos);
+
+    /* 配置 CON1 接口上的 RMII MDC (PB.14) 与 MDIO (PB.15) 多功能引脚复用 (功能号 6) */
+    nuc472_sys_unlock();
+    NUC472_SYS->GPB_MFPH = (NUC472_SYS->GPB_MFPH & ~NUC472_SYS_GPB_MFPH_RMII_MDIO_Msk) |
+                           NUC472_SYS_GPB_MFPH_RMII_MDIO_Val;
+    nuc472_sys_lock();
 
     return 0;
 }
@@ -53,13 +62,15 @@ int nuc472_emac_mdio_read(uint32_t phy_addr, uint32_t reg_addr, uint16_t *val)
 #ifdef NUC472_HOST_TEST
     if (!g_sim_mdio_timeout) {
         /* 在主机回归测试环境下模拟 IP101GR 硬件返回数据 */
+        static int s_bmsr_read_count = 0;
         if (phy_addr == 1U) {
             if (reg_addr == 2U) {
                 NUC472_EMAC->MIIMDAT = 0x0243U; /* IP101GR PHY ID1 */
             } else if (reg_addr == 3U) {
                 NUC472_EMAC->MIIMDAT = 0x0C54U; /* IP101GR PHY ID2 */
             } else if (reg_addr == 1U) {
-                NUC472_EMAC->MIIMDAT = 0x786DU; /* BMSR: Link Up (bit 2 = 1) */
+                /* 模拟 Latch Low: 首次读出 0x7809 (Link Down), 再次读出 0x786D (Link Up) */
+                NUC472_EMAC->MIIMDAT = (s_bmsr_read_count++ == 0) ? 0x7809U : 0x786DU;
             } else {
                 NUC472_EMAC->MIIMDAT = 0x0000U;
             }
@@ -128,13 +139,27 @@ int nuc472_emac_phy_probe(uint32_t phy_addr, struct nuc472_phy_info *info)
         return ret;
     }
 
+    /* 总线浮空或无 PHY 芯片响应时，读数通常为 0xFFFF 或 0x0000 */
+    if (id1 == 0xFFFFU || id1 == 0x0000U) {
+        info->link_up = false;
+        return -ENODEV;
+    }
+
     /* 读取 PHY ID 2 (寄存器 0x03) */
     ret = nuc472_emac_mdio_read(phy_addr, 3U, &id2);
     if (ret != 0) {
         return ret;
     }
 
-    /* 读取基本状态寄存器 BMSR (寄存器 0x01) */
+    /*
+     * 读取基本状态寄存器 BMSR (寄存器 0x01)
+     * IEEE 802.3 规范：BMSR 链路状态 (bit 2) 具备锁存低 (Latch Low) 粘滞特性，
+     * 必须连续读取两次，丢弃第一次读出的历史粘滞值，以第二次读数反映当前链路实时状态。
+     */
+    ret = nuc472_emac_mdio_read(phy_addr, 1U, &bmsr);
+    if (ret != 0) {
+        return ret;
+    }
     ret = nuc472_emac_mdio_read(phy_addr, 1U, &bmsr);
     if (ret != 0) {
         return ret;

@@ -68,8 +68,8 @@ int nuc472_wdt_start(uint32_t timeout_interval, bool enable_reset)
 int nuc472_wdt_feed(void)
 {
     nuc472_sys_unlock();
-    /* 置位 RSTCNT 复位看门狗计数器，避开写 1 清零位 */
-    NUC472_WDT->CTL = (NUC472_WDT->CTL & ~0x1EUL) | NUC472_WDT_CTL_RSTCNT;
+    /* 仅屏蔽 W1C 写 1 清零标志位 (0x1CUL: bits[4:2])，置位 RSTCNT 并完整保留 RSTEN 与配置 */
+    NUC472_WDT->CTL = (NUC472_WDT->CTL & ~NUC472_WDT_CTL_W1C_Msk) | NUC472_WDT_CTL_RSTCNT;
     nuc472_sys_lock();
     return 0;
 }

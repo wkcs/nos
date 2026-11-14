@@ -17,6 +17,9 @@ int nuc472_pwm_init(uint32_t ch)
     if (ch >= 6U) {
         return -EINVAL;
     }
+    if (ch >= 2U) {
+        return -ENOTSUP;
+    }
 
     nuc472_sys_unlock();
 
@@ -56,6 +59,9 @@ int nuc472_pwm_config(uint32_t ch, uint32_t freq_hz, uint32_t duty_percent)
 
     if (ch >= 6U || freq_hz == 0U || duty_percent > 100U) {
         return -EINVAL;
+    }
+    if (ch >= 2U) {
+        return -ENOTSUP;
     }
 
     /* 默认 PWM 输入时钟为 PCLK (84 MHz) */
@@ -141,6 +147,9 @@ int nuc472_pwm_start(uint32_t ch)
     if (ch >= 6U) {
         return -EINVAL;
     }
+    if (ch >= 2U) {
+        return -ENOTSUP;
+    }
 
     NUC472_PWM0->CNTEN |= NUC472_PWM_CNTEN_CH(ch);
     NUC472_PWM0->POEN  |= NUC472_PWM_POEN_CH(ch);
@@ -151,6 +160,9 @@ int nuc472_pwm_stop(uint32_t ch)
 {
     if (ch >= 6U) {
         return -EINVAL;
+    }
+    if (ch >= 2U) {
+        return -ENOTSUP;
     }
 
     NUC472_PWM0->CNTEN &= ~NUC472_PWM_CNTEN_CH(ch);

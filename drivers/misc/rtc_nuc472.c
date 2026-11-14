@@ -15,15 +15,17 @@
 
 static int rtc_wait_access_enable(void)
 {
-    uint32_t timeout;
+    uint32_t timeout = RTC_WAIT_TIMEOUT_CYCLES;
 
-    if ((NUC472_RTC->RWEN & NUC472_RTC_RWEN_RWENF_Msk) == 0UL) {
-        NUC472_RTC->RWEN = NUC472_RTC_WRITE_KEY;
-        timeout = RTC_WAIT_TIMEOUT_CYCLES;
-        while ((NUC472_RTC->RWEN & NUC472_RTC_RWEN_RWENF_Msk) == 0UL) {
-            if (--timeout == 0UL) {
-                return -ETIMEDOUT;
-            }
+    /* 写入写保护密匙并等待 RWENF 同步置位 */
+    NUC472_RTC->RWEN = NUC472_RTC_WRITE_KEY;
+#ifdef NUC472_HOST_TEST
+    g_rtc_rwen_key_writes++;
+    NUC472_RTC->RWEN |= NUC472_RTC_RWEN_RWENF_Msk;
+#endif
+    while ((NUC472_RTC->RWEN & NUC472_RTC_RWEN_RWENF_Msk) == 0UL) {
+        if (--timeout == 0UL) {
+            return -ETIMEDOUT;
         }
     }
     return 0;
@@ -80,11 +82,6 @@ int nuc472_rtc_set_time(const struct nuc472_rtc_time *time)
         return -EINVAL;
     }
 
-    ret = rtc_wait_access_enable();
-    if (ret != 0) {
-        return ret;
-    }
-
     year_offset = time->year - 2000U;
 
     /* BCD 编码日历寄存器 CAL */
@@ -103,8 +100,25 @@ int nuc472_rtc_set_time(const struct nuc472_rtc_time *time)
     tim |= ((time->second / 10U) & 0x7U) << 4;
     tim |= ((time->second % 10U) & 0xFU);
 
+    /* 写 CAL 寄存器前等待慢速时钟域访问同步 */
+    ret = rtc_wait_access_enable();
+    if (ret != 0) {
+        return ret;
+    }
     NUC472_RTC->CAL = cal;
+
+    /* 写 TIME 寄存器前等待慢速时钟域访问同步 */
+    ret = rtc_wait_access_enable();
+    if (ret != 0) {
+        return ret;
+    }
     NUC472_RTC->TIME = tim;
+
+    /* 写 WEEKDAY 寄存器前等待慢速时钟域访问同步 */
+    ret = rtc_wait_access_enable();
+    if (ret != 0) {
+        return ret;
+    }
     NUC472_RTC->WEEKDAY = time->weekday & 0x7U;
 
     return 0;

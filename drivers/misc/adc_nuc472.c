@@ -20,6 +20,12 @@ int nuc472_eadc_init(void)
     /* 开启 APBCLK1 EADC 外设时钟 */
     NUC472_CLK->APBCLK1 |= NUC472_CLK_APBCLK1_EADCCKEN;
 
+    /* 配置 EADC 时钟源为 HXT (12 MHz)，分频比为 1，确保 EADC 采样时钟 <= 16 MHz */
+    NUC472_CLK->CLKSEL1 = (NUC472_CLK->CLKSEL1 & ~NUC472_CLK_CLKSEL1_ADCSEL_Msk) |
+                          NUC472_CLK_CLKSEL1_ADCSEL_HXT;
+    NUC472_CLK->CLKDIV0 = (NUC472_CLK->CLKDIV0 & ~NUC472_CLK_CLKDIV0_ADCDIV_Msk) |
+                          (0U << NUC472_CLK_CLKDIV0_ADCDIV_Pos);
+
     /* 配置 EADC 模块基准源为 AVDD，并切换 ADC IP 模式为 EADC */
     NUC472_SYS->VREFCTL = (NUC472_SYS->VREFCTL & ~NUC472_SYS_VREFCTL_VREFCTL_Msk) |
                           NUC472_SYS_VREFCTL_VREF_AVDD |

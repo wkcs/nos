@@ -13,6 +13,7 @@
 #include <string.h>
 
 #define NUC472_HOST_TEST 1
+#include <kernel/types.h>
 #include <soc/nuc472_regs.h>
 #include <soc/nuc472_periph.h>
 
@@ -58,6 +59,44 @@ uint32_t nuc472_clk_get_pclk_hz(void)
 static bool g_sys_unlocked = false;
 void test_set_sys_lock_state(bool unlocked) { g_sys_unlocked = unlocked; }
 
+/* 模拟 RTC RWEN 解锁等待计数 */
+static uint32_t g_rtc_rwen_key_writes = 0;
+
+/* 模拟中断临界区与 NVIC 函数桩 */
+static int g_irq_disabled_count = 0;
+addr_t disable_irq_save(void)
+{
+    g_irq_disabled_count++;
+    return 0;
+}
+
+void enable_irq_save(addr_t flags)
+{
+    (void)flags;
+    g_irq_disabled_count--;
+}
+
+static uint32_t g_test_nvic_iser[4];
+static uint32_t g_test_nvic_icer[4];
+
+void nuc472_nvic_enable_irq(uint32_t irqn)
+{
+    g_test_nvic_iser[irqn >> 5] |= (1UL << (irqn & 0x1FU));
+}
+
+void nuc472_nvic_disable_irq(uint32_t irqn)
+{
+    g_test_nvic_icer[irqn >> 5] |= (1UL << (irqn & 0x1FU));
+    g_test_nvic_iser[irqn >> 5] &= ~(1UL << (irqn & 0x1FU));
+}
+
+void nuc472_nvic_clear_pending_irq(uint32_t irqn)
+{
+    (void)irqn;
+}
+
+void TMR0_IRQHandler(void);
+
 /* 包含实现文件以进行直接单元测试 */
 #include "../../soc/nuc472/sys_mfp.c"
 #include "../../drivers/misc/adc_nuc472.c"
@@ -82,6 +121,8 @@ static void test_eadc_periph(void)
 
     /* 校验时钟、VREFCTL、TEMPCTL 与 EADC 核心使能 */
     assert((g_test_clk.APBCLK1 & NUC472_CLK_APBCLK1_EADCCKEN) != 0UL);
+    assert((g_test_clk.CLKSEL1 & NUC472_CLK_CLKSEL1_ADCSEL_Msk) == NUC472_CLK_CLKSEL1_ADCSEL_HXT);
+    assert(((g_test_clk.CLKDIV0 & NUC472_CLK_CLKDIV0_ADCDIV_Msk) >> NUC472_CLK_CLKDIV0_ADCDIV_Pos) == 0U);
     assert((g_test_sys.VREFCTL & NUC472_SYS_VREFCTL_ADCMODESEL_Msk) != 0UL);
     assert((g_test_sys.TEMPCTL & NUC472_SYS_TEMPCTL_VTEMPEN_Msk) != 0UL);
     assert((g_test_eadc.CTL & NUC472_EADC_CTL_ADCEN) != 0UL);
@@ -155,6 +196,12 @@ static void test_pwm0_periph(void)
     assert((g_test_pwm0.CNTEN & NUC472_PWM_CNTEN_CH(0)) == 0UL);
     assert((g_test_pwm0.POEN & NUC472_PWM_POEN_CH(0)) == 0UL);
 
+    /* 验证不支持的通道 ch >= 2 显式返回 -ENOTSUP */
+    assert(nuc472_pwm_init(2U) == -ENOTSUP);
+    assert(nuc472_pwm_config(2U, 10000, 50) == -ENOTSUP);
+    assert(nuc472_pwm_start(2U) == -ENOTSUP);
+    assert(nuc472_pwm_stop(2U) == -ENOTSUP);
+
     printf("  -> PWM0 测试通过!\n");
 }
 
@@ -178,20 +225,41 @@ static void test_timer0_periph(void)
     ret = nuc472_timer0_start();
     assert(ret == 0);
     assert((g_test_tmr0.CTL & NUC472_TIMER_CTL_CNTEN) != 0UL);
+    /* 确认启动时开启 NVIC IRQ 32 (TMR0) */
+    assert((g_test_nvic_iser[NUC472_TMR0_IRQn >> 5] & (1UL << (NUC472_TMR0_IRQn & 0x1FU))) != 0UL);
 
     uint64_t ticks_before = nuc472_timer0_get_ticks();
 
-    /* 模拟硬件触发超时中断 */
+    /* 模拟硬件触发超时中断并由强符号 TMR0_IRQHandler 处理 */
     g_test_tmr0.INTSTS = NUC472_TIMER_INTSTS_TIF;
-    nuc472_timer0_irq_handler();
+    TMR0_IRQHandler();
 
     /* 确认写 1 清零 TIF 且软件滴答递增 */
     assert(g_test_tmr0.INTSTS == NUC472_TIMER_INTSTS_TIF); /* 模拟寄存器由驱动写 1 清零 */
     assert(nuc472_timer0_get_ticks() == ticks_before + 1U);
 
+    /*
+     * 模拟跨周期溢出窗口：CNT 已回绕但中断尚未响应 (TIF=1, CNT=10)
+     * 正常上一周期末尾 (CNT=995, TIF=0)
+     */
+    g_test_tmr0.INTSTS = 0;
+    HOST_REG_WRITE(g_test_tmr0.CNT, 995);
+    uint64_t us_prev = nuc472_timer0_get_us();
+
+    /* 模拟时钟到达比较值并回绕 (CNT=10, TIF=1, ticks 尚未被 ISR 递增) */
+    g_test_tmr0.INTSTS = NUC472_TIMER_INTSTS_TIF;
+    HOST_REG_WRITE(g_test_tmr0.CNT, 10);
+    uint64_t us_curr = nuc472_timer0_get_us();
+
+    /* 必须补偿单周期滴答，确保微秒时间戳单调递增，绝不逆流倒退 */
+    assert(us_curr > us_prev);
+    assert(us_curr == us_prev + 15U);
+
     ret = nuc472_timer0_stop();
     assert(ret == 0);
     assert((g_test_tmr0.CTL & NUC472_TIMER_CTL_CNTEN) == 0UL);
+    /* 确认停止时禁用 NVIC IRQ 32 (TMR0) */
+    assert((g_test_nvic_icer[NUC472_TMR0_IRQn >> 5] & (1UL << (NUC472_TMR0_IRQn & 0x1FU))) != 0UL);
 
     printf("  -> TIMER0 测试通过!\n");
 }
@@ -231,8 +299,11 @@ static void test_rtc_periph(void)
         .weekday = 6,
     };
 
+    g_rtc_rwen_key_writes = 0;
     ret = nuc472_rtc_set_time(&t_in);
     assert(ret == 0);
+    /* 每次写 CAL, TIME, WEEKDAY 均必须先获得 RWEN 同步许可 */
+    assert(g_rtc_rwen_key_writes >= 3U);
 
     /* 验证 CAL BCD: 年 26 (0x26), 月 11 (0x11), 日 14 (0x14) */
     /* CAL: [23:20]=2, [19:16]=6, [12]=1, [11:8]=1, [5:4]=1, [3:0]=4 */
@@ -298,6 +369,9 @@ static void test_wdt_periph(void)
     ret = nuc472_wdt_feed();
     assert(ret == 0);
     assert((g_test_wdt.CTL & NUC472_WDT_CTL_RSTCNT) != 0UL);
+    assert((g_test_wdt.CTL & NUC472_WDT_CTL_RSTEN) != 0UL);
+    assert((g_test_wdt.CTL & NUC472_WDT_CTL_WDTEN) != 0UL);
+    assert((g_test_wdt.CTL & NUC472_WDT_CTL_W1C_Msk) == 0UL);
 
     /* 停止看门狗 */
     ret = nuc472_wdt_stop();
@@ -320,8 +394,24 @@ static void test_emac_phy_probe_periph(void)
     assert(ret == 0);
     assert((g_test_clk.AHBCLK & NUC472_CLK_AHBCLK_EMACCKEN) != 0UL);
 
+    /* 校验 MDC 分频比 CLKDIV3 中的 EMACDIV: 84 MHz / (127 + 1) = 656.25 kHz <= 2.5 MHz */
+    uint32_t emac_div = (g_test_clk.CLKDIV3 & NUC472_CLK_CLKDIV3_EMACDIV_Msk) >> NUC472_CLK_CLKDIV3_EMACDIV_Pos;
+    assert(emac_div >= 33U);
+    assert(emac_div == 127U);
+
+    /* 校验 PB.14 (MDC) 与 PB.15 (MDIO) 引脚多功能复用为 EMAC (功能号 6) */
+    assert((g_test_sys.GPB_MFPH & NUC472_SYS_GPB_MFPH_RMII_MDIO_Msk) == NUC472_SYS_GPB_MFPH_RMII_MDIO_Val);
+
     /* 模拟 IP101GR 在 PHYADDR=1 上的 MDIO 交互 */
-    /* 6.1 正常探测 */
+    /* 6.1 模拟无 PHY 浮空总线 (返回 0xFFFF) 必须返回 -ENODEV 且 link_up=false */
+    g_test_emac.MIIMDAT = 0xFFFFU;
+    struct nuc472_phy_info no_phy_info;
+    memset(&no_phy_info, 0, sizeof(no_phy_info));
+    ret = nuc472_emac_phy_probe(0U, &no_phy_info);
+    assert(ret == -ENODEV);
+    assert(no_phy_info.link_up == false);
+
+    /* 6.2 正常探测并验证 BMSR 连续读取两次消抖 Latch Low */
     struct nuc472_phy_info info;
     memset(&info, 0, sizeof(info));
 

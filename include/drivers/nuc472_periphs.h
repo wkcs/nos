@@ -123,6 +123,11 @@ uint64_t nuc472_timer0_get_us(void);
  */
 void nuc472_timer0_irq_handler(void);
 
+/**
+ * @brief TIMER0 硬件中断服务例程 (强符号定义，覆盖启动汇编弱别名向量)
+ */
+void TMR0_IRQHandler(void);
+
 
 /* =========================================================================
  * 4. RTC 实时日历时钟驱动接口
