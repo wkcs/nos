@@ -1063,6 +1063,12 @@ static int kb_on_rpc(struct nlk_node *node, struct nlk_capability *cap,
         memset(kresp, 0, sizeof(*kresp));
         chain = &ctx->action_chains[greq->layer][greq->key_index];
         kresp->action_count = chain->count;
+        {
+            uint32_t hash = ctx->keymap[greq->layer][greq->key_index] >> 8;
+            kresp->target_hash[0] = (uint8_t)hash;
+            kresp->target_hash[1] = (uint8_t)(hash >> 8);
+            kresp->target_hash[2] = (uint8_t)(hash >> 16);
+        }
         for (i = 0U; i < chain->count && i < NLK_KB_MAX_KEY_ACTIONS; i++) {
             const char *aname = kb_find_action_name(ctx, chain->action_ids[i]);
             strncpy(kresp->action_names[i], aname, NLK_KB_ACTION_NAME_MAX - 1);
@@ -1845,8 +1851,13 @@ int nlk_cap_keyboard_register_action(struct nlk_keyboard_ctx *ctx,
     }
     for (i = 0U; i < ctx->action_count; i++) {
         if (strncmp(ctx->action_descs[i].name, name, NLK_KB_ACTION_NAME_MAX) == 0) {
-            ctx->action_handlers[i] = handler;
-            ctx->action_handler_privs[i] = priv;
+            /* Board profiles may repeat built-in names only to supply labels.
+             * A description-only registration must not erase their callbacks
+             * or replace the callback's context with the board/server context. */
+            if (handler != NULL) {
+                ctx->action_handlers[i] = handler;
+                ctx->action_handler_privs[i] = priv;
+            }
             if (desc != NULL) {
                 strncpy(ctx->action_descs[i].desc, desc, NLK_KB_ACTION_DESC_MAX - 1);
                 ctx->action_descs[i].desc[NLK_KB_ACTION_DESC_MAX - 1] = '\0';

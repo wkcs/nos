@@ -1303,8 +1303,49 @@ int main(void)
                 assert(nlk_cap_keyboard_update_local_keys(&dst, &pressed, 1U) == 0);
                 assert(nlk_cap_keyboard_set_macro_meta(&dst, 2U, "macro_b", "Macro B", "Desc B",
                                                        &hash_step, 1U, 1U) == 0);
+                {
+                    unsigned int action;
+                    for (action = 0U; action < dst.action_count; action++) {
+                        if (strcmp(dst.action_descs[action].name, "macro_play") == 0) break;
+                    }
+                    assert(action < dst.action_count);
+                    key_action_handler_fn_t handler = dst.action_handlers[action];
+                    void *handler_priv = dst.action_handler_privs[action];
+                    assert(handler != NULL);
+                    /* NK60's board profile supplies descriptions without callbacks. */
+                    assert(nlk_cap_keyboard_register_action(&dst, "macro_play", "Board macro label",
+                                                             NULL, &src) == 0);
+                    assert(dst.action_handlers[action] == handler);
+                    assert(dst.action_handler_privs[action] == handler_priv);
+                }
                 macro_hash = nlk_fnv1a_24("macro_b");
                 assert(macro_hash != 0U);
+                {
+                    struct nlk_kb_bind_action_req bind = { .layer = 0U, .key_index = 0U };
+                    struct nlk_kb_get_key_actions_req get = { .layer = 0U, .key_index = 0U };
+                    uint8_t request[sizeof(bind) + sizeof(macro_hash)];
+                    uint8_t response[sizeof(struct nlk_kb_key_actions_resp)];
+                    struct nlk_pkt_hdr rpc_hdr = { .cmd_op = NLK_KB_OP_BIND_ACTION };
+                    uint16_t response_len = 0U;
+                    strcpy(bind.action_name, "macro_play");
+                    memcpy(request, &bind, sizeof(bind));
+                    memcpy(request + sizeof(bind), &macro_hash, sizeof(macro_hash));
+                    assert(dst.cap.ops->on_rpc(NULL, &dst.cap, &rpc_hdr, request, sizeof(request),
+                                               response, &response_len) == 0);
+                    rpc_hdr.cmd_op = NLK_KB_OP_GET_KEY_ACTIONS;
+                    assert(dst.cap.ops->on_rpc(NULL, &dst.cap, &rpc_hdr, &get, sizeof(get),
+                                               response, &response_len) == 0);
+                    assert(response_len == sizeof(response));
+                    assert(response[0] == 1U);
+                    assert(((uint32_t)response[1] | ((uint32_t)response[2] << 8) |
+                            ((uint32_t)response[3] << 16)) == macro_hash);
+                    assert(keyboard_config_encode(&dst, "NK60-v2", "Active", "", KEYBOARD_CONFIG_ACTIVE,
+                                                   0U, buf, sizeof(buf), &len) == 0);
+                    dst.keymap[0][0] = 0U;
+                    assert(keyboard_config_decode(&dst, "NK60-v2", KEYBOARD_CONFIG_ACTIVE,
+                                                   0U, buf, len) == 0);
+                    assert((dst.keymap[0][0] >> 8) == macro_hash);
+                }
                 /* 32 位键码：高 24 位为 macro_hash，低 8 位为任意 HID 键码或 0 */
                 dst.keymap[0][0] = (macro_hash << 8) | 4U;
                 saw_macro_key = false;

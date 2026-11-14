@@ -1138,7 +1138,7 @@ struct nlk_kb_get_key_actions_req {
 /* 查询按键动作响应 */
 struct nlk_kb_key_actions_resp {
     uint8_t action_count; /* 该按键绑定的动作数量 */
-    uint8_t reserved[3];
+    uint8_t target_hash[3]; /* LE24 target hash from keymap bits 8..31; was reserved */
     char    action_names[NLK_KB_MAX_KEY_ACTIONS][NLK_KB_ACTION_NAME_MAX];
 } __attribute__((packed));
 
