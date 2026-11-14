@@ -20,10 +20,14 @@ _Min_Stack_Size = 0x800; /* required amount of stack */
 /* Specify the memory areas */
 MEMORY
 {
-  FLASH (rx)      : ORIGIN = 0x00000000, LENGTH = 512K
+  FLASH (rx)      : ORIGIN = 0x00000000, LENGTH = 384K
+  LFS_FLASH (r)   : ORIGIN = 0x00060000, LENGTH = 128K
   RAM (xrw)       : ORIGIN = 0x20000000, LENGTH = 64K
   MEMORY_B1 (rx)  : ORIGIN = 0x60000000, LENGTH = 0K
 }
+
+__lfs_flash_start = ORIGIN(LFS_FLASH);
+__lfs_flash_size = LENGTH(LFS_FLASH);
 
 /* Define output sections */
 SECTIONS
@@ -117,6 +121,9 @@ SECTIONS
     _sdata = .;        /* create a global symbol at data start */
     *(.data)           /* .data sections */
     *(.data*)          /* .data* sections */
+    . = ALIGN(4);
+    *(.ramfunc)
+    *(.ramfunc.*)
     . = ALIGN(4);
     __memory_node_data_start = .;
     KEEP (*(.memory_node.data))

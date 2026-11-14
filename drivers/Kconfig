@@ -329,9 +329,17 @@ config LED_DEV
 	help
 	  LED 设备名称。
 
+config FLASH_NUC472_FMC
+	bool "Nuvoton NUC472 internal FMC block driver"
+	depends on SOC_NUC472
+	default y if BOARD_NUTINY_NUC472
+	help
+	  Nuvoton NUC472 片上 FMC Flash 块设备驱动。
+
 config FLASH_DEV
 	string "Flash device name"
 	default "nk60_v1-flash" if BOARD_NK60_V1
+	default "nuc472-lfs" if BOARD_NUTINY_NUC472
 	default "nk60_v2-flash"
 	help
 	  Flash 设备名称。

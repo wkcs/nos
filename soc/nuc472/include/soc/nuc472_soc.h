@@ -34,9 +34,11 @@ extern "C" {
 NUC472_SYS_Type *nuc472_test_sys(void);
 NUC472_CLK_Type *nuc472_test_clk(void);
 NUC472_FMC_Type *nuc472_test_fmc(void);
+NUC472_RTC_Type *nuc472_test_rtc(void);
 #define NUC472_SYS        (nuc472_test_sys())
 #define NUC472_CLK        (nuc472_test_clk())
 #define NUC472_FMC        (nuc472_test_fmc())
+#define NUC472_RTC        (nuc472_test_rtc())
 #endif
 
 extern uint32_t SystemCoreClock;
@@ -62,7 +64,10 @@ uint32_t nuc472_clk_get_pclk_hz(void);
 uint32_t nuc472_clk_get_uart0_hz(void);
 void nuc472_mfp_set(volatile uint32_t *reg, uint32_t mask, uint32_t val);
 void nuc472_mfp_config_board_defaults(void);
+int  nuc472_fmc_erase_page(uint32_t addr);
+int  nuc472_fmc_write_u32(uint32_t addr, uint32_t val);
 int  nuc472_fmc_read_uid(uint32_t uid[3]);
+int  nuc472_fmc_read_id(uint32_t *cid, uint32_t *pid);
 
 #ifndef NUC472_HOST_TEST
 static inline void nuc472_nvic_enable_irq(uint32_t irqn)

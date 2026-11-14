@@ -4,4 +4,5 @@ list(APPEND SOC_SRCS
     nuc472/early_init.c
     nuc472/clk.c
     nuc472/sys_mfp.c
+    nuc472/fmc_ll.c
 )
