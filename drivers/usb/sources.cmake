@@ -13,5 +13,8 @@ if(CONFIG_USB)
     if(CONFIG_USB_CDC)
         list(APPEND DRIVERS_SRCS usb/device/class/cdc.c)
     endif()
+    if(CONFIG_USB_NUC472_USBD OR CONFIG_SOC_NUC472)
+        list(APPEND DRIVERS_SRCS usb/device/usbd_nuc472.c)
+    endif()
 endif()
 

@@ -56,6 +56,13 @@ config USB_DEVICE_COMPOSITE
 	help
 	  启用 USB 复合设备支持。
 
+config USB_NUC472_USBD
+	bool "NUC472 USBD controller driver"
+	default y if SOC_NUC472
+	depends on USB_DEVICE && SOC_NUC472
+	help
+	  启用新唐 NUC472 片上全速 (12 Mbps) USB 设备控制器 (USBD) 驱动。
+
 endif # USB
 
 endmenu
