@@ -66,6 +66,67 @@ void hal_irq_enable(uint32_t irq)
     (void)irq;
 }
 
+/* 模拟硬件 FIFO 流式读取桩 */
+#define MOCK_FIFO_MAX_LEN 128
+static uint8_t g_mock_cep_fifo[MOCK_FIFO_MAX_LEN];
+static size_t g_mock_cep_fifo_len = 0;
+static size_t g_mock_cep_fifo_pos = 0;
+static size_t g_mock_cep_drain_count = 0;
+
+static uint8_t g_mock_ep_fifo[10][MOCK_FIFO_MAX_LEN];
+static size_t g_mock_ep_fifo_len[10];
+static size_t g_mock_ep_fifo_pos[10];
+static size_t g_mock_ep_drain_count[10];
+
+static void mock_cep_fifo_set(const void *data, size_t len)
+{
+    if (len > MOCK_FIFO_MAX_LEN) {
+        len = MOCK_FIFO_MAX_LEN;
+    }
+    memcpy(g_mock_cep_fifo, data, len);
+    g_mock_cep_fifo_len = len;
+    g_mock_cep_fifo_pos = 0;
+    g_mock_cep_drain_count = 0;
+}
+
+static void mock_ep_fifo_set(int slot, const void *data, size_t len)
+{
+    if (slot < 0 || slot >= 10) {
+        return;
+    }
+    if (len > MOCK_FIFO_MAX_LEN) {
+        len = MOCK_FIFO_MAX_LEN;
+    }
+    memcpy(g_mock_ep_fifo[slot], data, len);
+    g_mock_ep_fifo_len[slot] = len;
+    g_mock_ep_fifo_pos[slot] = 0;
+    g_mock_ep_drain_count[slot] = 0;
+}
+
+uint8_t nuc472_host_cep_read_byte(void);
+uint8_t nuc472_host_ep_read_byte(int slot);
+
+uint8_t nuc472_host_cep_read_byte(void)
+{
+    g_mock_cep_drain_count++;
+    if (g_mock_cep_fifo_pos < g_mock_cep_fifo_len) {
+        return g_mock_cep_fifo[g_mock_cep_fifo_pos++];
+    }
+    return (uint8_t)g_test_usbd.CEPDAT_BYTE;
+}
+
+uint8_t nuc472_host_ep_read_byte(int slot)
+{
+    if (slot >= 0 && slot < 10) {
+        g_mock_ep_drain_count[slot]++;
+        if (g_mock_ep_fifo_pos[slot] < g_mock_ep_fifo_len[slot]) {
+            return g_mock_ep_fifo[slot][g_mock_ep_fifo_pos[slot]++];
+        }
+        return (uint8_t)g_test_usbd.EP[slot].EPDAT_BYTE;
+    }
+    return 0;
+}
+
 /* 记录并拦截 USBD core 回调事件 */
 static int g_reset_count = 0;
 static int g_connect_count = 0;
@@ -175,6 +236,7 @@ static void test_usbd_init_and_speed_lock(void)
 
     /* 验证 LDO33 与 USB AHB 时钟使能 */
     assert((g_test_sys.USBPHY & NUC472_SYS_USBPHY_LDO33EN_Msk) != 0);
+    assert((g_test_sys.USBPHY & NUC472_SYS_USBPHY_USBROLE_Msk) == 0);
     assert((g_test_clk.AHBCLK & NUC472_CLK_AHBCLK_USBDCKEN) != 0);
 
     /* 验证强制全速 12 Mbps 锁定 (HISPDEN 清零且 device_is_hs == 0) */
@@ -359,6 +421,19 @@ static void test_ep_write_and_zlp(void)
     assert(g_last_ep_in_size == 64);
     assert((g_test_usbd.EP[0].EPINTSTS & NUC472_USBD_EPINT_TXPK) == 0);
 
+    /* 3. Bulk IN 短包测试：发送 13 字节 (< MPS 64)，在 MODE_AUTO 下必须置位 SHORTTXEN */
+    g_test_usbd.EP[0].EPRSPCTL &= ~NUC472_USBD_EPRSPCTL_SHORTTXEN;
+    uint8_t short_data[13] = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13};
+    size_t short_wr = g_nuc472_udcd.ops->ep_write(0x81, short_data, 13);
+    assert(short_wr == 13);
+    assert((g_test_usbd.EP[0].EPRSPCTL & NUC472_USBD_EPRSPCTL_SHORTTXEN) != 0);
+
+    /* 4. Bulk IN 整包测试：发送 64 字节 (= MPS 64)，不应置位 SHORTTXEN */
+    g_test_usbd.EP[0].EPRSPCTL &= ~NUC472_USBD_EPRSPCTL_SHORTTXEN;
+    size_t full_wr = g_nuc472_udcd.ops->ep_write(0x81, tx_data, 64);
+    assert(full_wr == 64);
+    assert((g_test_usbd.EP[0].EPRSPCTL & NUC472_USBD_EPRSPCTL_SHORTTXEN) == 0);
+
     printf("  [PASS] test_ep_write_and_zlp\n");
 }
 
@@ -414,6 +489,98 @@ static void test_bus_reset_behavior(void)
     printf("  [PASS] test_bus_reset_behavior\n");
 }
 
+/* 测试 8: EP0 控制传输 OUT 数据阶段接收验证 (如 SET_LINE_CODING 7 字节) */
+static void test_ep0_control_out_data_stage(void)
+{
+    g_ep0_out_count = 0;
+    g_last_ep0_out_size = 0;
+
+    /* 模拟 CDC SET_LINE_CODING 7 字节 (波特率 115200 8N1) */
+    const uint8_t line_coding[7] = {0x00, 0xC2, 0x01, 0x00, 0x00, 0x00, 0x08};
+    uint8_t rx_buf[7] = {0};
+
+    /* 核心发起 EP0 OUT 接收准备 */
+    size_t prep_ret = g_nuc472_udcd.ops->ep_read_prepare(0x00, rx_buf, sizeof(rx_buf));
+    assert(prep_ret == sizeof(rx_buf));
+
+    /* 模拟硬件收到 7 字节数据并放入 CEP FIFO */
+    mock_cep_fifo_set(line_coding, sizeof(line_coding));
+    set_ro_reg(&g_test_usbd.CEPRXCNT, 7);
+    set_ro_reg(&g_test_usbd.CEPDATCNT, 7);
+
+    /* 触发 CEPINT_RXPK 中断 */
+    set_ro_reg(&g_test_usbd.GINTSTS, NUC472_USBD_GINTSTS_CEPIF);
+    g_test_usbd.CEPINTSTS = NUC472_USBD_CEPINT_RXPK;
+
+    USBD_IRQHandler();
+
+    /* 验证 usbd_ep0_out_handler 接收到全部 7 字节 */
+    assert(g_ep0_out_count == 1);
+    assert(g_last_ep0_out_size == 7);
+
+    /* 验证目标内存 rx_buf 准确接收到全部 7 字节内容 */
+    assert(memcmp(rx_buf, line_coding, sizeof(line_coding)) == 0);
+
+    /* 验证中断标志已清除 */
+    assert((g_test_usbd.CEPINTSTS & NUC472_USBD_CEPINT_RXPK) == 0);
+
+    printf("  [PASS] test_ep0_control_out_data_stage\n");
+}
+
+/* 测试 9: EP OUT 超长包进入 ep_read 时截断至 rx_buf_size 且防越界、排空 FIFO */
+static void test_ep_read_buffer_overflow_defense(void)
+{
+    g_ep_out_count = 0;
+
+    /* 准备 16 字节缓冲区，并在其前后设置哨兵值防御溢出探测 */
+    struct {
+        uint8_t guard_pre[4];
+        uint8_t buf[16];
+        uint8_t guard_post[4];
+    } packet_area;
+
+    const uint8_t expected_pre[4] = {0xAA, 0xBB, 0xCC, 0xDD};
+    const uint8_t expected_post[4] = {0xEE, 0xFF, 0x11, 0x22};
+    memcpy(packet_area.guard_pre, expected_pre, 4);
+    memcpy(packet_area.guard_post, expected_post, 4);
+    memset(packet_area.buf, 0, sizeof(packet_area.buf));
+
+    /* 注册 16 字节接收缓冲 */
+    size_t prep_ret = g_nuc472_udcd.ops->ep_read_prepare(0x01, packet_area.buf, sizeof(packet_area.buf));
+    assert(prep_ret == sizeof(packet_area.buf));
+
+    /* 模拟硬件实际收到了 64 字节超长包 */
+    uint8_t raw_packet[64];
+    for (int i = 0; i < 64; i++) {
+        raw_packet[i] = (uint8_t)(i + 0x50);
+    }
+    mock_ep_fifo_set(1, raw_packet, sizeof(raw_packet));
+    set_ro_reg(&g_test_usbd.EP[1].EPDATCNT, 64);
+
+    /* 触发 SHORTRX/RXPK 中断 */
+    set_ro_reg(&g_test_usbd.GINTSTS, (1UL << (NUC472_USBD_GINTSTS_EP_SHIFT + 1)));
+    g_test_usbd.EP[1].EPINTSTS = NUC472_USBD_EPINT_RXPK;
+    USBD_IRQHandler();
+
+    /* 执行 ep_read 读取 */
+    size_t rd_sz = g_nuc472_udcd.ops->ep_read(0x01, packet_area.buf);
+
+    /* 验证读取长度被严格截断至 rx_buf_size (16) */
+    assert(rd_sz == 16);
+
+    /* 验证 buf 内容为前 16 字节 */
+    assert(memcmp(packet_area.buf, raw_packet, 16) == 0);
+
+    /* 验证前、后哨兵未被越界覆写 */
+    assert(memcmp(packet_area.guard_pre, expected_pre, 4) == 0);
+    assert(memcmp(packet_area.guard_post, expected_post, 4) == 0);
+
+    /* 验证硬件 FIFO 全部 64 字节均被排空读出 (多余 48 字节已丢弃) */
+    assert(g_mock_ep_drain_count[1] == 64);
+
+    printf("  [PASS] test_ep_read_buffer_overflow_defense\n");
+}
+
 int main(void)
 {
     printf("=== NUC472 USBD Controller & Endpoint State Machine Tests ===\n");
@@ -424,6 +591,8 @@ int main(void)
     test_ep_write_and_zlp();
     test_ep_read_prepare_and_out();
     test_bus_reset_behavior();
+    test_ep0_control_out_data_stage();
+    test_ep_read_buffer_overflow_defense();
     printf("All NUC472 USBD host tests passed successfully!\n");
     return 0;
 }
