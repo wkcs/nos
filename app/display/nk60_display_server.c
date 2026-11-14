@@ -11,12 +11,14 @@
 #include <nos/display.h>
 #include <nos/keyboard.h>
 
-#define KEYBOARD_LIGHT_FRAME_MS 30U
+/* Preserve effect timing while advancing at every display refresh. */
+#define KEYBOARD_LIGHT_PHASE_MS 30U
 
 static struct keyboard_light_state g_frame_state;
 /* Per-frame workspace. Layer definitions and ordering come from the active configuration. */
 static struct ds_render_layer g_frame_layers[CONFIG_KEYBOARD_LIGHT_MAX_LAYERS];
 static uint32_t g_phase[CONFIG_KEYBOARD_LIGHT_MAX_LAYERS];
+static uint8_t g_phase_remainder[CONFIG_KEYBOARD_LIGHT_MAX_LAYERS];
 
 static void keyboard_render_light_layer(struct ds_frame *frame, uint8_t opacity, void *ctx)
 {
@@ -48,12 +50,12 @@ static const struct ds_render_layer *keyboard_prepare_light_layers(void *ctx, si
     static bool was_active[CONFIG_KEYBOARD_LIGHT_MAX_LAYERS];
     uint32_t generation = g_frame_state.generation;
     uint32_t now_ms = (uint32_t)tick_to_msec_64(cpu_run_ticks());
-    uint32_t frames = (now_ms - last_update_ms) / KEYBOARD_LIGHT_FRAME_MS;
+    uint32_t elapsed_ms = now_ms - last_update_ms;
     uint8_t i;
 
     (void)ctx;
     keyboard_server_get_light_state(&g_frame_state);
-    last_update_ms += frames * KEYBOARD_LIGHT_FRAME_MS;
+    last_update_ms = now_ms;
     *count = 0U;
     for (i = 0U; i < g_frame_state.count; i++) {
         struct keyboard_light_layer_state *state = &g_frame_state.layers[i];
@@ -65,8 +67,16 @@ static const struct ds_render_layer *keyboard_prepare_light_layers(void *ctx, si
 
         if (generation != g_frame_state.generation || !was_active[i]) {
             g_phase[i] = 0U;
+            g_phase_remainder[i] = 0U;
         } else if (state->active) {
-            g_phase[i] += frames * ((uint32_t)state->layer.cfg.speed + 1U);
+            uint32_t speed = (uint32_t)state->layer.cfg.speed + 1U;
+            uint32_t fraction = (elapsed_ms % KEYBOARD_LIGHT_PHASE_MS) * speed +
+                                g_phase_remainder[i];
+
+            /* Split whole/remainder milliseconds to avoid overflow after a long pause. */
+            g_phase[i] += (elapsed_ms / KEYBOARD_LIGHT_PHASE_MS) * speed +
+                          fraction / KEYBOARD_LIGHT_PHASE_MS;
+            g_phase_remainder[i] = (uint8_t)(fraction % KEYBOARD_LIGHT_PHASE_MS);
         }
         was_active[i] = state->active;
         if (!g_frame_state.enabled || !state->active ||

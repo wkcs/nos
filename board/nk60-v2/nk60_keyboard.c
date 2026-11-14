@@ -63,7 +63,7 @@ static const struct nlk_kb_light_zone_desc g_nk60_light_zones[] = {
         .type              = NLK_KB_LIGHT_TYPE_RGB_MATRIX,
         .led_start         = 0U,
         .led_count         = 61U,
-        .supported_effects = 0x0FU,
+        .supported_effects = NK60_EFFECT_MASK,
         .name              = "Key-RGB",
     },
     {
@@ -72,7 +72,7 @@ static const struct nlk_kb_light_zone_desc g_nk60_light_zones[] = {
         .type              = NLK_KB_LIGHT_TYPE_INDICATOR,
         .led_start         = 28U,
         .led_count         = 1U,
-        .supported_effects = 0x0FU,
+        .supported_effects = NK60_EFFECT_MASK,
         .name              = "Caps Lock",
     },
 };

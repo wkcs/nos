@@ -178,7 +178,7 @@ static void test_lighting_layers(void)
     effect->layer.opacity = 255U;
 
     effect->render = nk60_effect_breath;
-    g_phase[1] = 255U * 64U;
+    g_phase[1] = 16384U;
     display_server_merge_buf(&ds);
     assert(memcmp(pixels + effect_index, blue, 3U) == 0);
     g_phase[1] = 0U;
@@ -211,6 +211,77 @@ static void test_lighting_layers(void)
     }
 }
 
+static void test_lighting_phase(void)
+{
+    struct keyboard_light_layer_state *base = &test_light_state.layers[0];
+    size_t count;
+
+    test_light_state.enabled = true;
+    test_light_state.count = 1U;
+    test_light_state.generation++;
+    base->active = true;
+    base->layer.cfg.enable = 1U;
+    base->layer.cfg.speed = 255U;
+    test_ticks = 10U;
+    keyboard_prepare_light_layers(NULL, &count);
+    assert(count == 1U && g_phase[0] == 0U);
+    test_ticks += 10U;
+    keyboard_prepare_light_layers(NULL, &count);
+    assert(g_phase[0] == 85U);
+    test_ticks += 10U;
+    keyboard_prepare_light_layers(NULL, &count);
+    assert(g_phase[0] == 170U);
+    test_ticks += 10U;
+    keyboard_prepare_light_layers(NULL, &count);
+    assert(g_phase[0] == 256U);
+
+    base->layer.cfg.speed = 0U;
+    for (unsigned int i = 0U; i < 3U; i++) {
+        test_ticks += 10U;
+        keyboard_prepare_light_layers(NULL, &count);
+        assert(g_phase[0] == 256U + (i + 1U) / 3U);
+    }
+    /* At the default speed, irregular refreshes still total 129 units / 30 ms. */
+    base->layer.cfg.speed = 128U;
+    test_ticks += 7U;
+    keyboard_prepare_light_layers(NULL, &count);
+    assert(g_phase[0] == 287U);
+    test_ticks += 23U;
+    keyboard_prepare_light_layers(NULL, &count);
+    assert(g_phase[0] == 386U);
+
+    /* Generation/activation resets discard fractional phase from the old effect. */
+    base->layer.cfg.speed = 255U;
+    test_ticks += 10U;
+    keyboard_prepare_light_layers(NULL, &count);
+    test_light_state.generation++;
+    keyboard_prepare_light_layers(NULL, &count);
+    assert(g_phase[0] == 0U);
+    test_ticks += 10U;
+    keyboard_prepare_light_layers(NULL, &count);
+    assert(g_phase[0] == 85U);
+    base->active = false;
+    test_ticks += 10U;
+    keyboard_prepare_light_layers(NULL, &count);
+    assert(count == 0U && g_phase[0] == 85U);
+    base->active = true;
+    keyboard_prepare_light_layers(NULL, &count);
+    assert(g_phase[0] == 0U);
+    test_ticks += 10U;
+    keyboard_prepare_light_layers(NULL, &count);
+    assert(g_phase[0] == 85U);
+
+    test_ticks = UINT32_MAX - 14U;
+    test_light_state.generation++;
+    keyboard_prepare_light_layers(NULL, &count);
+    test_ticks += 10U;
+    keyboard_prepare_light_layers(NULL, &count);
+    assert(g_phase[0] == 85U);
+    test_ticks += 10U;
+    keyboard_prepare_light_layers(NULL, &count);
+    assert(g_phase[0] == 170U);
+}
+
 int main(void)
 {
     assert(display_server_register_layers("missing-output", &g_nk60_layer_source) == -ENODEV);
@@ -218,5 +289,6 @@ int main(void)
     assert(nk60_display_server_init() == -EBUSY);
     test_compositor();
     test_lighting_layers();
+    test_lighting_phase();
     return 0;
 }
