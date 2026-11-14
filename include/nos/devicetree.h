@@ -23,6 +23,7 @@ extern const size_t nos_dt_node_count;
 
 const struct nos_dt_node *nos_dt_find_path(const char *path);
 const struct nos_dt_node *nos_dt_find_phandle(uint32_t phandle);
+const struct nos_dt_node *nos_dt_find_compatible(const char *compatible);
 int nos_dt_is_available(const struct nos_dt_node *node);
 int nos_dt_is_compatible(const struct nos_dt_node *node, const char *compatible);
 const struct nos_dt_property *nos_dt_get_property(const struct nos_dt_node *node,

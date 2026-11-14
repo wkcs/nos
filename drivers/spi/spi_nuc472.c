@@ -35,14 +35,16 @@ struct nuc472_spi_data {
 
 static uint32_t nuc472_spi_calc_clkdiv(uint32_t pclk, uint32_t freq)
 {
-    if (freq == 0U) {
+    if (freq == 0U || freq >= pclk) {
         return 0U;
     }
-    uint32_t div = pclk / (2U * freq);
-    if (div > 0U) {
-        return div - 1U;
+    /* NUC472 官方公式: f_spi = clk_src / (CLKDIV + 1)
+     * 向上取整安全分频: div = ceil(pclk / freq) - 1 */
+    uint32_t div = (pclk + freq - 1U) / freq - 1U;
+    if (div > 255U) {
+        div = 255U;
     }
-    return 0U;
+    return div;
 }
 
 static uint32_t nuc472_spi_mode_ctl(uint8_t mode)
@@ -105,6 +107,9 @@ static int nuc472_spi_session_begin(const struct device *dev,
     if (config->word_size != 8U || config->mode > 3U || config->frequency == 0U) {
         return -EINVAL;
     }
+    if (config->chip_select != 0U) {
+        return -EINVAL;
+    }
 
     const struct nuc472_spi_config *cfg = dev->config;
     struct nuc472_spi_data *data = dev->data;
@@ -123,9 +128,7 @@ static int nuc472_spi_session_begin(const struct device *dev,
     spi->CTL = ctl;
 
     /* 3. 拉低 SS0 片选使能从机 */
-    if (config->chip_select == 0U) {
-        spi->SSCTL |= NUC472_SPI_SSCTL_SS0;
-    }
+    spi->SSCTL |= NUC472_SPI_SSCTL_SS0;
 
     return 0;
 }
@@ -194,7 +197,15 @@ static int nuc472_spi_session_end_with_idle(const struct device *dev, size_t byt
     struct nuc472_spi_data *data = dev->data;
     NUC472_SPI_Type *spi = cfg->regs;
 
-    /* 先释放片选 */
+    /* 等待发送排空与总线空闲，确保最后一个传输字节完成 */
+    uint32_t timeout = 1000000U;
+    while ((spi->STATUS & NUC472_SPI_STATUS_BUSY) != 0U) {
+        if (--timeout == 0U) {
+            break;
+        }
+    }
+
+    /* 释放片选 SS0 */
     spi->SSCTL &= ~NUC472_SPI_SSCTL_SS0;
 
     /* 发送空闲时钟 */

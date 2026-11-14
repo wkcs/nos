@@ -32,7 +32,9 @@ int main(void)
         nos_dt_is_compatible(node, "vendor,missing") ||
         nos_dt_is_compatible(&nos_dt_nodes[3], "bad") ||
         nos_dt_find_phandle(7) != &nos_dt_nodes[1] ||
-        nos_dt_find_phandle(0) != NULL || nos_dt_find_phandle(8) != NULL) {
+        nos_dt_find_phandle(0) != NULL || nos_dt_find_phandle(8) != NULL ||
+        nos_dt_find_compatible("vendor,generic") != &nos_dt_nodes[2] ||
+        nos_dt_find_compatible("vendor,missing") != NULL) {
         fputs("device tree matching or status failed\n", stderr);
         return 1;
     }

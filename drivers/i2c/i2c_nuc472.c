@@ -193,12 +193,31 @@ static const struct nuc472_i2c_config nuc472_i2c3_cfg = {
 
 static struct nuc472_i2c_data nuc472_i2c3_data;
 
+static uint32_t nuc472_i2c_calc_clkdiv(uint32_t pclk, uint32_t bus_clk)
+{
+    if (bus_clk == 0U) {
+        return 0U;
+    }
+    /* NUC472 官方公式: f_i2c = PCLK / (4 * (CLKDIV + 1))
+     * 因此: CLKDIV = PCLK / (4 * bus_clk) - 1 */
+    uint32_t div = pclk / (4U * bus_clk);
+    if (div > 0U) {
+        div -= 1U;
+    }
+    if (div > 255U) {
+        div = 255U;
+    }
+    return div;
+}
+
 static int nuc472_i2c_init(struct device *dev)
 {
     if (dev == NULL || dev->config == NULL || dev->data == NULL) {
         return -EINVAL;
     }
+    const struct nuc472_i2c_config *cfg = dev->config;
     struct nuc472_i2c_data *data = dev->data;
+    NUC472_I2C_Type *i2c = cfg->regs;
     mutex_init(&data->lock);
 
 #ifndef NUC472_HOST_TEST
@@ -206,10 +225,14 @@ static int nuc472_i2c_init(struct device *dev)
     NUC472_CLK->APBCLK0 |= NUC472_CLK_APBCLK0_I2C3CKEN;
     NUC472_SYS->IPRST1 |= NUC472_SYS_IPRST1_I2C3RST_Msk;
     NUC472_SYS->IPRST1 &= ~NUC472_SYS_IPRST1_I2C3RST_Msk;
+#endif
+
+    /* 计算 100 kHz 标准模式时钟分频并写入 CLKDIV */
+    uint32_t pclk = nuc472_clk_get_pclk_hz();
+    i2c->CLKDIV = nuc472_i2c_calc_clkdiv(pclk, 100000U);
 
     /* 使能 I2C 控制器 */
-    NUC472_I2C3->CTL |= NUC472_I2C_CTL_I2CEN;
-#endif
+    i2c->CTL |= NUC472_I2C_CTL_I2CEN;
 
 #if defined(CONFIG_DEVICE_TREE)
     const struct nos_dt_node *node = nos_dt_find_compatible("nuvoton,nuc472-i2c");

@@ -72,6 +72,21 @@ const struct nos_dt_node *nos_dt_find_phandle(uint32_t phandle)
     return NULL;
 }
 
+const struct nos_dt_node *nos_dt_find_compatible(const char *compatible)
+{
+    size_t i;
+
+    if (compatible == NULL) {
+        return NULL;
+    }
+    for (i = 0; i < nos_dt_node_count; i++) {
+        if (nos_dt_is_compatible(&nos_dt_nodes[i], compatible)) {
+            return &nos_dt_nodes[i];
+        }
+    }
+    return NULL;
+}
+
 int nos_dt_is_available(const struct nos_dt_node *node)
 {
     const struct nos_dt_property *status;

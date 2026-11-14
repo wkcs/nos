@@ -85,17 +85,17 @@ int nuc472_gpio_attach_irq(uint32_t port, uint32_t pin, uint32_t edge,
     /* 先写 1 清零现有悬挂中断状态 (W1C) */
     gpio_w1c_intsrc(gpio, (1U << pin));
 
-    /* 根据边沿使能上升沿与下降沿中断 */
+    /* 根据边沿使能上升沿与下降沿中断 (INTEN: 低 16 位 FLIEN 下降沿，高 16 位 RHIEN 上升沿) */
     if (edge & NUC472_GPIO_EDGE_RISING) {
-        gpio->INTEN |= (1U << pin);
-    } else {
-        gpio->INTEN &= ~(1U << pin);
-    }
-
-    if (edge & NUC472_GPIO_EDGE_FALLING) {
         gpio->INTEN |= (1U << (pin + 16U));
     } else {
         gpio->INTEN &= ~(1U << (pin + 16U));
+    }
+
+    if (edge & NUC472_GPIO_EDGE_FALLING) {
+        gpio->INTEN |= (1U << pin);
+    } else {
+        gpio->INTEN &= ~(1U << pin);
     }
 
 #ifndef NUC472_HOST_TEST
@@ -134,11 +134,34 @@ void GPG_IRQHandler(void) { nuc472_gpio_dispatch_irq(NUC472_PORT_G); }
 void GPH_IRQHandler(void) { nuc472_gpio_dispatch_irq(NUC472_PORT_H); }
 void GPI_IRQHandler(void) { nuc472_gpio_dispatch_irq(NUC472_PORT_I); }
 
-void EINT0_IRQHandler(void) {}
-void EINT1_IRQHandler(void) {}
-void EINT2_IRQHandler(void) {}
-void EINT3_IRQHandler(void) {}
-void EINT4_IRQHandler(void) {}
-void EINT5_IRQHandler(void) {}
-void EINT6_IRQHandler(void) {}
-void EINT7_IRQHandler(void) {}
+void EINT0_IRQHandler(void) { nuc472_gpio_dispatch_irq(NUC472_PORT_A); }
+void EINT1_IRQHandler(void) { nuc472_gpio_dispatch_irq(NUC472_PORT_B); }
+void EINT2_IRQHandler(void) { nuc472_gpio_dispatch_irq(NUC472_PORT_C); }
+void EINT3_IRQHandler(void) { nuc472_gpio_dispatch_irq(NUC472_PORT_D); }
+void EINT4_IRQHandler(void) { nuc472_gpio_dispatch_irq(NUC472_PORT_E); }
+void EINT5_IRQHandler(void) { nuc472_gpio_dispatch_irq(NUC472_PORT_F); }
+void EINT6_IRQHandler(void) { nuc472_gpio_dispatch_irq(NUC472_PORT_G); }
+void EINT7_IRQHandler(void) { nuc472_gpio_dispatch_irq(NUC472_PORT_H); }
+
+#if defined(CONFIG_DEVICE_TREE)
+#include <nos/devicetree.h>
+
+const struct nos_dt_node *nuc472_gpio_node(uint32_t port)
+{
+    static const char * const port_paths[9] = {
+        "/soc/gpio@40004000",
+        "/soc/gpio@40004040",
+        "/soc/gpio@40004080",
+        "/soc/gpio@400040c0",
+        "/soc/gpio@40004100",
+        "/soc/gpio@40004140",
+        "/soc/gpio@40004180",
+        "/soc/gpio@400041c0",
+        "/soc/gpio@40004200",
+    };
+    if (port > NUC472_PORT_I) {
+        return NULL;
+    }
+    return nos_dt_find_path(port_paths[port]);
+}
+#endif

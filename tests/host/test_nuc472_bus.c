@@ -250,8 +250,24 @@ static void test_gpio_exti(void)
     assert(ret == 0);
     /* INTTYPE 应为边沿触发 (bit 0 = 0) */
     assert((g_test_gpio[NUC472_PORT_A].INTTYPE & (1U << 0)) == 0);
-    /* INTEN 下降沿位于 bit 16 */
-    assert((g_test_gpio[NUC472_PORT_A].INTEN & (1U << 16)) != 0);
+    /* NUC472 硬件手册: INTEN[15:0] 为 FLIEN (下降沿使能), INTEN[31:16] 为 RHIEN (上升沿使能) */
+    assert((g_test_gpio[NUC472_PORT_A].INTEN & (1U << 0)) != 0);
+    assert((g_test_gpio[NUC472_PORT_A].INTEN & (1U << 16)) == 0);
+
+    /* 1.4.1 配置 PA.1 上升沿中断 */
+    ret = nuc472_gpio_attach_irq(NUC472_PORT_A, 1, NUC472_GPIO_EDGE_RISING,
+                                 on_exti_test_callback, (void *)0x12345678UL);
+    assert(ret == 0);
+    assert((g_test_gpio[NUC472_PORT_A].INTEN & (1U << (1 + 16))) != 0);
+    assert((g_test_gpio[NUC472_PORT_A].INTEN & (1U << 1)) == 0);
+
+    /* 1.4.2 配置 PA.2 双边沿中断 */
+    ret = nuc472_gpio_attach_irq(NUC472_PORT_A, 2,
+                                 NUC472_GPIO_EDGE_RISING | NUC472_GPIO_EDGE_FALLING,
+                                 on_exti_test_callback, (void *)0x12345678UL);
+    assert(ret == 0);
+    assert((g_test_gpio[NUC472_PORT_A].INTEN & (1U << 2)) != 0);
+    assert((g_test_gpio[NUC472_PORT_A].INTEN & (1U << (2 + 16))) != 0);
 
     /* 1.5 置位 GPIOA->INTSRC (bit 0) 并调用 GPA_IRQHandler() */
     g_test_gpio[NUC472_PORT_A].INTSRC = (1U << 0);
@@ -263,6 +279,12 @@ static void test_gpio_exti(void)
     assert(g_exti_trigger_count == 1);
     assert(g_exti_last_port == NUC472_PORT_A);
     assert(g_exti_last_pin == 0);
+
+    /* 1.6 测试 EINT0_IRQHandler 对应 PA.0 */
+    g_test_gpio[NUC472_PORT_A].INTSRC = (1U << 0);
+    EINT0_IRQHandler();
+    assert((g_test_gpio[NUC472_PORT_A].INTSRC & (1U << 0)) == 0);
+    assert(g_exti_trigger_count == 2);
 
     printf("  -> GPIO/EXTI 读写与中断分发验证通过!\n");
 }
@@ -296,18 +318,33 @@ static void test_spi0_bus(void)
     assert(api != NULL);
     assert(api->session_begin != NULL);
     assert(api->session_end != NULL);
+    assert(api->session_end_with_idle != NULL);
     assert(api->transceive != NULL);
+
+    /* 验证非零片选返回 -EINVAL */
+    struct spi_config cfg_invalid_cs = cfg;
+    cfg_invalid_cs.chip_select = 1;
+    assert(api->session_begin(spi_dev, &cfg_invalid_cs) == -EINVAL);
 
     int ret = api->session_begin(spi_dev, &cfg);
     assert(ret == 0);
 
-    /* PCLK = 84MHz, freq = 1MHz -> CLKDIV = 84000000 / (2 * 1000000) - 1 = 41 */
-    assert(g_test_spi0.CLKDIV == 41U);
+    /* PCLK = 84MHz, freq = 1MHz -> NUC472 官方公式: f_spi = clk_src / (CLKDIV + 1)
+     * 向上取整安全分频: (84000000 + 1000000 - 1) / 1000000 - 1 = 83 */
+    assert(g_test_spi0.CLKDIV == 83U);
     /* 验证 SS0 被置位拉低选中从机 */
     assert((g_test_spi0.SSCTL & NUC472_SPI_SSCTL_SS0) != 0);
 
     /* 结束 session 并释放 CS */
     ret = api->session_end(spi_dev);
+    assert(ret == 0);
+    assert((g_test_spi0.SSCTL & NUC472_SPI_SSCTL_SS0) == 0);
+
+    /* 验证 session_end_with_idle 在 BUSY 清除后释放 CS 并发送空闲时钟 */
+    ret = api->session_begin(spi_dev, &cfg);
+    assert(ret == 0);
+    assert((g_test_spi0.SSCTL & NUC472_SPI_SSCTL_SS0) != 0);
+    ret = api->session_end_with_idle(spi_dev, 2);
     assert(ret == 0);
     assert((g_test_spi0.SSCTL & NUC472_SPI_SSCTL_SS0) == 0);
 
@@ -352,6 +389,10 @@ static void test_i2c3_bus(void)
     int init_rc = nuc472_i2c_init(i2c_dev);
     assert(init_rc == 0);
     assert(device_is_ready(i2c_dev));
+    /* NUC472 I2C 官方公式: f_i2c = PCLK / (4 * (CLKDIV + 1))
+     * PCLK = 84MHz, bus_clk = 100kHz -> CLKDIV = 84000000 / (4 * 100000) - 1 = 209 */
+    assert(g_test_i2c3.CLKDIV == 209U);
+    assert((g_test_i2c3.CTL & NUC472_I2C_CTL_I2CEN) != 0);
 
     /* 3.1 典型 7-bit 写传输: START (0x08) -> SLA+W ACK (0x18) -> DATA ACK (0x28) -> STOP */
     g_i2c_test_mode = MOCK_I2C_NORMAL;

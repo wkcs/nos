@@ -87,6 +87,11 @@ void nuc472_gpio_toggle(uint32_t port, uint32_t pin);
 int nuc472_gpio_attach_irq(uint32_t port, uint32_t pin, uint32_t edge,
                            nuc472_gpio_irq_cb_t cb, void *ctx);
 
+#if defined(CONFIG_DEVICE_TREE)
+struct nos_dt_node;
+const struct nos_dt_node *nuc472_gpio_node(uint32_t port);
+#endif
+
 #ifdef __cplusplus
 }
 #endif
