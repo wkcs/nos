@@ -4,7 +4,7 @@
  * NLK L1 Bearer Adapter for USB WinUSB (Unified Bulk IN/OUT Datagram).
  */
 
-#define pr_fmt(fmt) "[NLK-USB]:%s[%d]:"fmt, __func__, __LINE__
+#define pr_fmt(fmt) "[NLK-USB] " fmt
 
 #include <kernel/device.h>
 #include <kernel/errno.h>
@@ -126,6 +126,9 @@ int nlk_winusb_bearer_poll_rx(struct nlk_winusb_bearer *wb,
                                (uint16_t)(sizeof(struct nlk_pkt_hdr) - got),
                                t_ms);
         if (rc <= 0) {
+            if (got > 0U) {
+                pr_warning("RX header incomplete got=%u rc=%d\n", got, (int)rc);
+            }
             return (rc < 0) ? (int)rc : -EAGAIN;
         }
         got = (uint16_t)(got + (uint16_t)rc);
@@ -134,6 +137,8 @@ int nlk_winusb_bearer_poll_rx(struct nlk_winusb_bearer *wb,
     memcpy(&hdr, rx_buf, sizeof(hdr));
     if (NLK_PKT_VER(hdr.ver_flags) != NLK_PROTO_VER_1 ||
         (uint32_t)sizeof(hdr) + hdr.payload_len > max_len) {
+        pr_warning("RX invalid header ver=%02x payload=%u max=%u\n",
+                   hdr.ver_flags, hdr.payload_len, max_len);
         while (winusb_read_chunk(wb, rx_buf, max_len, 2U) > 0) {
         }
         return -EBADMSG;
@@ -144,6 +149,8 @@ int nlk_winusb_bearer_poll_rx(struct nlk_winusb_bearer *wb,
         rc = winusb_read_chunk(wb, rx_buf + got, (uint16_t)(total_len - got),
                                body_timeout_ms);
         if (rc <= 0) {
+            pr_warning("RX body incomplete seq=%u got=%u need=%u rc=%d\n",
+                       hdr.seq_id, got, total_len, (int)rc);
             return (rc < 0) ? (int)rc : -EAGAIN;
         }
         got = (uint16_t)(got + (uint16_t)rc);

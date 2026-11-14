@@ -6,7 +6,7 @@
  * instances and delegates hardware capabilities/bearers to board setup hooks.
  */
 
-#define pr_fmt(fmt) "[NLK]:%s[%d]:"fmt, __func__, __LINE__
+#define pr_fmt(fmt) "[NLK-SRV] " fmt
 
 #include <kernel/task.h>
 #include <kernel/sched.h>
@@ -17,6 +17,7 @@
 #include <kernel/clk.h>
 #include <kernel/errno.h>
 #include <kernel/init.h>
+#include <kernel/mm.h>
 #include <string.h>
 
 #include <nos/nlk_core.h>
@@ -68,6 +69,7 @@ static void nlk_server_task_entry(void *parameter)
 {
     struct nlk_server *srv = (struct nlk_server *)parameter;
     uint32_t tick_cnt = 0U;
+    uint64_t next_health_ms = 0U;
 #ifdef CONFIG_SHELL
     struct nlk_shell_ctx *shell_frontend;
     uint64_t shell_retry_ms = 0U;
@@ -104,6 +106,14 @@ static void nlk_server_task_entry(void *parameter)
             srv->node->cap_count, srv->node->bearer_count);
 
     while (true) {
+        uint64_t health_ms = tick_to_msec_64(cpu_run_ticks());
+
+        if (health_ms >= next_health_ms) {
+            next_health_ms = health_ms + 10000U;
+            pr_info("alive rx=%u tx=%u drop=%u heap_free=%u\n",
+                    srv->node->rx_packets, srv->node->tx_packets,
+                    srv->node->dropped_packets, (unsigned int)mm_block_free_size());
+        }
 #ifdef CONFIG_SHELL
         uint64_t now_ms = tick_to_msec_64(cpu_run_ticks());
         if (shell_frontend != NULL && now_ms >= shell_retry_ms) {

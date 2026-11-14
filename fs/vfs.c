@@ -32,7 +32,7 @@ static const char *root_dev_name = "rootfs";
 static SPINLOCK(vfs_mount_lock);
 
 #define VFS_MAX_MOUNT_POINTS 8
-#define VFS_FAT_INODE_REMOVED 1UL
+#define VFS_INODE_REMOVED 1UL
 
 struct mount_point {
     struct inode *parent;
@@ -49,24 +49,31 @@ struct mount_point {
 static struct mount_point mount_points[VFS_MAX_MOUNT_POINTS];
 static int mount_count = 0;
 
-static bool vfs_is_fat_dentry(struct dentry *dentry)
+/* Persistent backends allocate an inode per cached dentry. RAMFS owns its
+ * inodes through directory links instead, and releases them in its own ops. */
+static bool vfs_owns_cached_inode(struct inode *inode)
 {
-    return dentry->d_sb != NULL && dentry->d_sb->s_type != NULL &&
-           strcmp(dentry->d_sb->s_type->name, "fatfs") == 0;
+    const char *name;
+
+    if (inode == NULL || inode->i_sb == NULL || inode->i_sb->s_type == NULL) {
+        return false;
+    }
+    name = inode->i_sb->s_type->name;
+    return name != NULL && (strcmp(name, "fatfs") == 0 || strcmp(name, "littlefs") == 0);
 }
 
 static void vfs_destroy_dentry(struct dentry *dentry)
 {
-    if (vfs_is_fat_dentry(dentry) && dentry->d_inode != NULL &&
-        (dentry->d_inode->i_flags & VFS_FAT_INODE_REMOVED) != 0)
+    if (vfs_owns_cached_inode(dentry->d_inode) &&
+        (dentry->d_inode->i_flags & VFS_INODE_REMOVED) != 0)
         nos_vfs_destroy_inode(dentry->d_inode);
     kfree(dentry);
 }
 
 static void vfs_drop_removed_dentry(struct dentry *dentry)
 {
-    if (vfs_is_fat_dentry(dentry) && dentry->d_inode != NULL)
-        dentry->d_inode->i_flags |= VFS_FAT_INODE_REMOVED;
+    if (vfs_owns_cached_inode(dentry->d_inode))
+        dentry->d_inode->i_flags |= VFS_INODE_REMOVED;
     if (--dentry->d_refs == 0) vfs_destroy_dentry(dentry);
 }
 
@@ -1373,9 +1380,7 @@ struct dentry *vfs_lookup(struct dentry *parent, struct qstr *name) {
     if (cached == NULL) cached = vfs_find_cached_identity(parent, lookup_inode);
     if (cached != NULL) {
       spin_unlock(&vfs_mount_lock);
-      if (lookup_inode != cached->d_inode && lookup_inode->i_sb != NULL &&
-          lookup_inode->i_sb->s_type != NULL &&
-          strcmp(lookup_inode->i_sb->s_type->name, "fatfs") == 0)
+      if (lookup_inode != cached->d_inode && vfs_owns_cached_inode(lookup_inode))
         nos_vfs_destroy_inode(lookup_inode);
       kfree(dentry);
       return cached;
@@ -1384,9 +1389,7 @@ struct dentry *vfs_lookup(struct dentry *parent, struct qstr *name) {
     list_add_tail(&dentry->d_child, &parent->d_subdirs);
     spin_unlock(&vfs_mount_lock);
 
-    if (lookup_inode != dentry->d_inode && lookup_inode->i_sb != NULL &&
-        lookup_inode->i_sb->s_type != NULL &&
-        strcmp(lookup_inode->i_sb->s_type->name, "fatfs") == 0)
+    if (lookup_inode != dentry->d_inode && vfs_owns_cached_inode(lookup_inode))
       nos_vfs_destroy_inode(lookup_inode);
 
     return dentry;

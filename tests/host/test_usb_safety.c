@@ -362,12 +362,17 @@ static struct {
     int set_config_val;
 } mock_dcd_stats;
 
+static void (*mock_write_observer)(uint8_t address, const void *buffer, size_t size);
+
 static size_t mock_ep_write(uint8_t address, void *buffer, size_t size)
 {
     mock_dcd_stats.write_calls++;
     mock_dcd_stats.write_addr = address;
     mock_dcd_stats.write_buf = buffer;
     mock_dcd_stats.write_len = size;
+    if (mock_write_observer != NULL) {
+        mock_write_observer(address, buffer, size);
+    }
     return size;
 }
 
@@ -948,6 +953,91 @@ static void test_set_configuration_transition(void)
 }
 
 /* ========================================================================= */
+/* A fast IN completion can wake the higher-priority USB task before the
+ * submitting task returns from the DCD write. Exercise that exact boundary. */
+static struct udevice *preempt_write_device;
+static bool preempt_first_write;
+static uint8_t preempt_wire_data[1024];
+static size_t preempt_wire_size;
+static unsigned int preempt_completions;
+
+static int preempt_in_complete(struct ufunction *func, size_t size)
+{
+    (void)func;
+    (void)size;
+    preempt_completions++;
+    return 0;
+}
+
+static void preempt_write_observer(uint8_t address, const void *buffer, size_t size)
+{
+    assert(preempt_wire_size + size <= sizeof(preempt_wire_data));
+    if (size > 0U) {
+        memcpy(preempt_wire_data + preempt_wire_size, buffer, size);
+    }
+    preempt_wire_size += size;
+    if (preempt_first_write) {
+        struct ep_msg event = {.ep_addr = address, .size = size};
+
+        preempt_first_write = false;
+        assert(_data_notify(preempt_write_device, &event) == 0);
+    }
+}
+
+static void test_in_completion_preempts_submitter(void)
+{
+    const size_t lengths[] = {0U, 1U, 58U, 64U, 65U, 128U, 189U, 268U};
+    struct udevice dev = {0};
+    struct udcd dcd = {.ops = &mock_udcd_ops};
+    struct uconfig cfg = {0};
+    struct ufunction func = {0};
+    struct uinterface intf = {0};
+    struct ualtsetting setting = {0};
+    struct uendpoint_descriptor desc = {.bEndpointAddress = 0x81, .wMaxPacketSize = 64};
+    struct uendpoint ep = {.ep_desc = &desc, .handler = preempt_in_complete};
+    uint8_t payload[268];
+    size_t i;
+    size_t j;
+
+    puts("[Test 6] IN completion preempts the submitting task...");
+    dev.dcd = &dcd;
+    dev.curr_cfg = &cfg;
+    dev.state = USB_STATE_CONFIGURED;
+    func.device = &dev;
+    intf.curr_setting = &setting;
+    INIT_LIST_HEAD(&cfg.func_list);
+    INIT_LIST_HEAD(&func.intf_list);
+    INIT_LIST_HEAD(&setting.ep_list);
+    list_add_tail(&func.list, &cfg.func_list);
+    list_add_tail(&intf.list, &func.intf_list);
+    list_add_tail(&ep.list, &setting.ep_list);
+    for (i = 0U; i < sizeof(payload); i++) {
+        payload[i] = (uint8_t)(i ^ (i >> 6U));
+    }
+
+    for (i = 0U; i < sizeof(lengths) / sizeof(lengths[0]); i++) {
+        struct ep_msg event = {.ep_addr = 0x81, .size = 64};
+
+        ep.request.buffer = lengths[i] > 0U ? payload : NULL;
+        ep.request.size = lengths[i];
+        ep.request.req_type = UIO_REQUEST_WRITE;
+        preempt_write_device = &dev;
+        preempt_first_write = true;
+        preempt_wire_size = 0U;
+        preempt_completions = 0U;
+        mock_write_observer = preempt_write_observer;
+        assert(usbd_io_request(&dev, &ep, &ep.request) == lengths[i]);
+        for (j = 0U; preempt_completions == 0U && j < 16U; j++) {
+            assert(_data_notify(&dev, &event) == 0);
+        }
+        mock_write_observer = NULL;
+        assert(preempt_completions == 1U);
+        assert(preempt_wire_size == lengths[i] && "IN packet was duplicated");
+        assert(memcmp(preempt_wire_data, payload, lengths[i]) == 0);
+        assert(ep.request.remain_size == 0U);
+    }
+}
+
 /* 主函数                                                                    */
 /* ========================================================================= */
 
@@ -962,6 +1052,7 @@ int main(void)
     test_ep0_zlp_state_machine();
     test_control_transfer_length_clamp();
     test_set_configuration_transition();
+    test_in_completion_preempts_submitter();
 
     printf("================================================================\n");
     printf("所有 USB 安全与状态机单元测试全部通过 (ALL PASSED)!\n");

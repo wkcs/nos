@@ -35,6 +35,7 @@ enum {
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdarg.h>
 
 /* Kernel stubs required by kernel/printk/log.c */
 addr_t kernel_running = 1;
@@ -81,6 +82,23 @@ void console_send_log(void) {}
 static unsigned int global_level_changes, global_enabled_changes;
 void set_log_level(enum log_level level) { (void)level; global_level_changes++; }
 void set_log_enabled(bool enabled) { (void)enabled; global_enabled_changes++; }
+
+static bool publish_diagnostics;
+int pr_log(bool no_tag, enum log_level level, const char *fmt, ...)
+{
+    char message[128];
+    va_list args;
+    int len;
+
+    (void)no_tag;
+    if (!publish_diagnostics) return 0;
+    va_start(args, fmt);
+    len = vsnprintf(message, sizeof(message), fmt, args);
+    va_end(args);
+    if (len <= 0) return len;
+    if ((size_t)len >= sizeof(message)) len = sizeof(message) - 1U;
+    return (int)kernel_log_write_record(message, (unsigned int)len, level, 0U, 0U);
+}
 
 /* --------------------------------------------------------------------------
  * Virtual Physical Link Adapters (Datagram, Stream, CAN 8B, I2C Master-Slave)
@@ -3010,6 +3028,32 @@ int main(void)
                                      NULL, &rlen, 100U) == 0);
             assert(g_test_mock_active == 1U);
         }
+    }
+
+    /* Communication diagnostics must reach the remote log subscriber without
+     * creating another log record for every transmitted log packet. */
+    {
+        struct nlk_log_sub_req sub = {.enable = 1U, .min_level = LOG_INFO};
+        struct nlk_device_desc desc;
+        uint16_t len = 0U;
+        uint32_t before;
+
+        publish_diagnostics = true;
+        assert(nlk_node_rpc_call(&node_host, node_nk60.addr, nk60_log.cap.cap_id,
+                                 NLK_LOG_OP_SUBSCRIBE, &sub, sizeof(sub),
+                                 NULL, &len, 100U) == 0);
+        (void)nlk_cap_log_flush_pending(&nk60_log);
+        before = host_cap.log_records_rx;
+        len = sizeof(desc);
+        assert(nlk_node_rpc_call(&node_host, node_nk60.addr, NLK_CAP_ID_CORE,
+                                 NLK_CORE_OP_GET_DEV_DESC, NULL, 0U,
+                                 &desc, &len, 100U) == 0);
+        assert(nlk_cap_log_flush_pending(&nk60_log) > 0);
+        assert(host_cap.log_records_rx > before);
+        assert(strstr(host_cap.last_log_msg, "RPC") != NULL);
+        assert(nlk_cap_log_flush_pending(&nk60_log) == 0);
+        assert(nlk_cap_log_flush_pending(&nk60_log) == 0);
+        publish_diagnostics = false;
     }
 
     puts("nlk distributed soft-bus checks passed");

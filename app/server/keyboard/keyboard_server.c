@@ -13,7 +13,7 @@
  * - Registers and manages the NLK_CAP_KEYBOARD capability on the NLK soft-bus
  */
 
-#define pr_fmt(fmt) "[KEYBOARD_SERVER]:%s[%d]:"fmt, __func__, __LINE__
+#define pr_fmt(fmt) "[KEYBOARD] " fmt
 
 #include <kernel/task.h>
 #include <kernel/errno.h>
@@ -66,6 +66,9 @@ struct keyboard_server {
     bool                    config_dirty;
     bool                    sync_pending;
     bool                    sync_busy;
+    bool                    light_log_valid;
+    struct nlk_kb_light_cfg  logged_light_cfg;
+    uint8_t                 logged_indicators;
     uint32_t                sync_deadline_ms;
     uint8_t                 active_slot_id;
     uint8_t                 saved_slots_mask;
@@ -525,8 +528,19 @@ static void kb_config_worker_task_entry(void *parameter)
         mutex_unlock(&ks->lock);
 
         if (len > 0U) {
-            (void)ks_write_active_snapshot(ks, ks->active_snapshot_buf, len);
-            (void)nos_sync();
+            int rc;
+            int sync_rc;
+
+            pr_info("config save begin bytes=%u\n", (unsigned int)len);
+            rc = ks_write_active_snapshot(ks, ks->active_snapshot_buf, len);
+            sync_rc = nos_sync();
+            if (rc != 0 || sync_rc != 0) {
+                pr_err("config save failed rc=%d sync=%d heap_free=%u\n",
+                       rc, sync_rc, (unsigned int)mm_block_free_size());
+            } else {
+                pr_info("config save complete heap_free=%u\n",
+                        (unsigned int)mm_block_free_size());
+            }
         }
 
         mutex_lock(&ks->lock);
@@ -804,6 +818,12 @@ static void ks_on_zone_light_cfg(uint8_t zone_id,
     struct keyboard_server *ks = priv;
 
     if (ks != NULL && cfg != NULL && zone_id != 0U) {
+        const struct nlk_kb_effect_entry *effect =
+            nlk_cap_keyboard_find_light_effect(&ks->kb_cap, cfg->effect_id);
+
+        pr_info("light zone=%u effect=%u/%s on=%u bright=%u speed=%u\n",
+                zone_id, cfg->effect_id, effect != NULL ? effect->info.name : "unknown",
+                cfg->enable, cfg->brightness, cfg->speed);
         ks_publish_light_state(&ks->kb_cap);
     }
 }
@@ -832,8 +852,7 @@ static int ks_action_key_light(const struct key_action_context *ctx, void *priv)
     struct keyboard_server *ks = (struct keyboard_server *)priv;
 
     if (ks != NULL && ctx != NULL && ctx->event_type == 1U) {
-        pr_info("Action key_light: key_index=%u, code=0x%02x\n",
-                ctx->key_index, ctx->key_code);
+        pr_debug("action=key_light key=%u\n", ctx->key_index);
     }
     return KEY_ACTION_PASS; /* 未返回按键值，保持原有按键值 */
 }
@@ -879,10 +898,24 @@ static void ks_on_light_cfg(const struct nlk_kb_light_cfg *cfg,
     struct keyboard_server *ks = (struct keyboard_server *)priv;
 
     (void)beacon;
-    (void)indicators;
     if (ks == NULL || cfg == NULL) {
         return;
     }
+    if (!ks->light_log_valid || memcmp(&ks->logged_light_cfg, cfg, sizeof(*cfg)) != 0) {
+        const struct nlk_kb_effect_entry *effect =
+            nlk_cap_keyboard_find_light_effect(&ks->kb_cap, cfg->effect_id);
+
+        pr_info("light zone=0 effect=%u/%s on=%u bright=%u speed=%u\n",
+                cfg->effect_id, effect != NULL ? effect->info.name : "unknown",
+                cfg->enable, cfg->brightness, cfg->speed);
+        pr_debug("light rgb=%02x%02x%02x\n", cfg->color_r, cfg->color_g, cfg->color_b);
+        ks->logged_light_cfg = *cfg;
+    }
+    if (!ks->light_log_valid || ks->logged_indicators != indicators) {
+        pr_info("indicators=%02x\n", indicators);
+        ks->logged_indicators = indicators;
+    }
+    ks->light_log_valid = true;
     ks_publish_light_state(&ks->kb_cap);
     if (ks->ds_dev == NULL) {
         ks->ds_dev = device_find_by_name("display-server");

@@ -947,19 +947,19 @@ static int _stop_notify(udevice_t device)
 
 static size_t usbd_ep_write(udevice_t device, uep_t ep, __maybe_unused void *buffer, size_t size)
 {
-    uint16_t maxpacket;
+    uint8_t *packet_buffer;
+    size_t packet_size;
 
     mutex_lock(&ep_write_lock);
-    maxpacket = EP_MAXPACKET(ep);
-    if(ep->request.remain_size >= maxpacket) {
-        dcd_ep_write(device->dcd, EP_ADDRESS(ep), ep->request.buffer, maxpacket);
-        ep->request.remain_size -= maxpacket;
-        ep->request.buffer += maxpacket;
-    } else {
-        dcd_ep_write(device->dcd, EP_ADDRESS(ep), ep->request.buffer,
-            ep->request.remain_size);
-        ep->request.remain_size = 0;
+    packet_buffer = ep->request.buffer;
+    packet_size = min_t(size_t, ep->request.remain_size, EP_MAXPACKET(ep));
+    /* A fast completion can run the higher-priority USB task before the
+     * DCD call returns. Publish the next packet before enabling hardware. */
+    ep->request.remain_size -= packet_size;
+    if (packet_size > 0U) {
+        ep->request.buffer += packet_size;
     }
+    dcd_ep_write(device->dcd, EP_ADDRESS(ep), packet_buffer, packet_size);
     mutex_unlock(&ep_write_lock);
     return size;
 }

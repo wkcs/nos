@@ -6,7 +6,10 @@
  * 6KRO + NKRO, Cascaded Sub-Module Aggregation & Integrated Keyboard Lighting).
  */
 
+#define pr_fmt(fmt) "[KB] " fmt
+
 #include <nos/nlk_caps.h>
+#include <kernel/printk.h>
 #include <kernel/mm.h>
 #include <uapi/nos/errno.h>
 #include <nos/keyboard_config.h>
@@ -321,6 +324,7 @@ int nlk_cap_keyboard_set_light_layers(struct nlk_keyboard_ctx *ctx,
         ctx->light_layer_active[i] = i < count && ctx->light_layers[i].trigger == 0U;
     }
     ctx->light_layer_generation++;
+    pr_info("light layers=%u generation=%u\n", count, ctx->light_layer_generation);
     if (ctx->light_cb != NULL) {
         ctx->light_cb(&ctx->light_cfg, NULL, ctx->indicator_leds, ctx->light_priv);
     }
@@ -345,7 +349,11 @@ static void kb_light_action(struct nlk_keyboard_ctx *ctx, const char *action, bo
         } else if (layer->activation == NLK_KB_LIGHT_TOGGLE && pressed) {
             active = !active;
         }
-        changed |= active != ctx->light_layer_active[i];
+        if (active != ctx->light_layer_active[i]) {
+            pr_info("light layer=%u zone=%u action=%s active=%u\n",
+                    i, layer->zone_id, action, active ? 1U : 0U);
+            changed = true;
+        }
         ctx->light_layer_active[i] = active;
     }
     if (changed && ctx->light_cb != NULL) {
@@ -1450,9 +1458,10 @@ static uint32_t kb_execute_action_chain(struct nlk_keyboard_ctx *ctx, uint8_t la
         uint8_t act_id = chain->action_ids[k];
         for (a = 0U; a < ctx->action_count && a < NLK_KB_MAX_ACTIONS; a++) {
             if (ctx->action_descs[a].action_id == act_id) {
+                int res = KEY_ACTION_PASS;
                 if (ctx->action_handlers[a] != NULL) {
                     act_ctx.key_code = current_code; /* 收集上一个动作输出的按键值作为输入 */
-                    int res = ctx->action_handlers[a](&act_ctx, ctx->action_handler_privs[a]);
+                    res = ctx->action_handlers[a](&act_ctx, ctx->action_handler_privs[a]);
 
                     /* 在使用时判断动作回调是否返回了按键值 */
                     if (res < 0) {
@@ -1470,6 +1479,13 @@ static uint32_t kb_execute_action_chain(struct nlk_keyboard_ctx *ctx, uint8_t la
                          * 不覆盖已有按键值，保持原有键码继续流转 */
                     }
                 }
+                /* Per-key lighting is bound to every key on some boards. */
+                __pr_log(false, strcmp(ctx->action_descs[a].name, "key_light") == 0 ?
+                         LOG_DEBUG : LOG_INFO,
+                         "action=%s layer=%u key=%u event=%s result=%s\n",
+                         ctx->action_descs[a].name, layer, key_index,
+                         pressed ? "press" : "release",
+                         res < 0 ? "drop" : (res > 0 ? "remap" : "pass"));
                 kb_light_action(ctx, ctx->action_descs[a].name, pressed != 0U);
                 break;
             }

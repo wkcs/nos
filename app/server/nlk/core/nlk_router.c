@@ -5,7 +5,10 @@
  * Cross-MTU Fragmentation / Reassembly Engine.
  */
 
+#define pr_fmt(fmt) "[NLK] " fmt
+
 #include <nos/nlk_core.h>
+#include <kernel/printk.h>
 #include <uapi/nos/errno.h>
 #include <string.h>
 
@@ -214,6 +217,11 @@ static int nlk_dispatch_local(struct nlk_node *node,
     }
 
     /* 2. Dispatch to Cap 0 (Core Discovery & Topology) */
+    if ((flags & NLK_FLAG_ACK_REQ) != 0U &&
+        (mode == NLK_MODE_RPC || mode == NLK_MODE_SYS)) {
+        pr_debug("RX src=%04x cap=%u op=%02x seq=%u bytes=%u\n",
+                 hdr->src_addr, hdr->dst_cap, hdr->cmd_op, hdr->seq_id, payload_len);
+    }
     if (hdr->dst_cap == NLK_CAP_ID_CORE) {
         rc = nlk_discovery_handle_packet(node, hdr, payload, payload_len,
                                          rx_port, resp_buf, &resp_len);
@@ -295,9 +303,23 @@ static int nlk_dispatch_local(struct nlk_node *node,
             out_ptr = &err_payload;
             out_len = sizeof(err_payload);
         }
-        (void)nlk_node_send_raw(node, hdr->src_addr, hdr->dst_cap, mode,
-                                ack_flags, hdr->cmd_op, hdr->seq_id,
-                                out_ptr, out_len);
+        int tx_rc = nlk_node_send_raw(node, hdr->src_addr, hdr->dst_cap, mode,
+                                     ack_flags, hdr->cmd_op, hdr->seq_id,
+                                     out_ptr, out_len);
+        struct nlk_capability *cap = nlk_node_find_cap_by_id(node, hdr->dst_cap);
+        bool quiet = (hdr->dst_cap == NLK_CAP_ID_CORE &&
+                      hdr->cmd_op == NLK_CORE_OP_PING) ||
+                     (cap != NULL && cap->cap_type == NLK_CAP_SHELL &&
+                      hdr->cmd_op == NLK_SHELL_OP_HEARTBEAT);
+        enum log_level level = (rc < 0 || tx_rc < 0) ? LOG_WARNING :
+                               (quiet ? LOG_DEBUG : LOG_INFO);
+
+        /* Log requests/results, never outgoing log streams: logging the log
+         * transport itself would continuously refill its own tap buffer. */
+        __pr_log(false, level,
+                 "RPC src=%04x cap=%u op=%02x seq=%u in=%u out=%u rc=%d tx=%d\n",
+                 hdr->src_addr, hdr->dst_cap, hdr->cmd_op, hdr->seq_id,
+                 payload_len, out_len, rc, tx_rc < 0 ? tx_rc : 0);
     }
 
     return rc;
@@ -319,10 +341,13 @@ int nlk_node_input_packet(struct nlk_node *node, struct nlk_bearer *rx_bearer,
     memcpy(&hdr, pkt_buf, sizeof(hdr));
     if (NLK_PKT_VER(hdr.ver_flags) != NLK_PROTO_VER_1) {
         node->dropped_packets++;
+        pr_warning("drop version=%02x bytes=%u\n", hdr.ver_flags, pkt_len);
         return -EPROTONOSUPPORT;
     }
     if ((uint32_t)sizeof(hdr) + hdr.payload_len > pkt_len) {
         node->dropped_packets++;
+        pr_warning("drop truncated seq=%u payload=%u bytes=%u\n",
+                   hdr.seq_id, hdr.payload_len, pkt_len);
         return -EBADMSG;
     }
 

@@ -68,6 +68,7 @@ TESTS = [
     ("run_sched_load_dump_test.py",),
     ("run_timer_test.py",),
     ("run_vfs_fd_lifetime_test.py",),
+    ("run_vfs_inode_lifetime_test.py",),
     ("run_vfs_fd_position_test.py",),
     ("run_task_fd_dup2_test.py",),
     ("run_redirect_libc_test.py",),

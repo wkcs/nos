@@ -312,6 +312,9 @@ static int _function_enable(ufunction_t func)
     usbd_io_request(func->device, winusb_device->ep_out,
                     &winusb_device->ep_out->request);
 
+    pr_info("link configured in=%02x out=%02x mps=%u\n",
+            EP_ADDRESS(winusb_device->ep_in), EP_ADDRESS(winusb_device->ep_out),
+            EP_MAXPACKET(winusb_device->ep_out));
     return 0;
 }
 
@@ -323,6 +326,8 @@ static int _function_disable(ufunction_t func)
         return -EINVAL;
 
     winusb_device = (struct winusb_device *)func->user_data;
+    pr_info("link disabled tx_pending=%u rx_queued=%u\n",
+            winusb_device->tx_pending ? 1U : 0U, kfifo_used(&winusb_device->rx_fifo));
     winusb_device->connected = false;
     winusb_device->rx_paused = false;
     kfifo_skip(&winusb_device->rx_fifo, kfifo_used(&winusb_device->rx_fifo));
