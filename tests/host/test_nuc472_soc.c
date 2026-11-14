@@ -87,6 +87,11 @@ static NUC472_SYS_Type g_stub_sys;
 static NUC472_CLK_Type g_stub_clk;
 static NUC472_FMC_Type g_stub_fmc;
 
+static bool g_fmc_sim_auto_complete = true;
+static bool g_fmc_sim_ispff = false;
+static int g_fmc_clear_state = 0;
+static const uint32_t g_mock_uid[3] = { 0x11223344UL, 0x55667788UL, 0x99AABBCCUL };
+
 NUC472_SYS_Type *nuc472_test_sys(void)
 {
     return &g_stub_sys;
@@ -99,15 +104,45 @@ NUC472_CLK_Type *nuc472_test_clk(void)
 
 NUC472_FMC_Type *nuc472_test_fmc(void)
 {
+    /* 模拟 ISPFF 标志位写 1 清除的硬件行为 */
+    if (g_fmc_clear_state == 1) {
+        /* 代码正在读取: if ((NUC472_FMC->ISPCTL & ISPFF) != 0U) */
+        g_fmc_clear_state = 2;
+    } else if (g_fmc_clear_state == 2) {
+        /* 代码正在执行写 1 清除: NUC472_FMC->ISPCTL |= ISPFF */
+        g_fmc_clear_state = 3;
+    } else if (g_fmc_clear_state == 3) {
+        /* 代码已完成写 1 清除，硬件自动清除 ISPCTL 中的 ISPFF 标志位 */
+        g_stub_fmc.ISPCTL &= ~NUC472_FMC_ISPCTL_ISPFF;
+        g_fmc_clear_state = 0;
+    }
+
+    if (g_fmc_sim_auto_complete && ((g_stub_fmc.ISPTRG & NUC472_FMC_ISPTRG_ISPGO) != 0U)) {
+        if (g_fmc_sim_ispff) {
+            /* 模拟硬件 ISP 失败：置位 ISPCTL.ISPFF 并准备响应写 1 清除 */
+            g_stub_fmc.ISPCTL |= NUC472_FMC_ISPCTL_ISPFF;
+            g_fmc_clear_state = 1;
+        } else if (g_stub_fmc.ISPCMD == NUC472_FMC_ISPCMD_READ_UID) {
+            uint32_t word_idx = g_stub_fmc.ISPADDR / 4U;
+            if (word_idx < 3U) {
+                g_stub_fmc.ISPDAT = g_mock_uid[word_idx];
+            }
+        }
+        g_stub_fmc.ISPTRG &= ~NUC472_FMC_ISPTRG_ISPGO;
+    }
+
     return &g_stub_fmc;
 }
 
 #include "../../soc/nuc472/clk.c"
 #include "../../soc/nuc472/sys_mfp.c"
+#include "../../soc/nuc472/system.c"
 
 int main(void)
 {
     uint32_t hclk;
+    uint32_t uid[3];
+    int ret;
 
     /* 测试场景 1: REGLCTL 已可解锁且 HXT/PLL 就绪 -> 切换到 84 MHz PLL */
     memset(&g_stub_sys, 0, sizeof(g_stub_sys));
@@ -120,19 +155,68 @@ int main(void)
     assert((g_stub_clk.CLKSEL0 & NUC472_CLK_CLKSEL0_HCLKSEL_Msk) == NUC472_CLK_CLKSEL0_HCLKSEL_PLL);
     assert(g_stub_clk.PLLCTL == NUC472_CLK_PLLCTL_84MHZ_HXT);
 
-    /* 测试场景 2: 无外部晶振 (HXTSTB=0) -> 超时安全回退 HIRC (22.1184 MHz) */
+    /* 测试场景 2: 无外部晶振 (HXTSTB=0) -> 超时安全回退 HIRC (22.1184 MHz) 且分频清零 */
     memset(&g_stub_clk, 0, sizeof(g_stub_clk));
     g_stub_sys.REGLCTL = 1U;
     g_stub_clk.STATUS = NUC472_CLK_STATUS_HIRCSTB;
+    g_stub_clk.CLKDIV0 = 0x00000F0FUL; /* 模拟先前有残存分频 */
     hclk = nuc472_clk_init_84mhz();
     assert(hclk == 22118400UL);
     assert((g_stub_clk.CLKSEL0 & NUC472_CLK_CLKSEL0_HCLKSEL_Msk) == NUC472_CLK_CLKSEL0_HCLKSEL_HIRC);
+    assert((g_stub_clk.CLKDIV0 & (NUC472_CLK_CLKDIV0_HCLKDIV_Msk | NUC472_CLK_CLKDIV0_UARTDIV_Msk)) == 0U);
 
     /* 测试场景 3: MFP 寄存器写入不破坏同寄存器其他引脚 */
     nuc472_mfp_set(&g_stub_sys.GPG_MFPL, NUC472_SYS_MFPL_Msk(1U), (1UL << 4));
     nuc472_mfp_set(&g_stub_sys.GPG_MFPL, NUC472_SYS_MFPL_Msk(2U), (1UL << 8));
     assert((g_stub_sys.GPG_MFPL & 0xFF0U) == 0x110U);
 
-    printf("NUC472 SoC layout & clock tests passed\n");
+    /* 测试场景 4: FMC UID 正常读取，且 FMC->ISPSTS bit 6 (CBS) 置 1 时不应误判为失败 */
+    memset(&g_stub_sys, 0, sizeof(g_stub_sys));
+    memset(&g_stub_fmc, 0, sizeof(g_stub_fmc));
+    memset(uid, 0, sizeof(uid));
+    g_stub_sys.REGLCTL = 1U;
+    g_fmc_sim_auto_complete = true;
+    g_fmc_sim_ispff = false;
+    g_stub_fmc.ISPSTS = 0x00000040UL; /* FMC_ISPSTS bit 6 CBS 置 1 */
+    g_stub_fmc.ISPCTL = 0U;
+    ret = nuc472_fmc_read_uid(uid);
+    assert(ret == 0);
+    assert(uid[0] == 0x11223344UL);
+    assert(uid[1] == 0x55667788UL);
+    assert(uid[2] == 0x99AABBCCUL);
+    assert((g_stub_fmc.ISPSTS & 0x00000040UL) == 0x00000040UL); /* 不应错误篡改 ISPSTS */
+    assert((g_stub_fmc.ISPCTL & NUC472_FMC_ISPCTL_ISPEN) == 0U);
+    assert(g_stub_sys.REGLCTL == 0U);
+
+    /* 测试场景 5: FMC UID 读取中 ISPFF (ISPCTL bit 6) 置位时返回 -1 并写 1 清除标志 */
+    memset(&g_stub_sys, 0, sizeof(g_stub_sys));
+    memset(&g_stub_fmc, 0, sizeof(g_stub_fmc));
+    memset(uid, 0, sizeof(uid));
+    g_stub_sys.REGLCTL = 1U;
+    g_fmc_sim_auto_complete = true;
+    g_fmc_sim_ispff = true;
+    g_fmc_clear_state = 0;
+    g_stub_fmc.ISPCTL = 0U;
+    g_stub_fmc.ISPSTS = 0U;
+    ret = nuc472_fmc_read_uid(uid);
+    assert(ret == -1);
+    assert((g_stub_fmc.ISPCTL & NUC472_FMC_ISPCTL_ISPFF) == 0U); /* 标志位已被写 1 清除 */
+    assert((g_stub_fmc.ISPSTS & NUC472_FMC_ISPCTL_ISPFF) == 0U); /* 不应写到 ISPSTS */
+    assert((g_stub_fmc.ISPCTL & NUC472_FMC_ISPCTL_ISPEN) == 0U);
+    assert(g_stub_sys.REGLCTL == 0U);
+
+    /* 测试场景 6: FMC ISPGO 卡死未响应时有限超时返回 -1 */
+    memset(&g_stub_sys, 0, sizeof(g_stub_sys));
+    memset(&g_stub_fmc, 0, sizeof(g_stub_fmc));
+    memset(uid, 0, sizeof(uid));
+    g_stub_sys.REGLCTL = 1U;
+    g_fmc_sim_auto_complete = false; /* 不清除 ISPGO */
+    g_fmc_sim_ispff = false;
+    ret = nuc472_fmc_read_uid(uid);
+    assert(ret == -1);
+    assert((g_stub_fmc.ISPCTL & NUC472_FMC_ISPCTL_ISPEN) == 0U);
+    assert(g_stub_sys.REGLCTL == 0U);
+
+    printf("NUC472 SoC layout, clock & FMC tests passed\n");
     return 0;
 }

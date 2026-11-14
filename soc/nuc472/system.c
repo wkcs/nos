@@ -41,16 +41,24 @@ int nuc472_fmc_read_uid(uint32_t uid[3])
     NUC472_FMC->ISPCTL |= NUC472_FMC_ISPCTL_ISPEN;
 
     for (uint32_t i = 0; i < 3U; i++) {
+        uint32_t timeout = 100000UL;
+
         NUC472_FMC->ISPCMD = NUC472_FMC_ISPCMD_READ_UID;
         NUC472_FMC->ISPADDR = i * 4U;
         NUC472_FMC->ISPTRG = NUC472_FMC_ISPTRG_ISPGO;
 
-        while ((NUC472_FMC->ISPTRG & NUC472_FMC_ISPTRG_ISPGO) != 0U) {
-            /* 等待 ISP 触发完成 */
+        while (((NUC472_FMC->ISPTRG & NUC472_FMC_ISPTRG_ISPGO) != 0U) && (timeout > 0UL)) {
+            timeout--;
         }
 
-        if ((NUC472_FMC->ISPSTS & NUC472_FMC_ISPCTL_ISPFF) != 0U) {
-            NUC472_FMC->ISPSTS |= NUC472_FMC_ISPCTL_ISPFF;
+        if (timeout == 0UL) {
+            NUC472_FMC->ISPCTL &= ~NUC472_FMC_ISPCTL_ISPEN;
+            nuc472_sys_lock();
+            return -1;
+        }
+
+        if ((NUC472_FMC->ISPCTL & NUC472_FMC_ISPCTL_ISPFF) != 0U) {
+            NUC472_FMC->ISPCTL |= NUC472_FMC_ISPCTL_ISPFF;
             NUC472_FMC->ISPCTL &= ~NUC472_FMC_ISPCTL_ISPEN;
             nuc472_sys_lock();
             return -1;

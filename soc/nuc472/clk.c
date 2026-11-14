@@ -60,7 +60,9 @@ uint32_t nuc472_clk_init_84mhz(void)
     }
 
     if (sys_hclk != NUC472_PLL_84MHZ_HZ) {
-        /* 回退 HIRC (22.1184 MHz)，UART0 同步切到 HIRC 避免波特率失真 */
+        /* 回退 HIRC (22.1184 MHz)，清除分频恢复 1:1，UART0 同步切到 HIRC 避免波特率失真 */
+        NUC472_CLK->CLKDIV0 = (NUC472_CLK->CLKDIV0 &
+                               ~(NUC472_CLK_CLKDIV0_HCLKDIV_Msk | NUC472_CLK_CLKDIV0_UARTDIV_Msk));
         NUC472_CLK->CLKSEL0 = (NUC472_CLK->CLKSEL0 & ~NUC472_CLK_CLKSEL0_HCLKSEL_Msk) |
                               NUC472_CLK_CLKSEL0_HCLKSEL_HIRC;
         NUC472_CLK->CLKSEL1 = (NUC472_CLK->CLKSEL1 & ~NUC472_CLK_CLKSEL1_UARTSEL_Msk) |
