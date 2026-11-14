@@ -5,7 +5,13 @@ if(CONFIG_LUA)
         "${CMAKE_SOURCE_DIR}/libs/third_party/lua/lua.c"
         "${CMAKE_SOURCE_DIR}/libs/third_party/lua/luac.c"
     )
-    list(APPEND APP_SRCS ${LUA_LIB_SRCS} lua/lua_test.c)
+    list(APPEND APP_SRCS ${LUA_LIB_SRCS})
+    if(CONFIG_LUA_BOOT_TEST)
+        list(APPEND APP_SRCS lua/lua_test.c)
+    endif()
+    if(CONFIG_LUA_SHELL_CMD)
+        list(APPEND APP_SRCS lua/lua_cmd.c)
+    endif()
     list(APPEND APP_PRIVATE_INCLUDES "${CMAKE_SOURCE_DIR}/libs/third_party/lua")
 endif()
 

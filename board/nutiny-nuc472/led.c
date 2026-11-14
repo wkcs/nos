@@ -13,6 +13,19 @@
 
 #define LED_BLINK_INTERVAL_MS 500U
 
+volatile bool g_nutiny_led_blinking = true;
+
+int board_led_set(bool on)
+{
+    g_nutiny_led_blinking = false;
+    nuc472_sys_unlock();
+    NUC472_SYS->GPB_MFPH &= ~(0xFU << 8);
+    nuc472_sys_lock();
+    nuc472_gpio_config(NUC472_PORT_B, 10, NUC472_GPIO_MODE_OUTPUT);
+    nuc472_gpio_write(NUC472_PORT_B, 10, on ? 1 : 0);
+    return 0;
+}
+
 static void nutiny_led_task(void *parameter)
 {
     (void)parameter;
@@ -28,7 +41,9 @@ static void nutiny_led_task(void *parameter)
 
     while (true) {
         msleep(LED_BLINK_INTERVAL_MS);
-        nuc472_gpio_toggle(NUC472_PORT_B, 10);
+        if (g_nutiny_led_blinking) {
+            nuc472_gpio_toggle(NUC472_PORT_B, 10);
+        }
     }
 }
 

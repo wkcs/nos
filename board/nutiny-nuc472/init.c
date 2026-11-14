@@ -21,20 +21,7 @@ mm_reserve_node_register((addr_t)&__mm_sys_reserve_start, (addr_t)&__mm_sys_rese
 mm_node_register((addr_t)&__mm_pool_start, (addr_t)&__mm_pool_end, inside);
 #endif
 
-#ifdef CONFIG_NLK_SERVER
-static int nutiny_nlk_setup(struct nlk_node *node)
-{
-    return nlk_node_set_identity(node, 0x4e4fU, 0x0472U,
-                                 NLK_DEV_CLASS_GENERIC, "NuTiny-NUC472");
-}
-#endif
-
-void board_early_init(void)
-{
-#ifdef CONFIG_NLK_SERVER
-    nlk_server_register_board_setup(nutiny_nlk_setup);
-#endif
-}
+void board_early_init(void) { }
 void board_init(void)
 {
 #ifndef NUC472_HOST_TEST

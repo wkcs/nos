@@ -6,6 +6,58 @@
  * Email: huqihan@live.com
  */
 
+#ifdef SHELL_EXT_CMD_HOST_TEST
+#include <stdio.h>
+#include <string.h>
+#include <stdbool.h>
+#include <stddef.h>
+#include <errno.h>
+#include <nos/shell_cmd.h>
+
+/* 外部扩展命令链表头指针 */
+static struct nos_shell_cmd *g_ext_cmds = NULL;
+
+int nos_shell_register_cmd(struct nos_shell_cmd *cmd)
+{
+    struct nos_shell_cmd *curr;
+
+    if (cmd == NULL || cmd->name == NULL || cmd->func == NULL) {
+        return -EINVAL;
+    }
+
+    for (curr = g_ext_cmds; curr != NULL; curr = curr->next) {
+        if (curr == cmd || strcmp(curr->name, cmd->name) == 0) {
+            return -EEXIST;
+        }
+    }
+
+    cmd->next = g_ext_cmds;
+    g_ext_cmds = cmd;
+    return 0;
+}
+
+const struct nos_shell_cmd *nos_shell_find_cmd(const char *name)
+{
+    struct nos_shell_cmd *curr;
+
+    if (name == NULL) {
+        return NULL;
+    }
+    for (curr = g_ext_cmds; curr != NULL; curr = curr->next) {
+        if (strcmp(curr->name, name) == 0) {
+            return curr;
+        }
+    }
+    return NULL;
+}
+
+const struct nos_shell_cmd *nos_shell_get_ext_cmds(void)
+{
+    return g_ext_cmds;
+}
+
+#else /* !SHELL_EXT_CMD_HOST_TEST */
+
 #define pr_fmt(fmt) "[NSHELL]:%s[%d]:"fmt, __func__, __LINE__
 
 #include <kernel/task.h>
@@ -26,6 +78,7 @@
 #include <fs/vfs.h>
 #include <lib/vsprintf.h>
 #include <nos/shell_session.h>
+#include <nos/shell_cmd.h>
 #include <stdarg.h>
 #include "parse.h"
 #include "glob.h"
@@ -6491,20 +6544,74 @@ static const struct shell_cmd builtin_cmds[] = {
 #endif
 };
 
+/* 外部扩展命令链表头指针 */
+static struct nos_shell_cmd *g_ext_cmds = NULL;
+
+int nos_shell_register_cmd(struct nos_shell_cmd *cmd)
+{
+    struct nos_shell_cmd *curr;
+
+    if (cmd == NULL || cmd->name == NULL || cmd->func == NULL) {
+        return -EINVAL;
+    }
+
+    for (curr = g_ext_cmds; curr != NULL; curr = curr->next) {
+        if (curr == cmd || strcmp(curr->name, cmd->name) == 0) {
+            return -EEXIST;
+        }
+    }
+
+    cmd->next = g_ext_cmds;
+    g_ext_cmds = cmd;
+    return 0;
+}
+
+const struct nos_shell_cmd *nos_shell_find_cmd(const char *name)
+{
+    struct nos_shell_cmd *curr;
+
+    if (name == NULL) {
+        return NULL;
+    }
+    for (curr = g_ext_cmds; curr != NULL; curr = curr->next) {
+        if (strcmp(curr->name, name) == 0) {
+            return curr;
+        }
+    }
+    return NULL;
+}
+
+const struct nos_shell_cmd *nos_shell_get_ext_cmds(void)
+{
+    return g_ext_cmds;
+}
+
 static const struct shell_cmd *nshell_find_builtin(const char *name)
 {
     size_t i;
+    const struct nos_shell_cmd *ext;
+    static struct shell_cmd s_ext_cmd_adapter;
 
     for (i = 0U; i < sizeof(builtin_cmds) / sizeof(builtin_cmds[0]); i++) {
         if (strcmp(builtin_cmds[i].name, name) == 0)
             return &builtin_cmds[i];
     }
+
+    ext = nos_shell_find_cmd(name);
+    if (ext != NULL) {
+        s_ext_cmd_adapter.name = ext->name;
+        s_ext_cmd_adapter.desc = ext->desc;
+        s_ext_cmd_adapter.func = (cmd_func_t)ext->func;
+        return &s_ext_cmd_adapter;
+    }
+
     return NULL;
 }
 
 static void nshell_print_commands(void)
 {
     size_t i;
+    struct nos_shell_cmd *ext;
 
     shell_printf("Available commands:\n");
     for (i = 0U; i < sizeof(builtin_cmds) / sizeof(builtin_cmds[0]); i++) {
@@ -6513,20 +6620,166 @@ static void nshell_print_commands(void)
             continue;
         shell_printf("  %-10s - %s\n", cmd->name, cmd->desc);
     }
+    for (ext = g_ext_cmds; ext != NULL; ext = ext->next) {
+        if (ext->desc == NULL)
+            continue;
+        shell_printf("  %-10s - %s\n", ext->name, ext->desc);
+    }
 }
 
 static void complete_scan_commands(struct nshell *shell, struct complete_workspace *ws)
 {
     struct shell_variable *alias;
+    struct nos_shell_cmd *ext;
     size_t i;
     for (i = 0U; i < sizeof(builtin_cmds) / sizeof(builtin_cmds[0]); i++) {
         if (builtin_cmds[i].desc != NULL)
             complete_consider(ws, builtin_cmds[i].name);
     }
+    for (ext = g_ext_cmds; ext != NULL; ext = ext->next) {
+        if (ext->name != NULL)
+            complete_consider(ws, ext->name);
+    }
     for (alias = shell->aliases; alias != NULL; alias = alias->next) {
         if (nshell_find_builtin(alias->name) == NULL)
             complete_consider(ws, alias->name);
     }
+}
+
+int nos_shell_printf(const char *fmt, ...)
+{
+    char buf[CONFIG_SHELL_OUTPUT_SIZE];
+    va_list args;
+    int len;
+
+    va_start(args, fmt);
+    len = vsnprintf(buf, sizeof(buf), fmt, args);
+    va_end(args);
+
+    if (len < 0) {
+        return len;
+    }
+    if ((size_t)len >= sizeof(buf)) {
+        len = sizeof(buf) - 1;
+    }
+    return nshell_write(buf, len);
+}
+
+int nos_shell_error(const char *fmt, ...)
+{
+    struct nshell *shell = nshell_current();
+    char buf[CONFIG_SHELL_OUTPUT_SIZE];
+    va_list args;
+    int len;
+
+    if (shell == NULL) return -EINVAL;
+    va_start(args, fmt);
+    len = vsnprintf(buf, sizeof(buf), fmt, args);
+    va_end(args);
+    if (len < 0) return len;
+    if ((size_t)len >= sizeof(buf)) len = sizeof(buf) - 1;
+    if (shell->error_pipe != NULL) {
+        int rc = shell_stream_pipe_write(shell->error_pipe, buf, (size_t)len);
+        if (rc < 0) shell->output_error = rc;
+        return rc;
+    }
+#if defined(CONFIG_VFS) || defined(CONFIG_FS)
+    ssize_t ret = nshell_write_fd(shell, 2, buf, (size_t)len);
+    if (ret >= 0) {
+        return (int)ret;
+    }
+    if (ret != -EBADF) {
+        shell->output_error = (int)ret;
+        return (int)ret;
+    }
+#endif
+    return shell_session_write(&shell->session, buf, (unsigned int)len);
+}
+
+int nos_shell_getc(void)
+{
+    return nshell_getc();
+}
+
+int nos_shell_read_cwd_file(const char *path, char **buf_out, size_t *len_out)
+{
+    struct dentry *dentry;
+    struct file *f;
+    size_t size;
+    char *buf;
+    int ret;
+    int bytes_read;
+
+    if (path == NULL || buf_out == NULL || len_out == NULL) {
+        return -EINVAL;
+    }
+
+    *buf_out = NULL;
+    *len_out = 0;
+
+    dentry = resolve_path(path);
+    if (dentry == NULL || dentry->d_inode == NULL) {
+        return -ENOENT;
+    }
+    if (S_ISDIR(dentry->d_inode->i_mode)) {
+        return -EISDIR;
+    }
+    if (dentry->d_inode->i_fop == NULL || dentry->d_inode->i_fop->read == NULL) {
+        return -EACCES;
+    }
+
+    f = kzalloc(sizeof(struct file), GFP_KERNEL);
+    if (f == NULL) {
+        return -ENOMEM;
+    }
+
+    f->f_inode = dentry->d_inode;
+    f->f_op = dentry->d_inode->i_fop;
+    f->f_pos = 0;
+    f->f_path.dentry = dentry;
+    f->f_path.mnt = NULL;
+    f->f_flags = O_RDONLY;
+
+    if (f->f_op->open != NULL) {
+        ret = f->f_op->open(dentry->d_inode, f);
+        if (ret != 0) {
+            kfree(f);
+            return ret;
+        }
+    }
+
+    size = (size_t)dentry->d_inode->i_size;
+    buf = kmalloc(size + 1, GFP_KERNEL);
+    if (buf == NULL) {
+        if (f->f_op->release != NULL) {
+            f->f_op->release(dentry->d_inode, f);
+        }
+        kfree(f);
+        return -ENOMEM;
+    }
+
+    bytes_read = 0;
+    if (size > 0) {
+        bytes_read = f->f_op->read(f, buf, size, &f->f_pos);
+        if (bytes_read < 0) {
+            if (f->f_op->release != NULL) {
+                f->f_op->release(dentry->d_inode, f);
+            }
+            kfree(buf);
+            kfree(f);
+            return bytes_read;
+        }
+    }
+    buf[bytes_read] = '\0';
+
+    if (f->f_op->release != NULL) {
+        f->f_op->release(dentry->d_inode, f);
+    }
+    kfree(f);
+
+    *buf_out = buf;
+    *len_out = (size_t)bytes_read;
+    return 0;
 }
 
 static void complete_scan_dir(struct dentry *dir, struct complete_workspace *ws)
@@ -6788,3 +7041,5 @@ static int nshell_init(void)
 }
 task_init(nshell_init);
 #endif
+
+#endif /* !SHELL_EXT_CMD_HOST_TEST */

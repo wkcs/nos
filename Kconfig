@@ -467,6 +467,17 @@ config LUA
 	bool "Enable Lua runtime"
 	default n
 
+config LUA_BOOT_TEST
+	bool "Run Lua self-test task at boot"
+	depends on LUA
+	default y if !BOARD_NUTINY_NUC472
+	default n
+
+config LUA_SHELL_CMD
+	bool "Register on-demand lua command in nShell"
+	depends on LUA && SHELL
+	default y
+
 config LVGL
 	bool "Enable LVGL graphics library"
 	default n
