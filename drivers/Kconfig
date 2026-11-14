@@ -150,6 +150,13 @@ endmenu
 # UART 驱动
 menu "UART Support"
 
+config UART_NUC472
+	bool "NUC472 UART driver"
+	depends on SOC_NUC472
+	default y
+	help
+	  启用新唐 NUC472 片上 UART0 中断与环形 FIFO 驱动。
+
 config UART_BAUD_RATE
 	int "Console UART baud rate"
 	default 115200

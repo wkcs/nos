@@ -85,6 +85,7 @@ TESTS = [
     ("run_usb_safety_test.py",),
     ("run_nuc472_soc_test.py",),
     ("run_nuc472_fmc_rtc_test.py",),
+    ("run_nuc472_uart_test.py",),
 ]
 
 
