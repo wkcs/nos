@@ -1,0 +1,4 @@
+# NUC472 SoC 头文件路径注册
+list(APPEND _NOS_INCLUDE_DIRS
+    "${CMAKE_CURRENT_LIST_DIR}/include"
+)

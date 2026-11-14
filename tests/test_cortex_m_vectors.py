@@ -32,7 +32,7 @@ class VectorTests(unittest.TestCase):
                 self.assertIsNotNone(symbols.get('soc_early_init'))
 
     def test_firmware_has_no_unresolved_reset_symbol(self):
-        for board in ('nk60-v2', 'qemu-stm32', 'wl-001', 'zj-v3'):
+        for board in ('nk60-v2', 'qemu-stm32', 'wl-001', 'zj-v3', 'nutiny-nuc472'):
             with self.subTest(board=board):
                 elf = ROOT / 'build' / board / 'nos.elf'
                 undefined = subprocess.check_output(
@@ -99,6 +99,20 @@ class VectorTests(unittest.TestCase):
             with self.subTest(board=board):
                 vectors, _ = vectors_and_symbols(board)
                 self.assertEqual(len(vectors), entries)
+
+    def test_nuc472_vectors_match_irq_count(self):
+        vectors, symbols = vectors_and_symbols('nutiny-nuc472')
+        self.assertEqual(len(vectors), 16 + 142)
+        for irq, handler in (
+            (18, 'GPC_IRQHandler'),
+            (48, 'EADC0_IRQHandler'),
+            (88, 'USBD_IRQHandler'),
+            (104, 'UART0_IRQHandler'),
+        ):
+            with self.subTest(irq=irq, handler=handler):
+                symbol = symbols.get(handler)
+                self.assertIsNotNone(symbol)
+                self.assertEqual(vectors[16 + irq] & ~1, symbol & ~1)
 
     def test_uart_and_dma_irq_slots(self):
         for board, dma_irq, dma_handler in (

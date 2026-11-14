@@ -83,6 +83,7 @@ TESTS = [
     ("run_ipc_notify_test.py",),
     ("run_ipc_endpoint_test.py",),
     ("run_usb_safety_test.py",),
+    ("run_nuc472_soc_test.py",),
 ]
 
 
