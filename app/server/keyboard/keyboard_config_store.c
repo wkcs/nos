@@ -113,9 +113,17 @@ static int config_file_matches(const char *path, const void *buffer, size_t leng
     return equal;
 }
 
-/* Return one for a new write, zero for identical content, or a negative errno. */
-static int config_write_buffer(const char *dir, const char *id, uint8_t kind,
-                                const void *buffer, size_t length)
+static __attribute__((__noinline__)) int config_buffer_matches(const char *dir, const char *id, uint8_t kind,
+                                          const void *buffer, size_t length)
+{
+    char path[CONFIG_PATH_SIZE];
+
+    if (config_path(path, dir, id, kind, 0) != 0) return -EINVAL;
+    return config_file_matches(path, buffer, length);
+}
+
+static __attribute__((__noinline__)) int config_commit_buffer(const char *dir, const char *id, uint8_t kind,
+                                         const void *buffer, size_t length)
 {
     char path[CONFIG_PATH_SIZE], temp[CONFIG_PATH_SIZE];
     ssize_t count;
@@ -123,9 +131,6 @@ static int config_write_buffer(const char *dir, const char *id, uint8_t kind,
 
     if (config_path(path, dir, id, kind, 0) != 0 ||
         config_path(temp, dir, id, kind, 1) != 0) return -EINVAL;
-    if (config_file_matches(path, buffer, length)) return 0;
-    ret = config_ensure_dirs(dir);
-    if (ret != 0) return ret;
     fd = nos_open(temp, O_WRONLY | O_CREAT | O_TRUNC, 0644);
     if (fd < 0) return fd;
     count = nos_write(fd, buffer, length);
@@ -140,6 +145,20 @@ static int config_write_buffer(const char *dir, const char *id, uint8_t kind,
     }
     if (ret != 0) (void)nos_unlink(temp);
     return ret == 0 ? 1 : ret;
+}
+
+/* Keep path buffers out of the directory creation call chain. LittleFS may
+ * compact metadata and enter SPI waits while creating even a small file. */
+static int config_write_buffer(const char *dir, const char *id, uint8_t kind,
+                                const void *buffer, size_t length)
+{
+    int ret = config_buffer_matches(dir, id, kind, buffer, length);
+
+    if (ret < 0) return ret;
+    if (ret != 0) return 0;
+    ret = config_ensure_dirs(dir);
+    if (ret != 0) return ret;
+    return config_commit_buffer(dir, id, kind, buffer, length);
 }
 
 int keyboard_config_snapshot_write(const char *dir, const void *buffer, size_t length)
@@ -198,7 +217,8 @@ static int config_read_file(const struct nlk_keyboard_ctx *ctx, const char *dir,
     if (fd < 0) return fd;
     count = nos_read(fd, &header, sizeof(header));
     file_size = nos_lseek(fd, 0, SEEK_END);
-    if (count != (ssize_t)sizeof(header) || header.length < sizeof(header) ||
+    if (count != (ssize_t)sizeof(header) || header.version != keyboard_config_version(kind) ||
+        header.length < sizeof(header) ||
         header.length > config_max_size(ctx) || file_size != (loff_t)header.length ||
         nos_lseek(fd, 0, SEEK_SET) < 0) {
         (void)nos_close(fd);
@@ -215,6 +235,42 @@ static int config_read_file(const struct nlk_keyboard_ctx *ctx, const char *dir,
         return -EIO;
     }
     return 0;
+}
+
+static void config_prune_missing_macros(struct nlk_keyboard_ctx *ctx, const char *dir,
+                                         struct mutex *lock)
+{
+    unsigned int index = 0U;
+
+    for (;;) {
+        struct keyboard_config_macro_target target = {0};
+        const struct nlk_kb_macro *macro;
+        char path[CONFIG_PATH_SIZE];
+        unsigned int i;
+        int present;
+
+        if (lock != NULL) mutex_lock(lock);
+        macro = ctx->macros;
+        for (i = 0U; macro != NULL && i < index; i++) macro = macro->next;
+        if (macro == NULL) {
+            if (lock != NULL) mutex_unlock(lock);
+            break;
+        }
+        target.info = macro->info;
+        memcpy(target.file_id, macro->info.id, sizeof(macro->info.id));
+        if (lock != NULL) mutex_unlock(lock);
+        /* A snapshot is a cache, never proof that a deleted library object exists. */
+        present = config_path(path, dir, target.file_id, KEYBOARD_CONFIG_MACRO, 0) == 0 &&
+            vfs_lookup_path(vfs_get_root(), path) != NULL;
+        if (!present) {
+            int removed;
+            if (lock != NULL) mutex_lock(lock);
+            removed = keyboard_config_remove_macro(ctx, &target);
+            if (lock != NULL) mutex_unlock(lock);
+            if (removed > 0) continue;
+        }
+        index++;
+    }
 }
 
 int keyboard_config_activate_macros(struct nlk_keyboard_ctx *ctx, const char *hardware,
@@ -268,6 +324,7 @@ int keyboard_config_activate_macros(struct nlk_keyboard_ctx *ctx, const char *ha
         if (ret < 0) return ret;
     }
     if (ret < 0) return ret;
+    config_prune_missing_macros(ctx, dir, lock);
     if (lock != NULL) mutex_lock(lock);
     link = &ctx->macros;
     while (*link != NULL) {
@@ -294,20 +351,31 @@ int keyboard_config_file_load(struct nlk_keyboard_ctx *ctx, const char *hardware
     void *buffer = NULL, *backup = NULL;
     size_t length = 0U, backup_len = 0U;
     int activation = kind == KEYBOARD_CONFIG_KEYBOARD || kind == KEYBOARD_CONFIG_ACTIVE;
+    uint8_t backup_kind = kind == KEYBOARD_CONFIG_ACTIVE ? KEYBOARD_CONFIG_ACTIVE : KEYBOARD_CONFIG_KEYBOARD;
+    bool macro_bindings = true;
     int ret = config_read_file(ctx, dir, id, kind, &buffer, &length);
 
     if (ret != 0) return ret;
+    if (kind == KEYBOARD_CONFIG_KEYBOARD) {
+        ret = keyboard_config_validate(ctx, hardware, kind, macro_id, buffer, length, &macro_bindings);
+        if (ret != 0) goto out;
+        activation = macro_bindings;
+    }
     if (activation) {
-        ret = keyboard_config_encode(ctx, hardware, "active", "", KEYBOARD_CONFIG_ACTIVE,
+        /* A keyboard profile cannot change lighting or active object IDs. */
+        ret = keyboard_config_encode(ctx, hardware, "backup", "", backup_kind,
                                       0U, NULL, 0U, &backup_len);
         if (ret != 0) goto out;
         backup = kmalloc(backup_len, GFP_KERNEL);
         if (backup == NULL) { ret = -ENOMEM; goto out; }
-        ret = keyboard_config_encode(ctx, hardware, "active", "", KEYBOARD_CONFIG_ACTIVE,
+        ret = keyboard_config_encode(ctx, hardware, "backup", "", backup_kind,
                                       0U, backup, backup_len, &backup_len);
         if (ret != 0) goto out;
     }
     ret = keyboard_config_decode(ctx, hardware, kind, macro_id, buffer, length);
+    if (ret == 0 && kind == KEYBOARD_CONFIG_KEYBOARD && !macro_bindings) {
+        nlk_cap_keyboard_replace_macros(ctx, NULL, 0U);
+    }
     kfree(buffer);
     buffer = NULL;
     if (ret == 0 && activation) {
@@ -315,7 +383,7 @@ int keyboard_config_file_load(struct nlk_keyboard_ctx *ctx, const char *hardware
     }
     if (ret != 0 && backup != NULL) {
         nlk_cap_keyboard_replace_macros(ctx, NULL, 0U);
-        (void)keyboard_config_decode(ctx, hardware, KEYBOARD_CONFIG_ACTIVE, 0U, backup, backup_len);
+        (void)keyboard_config_decode(ctx, hardware, backup_kind, 0U, backup, backup_len);
     }
 out:
     kfree(buffer);
@@ -398,18 +466,17 @@ static int config_file_next(const char *dir, const char *hardware, uint8_t kind,
         if (fd < 0) continue;
         ret = (int)nos_read(fd, &work->header, sizeof(work->header));
         (void)nos_close(fd);
-        if (ret != (int)sizeof(work->header) || work->header.magic != KEYBOARD_CONFIG_MAGIC ||
-            (work->header.version < 1U || work->header.version > 5U) || work->header.kind != kind ||
+        if (ret != (int)sizeof(work->header) ||
+            work->header.magic != KEYBOARD_CONFIG_MAGIC ||
+            work->header.version != keyboard_config_version(kind) || work->header.kind != kind ||
             memchr(work->header.hardware, '\0', sizeof(work->header.hardware)) == NULL ||
             memchr(work->header.name, '\0', sizeof(work->header.name)) == NULL ||
-            (work->header.version >= 2U && memchr(work->header.desc, '\0', sizeof(work->header.desc)) == NULL) ||
+            memchr(work->header.desc, '\0', sizeof(work->header.desc)) == NULL ||
             strcmp(work->header.hardware, hardware) != 0) continue;
         memset(info, 0, sizeof(*info));
         memcpy(info->id, work->scan.id, strlen(work->scan.id) + 1U);
         memcpy(info->name, work->header.name, sizeof(info->name));
-        if (work->header.version >= 2U) {
-            memcpy(info->desc, work->header.desc, sizeof(info->desc));
-        }
+        memcpy(info->desc, work->header.desc, sizeof(info->desc));
         info->size = work->header.length;
         return 1;
     }
@@ -435,6 +502,104 @@ int keyboard_config_file_delete(const char *dir, const char *id, uint8_t kind)
     char path[CONFIG_PATH_SIZE];
     if (kind == KEYBOARD_CONFIG_ACTIVE || config_path(path, dir, id, kind, 0) != 0) return -EINVAL;
     return nos_unlink(path);
+}
+
+struct config_cleanup_entry {
+    struct config_cleanup_entry *next;
+    char id[KEYBOARD_CONFIG_ID_SIZE];
+};
+
+static int config_strip_macro_file(struct nlk_keyboard_ctx *ctx, const char *hardware,
+                                    const char *dir, const char *id, uint8_t kind,
+                                    const struct keyboard_config_macro_target *target)
+{
+    void *buffer = NULL;
+    size_t length = 0U;
+    int ret = config_read_file(ctx, dir, id, kind, &buffer, &length);
+
+    if (ret != 0) return ret;
+    ret = keyboard_config_strip_macro(ctx, hardware, target, buffer, &length);
+    if (ret > 0) ret = config_write_buffer(dir, id, kind, buffer, length);
+    kfree(buffer);
+    return ret < 0 ? ret : 0;
+}
+
+int keyboard_config_macro_delete(struct nlk_keyboard_ctx *ctx, const char *hardware,
+                                  const char *dir, const char *id)
+{
+    struct config_cleanup_entry *entries = NULL;
+    struct keyboard_config_file_info info;
+    struct keyboard_config_macro_target target = { .info.macro_id = NLK_KB_MACRO_NEW };
+    const struct nlk_kb_macro *macro;
+    void *buffer = NULL;
+    size_t length = 0U;
+    uint32_t cursor = 0U;
+    int ret;
+
+    if (ctx == NULL || hardware == NULL || dir == NULL || !config_valid_id(id)) return -EINVAL;
+    memcpy(target.file_id, id, strlen(id) + 1U);
+    if (ctx->macro_rpc_lock != NULL) mutex_lock(ctx->macro_rpc_lock);
+    for (macro = ctx->macros; macro != NULL; macro = macro->next) {
+        if (strcmp(macro->info.id, id) == 0) {
+            target.info = macro->info;
+            break;
+        }
+    }
+    if (ctx->macro_rpc_lock != NULL) mutex_unlock(ctx->macro_rpc_lock);
+    ret = config_read_file(ctx, dir, id, KEYBOARD_CONFIG_MACRO, &buffer, &length);
+    if (ret == 0) {
+        /* A malformed library file must still be deletable by its filename. */
+        if (keyboard_config_validate(ctx, hardware, KEYBOARD_CONFIG_MACRO, 0U,
+                                      buffer, length, NULL) == 0) {
+            struct nlk_kb_macro_info stored;
+            memcpy(&stored, (uint8_t *)buffer + sizeof(struct keyboard_config_header), sizeof(stored));
+            if (macro == NULL) target.info = stored;
+        }
+        kfree(buffer);
+    } else if (ret != -ENOENT && ret != -EINVAL && ret != -EIO) {
+        return ret;
+    }
+    /* Snapshot IDs first: replacing a file can reorder the directory cursor. */
+    while ((ret = keyboard_config_file_next(dir, hardware, KEYBOARD_CONFIG_KEYBOARD,
+                                             &cursor, &info)) > 0) {
+        struct config_cleanup_entry *entry = kmalloc(sizeof(*entry), GFP_KERNEL);
+        if (entry == NULL) { ret = -ENOMEM; break; }
+        memcpy(entry->id, info.id, sizeof(entry->id));
+        entry->next = entries;
+        entries = entry;
+    }
+    while (entries != NULL) {
+        struct config_cleanup_entry *entry = entries;
+        entries = entry->next;
+        if (ret >= 0) ret = config_strip_macro_file(ctx, hardware, dir, entry->id,
+                                                    KEYBOARD_CONFIG_KEYBOARD, &target);
+        kfree(entry);
+    }
+    if (ret < 0) return ret;
+    ret = config_strip_macro_file(ctx, hardware, dir, NULL, KEYBOARD_CONFIG_ACTIVE, &target);
+    if (ret != 0 && ret != -ENOENT) return ret;
+    /* Finish durable cleanup before unlinking the authoritative library object. */
+    buffer = NULL;
+    length = 0U;
+    if (ctx->macro_rpc_lock != NULL) mutex_lock(ctx->macro_rpc_lock);
+    ret = keyboard_config_remove_macro(ctx, &target);
+    if (ret >= 0) {
+        ret = keyboard_config_encode_persistent(ctx, hardware, "active", "", KEYBOARD_CONFIG_ACTIVE,
+                                                0U, NULL, 0U, &length);
+    }
+    if (ret == 0) {
+        buffer = kmalloc(length, GFP_KERNEL);
+        ret = buffer != NULL ? keyboard_config_encode_persistent(ctx, hardware, "active", "",
+            KEYBOARD_CONFIG_ACTIVE, 0U, buffer, length, &length) : -ENOMEM;
+    }
+    if (ctx->macro_rpc_lock != NULL) mutex_unlock(ctx->macro_rpc_lock);
+    if (ret == 0) ret = keyboard_config_snapshot_write(dir, buffer, length);
+    kfree(buffer);
+    if (ret < 0) return ret;
+    ret = keyboard_config_file_delete(dir, id, KEYBOARD_CONFIG_MACRO);
+    if (ret != 0 && ret != -ENOENT) return ret;
+    (void)keyboard_config_manifest_update(&ctx->manifest, KEYBOARD_CONFIG_MACRO, id, 1);
+    return 0;
 }
 
 int keyboard_config_file_restore(struct nlk_keyboard_ctx *ctx, const char *hardware,
@@ -571,6 +736,9 @@ int keyboard_config_file_rpc(struct nlk_keyboard_ctx *ctx, const char *hardware,
             (file_req->kind == KEYBOARD_CONFIG_LIGHT &&
              strcmp(ctx->active_light_id, file_req->id) == 0)) {
             return -EBUSY;
+        }
+        if (file_req->kind == KEYBOARD_CONFIG_MACRO) {
+            return keyboard_config_macro_delete(ctx, hardware, dir, file_req->id);
         }
         ret = keyboard_config_file_delete(dir, file_req->id, file_req->kind);
         if (ret == 0) {

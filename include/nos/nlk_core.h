@@ -126,6 +126,14 @@ struct nlk_node *nlk_default_node(void);
 typedef int (*nlk_board_setup_fn)(struct nlk_node *node);
 void nlk_server_register_board_setup(nlk_board_setup_fn setup_fn);
 
+/* Product maintenance runs between requests on the existing service stack.
+ * The registered object must remain alive for the lifetime of the service. */
+struct nlk_maintenance {
+    void (*run)(void *priv);
+    void *priv;
+};
+int nlk_server_register_maintenance(struct nlk_maintenance *maintenance);
+
 /* Node lifecycle & configuration */
 int nlk_node_init(struct nlk_node *node, nlk_addr_t initial_addr,
                   uint16_t vendor_id, uint16_t product_id,

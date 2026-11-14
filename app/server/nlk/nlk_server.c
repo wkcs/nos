@@ -40,10 +40,21 @@ struct nlk_server {
 
 static struct nlk_server g_nlk_srv;
 static nlk_board_setup_fn g_board_setup_fn;
+static struct nlk_maintenance *g_maintenance;
 
 void nlk_server_register_board_setup(nlk_board_setup_fn setup_fn)
 {
     g_board_setup_fn = setup_fn;
+}
+
+int nlk_server_register_maintenance(struct nlk_maintenance *maintenance)
+{
+    struct nlk_maintenance *expected = NULL;
+
+    if (maintenance == NULL || maintenance->run == NULL) return -EINVAL;
+    if (__atomic_compare_exchange_n(&g_maintenance, &expected, maintenance, false,
+                                     __ATOMIC_RELEASE, __ATOMIC_RELAXED)) return 0;
+    return expected == maintenance ? 0 : -EEXIST;
 }
 
 static void nlk_server_reboot_timer_cb(void *parameter)
@@ -144,6 +155,12 @@ static void nlk_server_task_entry(void *parameter)
             }
         }
         (void)nlk_cap_log_flush_pending(&srv->log_cap);
+
+        {
+            struct nlk_maintenance *maintenance =
+                __atomic_load_n(&g_maintenance, __ATOMIC_ACQUIRE);
+            if (maintenance != NULL) maintenance->run(maintenance->priv);
+        }
 
         tick_cnt++;
         if ((tick_cnt % 10U) == 0U && srv->node->desc.attached_children > 0U) {

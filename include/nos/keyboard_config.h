@@ -22,6 +22,22 @@ enum keyboard_config_kind {
 #define KEYBOARD_CONFIG_ID_SIZE NLK_KB_CONFIG_ID_SIZE
 #define KEYBOARD_CONFIG_MAGIC 0x31434b4eUL
 
+/* Each object kind has exactly one current on-disk layout. */
+static inline uint16_t keyboard_config_version(uint8_t kind)
+{
+    switch (kind) {
+    case KEYBOARD_CONFIG_KEYBOARD:
+        return 5U;
+    case KEYBOARD_CONFIG_ACTIVE:
+        return 4U;
+    case KEYBOARD_CONFIG_LIGHT:
+    case KEYBOARD_CONFIG_MACRO:
+        return 3U;
+    default:
+        return 0U;
+    }
+}
+
 struct keyboard_config_header {
     uint32_t magic;
     uint16_t version;
@@ -48,6 +64,10 @@ int keyboard_config_macro_bound(const struct nlk_keyboard_ctx *ctx, uint8_t slot
 int keyboard_config_decode(struct nlk_keyboard_ctx *ctx, const char *hardware,
                            uint8_t kind, uint8_t macro_id,
                            const void *buffer, size_t length);
+/* Validate without changing runtime state; report whether macro bindings exist. */
+int keyboard_config_validate(struct nlk_keyboard_ctx *ctx, const char *hardware,
+                             uint8_t kind, uint8_t macro_id,
+                             const void *buffer, size_t length, bool *macro_bindings);
 
 struct keyboard_config_file_info {
     char id[KEYBOARD_CONFIG_ID_SIZE];
@@ -67,6 +87,22 @@ int keyboard_config_file_load(struct nlk_keyboard_ctx *ctx, const char *hardware
 int keyboard_config_file_next(const char *dir, const char *hardware, uint8_t kind,
                               uint32_t *cursor, struct keyboard_config_file_info *info);
 int keyboard_config_file_delete(const char *dir, const char *id, uint8_t kind);
+/* Remove a library object, its resident cache, and bindings in all saved snapshots. */
+int keyboard_config_macro_delete(struct nlk_keyboard_ctx *ctx, const char *hardware,
+                                  const char *dir, const char *id);
+/* File IDs use the filesystem contract, independently of shorter macro metadata IDs. */
+struct keyboard_config_macro_target {
+    char file_id[KEYBOARD_CONFIG_ID_SIZE];
+    struct nlk_kb_macro_info info;
+};
+
+/* Codec helpers return one when changed, zero when unchanged, or a negative errno. */
+int keyboard_config_remove_macro(struct nlk_keyboard_ctx *ctx,
+                                  const struct keyboard_config_macro_target *target);
+int keyboard_config_strip_macro(struct nlk_keyboard_ctx *ctx, const char *hardware,
+                                 const struct keyboard_config_macro_target *target,
+                                 void *buffer, size_t *length);
+
 /* Returns 1 when written, 0 when unchanged, or a negative errno. */
 int keyboard_config_snapshot_write(const char *dir, const void *buffer, size_t length);
 int keyboard_config_active_save(const struct nlk_keyboard_ctx *ctx,

@@ -54,15 +54,18 @@ static void capture_macro_report(const struct nlk_kb_hid_report *report, void *p
     if (report->keys[0] == 4U && (report->modifiers & 1U) != 0U) saw_macro_modified_key = true;
 }
 static unsigned int outstanding_kmalloc;
+static size_t remaining_kmalloc = (size_t)-1;
 void *kmalloc(size_t size, gfp_t flags)
 {
     (void)flags;
+    if (remaining_kmalloc == 0U) return NULL;
     if (fail_next_kmalloc) {
         fail_next_kmalloc = false;
         return NULL;
     }
     void *ptr = malloc(size);
     if (ptr != NULL) {
+        if (remaining_kmalloc != (size_t)-1) remaining_kmalloc--;
         outstanding_kmalloc++;
     }
     return ptr;
@@ -441,7 +444,7 @@ struct mock_vfs_node {
     bool          is_dir;
     char          path[128];
     char          name[32];
-    uint8_t       data[1024];
+    uint8_t       data[2048];
     size_t        size;
     struct inode  inode;
     struct dentry dentry;
@@ -908,26 +911,93 @@ static void test_light_action_lifecycle(void)
                                        NULL, &wire_len) == -EINVAL);
         assert(restored.light_layers[0].opacity == 31U);
 
-        /* A version-2 lighting file leaves the factory layer configuration available. */
+        /* Current files replace layers; historical formats must be rejected. */
         assert(nlk_cap_keyboard_set_light_layers(&kb, NULL, 0U) == 0);
-        assert(keyboard_config_encode(&kb, "test", "legacy", "", KEYBOARD_CONFIG_LIGHT,
+        assert(keyboard_config_encode(&kb, "test", "current", "", KEYBOARD_CONFIG_LIGHT,
                                       0U, file, sizeof(file), &file_len) == 0);
-        file_len--; /* Version 2 ends before the new layer-count byte. */
+        assert(keyboard_config_decode(&restored, "test", KEYBOARD_CONFIG_LIGHT,
+                                      0U, file, file_len) == 0);
+        assert(restored.light_layer_count == 0U);
+        file_len--; /* Historical files omitted the layer-count byte. */
         struct keyboard_config_header *header = (struct keyboard_config_header *)file;
         header->version = 2U;
         header->length = file_len;
         header->checksum = 0U;
         header->checksum = nlk_crc32(0U, file, file_len);
         assert(keyboard_config_decode(&restored, "test", KEYBOARD_CONFIG_LIGHT,
-                                      0U, file, file_len) == 0);
-        assert(restored.light_layer_count == 3U && restored.light_layers[0].opacity == 31U);
+                                      0U, file, file_len) == -EINVAL);
+        assert(restored.light_layer_count == 0U);
         nlk_cap_keyboard_deinit(&restored);
     }
     nlk_cap_keyboard_deinit(&kb);
 }
 
+/* Each object kind accepts only its current layout. */
+static void test_current_keyboard_config_format(void)
+{
+    struct nlk_keyboard_ctx kb;
+    struct keyboard_config_header *header;
+    struct nlk_kb_macro_step step = { NLK_KB_MACRO_ACT_KEY_TAP, 4U, 10U };
+    uint8_t file[2048];
+    size_t length;
+    uint8_t kind;
+    uint16_t version;
+
+    assert(nlk_cap_keyboard_init_sized(NULL, &kb, 1U, 3U, 3U, 2U, NULL, NULL) == 0);
+    assert(nlk_cap_keyboard_register_light_effect(&kb, "off", "", NULL, NULL) == 0);
+    assert(nlk_cap_keyboard_set_macro(&kb, 2U, "Copy", &step, 1U, 2U) == 0);
+    kb.keymap[0][0] = 42U;
+    for (kind = KEYBOARD_CONFIG_KEYBOARD; kind <= KEYBOARD_CONFIG_ACTIVE; kind++) {
+        assert(keyboard_config_encode(&kb, "NK60-v2", "Current", "", kind,
+                                      2U, file, sizeof(file), &length) == 0);
+        header = (struct keyboard_config_header *)file;
+        uint16_t current_version = kind == KEYBOARD_CONFIG_KEYBOARD ? 5U :
+            (kind == KEYBOARD_CONFIG_ACTIVE ? 4U : 3U);
+        assert(header->version == current_version);
+        for (version = 0U; version <= 6U; version++) {
+            if (version == current_version) continue;
+            header->version = version;
+            header->checksum = 0U;
+            header->checksum = nlk_crc32(0U, file, length);
+            assert(keyboard_config_decode(&kb, "NK60-v2", kind, 2U, file, length) == -EINVAL);
+            assert(kb.keymap[0][0] == 42U);
+            assert(nlk_cap_keyboard_find_macro(&kb, 2U)->info.repeat_count == 2U);
+        }
+        header->version = current_version;
+        header->checksum = 0U;
+        header->checksum = nlk_crc32(0U, file, length);
+        assert(keyboard_config_decode(&kb, "NK60-v2", kind, 2U, file, length) == 0);
+    }
+    nlk_cap_keyboard_deinit(&kb);
+}
+
+static void test_keyboard_load_small_heap(void)
+{
+    struct nlk_keyboard_ctx kb;
+
+    mock_vfs_init();
+    assert(nlk_cap_keyboard_init_sized(NULL, &kb, 5U, 14U, 61U, 3U, NULL, NULL) == 0);
+    assert(nlk_cap_keyboard_register_light_effect(&kb, "off", "", NULL, NULL) == 0);
+    kb.keymap[0][0] = 4U;
+    assert(keyboard_config_file_save(&kb, "NK60-v2", "/profiles", "limited", "Limited", "",
+                                     KEYBOARD_CONFIG_KEYBOARD, 0U) == 0);
+    kb.keymap[0][0] = 9U;
+    kb.light_cfg.brightness = 77U;
+    strcpy(kb.active_keyboard_id, "previous");
+    /* A self-contained profile without macro bindings needs only its input. */
+    remaining_kmalloc = 1U;
+    assert(keyboard_config_file_load(&kb, "NK60-v2", "/profiles", "limited",
+                                     KEYBOARD_CONFIG_KEYBOARD, 0U) == 0);
+    remaining_kmalloc = (size_t)-1;
+    assert(kb.keymap[0][0] == 4U && kb.light_cfg.brightness == 77U);
+    assert(strcmp(kb.active_keyboard_id, "previous") == 0);
+    nlk_cap_keyboard_deinit(&kb);
+}
+
 int main(void)
 {
+    test_current_keyboard_config_format();
+    test_keyboard_load_small_heap();
     test_light_action_lifecycle();
     /* 7 Nodes in the 4-tier cascade tree */
     static struct nlk_node node_host;
@@ -1392,9 +1462,15 @@ int main(void)
             assert(nlk_cap_keyboard_register_light_zone(&dst, &indicator, &defaults) == 0);
             dst.zone_cfgs[0].brightness = 0U;
             assert(keyboard_config_decode(&dst, "NK60-v2", KEYBOARD_CONFIG_LIGHT,
+                                          0U, buf, len) == -EINVAL);
+            assert(dst.zone_cfgs[0].brightness == 0U);
+            assert(nlk_cap_keyboard_register_light_zone(&src, &indicator, &defaults) == 0);
+            assert(keyboard_config_encode(&src, "NK60-v2", "Evening", "Night mood", KEYBOARD_CONFIG_LIGHT,
+                                          0U, buf, sizeof(buf), &len) == 0);
+            assert(keyboard_config_decode(&dst, "NK60-v2", KEYBOARD_CONFIG_LIGHT,
                                           0U, buf, len) == 0);
             assert(dst.zone_cfgs[0].brightness == 77U);
-            assert(dst.zone_cfgs[1].effect_id == 1U && dst.zone_cfgs[1].brightness == 123U);
+            assert(dst.zone_cfgs[1].effect_id == 0U && dst.zone_cfgs[1].brightness == 123U);
         }
         nlk_cap_keyboard_deinit(&src);
         nlk_cap_keyboard_deinit(&dst);
@@ -1592,6 +1668,137 @@ int main(void)
             assert(keyboard_config_manifest_lookup_config(&kb.manifest, 0x123456U) == NULL);
         }
         nlk_cap_keyboard_deinit(&kb);
+    }
+    {
+        /* Deleting a library macro also removes every persisted snapshot/binding. */
+        struct nlk_keyboard_ctx kb;
+        struct nlk_kb_macro_step step = { NLK_KB_MACRO_ACT_KEY_TAP, 4U, 10U };
+        struct nlk_kb_config_file_req req = { .kind = KEYBOARD_CONFIG_MACRO };
+        uint16_t resp_len = 0U;
+        unsigned int allocations_before = outstanding_kmalloc;
+
+        mock_vfs_init();
+        assert(nlk_cap_keyboard_init_sized(NULL, &kb, 1U, 3U, 3U, 2U, NULL, NULL) == 0);
+        assert(nlk_cap_keyboard_set_macro_meta(&kb, 7U, "delete_me", "Delete Me", "",
+                                               &step, 1U, 1U) == 0);
+        assert(nlk_cap_keyboard_set_macro_meta(&kb, 8U, "keep_me", "Keep Me", "",
+                                               &step, 1U, 1U) == 0);
+        assert(keyboard_config_file_save(&kb, "NK60-v2", "/delete_profiles", "delete_me", "Delete Me", "",
+                                         KEYBOARD_CONFIG_MACRO, 7U) == 0);
+        assert(keyboard_config_file_save(&kb, "NK60-v2", "/delete_profiles", "keep_me", "Keep Me", "",
+                                         KEYBOARD_CONFIG_MACRO, 8U) == 0);
+        kb.keymap[0][0] = (nlk_fnv1a_24("delete_me") << 8) | 4U;
+        kb.keymap[0][1] = nlk_fnv1a_24("keep_me") << 8;
+        kb.keymap[0][2] = nlk_fnv1a_24("delete_me") << 8;
+        assert(nlk_cap_keyboard_bind_key_action(&kb, 0U, 0U, "macro_play", false) == 0);
+        assert(nlk_cap_keyboard_bind_key_action(&kb, 0U, 1U, "macro_play", false) == 0);
+        kb.keymap[1][0] = nlk_fnv1a_24("Delete Me") << 8;
+        assert(nlk_cap_keyboard_bind_key_action(&kb, 1U, 0U, "light_toggle", false) == 0);
+        assert(nlk_cap_keyboard_bind_key_action(&kb, 1U, 0U, "macro_play", true) == 0);
+        assert(keyboard_config_file_save(&kb, "NK60-v2", "/delete_profiles", "hash_bound", "Hash Bound", "",
+                                         KEYBOARD_CONFIG_KEYBOARD, 0U) == 0);
+        kb.keymap[0][0] = NLK_KB_MACRO_KEYCODE_BASE + 7U;
+        assert(keyboard_config_file_save(&kb, "NK60-v2", "/delete_profiles", "slot_bound", "Slot Bound", "",
+                                         KEYBOARD_CONFIG_KEYBOARD, 0U) == 0);
+        kb.keymap[0][0] = (nlk_fnv1a_24("delete_me") << 8) | 4U;
+        assert(keyboard_config_active_save(&kb, "NK60-v2", "/delete_profiles") == 0);
+        strcpy(req.id, "delete_me");
+        g_vfs_fail_selection_write = true;
+        assert(keyboard_config_file_rpc(&kb, "NK60-v2", "/delete_profiles", NLK_KB_OP_CONFIG_FILES_DELETE,
+                                        &req, sizeof(req), NULL, &resp_len) < 0);
+        g_vfs_fail_selection_write = false;
+        assert(vfs_lookup_path(NULL, "/delete_profiles/macro/delete_me.nkc") != NULL);
+        assert(nlk_cap_keyboard_find_macro(&kb, 7U) != NULL);
+        assert(keyboard_config_file_rpc(&kb, "NK60-v2", "/delete_profiles", NLK_KB_OP_CONFIG_FILES_DELETE,
+                                        &req, sizeof(req), NULL, &resp_len) == 0);
+        assert(vfs_lookup_path(NULL, "/delete_profiles/macro/delete_me.nkc") == NULL);
+        assert(nlk_cap_keyboard_find_macro(&kb, 7U) == NULL);
+        assert(nlk_cap_keyboard_find_macro(&kb, 8U) != NULL);
+        assert(kb.keymap[0][0] == 4U && kb.action_chains[0][0].count == 0U);
+        assert(kb.keymap[0][2] == (nlk_fnv1a_24("delete_me") << 8));
+        assert(kb.keymap[1][0] == 0U && kb.action_chains[1][0].count == 1U);
+        assert(kb.action_chains[1][0].action_ids[0] == 1U);
+        nlk_cap_keyboard_replace_macros(&kb, NULL, 0U);
+        assert(keyboard_config_file_restore(&kb, "NK60-v2", "/delete_profiles", KEYBOARD_CONFIG_ACTIVE) == 0);
+        assert(kb.macro_count == 1U && strcmp(kb.macros->info.id, "keep_me") == 0);
+        assert(kb.keymap[0][0] == 4U && kb.action_chains[0][0].count == 0U);
+        assert(keyboard_config_file_load(&kb, "NK60-v2", "/delete_profiles", "hash_bound",
+                                         KEYBOARD_CONFIG_KEYBOARD, 0U) == 0);
+        assert(kb.macro_count == 1U && strcmp(kb.macros->info.id, "keep_me") == 0);
+        assert(kb.keymap[0][0] == 4U && kb.action_chains[0][0].count == 0U);
+        assert(keyboard_config_file_load(&kb, "NK60-v2", "/delete_profiles", "slot_bound",
+                                         KEYBOARD_CONFIG_KEYBOARD, 0U) == 0);
+        assert(kb.macro_count == 1U && strcmp(kb.macros->info.id, "keep_me") == 0);
+        assert(kb.keymap[0][0] == 0U && kb.action_chains[0][0].count == 0U);
+        /* A raw VFS unlink must never resurrect an embedded snapshot on boot/load. */
+        assert(nos_unlink("/delete_profiles/macro/keep_me.nkc") == 0);
+        nlk_cap_keyboard_replace_macros(&kb, NULL, 0U);
+        assert(keyboard_config_file_restore(&kb, "NK60-v2", "/delete_profiles", KEYBOARD_CONFIG_ACTIVE) == 0);
+        assert(kb.macro_count == 0U);
+        assert(kb.keymap[0][1] == 0U && kb.action_chains[0][1].count == 0U);
+        assert(keyboard_config_file_load(&kb, "NK60-v2", "/delete_profiles", "hash_bound",
+                                         KEYBOARD_CONFIG_KEYBOARD, 0U) == 0);
+        assert(kb.macro_count == 0U);
+        assert(kb.keymap[0][1] == 0U && kb.action_chains[0][1].count == 0U);
+        /* Cleanup also works with no resident payload and an already missing file. */
+        assert(keyboard_config_macro_delete(&kb, "NK60-v2", "/delete_profiles", "keep_me") == 0);
+        assert(nlk_cap_keyboard_set_macro_meta(&kb, 8U, "keep_me", "Keep Me", "",
+                                               &step, 1U, 1U) == 0);
+        assert(keyboard_config_file_save(&kb, "NK60-v2", "/delete_profiles", "keep_me", "Keep Me", "",
+                                         KEYBOARD_CONFIG_MACRO, 8U) == 0);
+        assert(keyboard_config_file_load(&kb, "NK60-v2", "/delete_profiles", "hash_bound",
+                                         KEYBOARD_CONFIG_KEYBOARD, 0U) == 0);
+        assert(kb.macro_count == 0U && kb.action_chains[0][1].count == 0U);
+        assert(kb.action_chains[1][0].count == 1U && kb.action_chains[1][0].action_ids[0] == 1U);
+        nlk_cap_keyboard_deinit(&kb);
+        assert(outstanding_kmalloc == allocations_before);
+    }
+    {
+        /* Filesystem IDs are 23 characters even though macro metadata IDs are shorter. */
+        static const char file_id[] = "abcdefghijklmnopqrstuvw";
+        struct nlk_keyboard_ctx kb;
+        struct nlk_kb_macro_step step = { NLK_KB_MACRO_ACT_KEY_TAP, 4U, 10U };
+        struct nlk_kb_config_file_req req = { .kind = KEYBOARD_CONFIG_MACRO };
+        uint16_t resp_len = 0U;
+        unsigned int allocations_before = outstanding_kmalloc;
+
+        mock_vfs_init();
+        assert(strlen(file_id) == KEYBOARD_CONFIG_ID_SIZE - 1U);
+        assert(nlk_cap_keyboard_init_sized(NULL, &kb, 1U, 3U, 3U, 2U, NULL, NULL) == 0);
+        assert(nlk_cap_keyboard_set_macro_meta(&kb, 7U, "long_alias", "Long Alias", "",
+                                               &step, 1U, 1U) == 0);
+        assert(keyboard_config_file_save(&kb, "NK60-v2", "/long_profiles", file_id, "Long Alias", "",
+                                         KEYBOARD_CONFIG_MACRO, 7U) == 0);
+        kb.keymap[0][0] = nlk_fnv1a_24(file_id) << 8;
+        kb.keymap[0][1] = nlk_fnv1a_24("long_alias") << 8;
+        assert(nlk_cap_keyboard_bind_key_action(&kb, 0U, 0U, "macro_play", false) == 0);
+        assert(nlk_cap_keyboard_bind_key_action(&kb, 0U, 1U, "macro_play", false) == 0);
+        assert(keyboard_config_file_save(&kb, "NK60-v2", "/long_profiles", "bound", "Bound", "",
+                                         KEYBOARD_CONFIG_KEYBOARD, 0U) == 0);
+        assert(keyboard_config_active_save(&kb, "NK60-v2", "/long_profiles") == 0);
+        memcpy(req.id, file_id, sizeof(file_id));
+        assert(keyboard_config_file_rpc(&kb, "NK60-v2", "/long_profiles", NLK_KB_OP_CONFIG_FILES_DELETE,
+                                        &req, sizeof(req), NULL, &resp_len) == 0);
+        assert(vfs_lookup_path(NULL, "/long_profiles/macro/abcdefghijklmnopqrstuvw.nkc") == NULL);
+        assert(kb.macro_count == 0U);
+        assert(kb.action_chains[0][0].count == 0U && kb.action_chains[0][1].count == 0U);
+        assert(keyboard_config_file_restore(&kb, "NK60-v2", "/long_profiles", KEYBOARD_CONFIG_ACTIVE) == 0);
+        assert(kb.macro_count == 0U && kb.action_chains[0][0].count == 0U);
+        assert(keyboard_config_file_load(&kb, "NK60-v2", "/long_profiles", "bound",
+                                         KEYBOARD_CONFIG_KEYBOARD, 0U) == 0);
+        assert(kb.macro_count == 0U && kb.action_chains[0][0].count == 0U);
+        assert(kb.action_chains[0][1].count == 0U);
+        /* Preserve the full filename hash even when no metadata/file remains. */
+        kb.keymap[0][0] = nlk_fnv1a_24(file_id) << 8;
+        assert(nlk_cap_keyboard_bind_key_action(&kb, 0U, 0U, "macro_play", false) == 0);
+        assert(keyboard_config_file_save(&kb, "NK60-v2", "/long_profiles", "hash_only", "Hash Only", "",
+                                         KEYBOARD_CONFIG_KEYBOARD, 0U) == 0);
+        assert(keyboard_config_macro_delete(&kb, "NK60-v2", "/long_profiles", file_id) == 0);
+        assert(keyboard_config_file_load(&kb, "NK60-v2", "/long_profiles", "hash_only",
+                                         KEYBOARD_CONFIG_KEYBOARD, 0U) == 0);
+        assert(kb.action_chains[0][0].count == 0U && kb.keymap[0][0] == 0U);
+        nlk_cap_keyboard_deinit(&kb);
+        assert(outstanding_kmalloc == allocations_before);
     }
     assert(nlk_cap_flash_init(&node_nk60, &nk60_flash_cap,
                               (uint8_t)BOOT_NORMAL, 0x00020100UL) == 1);

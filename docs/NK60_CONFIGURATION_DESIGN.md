@@ -1,6 +1,6 @@
 # NK60 configuration system: proposed design
 
-Status: the version 1 named-object codec, filesystem store, NLK file operations,
+Status: the current named-object codec, filesystem store, NLK file operations,
 and non-blocking timed macro engine are implemented alongside the legacy
 four-slot protocol.
 
@@ -48,7 +48,25 @@ loading restore the previous runtime configuration. Storage is subject to
 filesystem and available-space limits, rather than a fixed count of saved
 profiles.
 
-The version 1 header and fixed-width fields use little-endian layout. Files
+Macro files are the authoritative catalog. Runtime macro objects and embedded
+profile snapshots are caches, not additional device macros. Deleting a macro
+removes its cached steps and matching `macro_play` bindings from the active state
+and all saved keyboard profiles before unlinking the library file. Loading a
+snapshot also discards cached macros whose library file no longer exists.
+
+Delayed active-state writes run between NLK requests on the existing service
+stack, rather than reserving another task stack. The keyboard scanner retains
+its higher priority, and flash I/O runs without the keyboard lock. The stack
+regression measures metadata compaction, wear leveling, and exception context
+for both persistence and macro deletion.
+
+Each object kind has one current layout, selected by `keyboard_config_version()`:
+keyboard profiles use version 5, active snapshots use version 4, and lighting
+profiles and macros use version 3. Readers accept only the current version for
+the requested kind; historical parsing and fallback paths are removed. Existing
+device files must be converted once or regenerated and uploaded before loading.
+
+The header and fixed-width fields use little-endian layout. Files
 carry model/revision/layout identity, a name, dimensions, length and CRC-32.
 Key entries contain a keycode and only the action names actually bound; macros
 contain only their actual steps. Lighting effects are stored by name and mapped

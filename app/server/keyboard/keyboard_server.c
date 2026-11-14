@@ -50,7 +50,6 @@
 
 struct keyboard_server {
     struct task_struct     *task;
-    struct task_struct     *sync_task;
     struct device          *key_dev;
     struct device          *hid_dev;
     struct device          *ds_dev;
@@ -60,7 +59,7 @@ struct keyboard_server {
     struct nlk_node        *nlk_node;
     struct nlk_keyboard_ctx kb_cap;
     struct nos_completion   comp;
-    struct nos_completion   sync_comp;
+    struct nlk_maintenance  config_maintenance;
     struct mutex            lock;
     bool                    enable;
     bool                    config_dirty;
@@ -470,107 +469,85 @@ static bool ks_valid_config_id(const char *id)
     return false;
 }
 
-/*
- * 低优先级后台持久化工作任务：
- * 优先级 7，栈 1536 字节。专职执行 Flash 写盘与 nos_sync()，
- * 绝不在持有 ks->lock 期间进行任何耗时 I/O，保证 1ms 按键扫描完全零阻塞。
- */
-static void kb_config_worker_task_entry(void *parameter)
+/* Reuse the NLK service's existing 4 KiB stack between requests. Flash I/O
+ * stays outside the keyboard lock and the higher-priority scanner can run. */
+static void ks_flush_config(void *parameter)
 {
-    struct keyboard_server *ks = (struct keyboard_server *)parameter;
+    struct keyboard_server *ks = parameter;
+    size_t len = 0U;
+    void *snapshot = NULL;
+    int rc = 0;
+    bool retry = false;
 
-    while (true) {
-        nos_completion_wait(&ks->sync_comp, NOS_WAIT_FOREVER);
-
-        if (ks == NULL) {
-            continue;
-        }
-
-        size_t len = 0U;
-        void *snapshot = NULL;
-        int rc = 0;
-        bool retry = false;
-
-        mutex_lock(&ks->lock);
-        if (ks->sync_pending) {
-            ks->sync_pending = false;
-            if (ks->config_loading || ks->kb_cap.recording_macro_id != 0xFFU) {
-                rc = -EBUSY;
-            } else {
-                rc = keyboard_config_encode_persistent(&ks->kb_cap, ks->profile.hardware_id,
-                                            "active", "", KEYBOARD_CONFIG_ACTIVE,
-                                            0U, NULL, 0U, &len);
-                if (rc == 0) {
-                    snapshot = kmalloc(len, GFP_KERNEL);
-                    rc = snapshot != NULL ? keyboard_config_encode_persistent(&ks->kb_cap, ks->profile.hardware_id,
-                          "active", "", KEYBOARD_CONFIG_ACTIVE,
-                          0U, snapshot, len, &len) : -ENOMEM;
-                }
-            }
-        }
+    if (ks == NULL) return;
+    mutex_lock(&ks->lock);
+    if (!ks->sync_pending) {
         mutex_unlock(&ks->lock);
-
-        if (rc == 0 && snapshot != NULL) {
-            rc = ks_persistent_store_ready(ks);
-            if (rc == 0) {
-                rc = keyboard_config_snapshot_write("/assets/keyboard", snapshot, len);
-                if (rc > 0) {
-                    ks->sync_flush_pending = true;
-                    rc = 0;
-                }
-                if (rc == 0 && ks->sync_flush_pending) {
-                    rc = nos_sync();
-                    if (rc == 0) ks->sync_flush_pending = false;
-                }
-            }
-            kfree(snapshot);
-            snapshot = NULL;
-            if (rc == 0) {
-                pr_info("config save complete bytes=%u heap_free=%u\n",
-                        (unsigned int)len, (unsigned int)mm_block_free_size());
-            }
-        }
-        if (snapshot != NULL) kfree(snapshot);
-        if (rc != 0) {
-            retry = true;
-            if (rc != -EBUSY) pr_err("config save failed rc=%d heap_free=%u\n",
-                                     rc, (unsigned int)mm_block_free_size());
-        }
-
-        mutex_lock(&ks->lock);
-        ks->sync_busy = false;
-        if (retry && !ks->config_dirty) {
-            ks->config_dirty = true;
-            ks->sync_deadline_ms = (uint32_t)tick_to_msec_64(cpu_run_ticks()) + KS_CONFIG_SAVE_DELAY_MS;
-        }
-        mutex_unlock(&ks->lock);
-    }
-}
-
-/*
- * 触发 active 配置快照并唤醒后台持久化任务：
- * 瞬间持有 ks->lock 获取序列化快照并释放，杜绝共享状态数据竞争。
- */
-static void ks_trigger_config_snapshot(struct keyboard_server *ks)
-{
-    bool need_signal = false;
-
-    if (ks == NULL) {
         return;
     }
+    ks->sync_pending = false;
+    if (ks->config_loading || ks->kb_cap.recording_macro_id != 0xFFU) {
+        rc = -EBUSY;
+    } else {
+        rc = keyboard_config_encode_persistent(&ks->kb_cap, ks->profile.hardware_id,
+                                    "active", "", KEYBOARD_CONFIG_ACTIVE,
+                                    0U, NULL, 0U, &len);
+        if (rc == 0) {
+            snapshot = kmalloc(len, GFP_KERNEL);
+            rc = snapshot != NULL ? keyboard_config_encode_persistent(&ks->kb_cap, ks->profile.hardware_id,
+                  "active", "", KEYBOARD_CONFIG_ACTIVE,
+                  0U, snapshot, len, &len) : -ENOMEM;
+        }
+    }
+    mutex_unlock(&ks->lock);
+
+    if (rc == 0 && snapshot != NULL) {
+        rc = ks_persistent_store_ready(ks);
+        if (rc == 0) {
+            rc = keyboard_config_snapshot_write("/assets/keyboard", snapshot, len);
+            if (rc > 0) {
+                ks->sync_flush_pending = true;
+                rc = 0;
+            }
+            if (rc == 0 && ks->sync_flush_pending) {
+                rc = nos_sync();
+                if (rc == 0) ks->sync_flush_pending = false;
+            }
+        }
+        kfree(snapshot);
+        snapshot = NULL;
+        if (rc == 0) {
+            pr_info("config save complete bytes=%u heap_free=%u\n",
+                    (unsigned int)len, (unsigned int)mm_block_free_size());
+        }
+    }
+    if (snapshot != NULL) kfree(snapshot);
+    if (rc != 0) {
+        retry = true;
+        if (rc != -EBUSY) pr_err("config save failed rc=%d heap_free=%u\n",
+                                 rc, (unsigned int)mm_block_free_size());
+    }
+
+    mutex_lock(&ks->lock);
+    ks->sync_busy = false;
+    if (retry && !ks->config_dirty) {
+        ks->config_dirty = true;
+        ks->sync_deadline_ms = (uint32_t)tick_to_msec_64(cpu_run_ticks()) + KS_CONFIG_SAVE_DELAY_MS;
+    }
+    mutex_unlock(&ks->lock);
+}
+
+static void ks_trigger_config_snapshot(struct keyboard_server *ks)
+{
+    if (ks == NULL) return;
     mutex_lock(&ks->lock);
     if (ks->config_dirty && !ks->config_loading && !ks->sync_busy &&
         ks->kb_cap.recording_macro_id == 0xFFU) {
         ks->sync_pending = true;
         ks->sync_busy = true;
         ks->config_dirty = false;
-        need_signal = true;
     }
     mutex_unlock(&ks->lock);
-
-    if (need_signal) {
-        nos_complete(&ks->sync_comp);
-    }
 }
 
 /* Separate LOAD's file header/path frame from all other RPC operations. */
@@ -581,11 +558,14 @@ static noinline int ks_load_config_file(struct keyboard_server *ks,
     const struct nlk_kb_config_file_req *file_req = req;
     char path[64];
     const char *sub = NULL;
+    const char *stage = "snapshot";
     int fd;
     struct keyboard_config_header header;
+    char previous_keyboard_id[KEYBOARD_CONFIG_ID_SIZE];
     void *file_buf = NULL, *backup = NULL;
     size_t file_len = 0U, backup_len = 0U;
     bool load_started = false;
+    bool macro_bindings = true;
     ssize_t count;
     loff_t file_size;
     int ret;
@@ -612,9 +592,12 @@ static noinline int ks_load_config_file(struct keyboard_server *ks,
     }
     count = nos_read(fd, &header, sizeof(header));
     file_size = nos_lseek(fd, 0, SEEK_END);
-    if (count != (ssize_t)sizeof(header) || header.length < sizeof(header) ||
+    if (count != (ssize_t)sizeof(header) || header.version != keyboard_config_version(file_req->kind) ||
+        header.length < sizeof(header) ||
         file_size != (loff_t)header.length || nos_lseek(fd, 0, SEEK_SET) < 0) {
         (void)nos_close(fd);
+        pr_warning("config load rejected id=%s stage=header bytes=%d\n",
+                   file_req->id, (int)count);
         return -EINVAL;
     }
     file_len = header.length;
@@ -638,13 +621,20 @@ static noinline int ks_load_config_file(struct keyboard_server *ks,
         ret = -EBUSY;
     }
     if (ret == 0 && file_req->kind == NLK_KB_CONFIG_KEYBOARD) {
+        ret = keyboard_config_validate(&ks->kb_cap, ks->profile.hardware_id,
+                                       file_req->kind, file_req->macro_id,
+                                       file_buf, file_len, &macro_bindings);
+    }
+    if (ret == 0 && file_req->kind == NLK_KB_CONFIG_KEYBOARD && macro_bindings) {
+        memcpy(previous_keyboard_id, ks->kb_cap.active_keyboard_id, sizeof(previous_keyboard_id));
+        /* Keep rollback scoped to the fields a keyboard profile can change. */
         ret = keyboard_config_encode(&ks->kb_cap, ks->profile.hardware_id,
-                                      "active", "", KEYBOARD_CONFIG_ACTIVE,
+                                      "backup", "", KEYBOARD_CONFIG_KEYBOARD,
                                       0U, NULL, 0U, &backup_len);
         if (ret == 0) {
             backup = kmalloc(backup_len, GFP_KERNEL);
             ret = backup != NULL ? keyboard_config_encode(&ks->kb_cap, ks->profile.hardware_id,
-                   "active", "", KEYBOARD_CONFIG_ACTIVE, 0U, backup, backup_len, &backup_len) : -ENOMEM;
+                   "backup", "", KEYBOARD_CONFIG_KEYBOARD, 0U, backup, backup_len, &backup_len) : -ENOMEM;
         }
         if (ret == 0) {
             ks->config_loading = true;
@@ -652,8 +642,14 @@ static noinline int ks_load_config_file(struct keyboard_server *ks,
         }
     }
     if (ret == 0) {
+        stage = "decode";
         ret = keyboard_config_decode(&ks->kb_cap, ks->profile.hardware_id,
                                      file_req->kind, file_req->macro_id, file_buf, file_len);
+        if (ret == 0 && file_req->kind == NLK_KB_CONFIG_KEYBOARD && !macro_bindings) {
+            /* Validation/commit is atomic under the lock. No fallible macro
+             * library I/O follows, so a second heap-sized snapshot is needless. */
+            nlk_cap_keyboard_replace_macros(&ks->kb_cap, NULL, 0U);
+        }
     }
     if (ret == 0) {
         if (file_req->kind == NLK_KB_CONFIG_KEYBOARD) {
@@ -667,7 +663,8 @@ static noinline int ks_load_config_file(struct keyboard_server *ks,
     mutex_unlock(&ks->lock);
     kfree(file_buf);
 
-    if (ret == 0 && file_req->kind == NLK_KB_CONFIG_KEYBOARD) {
+    if (ret == 0 && file_req->kind == NLK_KB_CONFIG_KEYBOARD && macro_bindings) {
+        stage = "macros";
         ret = keyboard_config_activate_macros(&ks->kb_cap, ks->profile.hardware_id,
                                               "/assets/keyboard", &ks->lock);
     }
@@ -676,7 +673,8 @@ static noinline int ks_load_config_file(struct keyboard_server *ks,
         if (ret != 0) {
             nlk_cap_keyboard_replace_macros(&ks->kb_cap, NULL, 0U);
             (void)keyboard_config_decode(&ks->kb_cap, ks->profile.hardware_id,
-                                         KEYBOARD_CONFIG_ACTIVE, 0U, backup, backup_len);
+                                         KEYBOARD_CONFIG_KEYBOARD, 0U, backup, backup_len);
+            memcpy(ks->kb_cap.active_keyboard_id, previous_keyboard_id, sizeof(previous_keyboard_id));
         }
         ks->config_loading = false;
     }
@@ -687,6 +685,10 @@ static noinline int ks_load_config_file(struct keyboard_server *ks,
     mutex_unlock(&ks->lock);
     kfree(backup);
 
+    if (ret != 0) {
+        pr_warning("config load failed id=%s kind=%u version=%u stage=%s rc=%d\n",
+                   file_req->id, file_req->kind, header.version, stage, ret);
+    }
     if (ret == 0) {
         if (file_req->kind == NLK_KB_CONFIG_KEYBOARD) {
             if (ks->key_dev != NULL && ks->key_dev->ops.control != NULL) {
@@ -765,6 +767,34 @@ static int ks_on_config_files(uint8_t op, const void *req, uint16_t req_len,
      */
     if (op == NLK_KB_OP_CONFIG_FILES_LOAD) {
         return ks_load_config_file(ks, req, req_len, resp_len);
+    }
+
+    if (op == NLK_KB_OP_CONFIG_FILES_DELETE && req != NULL &&
+        req_len >= sizeof(struct nlk_kb_config_file_req) &&
+        ((const struct nlk_kb_config_file_req *)req)->kind == KEYBOARD_CONFIG_MACRO) {
+        /* Do not let an older in-flight snapshot restore the deleted macro.
+         * The delete helper locks only runtime updates, never filesystem I/O. */
+        mutex_lock(&ks->lock);
+        if (ks->config_loading || ks->sync_busy ||
+            ks->kb_cap.recording_macro_id != 0xFFU) {
+            mutex_unlock(&ks->lock);
+            return -EBUSY;
+        }
+        ks->config_loading = true;
+        mutex_unlock(&ks->lock);
+        ret = keyboard_config_macro_delete(&ks->kb_cap, ks->profile.hardware_id,
+                                            "/assets/keyboard",
+                                            ((const struct nlk_kb_config_file_req *)req)->id);
+        if (resp_len != NULL) *resp_len = 0U;
+        mutex_lock(&ks->lock);
+        ks->config_loading = false;
+        if (ret == 0) {
+            /* Preserve any key-triggered edits made while the file scan ran. */
+            ks->config_dirty = true;
+            ks->sync_deadline_ms = (uint32_t)tick_to_msec_64(cpu_run_ticks()) + KS_CONFIG_SAVE_DELAY_MS;
+        }
+        mutex_unlock(&ks->lock);
+        return ret;
     }
 
     /*
@@ -1416,7 +1446,6 @@ static int keyboard_server_init(void)
     memset(ks, 0, sizeof(*ks));
 
     nos_completion_init(&ks->comp);
-    nos_completion_init(&ks->sync_comp);
     mutex_init(&ks->lock);
 
     device_init(&ks->ks_dev);
@@ -1431,16 +1460,14 @@ static int keyboard_server_init(void)
         BUG_ON(true);
         return -EINVAL;
     }
-    task_ready(ks->task);
-
-    ks->sync_task = task_create("kb_config_worker", kb_config_worker_task_entry,
-                                ks, 7, 2048, 10, NULL);
-    if (ks->sync_task == NULL) {
-        pr_fatal("create kb_config_worker task err\n");
+    ks->config_maintenance.run = ks_flush_config;
+    ks->config_maintenance.priv = ks;
+    if (nlk_server_register_maintenance(&ks->config_maintenance) != 0) {
+        pr_fatal("register keyboard configuration maintenance failed\n");
         BUG_ON(true);
         return -EINVAL;
     }
-    task_ready(ks->sync_task);
+    task_ready(ks->task);
 
     return 0;
 }
