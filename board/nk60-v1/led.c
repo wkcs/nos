@@ -7,7 +7,8 @@
  *
  * NK60-V1 RGB 背光矩阵驱动 ("nk60_v1-led")：
  * - 15 行（5 个按键行 × R/G/B 3 路）采用级联 74HC595（PB12=EN/RCLK, PB13=CLK, PB15=DATA）分时扫描
- * - 14 列采用 TIM2/TIM3/TIM4/TIM5 共 14 路 PWM（低电平有效、Period=255、Prescaler=8）控制亮度
+ * - 14 列采用 TIM2/TIM3/TIM4/TIM5 共 14 路 10-bit PWM（低电平有效、Period=1023、Prescaler=1）控制亮度
+ * - 内置 Gamma 1.6 查找表与 R/G/B 通道白平衡增益，兼顾矩阵亮度、人眼线性度及三色灯珠差异
  * - TIM9 定时中断（TIM1_BRK_TIM9_IRQHandler，约 2 kHz 行扫描）逐行消隐、移位锁存并更新列 PWM
  */
 
@@ -49,8 +50,18 @@ typedef struct {
 #define LED_WIDTH               14U
 #define LED_HEIGHT              5U
 #define LED_SCAN_ROWS           (LED_HEIGHT * 3U) /* 共 15 个扫描行：每按键行 3 路 (R, G, B) */
-#define LED_PWM_PERIOD          255U
-#define LED_PWM_PRESCALER       8U
+#define LED_PWM_PERIOD          1023U
+#define LED_PWM_PRESCALER       1U
+
+/*
+ * R/G/B 通道白平衡增益（Q8 定点数，256 = 100%）：
+ * 分立 RGB 灯珠的红光 Vf 较低且发光效率偏高，等占空比下白色会偏粉。
+ * 实机微调建议：固定最弱通道为 256，显示纯白 (255,255,255) 时先下调 R，再微调 B。
+ */
+#define LED_WB_GAIN_R           152U
+#define LED_WB_GAIN_G           256U
+#define LED_WB_GAIN_B           176U
+#define LED_WB_UNITY            256U
 
 /* TIM9 行扫描参数：APB2 定时器时钟 84 MHz / (499 + 1) / (83 + 1) = 2000 Hz */
 #define LED_TIM9_PERIOD         83U
@@ -95,8 +106,45 @@ struct nk60_v1_led {
     bool          enable;
 };
 
-static uint8_t s_display_buf[LED_SCAN_ROWS][LED_WIDTH];
+static uint16_t s_display_buf[LED_SCAN_ROWS][LED_WIDTH];
 static volatile uint8_t s_scan_row;
+
+/* sRGB 8-bit -> 10-bit 线性光强查找表 (Gamma 1.6)，非零输入最小保留 1 以避免暗部死区 */
+static const uint16_t s_gamma_lut[256] = {
+       0U,    1U,    1U,    1U,    1U,    2U,    3U,    3U,    4U,    5U,    6U,    7U,    8U,    9U,   10U,   11U,
+      12U,   13U,   15U,   16U,   17U,   19U,   20U,   22U,   23U,   25U,   27U,   28U,   30U,   32U,   33U,   35U,
+      37U,   39U,   41U,   43U,   45U,   47U,   49U,   51U,   53U,   55U,   57U,   59U,   62U,   64U,   66U,   68U,
+      71U,   73U,   75U,   78U,   80U,   83U,   85U,   88U,   90U,   93U,   96U,   98U,  101U,  104U,  106U,  109U,
+     112U,  115U,  118U,  121U,  123U,  126U,  129U,  132U,  135U,  138U,  141U,  144U,  147U,  151U,  154U,  157U,
+     160U,  163U,  167U,  170U,  173U,  176U,  180U,  183U,  186U,  190U,  193U,  197U,  200U,  204U,  207U,  211U,
+     214U,  218U,  221U,  225U,  229U,  232U,  236U,  240U,  244U,  247U,  251U,  255U,  259U,  263U,  266U,  270U,
+     274U,  278U,  282U,  286U,  290U,  294U,  298U,  302U,  306U,  310U,  314U,  319U,  323U,  327U,  331U,  335U,
+     340U,  344U,  348U,  352U,  357U,  361U,  365U,  370U,  374U,  379U,  383U,  387U,  392U,  396U,  401U,  405U,
+     410U,  415U,  419U,  424U,  428U,  433U,  438U,  442U,  447U,  452U,  457U,  461U,  466U,  471U,  476U,  480U,
+     485U,  490U,  495U,  500U,  505U,  510U,  515U,  520U,  525U,  530U,  535U,  540U,  545U,  550U,  555U,  560U,
+     565U,  570U,  576U,  581U,  586U,  591U,  596U,  602U,  607U,  612U,  617U,  623U,  628U,  634U,  639U,  644U,
+     650U,  655U,  661U,  666U,  671U,  677U,  682U,  688U,  694U,  699U,  705U,  710U,  716U,  721U,  727U,  733U,
+     738U,  744U,  750U,  756U,  761U,  767U,  773U,  779U,  784U,  790U,  796U,  802U,  808U,  814U,  820U,  825U,
+     831U,  837U,  843U,  849U,  855U,  861U,  867U,  873U,  879U,  885U,  892U,  898U,  904U,  910U,  916U,  922U,
+     928U,  935U,  941U,  947U,  953U,  960U,  966U,  972U,  978U,  985U,  991U,  997U, 1004U, 1010U, 1017U, 1023U,
+};
+
+static inline uint16_t nk60_v1_led_map_channel(uint8_t val, uint16_t gain)
+{
+    uint32_t linear;
+
+    if (val == 0U || gain == 0U) {
+        return 0U;
+    }
+    linear = ((uint32_t)s_gamma_lut[val] * gain + (LED_WB_UNITY / 2U)) / LED_WB_UNITY;
+    if (linear == 0U) {
+        return 1U;
+    }
+    if (linear > LED_PWM_PERIOD) {
+        return LED_PWM_PERIOD;
+    }
+    return (uint16_t)linear;
+}
 
 static inline void nk60_v1_hc595_delay(void)
 {
@@ -145,6 +193,15 @@ static inline void nk60_v1_hc595_send_bit(bool bit_val)
     nk60_v1_hc595_load();
 }
 
+static inline void nk60_v1_pwm_sync_update(void)
+{
+    /* 立即将影子寄存器 CCR 装载到激活寄存器并清零计数器，保证消隐与 4 个定时器相位同步 */
+    TIM2->EGR = TIM_EGR_UG;
+    TIM3->EGR = TIM_EGR_UG;
+    TIM4->EGR = TIM_EGR_UG;
+    TIM5->EGR = TIM_EGR_UG;
+}
+
 static inline void nk60_v1_pwm_set_led_off(void)
 {
     uint32_t col;
@@ -152,15 +209,17 @@ static inline void nk60_v1_pwm_set_led_off(void)
     for (col = 0U; col < LED_WIDTH; col++) {
         *s_pwm_ccr[col] = 0U;
     }
+    nk60_v1_pwm_sync_update();
 }
 
-static inline void nk60_v1_pwm_set_led_data(const uint8_t buf[LED_WIDTH])
+static inline void nk60_v1_pwm_set_led_data(const uint16_t buf[LED_WIDTH])
 {
     uint32_t col;
 
     for (col = 0U; col < LED_WIDTH; col++) {
         *s_pwm_ccr[col] = buf[col];
     }
+    nk60_v1_pwm_sync_update();
 }
 
 static void nk60_v1_pwm_init(void)
@@ -186,7 +245,7 @@ static void nk60_v1_pwm_init(void)
         GPIO_Init(s_pwm_pins[i].gpio, &gpio_init);
     }
 
-    /* 配置 TIM2/3/4/5 时基：84MHz / 9 / 256 ≈ 36.46kHz PWM，Period = 255 */
+    /* 配置 TIM2/3/4/5 时基：84MHz / 2 / 1024 ≈ 41.02kHz 10-bit PWM，Period = 1023 */
     TIM_TimeBaseStructInit(&tb_init);
     tb_init.TIM_Prescaler = LED_PWM_PRESCALER;
     tb_init.TIM_CounterMode = TIM_CounterMode_Up;
@@ -294,7 +353,7 @@ static ssize_t nk60_v1_led_buf_write(struct device *dev, addr_t pos,
 {
     struct nk60_v1_led *led;
     const uint8_t *buf = buffer;
-    uint8_t next_buf[LED_SCAN_ROWS][LED_WIDTH];
+    uint16_t next_buf[LED_SCAN_ROWS][LED_WIDTH];
     uint32_t row;
     uint32_t col;
     addr_t irq_flags;
@@ -309,16 +368,16 @@ static ssize_t nk60_v1_led_buf_write(struct device *dev, addr_t pos,
     led = dev->priv;
 
     /*
-     * 先在局部缓冲区完成 RGB 分色重组（每按键行展开为 R/G/B 三个物理扫描行），
-     * 输入 0..255 亮度值直接 1:1 写入周期为 255 的 PWM CCR。
+     * 先在局部缓冲区完成 Gamma 1.6 校正、RGB 通道白平衡及分色重组
+     * （每按键行展开为 R/G/B 三个物理扫描行），映射为 0..1023 的 10-bit PWM CCR。
      */
     for (row = 0U; row < LED_HEIGHT; row++) {
         for (col = 0U; col < LED_WIDTH; col++) {
             const uint8_t *pixel = &buf[(row * LED_WIDTH + col) * DS_COLOR_DATA_MAX];
 
-            next_buf[row * 3U + 0U][col] = pixel[DS_COLOR_R];
-            next_buf[row * 3U + 1U][col] = pixel[DS_COLOR_G];
-            next_buf[row * 3U + 2U][col] = pixel[DS_COLOR_B];
+            next_buf[row * 3U + 0U][col] = nk60_v1_led_map_channel(pixel[DS_COLOR_R], LED_WB_GAIN_R);
+            next_buf[row * 3U + 1U][col] = nk60_v1_led_map_channel(pixel[DS_COLOR_G], LED_WB_GAIN_G);
+            next_buf[row * 3U + 2U][col] = nk60_v1_led_map_channel(pixel[DS_COLOR_B], LED_WB_GAIN_B);
         }
     }
 
