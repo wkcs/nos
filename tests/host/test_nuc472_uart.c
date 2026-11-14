@@ -11,6 +11,9 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include <unistd.h>
+#include <pthread.h>
+
 #define NUC472_HOST_TEST 1
 #include <soc/nuc472_regs.h>
 #include <soc/nuc472_periph.h>
@@ -68,9 +71,18 @@ bool in_interrupt(void)
     return g_in_irq;
 }
 
+static uint32_t g_test_uart0_clk_hz = 12000000UL;
+
 uint32_t nuc472_clk_get_uart0_hz(void)
 {
-    return 12000000UL;
+    return g_test_uart0_clk_hz;
+}
+
+void nuc472_mfp_set(volatile uint32_t *reg, uint32_t mask, uint32_t val)
+{
+    if (reg != NULL) {
+        *reg = (*reg & ~mask) | (val & mask);
+    }
 }
 
 /* 硬件模拟数据端口钩子 */
@@ -332,6 +344,120 @@ static void test_uart_configure(void)
     printf("  -> configure 与波特率分频计算验证通过!\n");
 }
 
+/**
+ * 测试 6: HIRC 回退时钟保留与波特率分频计算
+ */
+static void test_uart_init_hirc_fallback(void)
+{
+    printf("[Test 6] 验证 HIRC 回退: CLKSEL1=HIRC 且时钟为 22.1184MHz 时，init 不覆写为 HXT 且 BAUD 正确...\n");
+    reset_test_env();
+
+    /* 模拟时钟初始化回退到片内 HIRC (22.1184 MHz) */
+    g_test_uart0_clk_hz = 22118400UL;
+    g_test_clk.CLKSEL1 = (g_test_clk.CLKSEL1 & ~NUC472_CLK_CLKSEL1_UARTSEL_Msk) |
+                         NUC472_CLK_CLKSEL1_UARTSEL_HIRC;
+
+    int rc = uart_nuc472_init(&__device_nuc472_uart0);
+    assert(rc == 0);
+
+    /* 验证 CLKSEL1 保持为 UARTSEL_HIRC，绝对不能被强制覆写为 HXT */
+    uint32_t uartsel = g_test_clk.CLKSEL1 & NUC472_CLK_CLKSEL1_UARTSEL_Msk;
+    assert(uartsel == NUC472_CLK_CLKSEL1_UARTSEL_HIRC);
+
+    /* 验证 BAUD Mode 2 分频值基于 22.1184 MHz 正确计算: (22118400 + 57600) / 115200 - 2 = 190 */
+    uint32_t expected_div = NUC472_UART_BAUD_MODE2_DIVIDER(22118400UL, 115200UL);
+    assert(expected_div == 190);
+    assert((g_test_uart.BAUD & 0xFFFFUL) == 190);
+
+    /* 恢复默认 12 MHz */
+    g_test_uart0_clk_hz = 12000000UL;
+    printf("  -> HIRC 回退时钟源保留与波特率计算验证通过!\n");
+}
+
+struct blocking_read_arg {
+    uint8_t out_buf[16];
+    ssize_t result;
+    bool started;
+};
+
+static void *blocking_read_worker(void *arg)
+{
+    struct blocking_read_arg *a = (struct blocking_read_arg *)arg;
+    a->started = true;
+    a->result = nuc472_read(&__device_nuc472_uart0, a->out_buf, 10, true);
+    return NULL;
+}
+
+/**
+ * 测试 7: 连续非阻塞读取超过 256 字节不发生 rx_sem 溢出与阻塞唤醒无幽灵空转
+ */
+static void test_uart_rx_sem_overflow_and_blocking_wakeup(void)
+{
+    printf("[Test 7] 验证 rx_sem: 连续非阻塞读取 320 字节不溢出，二值信号量事件唤醒无幽灵空转...\n");
+    reset_test_env();
+
+    /* 校验信号量上限必须为 1 (事件二值信号量) */
+    assert(uart0_data.rx_sem.limit == 1);
+
+    /* 连续注入并进行非阻塞流式读取超过 256 字节 (10 轮，每轮 32 字节，共 320 字节) */
+    uint8_t tx_chunk[32];
+    uint8_t rx_chunk[32];
+    for (int i = 0; i < 32; i++) {
+        tx_chunk[i] = (uint8_t)(i & 0xFF);
+    }
+
+    for (int round = 0; round < 10; round++) {
+        hw_rx_inject(tx_chunk, sizeof(tx_chunk));
+        g_test_uart.INTSTS = NUC472_UART_INTSTS_RDAINT;
+        g_in_irq = true;
+        UART0_IRQHandler();
+        g_in_irq = false;
+
+        ssize_t n = nuc472_read(&__device_nuc472_uart0, rx_chunk, sizeof(rx_chunk), false);
+        assert(n == (ssize_t)sizeof(tx_chunk));
+        assert(memcmp(rx_chunk, tx_chunk, sizeof(tx_chunk)) == 0);
+    }
+
+    /* 320 字节全部读取完毕，环形缓冲为空 */
+    assert(uart0_data.rx_count == 0);
+    /* 二值信号量上限为 1，count 绝不能饱和积攒几百个幽灵令牌 */
+    assert(uart0_data.rx_sem.count <= 1);
+
+    /* 启动后台线程执行阻塞读 */
+    struct blocking_read_arg arg;
+    memset(&arg, 0, sizeof(arg));
+    pthread_t th;
+    int prc = pthread_create(&th, NULL, blocking_read_worker, &arg);
+    assert(prc == 0);
+
+    while (!arg.started) {
+        usleep(1000);
+    }
+    usleep(10000);
+    /* 此时尚未触发中断注入数据，工作线程应当处于等待中 */
+    assert(arg.result == 0);
+
+    /* 注入 10 字节新数据并触发中断 */
+    uint8_t test_bytes[10] = "1234567890";
+    hw_rx_inject(test_bytes, sizeof(test_bytes));
+    g_test_uart.INTSTS = NUC472_UART_INTSTS_RDAINT;
+    g_in_irq = true;
+    UART0_IRQHandler();
+    g_in_irq = false;
+
+    /* 等待后台工作线程被正确唤醒并返回 */
+    pthread_join(th, NULL);
+    assert(arg.result == 10);
+    assert(memcmp(arg.out_buf, test_bytes, 10) == 0);
+    assert(uart0_data.rx_count == 0);
+
+    /* 再次非阻塞读取应返回 -EAGAIN */
+    uint8_t dummy[1];
+    ssize_t final_n = nuc472_read(&__device_nuc472_uart0, dummy, sizeof(dummy), false);
+    assert(final_n == -EAGAIN);
+    printf("  -> rx_sem 二值信号量防溢出与阻塞精准唤醒验证通过!\n");
+}
+
 int main(void)
 {
     printf("=== 开始运行 NUC472 UART0 驱动中断与 FIFO 主机测试 ===\n");
@@ -340,6 +466,8 @@ int main(void)
     test_uart_read_irq_and_rls();
     test_uart_panic();
     test_uart_configure();
+    test_uart_init_hirc_fallback();
+    test_uart_rx_sem_overflow_and_blocking_wakeup();
     printf("====================================================\n");
     printf("所有 NUC472 UART0 单元测试全部通过!\n");
     return 0;

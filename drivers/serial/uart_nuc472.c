@@ -73,6 +73,13 @@ void host_test_uart_clear_fifosts(uint32_t flags);
 #define uart_clear_fifosts(flags) (NUC472_UART0->FIFOSTS = (flags))
 #endif
 
+/**
+ * 硬件轮询输出单字节 (用于 earlycon、panic 或无调度上下文)
+ *
+ * @param dev: 设备对象结构体指针
+ * @param ch: 待发送字符
+ * @return: 0 成功，-ETIMEDOUT 超时
+ */
 static int nuc472_poll_out(const struct device *dev, unsigned char ch)
 {
     uint32_t remaining = CONFIG_UART_POLL_TIMEOUT;
@@ -87,6 +94,13 @@ static int nuc472_poll_out(const struct device *dev, unsigned char ch)
     return 0;
 }
 
+/**
+ * 硬件轮询接收单字节
+ *
+ * @param dev: 设备对象结构体指针
+ * @param ch: 接收字符存储指针
+ * @return: 0 成功读取，-EINVAL 参数非法，-EAGAIN 硬件 FIFO 为空
+ */
 static int nuc472_poll_in(const struct device *dev, unsigned char *ch)
 {
     (void)dev;
@@ -100,6 +114,17 @@ static int nuc472_poll_in(const struct device *dev, unsigned char *ch)
     return 0;
 }
 
+/**
+ * 驱动流式发送字符缓冲
+ *
+ * 将数据推入软件 TX 环形队列并开启 THRE 中断由 ISR 异步吐向硬件 FIFO。
+ * 若系统处于 panic 或未就绪状态则回退到同步轮询发送。
+ *
+ * @param dev: 设备对象结构体指针
+ * @param buf: 发送数据缓冲区
+ * @param len: 发送字节数
+ * @return: 实际写入缓冲或发送的字节数，或负数错误码
+ */
 static ssize_t nuc472_write(const struct device *dev, const unsigned char *buf, size_t len)
 {
     struct uart_nuc472_data *data = dev->data;
@@ -139,10 +164,21 @@ static ssize_t nuc472_write(const struct device *dev, const unsigned char *buf, 
     return (ssize_t)i;
 }
 
+/**
+ * 驱动流式接收字符缓冲
+ *
+ * 从软件 RX 环形队列中尽可能读取数据；若队列为空且 wait=true，
+ * 阻塞等待二值信号量事件唤醒，并在被唤醒后重新检查并排干当前缓冲。
+ *
+ * @param dev: 设备对象结构体指针
+ * @param buf: 目标接收缓冲指针
+ * @param len: 请求读取的最大字节数
+ * @param wait: 是否阻塞等待新数据
+ * @return: 实际读取的字节数，或负数错误码
+ */
 static ssize_t nuc472_read(const struct device *dev, unsigned char *buf, size_t len, bool wait)
 {
     struct uart_nuc472_data *data = dev->data;
-    size_t i = 0;
 
     if (buf == NULL && len != 0U) {
         return -EINVAL;
@@ -152,6 +188,7 @@ static ssize_t nuc472_read(const struct device *dev, unsigned char *buf, size_t 
     }
 
     if (data->in_panic || !data->initialized) {
+        size_t i = 0;
         while (i < len) {
             int rc = nuc472_poll_in(dev, &buf[i]);
             if (rc == 0) {
@@ -165,19 +202,18 @@ static ssize_t nuc472_read(const struct device *dev, unsigned char *buf, size_t 
         return (ssize_t)i;
     }
 
-    while (i < len) {
+    for (;;) {
+        size_t received = 0;
         addr_t flags = disable_irq_save();
-        if (data->rx_count > 0U) {
-            buf[i++] = data->rx_buf[data->rx_tail];
+        while (received < len && data->rx_count > 0U) {
+            buf[received++] = data->rx_buf[data->rx_tail];
             data->rx_tail = (data->rx_tail + 1U) % NUC472_UART_RX_BUF_SIZE;
             data->rx_count--;
-            enable_irq_save(flags);
-            continue;
         }
         enable_irq_save(flags);
 
-        if (i > 0U) {
-            break;
+        if (received != 0U) {
+            return (ssize_t)received;
         }
         if (!wait || in_interrupt()) {
             return -EAGAIN;
@@ -188,9 +224,15 @@ static ssize_t nuc472_read(const struct device *dev, unsigned char *buf, size_t 
             return rc;
         }
     }
-    return (ssize_t)i;
 }
 
+/**
+ * 进入内核紧急 Panic 模式
+ *
+ * 标记驱动进入 panic 状态，立即禁止硬件中断并准备切换至安全轮询输出。
+ *
+ * @param dev: 设备对象结构体指针
+ */
 static void nuc472_panic_begin(const struct device *dev)
 {
     struct uart_nuc472_data *data = dev->data;
@@ -198,6 +240,15 @@ static void nuc472_panic_begin(const struct device *dev)
     NUC472_UART0->INTEN = 0U;
 }
 
+/**
+ * Panic 模式下的同步紧急输出
+ *
+ * 先将 TX 环形队列中残留的字符轮询吐出硬件 FIFO，随后同步发送指定的 panic 日志缓冲区。
+ *
+ * @param dev: 设备对象结构体指针
+ * @param buf: 待发送数据缓冲区
+ * @param len: 数据长度
+ */
 static void nuc472_panic_write(const struct device *dev, const unsigned char *buf, size_t len)
 {
     struct uart_nuc472_data *data = dev->data;
@@ -220,6 +271,13 @@ static void nuc472_panic_write(const struct device *dev, const unsigned char *bu
     }
 }
 
+/**
+ * 动态配置 UART 硬件波特率与帧格式 (8-N-1 等)
+ *
+ * @param dev: 设备对象结构体指针
+ * @param cfg: 串口配置参数结构体
+ * @return: 0 成功，-EINVAL 参数非法，-ENOTSUP 暂不支持的配置
+ */
 static int nuc472_configure(const struct device *dev, const struct uart_config *cfg)
 {
     struct uart_nuc472_data *data = dev->data;
@@ -259,6 +317,13 @@ static int nuc472_configure(const struct device *dev, const struct uart_config *
     return 0;
 }
 
+/**
+ * 查询当前生效的 UART 硬件配置参数
+ *
+ * @param dev: 设备对象结构体指针
+ * @param cfg: 存储当前配置参数的结构体指针
+ * @return: 0 成功，-EINVAL 参数非法
+ */
 static int nuc472_get_config(const struct device *dev, struct uart_config *cfg)
 {
     struct uart_nuc472_data *data = dev->data;
@@ -274,6 +339,12 @@ static int nuc472_get_config(const struct device *dev, struct uart_config *cfg)
     return 0;
 }
 
+/**
+ * UART0 中断服务函数
+ *
+ * 处理接收可用 (RDA)、接收超时 (RXTO)、发送保持寄存器空中断 (THRE) 及线路状态错误 (RLS)。
+ * RX 分支在外层关中断批量排空硬件 FIFO 入环，仅在写入新字节时单次 give 二值信号量。
+ */
 void UART0_IRQHandler(void);
 void UART0_IRQHandler(void)
 {
@@ -281,18 +352,21 @@ void UART0_IRQHandler(void)
     uint32_t intsts = NUC472_UART0->INTSTS;
 
     if ((intsts & (NUC472_UART_INTSTS_RDAINT | NUC472_UART_INTSTS_RXTOINT)) != 0U) {
+        bool has_new = false;
+        addr_t flags = disable_irq_save();
         while ((NUC472_UART0->FIFOSTS & NUC472_UART_FIFOSTS_RXEMPTY) == 0U) {
             uint8_t ch = uart_read_dat();
-            addr_t flags = disable_irq_save();
             if (data->rx_count < NUC472_UART_RX_BUF_SIZE) {
                 data->rx_buf[data->rx_head] = ch;
                 data->rx_head = (data->rx_head + 1U) % NUC472_UART_RX_BUF_SIZE;
                 data->rx_count++;
-                enable_irq_save(flags);
-                (void)nos_sem_give(&data->rx_sem);
-            } else {
-                enable_irq_save(flags);
+                has_new = true;
             }
+        }
+        enable_irq_save(flags);
+
+        if (has_new) {
+            (void)nos_sem_give(&data->rx_sem);
         }
     }
 
@@ -323,6 +397,12 @@ void UART0_IRQHandler(void)
     }
 }
 
+/**
+ * NUC472 UART0 硬件与软件环形缓冲区初始化
+ *
+ * @param dev: 设备对象结构体指针
+ * @return: 0 成功，负数失败
+ */
 int uart_nuc472_init(struct device *dev)
 {
     struct uart_nuc472_data *data = dev->data;
@@ -336,16 +416,25 @@ int uart_nuc472_init(struct device *dev)
     data->tx_count = 0U;
     data->in_panic = false;
 
-    int rc = nos_sem_init(&data->rx_sem, 0U, NUC472_UART_RX_BUF_SIZE);
+    /* 将 rx_sem 初始化为事件唤醒型二值信号量 (上限 1) */
+    int rc = nos_sem_init(&data->rx_sem, 0U, 1U);
     if (rc < 0) {
         return rc;
     }
 
-#ifndef NUC472_HOST_TEST
+    uint32_t clk_hz = nuc472_clk_get_uart0_hz();
+    if (clk_hz == 0U) {
+        clk_hz = NUC472_HXT_HZ;
+    }
+
+    /* 根据时钟模块配置选择 UART0 时钟源，严格保留 HIRC 回退设置，禁止强制覆盖为 HXT */
+    uint32_t uartsel = (clk_hz == NUC472_HIRC_HZ) ?
+                       NUC472_CLK_CLKSEL1_UARTSEL_HIRC :
+                       NUC472_CLK_CLKSEL1_UARTSEL_HXT;
+
     nuc472_sys_unlock();
     NUC472_CLK->APBCLK0 |= NUC472_CLK_APBCLK0_UART0CKEN;
-    NUC472_CLK->CLKSEL1 = (NUC472_CLK->CLKSEL1 & ~NUC472_CLK_CLKSEL1_UARTSEL_Msk) |
-                          NUC472_CLK_CLKSEL1_UARTSEL_HXT;
+    NUC472_CLK->CLKSEL1 = (NUC472_CLK->CLKSEL1 & ~NUC472_CLK_CLKSEL1_UARTSEL_Msk) | uartsel;
     NUC472_CLK->CLKDIV0 &= ~NUC472_CLK_CLKDIV0_UARTDIV_Msk;
     nuc472_mfp_set(&NUC472_SYS->GPG_MFPL,
                    NUC472_SYS_MFPL_Msk(1U) | NUC472_SYS_MFPL_Msk(2U),
@@ -353,15 +442,9 @@ int uart_nuc472_init(struct device *dev)
     nuc472_sys_lock();
 
     NUC472_UART0->FUNCSEL = 0U;
-#endif
-
     NUC472_UART0->FIFO = NUC472_UART_FIFO_RXRST | NUC472_UART_FIFO_TXRST;
     NUC472_UART0->LINE = NUC472_UART_LINE_WLS_8BIT;
 
-    uint32_t clk_hz = nuc472_clk_get_uart0_hz();
-    if (clk_hz == 0U) {
-        clk_hz = 12000000UL;
-    }
     uint32_t baud = (cfg != NULL && cfg->baud_rate != 0U) ? cfg->baud_rate : 115200UL;
     uint32_t brd = NUC472_UART_BAUD_MODE2_DIVIDER(clk_hz, baud);
     NUC472_UART0->BAUD = NUC472_UART_BAUD_MODE2 | (brd & 0xFFFFUL);
