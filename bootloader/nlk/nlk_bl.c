@@ -412,11 +412,16 @@ uint16_t nlk_bl_handle_packet(const uint8_t *rx_pkt, uint16_t rx_len, uint8_t *t
             d->vendor_id = 0x4E4BU;
             d->product_id = 0x0060U;
             d->device_class = 0x0010U;
+#ifdef BOARD_NK60_V1
+            d->hw_ver[0] = 1U;
+            bl_memcpy(d->name, "NK60-V1-BL", 11U);
+#else
             d->hw_ver[0] = 2U;
+            bl_memcpy(d->name, "NK60-V2-BL", 11U);
+#endif
             d->fw_ver[0] = (uint8_t)BL_VER_MAJOR;
             d->fw_ver[1] = (uint8_t)BL_VER_MINOR;
             d->fw_ver[2] = (uint8_t)BL_VER_PATCH;
-            bl_memcpy(d->name, "NK60-V2-BL", 11U);
             d->max_payload_size = BL_NLK_MTU - sizeof(struct nlk_pkt_hdr);
             d->cap_count = 1U;
             out_len = sizeof(*d);

@@ -9,6 +9,15 @@ project(nk60_bootloader VERSION 1.0.0 LANGUAGES C ASM)
 
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 
+set(NK60_BOARD "nk60-v2" CACHE STRING "Target NK60 board variant (nk60-v1 or nk60-v2)")
+if(NK60_BOARD STREQUAL "nk60-v1")
+    set(BL_BOARD_DEF BOARD_NK60_V1=1)
+elseif(NK60_BOARD STREQUAL "nk60-v2")
+    set(BL_BOARD_DEF BOARD_NK60_V2=1)
+else()
+    message(FATAL_ERROR "Unsupported NK60_BOARD: ${NK60_BOARD}")
+endif()
+
 set(BL_COMPILE_FLAGS
     -mcpu=cortex-m4
     -mthumb
@@ -65,6 +74,7 @@ target_compile_definitions(bootloader.elf PRIVATE
     STM32F401xC=1
     USE_HAL_DRIVER=1
     NK60_BOOTLOADER_BUILD=1
+    ${BL_BOARD_DEF}
     BL_VER_MAJOR=${PROJECT_VERSION_MAJOR}
     BL_VER_MINOR=${PROJECT_VERSION_MINOR}
     BL_VER_PATCH=${PROJECT_VERSION_PATCH}

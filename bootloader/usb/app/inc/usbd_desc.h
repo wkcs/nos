@@ -13,7 +13,11 @@
 #define USB_PID                         0x0001U
 #define USB_LANGID_STRING               0x0409U
 #define USB_MANUFACTURER_STRING         "NOS Embedded"
+#ifdef BOARD_NK60_V1
+#define USB_PRODUCT_STRING              "NK60-V1-BL"
+#else
 #define USB_PRODUCT_STRING              "NK60-V2-BL"
+#endif
 /* Match the NK60 composite runtime identity so WebUSB grants survive reboot. */
 #define USB_SERIALNUMBER_STRING         "320219198301"
 

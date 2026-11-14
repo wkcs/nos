@@ -105,8 +105,14 @@ void flash_jump_to_app(uint32_t app_base)
     }
 
     /* 重置外设复位寄存器 */
-    RCC->APB1RSTR |= RCC_APB1RSTR_SPI2RST;
-    RCC->APB1RSTR &= ~RCC_APB1RSTR_SPI2RST;
+    RCC->APB1RSTR |= (RCC_APB1RSTR_SPI2RST | RCC_APB1RSTR_TIM2RST |
+                      RCC_APB1RSTR_TIM3RST | RCC_APB1RSTR_TIM4RST |
+                      RCC_APB1RSTR_TIM5RST);
+    RCC->APB1RSTR &= ~(RCC_APB1RSTR_SPI2RST | RCC_APB1RSTR_TIM2RST |
+                       RCC_APB1RSTR_TIM3RST | RCC_APB1RSTR_TIM4RST |
+                       RCC_APB1RSTR_TIM5RST);
+    RCC->APB2RSTR |= RCC_APB2RSTR_TIM9RST;
+    RCC->APB2RSTR &= ~RCC_APB2RSTR_TIM9RST;
 
     /* 重设中断向量表 VTOR 并跳转 */
     SCB->VTOR = app_base;

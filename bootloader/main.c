@@ -25,7 +25,11 @@ int main(void)
     /* 2. 初始化串口 1 (115200 8N1) */
     uart1_init();
     uart_puts("\n========================================\n");
+#ifdef BOARD_NK60_V1
+    uart_puts("[BL] NK60-V1 Bootloader v1.0.0 Booting...\n");
+#else
     uart_puts("[BL] NK60-V2 Bootloader v1.0.0 Booting...\n");
+#endif
 
     /* 3. 检查启动标志与按键状态 */
     uint32_t bkp_val = backup_read_flag();
