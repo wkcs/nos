@@ -66,6 +66,43 @@ int task_ready(struct task_struct *task) { (void)task; return 0; }
 #undef pr_fmt
 #include "../../drivers/usb/device/core/usbdevice.c"
 
+/* WinUSB 单元测试支持桩与头文件 */
+#include <nos/completion.h>
+#include <lib/kfifo.h>
+#include <kernel/board.h>
+
+#ifndef __aligned
+#define __aligned(x) __attribute__((aligned(x)))
+#endif
+
+void *kzalloc(size_t size, unsigned int flags) { (void)flags; return calloc(1, size); }
+int nos_completion_init(struct nos_completion *comp) { (void)comp; return 0; }
+int nos_complete(struct nos_completion *comp) { (void)comp; return 0; }
+int nos_complete_all(struct nos_completion *comp) { (void)comp; return 0; }
+int nos_completion_reset(struct nos_completion *comp) { (void)comp; return 0; }
+int nos_completion_wait(struct nos_completion *comp, nos_timeout_t timeout) { (void)comp; (void)timeout; return 0; }
+int nos_wait_completion_timeout(struct nos_completion *comp, uint32_t to) { (void)comp; (void)to; return 0; }
+unsigned int kfifo_unused(struct kfifo *fifo) { (void)fifo; return 512; }
+unsigned int kfifo_used(struct kfifo *fifo) { (void)fifo; return 0; }
+int kfifo_init(struct kfifo *fifo, void *buf, unsigned int size, size_t esize) { (void)fifo;(void)buf;(void)size;(void)esize; return 0; }
+unsigned int kfifo_in(struct kfifo *fifo, const void *buf, unsigned int len) { (void)fifo;(void)buf; return len; }
+unsigned int kfifo_out(struct kfifo *fifo, void *buf, unsigned int len) { (void)fifo;(void)buf; return len; }
+unsigned int kfifo_skip(struct kfifo *fifo, unsigned int len) { (void)fifo; return len; }
+
+static char s_mock_uid[32] = "4E4F53010203040506070809";
+static int s_mock_uid_ret = 0;
+int board_get_chip_uid_hex(char *b, size_t l) {
+    if (s_mock_uid_ret != 0) return s_mock_uid_ret;
+    if (b == NULL || l < 25) return -EINVAL;
+    strncpy(b, s_mock_uid, l);
+    return 0;
+}
+
+#undef pr_fmt
+#define __NOS_INIT_H__
+#define __ASM_INIT_H__
+#include "../../drivers/usb/device/class/winusb.c"
+
 /* ========================================================================= */
 /* 辅助结构与 Canary 哨兵测试脚手架                                           */
 /* ========================================================================= */
@@ -1073,6 +1110,37 @@ static void test_set_descriptor_preserves_num_configurations(void)
     assert(dev.dev_desc.bNumConfigurations == 1);
 }
 
+static void test_winusb_descriptor_and_dynamic_serial(void)
+{
+    puts("[Test 8] WinUSB 描述符 NLK v1 三元组与硬件 SoC 序列号动态绑定验证...");
+
+    /* 验证接口描述符三元组: 0xFF (Vendor Specific), 0x4E ('N'), 0x01 (NLK v1) */
+    assert(_winusb_desc.intf_desc.bInterfaceClass == 0xFF);
+    assert(_winusb_desc.intf_desc.bInterfaceSubClass == 0x4E);
+    assert(_winusb_desc.intf_desc.bInterfaceProtocol == 0x01);
+
+    /* 验证动态序列号生成与 _ustring 绑定 */
+    strcpy(s_mock_uid, "0123456789ABCDEF01234567");
+    s_mock_uid_ret = 0;
+    assert(winusb_init_serial() == 0);
+    assert(_ustring[USB_STRING_SERIAL_INDEX] != NULL);
+    assert(strcmp(_ustring[USB_STRING_SERIAL_INDEX], "0123456789ABCDEF01234567") == 0);
+    assert(strlen(_ustring[USB_STRING_SERIAL_INDEX]) == 24);
+    assert(strcmp(winusb_get_serial_str(), "0123456789ABCDEF01234567") == 0);
+
+    /* 验证 UID 变更时重新初始化 */
+    strcpy(s_mock_uid, "4E4F53A1B2C3D4E5F6070809");
+    assert(winusb_init_serial() == 0);
+    assert(strcmp(_ustring[USB_STRING_SERIAL_INDEX], "4E4F53A1B2C3D4E5F6070809") == 0);
+
+    /* 验证底导异常返回值时保证 _ustring 依然合法 */
+    s_mock_uid_ret = -EIO;
+    assert(winusb_init_serial() == -EIO);
+    assert(_ustring[USB_STRING_SERIAL_INDEX] != NULL);
+    assert(strlen(_ustring[USB_STRING_SERIAL_INDEX]) == 24);
+    s_mock_uid_ret = 0;
+}
+
 /* 主函数                                                                    */
 /* ========================================================================= */
 
@@ -1090,6 +1158,7 @@ int main(void)
     test_set_configuration_transition();
     test_in_completion_preempts_submitter();
     test_set_descriptor_preserves_num_configurations();
+    test_winusb_descriptor_and_dynamic_serial();
 
     printf("================================================================\n");
     printf("所有 USB 安全与状态机单元测试全部通过 (ALL PASSED)!\n");

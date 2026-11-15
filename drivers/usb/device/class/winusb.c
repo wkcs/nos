@@ -16,7 +16,7 @@
 #include <kernel/mutex.h>
 #include <kernel/device.h>
 #include <kernel/printk.h>
-#include <kernel/init.h>
+#include <kernel/board.h>
 #include <lib/kfifo.h>
 #include <drivers/usb/usb_common.h>
 #include <drivers/usb/usb_device.h>
@@ -117,9 +117,9 @@ struct winusb_descriptor _winusb_desc = {
         USB_DYNAMIC,                //bInterfaceNumber;
         0x00,                       //bAlternateSetting;
         0x02,                       //bNumEndpoints
-        0xFF,                       //bInterfaceClass;
-        0x00,                       //bInterfaceSubClass;
-        0x00,                       //bInterfaceProtocol;
+        0xFF,                       //bInterfaceClass: 厂商自定义类 (Vendor Specific)
+        0x4E,                       //bInterfaceSubClass: 'N' (NLK 子类)
+        0x01,                       //bInterfaceProtocol: 0x01 (NLK 协议 v1)
         0x00,                       //iInterface;
     },
     /*endpoint descriptor*/
@@ -142,23 +142,51 @@ struct winusb_descriptor _winusb_desc = {
     },
 };
 
+static char s_serial_str[32] = "000000000000000000000000";
+
 __aligned(4)
-static const char* _ustring[] =
+const char* _ustring[] =
 {
     "Language",
     "wkcs",
     "NOS Win USB",
-    "32021919830108",
+    s_serial_str,
     "Configuration",
     "Interface",
     USB_STRING_OS//must be
 };
 
+int winusb_init_serial(void)
+{
+    int ret = board_get_chip_uid_hex(s_serial_str, sizeof(s_serial_str));
+    _ustring[USB_STRING_SERIAL_INDEX] = s_serial_str;
+    return ret;
+}
+
+const char *winusb_get_serial_str(void)
+{
+    return s_serial_str;
+}
+
+#if defined(__APPLE__) && defined(__aarch64__)
+struct usb_os_proerty winusb_proerty[1];
+__attribute__((constructor))
+static void init_winusb_proerty(void) {
+    /* macOS aarch64 宿主机单测环境运行态初始化，避免 Mach-O 链接器对 pack(1) 结构中未对齐指针报错 */
+    winusb_proerty[0].dwSize = sizeof(struct usb_os_proerty) - sizeof(const char *)*2 + sizeof("DeviceInterfaceGUID")*2 + sizeof(WINUSB_GUID)*2;
+    winusb_proerty[0].dwPropertyDataType = USB_OS_PROERTY_TYPE_REG_SZ;
+    winusb_proerty[0].wPropertyNameLength = sizeof("DeviceInterfaceGUID")*2;
+    winusb_proerty[0].bPropertyName = "DeviceInterfaceGUID";
+    winusb_proerty[0].dwPropertyDataLength = sizeof(WINUSB_GUID)*2;
+    winusb_proerty[0].bPropertyData = WINUSB_GUID;
+}
+#else
 __aligned(4)
 struct usb_os_proerty winusb_proerty[] =
 {
     USB_OS_PROERTY_DESC(USB_OS_PROERTY_TYPE_REG_SZ,"DeviceInterfaceGUID", WINUSB_GUID),
 };
+#endif
 
 __aligned(4)
 struct usb_os_function_comp_id_descriptor winusb_func_comp_id_desc =
@@ -529,7 +557,15 @@ static int usb_winusb_init(ufunction_t func)
     struct winusb_device *winusb_device   = (struct winusb_device *)func->user_data;
 
     winusb_device->func = func;
+    winusb_init_serial();
 
+#ifdef NOS_TEST_DEVICE_H
+    (void)winusb_read;
+    (void)winusb_write;
+    (void)winusb_read_timeout;
+    (void)winusb_write_timeout;
+    (void)winusb_control;
+#else
     device_init(&winusb_device->dev);
     winusb_device->dev.name = "winusb";
     winusb_device->dev.ops.read = winusb_read;
@@ -538,6 +574,7 @@ static int usb_winusb_init(ufunction_t func)
     winusb_device->dev.ops.write_timeout = winusb_write_timeout;
     winusb_device->dev.ops.control = winusb_control;
     device_register(&winusb_device->dev);
+#endif
 
     return 0;
 }
@@ -556,6 +593,9 @@ ufunction_t usbd_function_winusb_create(udevice_t device)
     if (winusb_device == NULL) {
         return NULL;
     }
+
+    /* 动态初始化芯片硬件序列号并绑定字符串描述符 */
+    winusb_init_serial();
 
     /* set usb device string description */
     usbd_device_set_string(device, _ustring);
@@ -616,6 +656,7 @@ struct udclass winusb_class =
 
 int usbd_winusb_class_register(void)
 {
+    winusb_init_serial();
     INIT_LIST_HEAD(&winusb_class.list);
     usbd_class_register(&winusb_class);
     pr_info("winusb register ok\n");
