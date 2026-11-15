@@ -59,8 +59,8 @@ __ALIGN_BEGIN static const uint8_t USBD_WinUSB_CfgDesc[USB_WINUSB_CONFIG_DESC_SI
     0x00,                               /* bAlternateSetting (0) */
     0x02,                               /* bNumEndpoints (2) */
     0xFF,                               /* bInterfaceClass (Vendor Specific) */
-    0x00,                               /* bInterfaceSubClass */
-    0x00,                               /* bInterfaceProtocol */
+    0x4E,                               /* bInterfaceSubClass ('N') */
+    0x01,                               /* bInterfaceProtocol (NLK v1) */
     0x00,                               /* iInterface (0) */
 
     /* Endpoint 1 OUT Descriptor (7 字节) */

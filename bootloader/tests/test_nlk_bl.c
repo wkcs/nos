@@ -39,6 +39,9 @@ int main(void)
     test_flash_init();
     nlk_bl_init();
     CHECK(call(0, NLK_CORE_OP_GET_DEV_DESC, NULL, 0) == 60);
+    const struct nlk_device_desc *dev_desc = (const struct nlk_device_desc *)(tx + sizeof(struct nlk_pkt_hdr));
+    static const uint8_t zero_uuid[12] = {0};
+    CHECK(memcmp(dev_desc->uuid, zero_uuid, sizeof(zero_uuid)) != 0);
     CHECK(call(0, NLK_CORE_OP_GET_CAP_LIST, NULL, 0) == 20);
     CHECK(call(0, NLK_CORE_OP_GET_TOPOLOGY, NULL, 0) == 24);
     CHECK(call(1, NLK_FLASH_OP_QUERY_PARTS, NULL, 0) == 244);

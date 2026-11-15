@@ -69,6 +69,14 @@ static void complete_in(void)
 }
 int main(void)
 {
+    /* 验证接口描述符三元组: 0xFF (Vendor Specific), 0x4E ('N'), 0x01 (NLK v1) */
+    uint16_t cfg_len = 0;
+    uint8_t *cfg = USBD_WINUSB_ClassDriver.GetFSConfigDescriptor(&cfg_len);
+    CHECK(cfg != NULL && cfg_len >= 18);
+    CHECK(cfg[14] == 0xFF);
+    CHECK(cfg[15] == 0x4E);
+    CHECK(cfg[16] == 0x01);
+
     in_usb_irq = true;
     USBD_WINUSB_ClassDriver.Init(&dev, 0);
     in_usb_irq = false;

@@ -105,7 +105,26 @@ static uint8_t *USBD_WinUSB_ProductStrDescriptor(USBD_SpeedTypeDef speed, uint16
 static uint8_t *USBD_WinUSB_SerialStrDescriptor(USBD_SpeedTypeDef speed, uint16_t *length)
 {
     (void)speed;
-    USBD_GetString((uint8_t *)USBD_SERIALNUMBER_STRING, USBD_StrDesc, length);
+    char serial[25];
+    /* 动态读取 SoC 芯片 96-bit 硬件 UID 并转换为 24 字符大写十六进制字符串 */
+#if (defined(STM32F401xC) || defined(STM32F4)) && (defined(__arm__) || defined(__thumb__))
+    const volatile uint32_t *uid_reg = (const volatile uint32_t *)0x1FFF7A10UL;
+    uint32_t tmp_uid[3];
+    tmp_uid[0] = uid_reg[0];
+    tmp_uid[1] = uid_reg[1];
+    tmp_uid[2] = uid_reg[2];
+    const uint8_t *uid = (const uint8_t *)tmp_uid;
+#else
+    static const uint8_t mock_bl_uid[12] = {0x00, 0x1B, 0x00, 0x25, 0x34, 0x34, 0x51, 0x07, 0x38, 0x39, 0x35, 0x37};
+    const uint8_t *uid = mock_bl_uid;
+#endif
+    static const char hex[] = "0123456789ABCDEF";
+    for (int i = 0; i < 12; i++) {
+        serial[i * 2]     = hex[(uid[i] >> 4) & 0x0F];
+        serial[i * 2 + 1] = hex[uid[i] & 0x0F];
+    }
+    serial[24] = '\0';
+    USBD_GetString((uint8_t *)serial, USBD_StrDesc, length);
     return USBD_StrDesc;
 }
 

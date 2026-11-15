@@ -422,6 +422,18 @@ uint16_t nlk_bl_handle_packet(const uint8_t *rx_pkt, uint16_t rx_len, uint8_t *t
             d->fw_ver[0] = (uint8_t)BL_VER_MAJOR;
             d->fw_ver[1] = (uint8_t)BL_VER_MINOR;
             d->fw_ver[2] = (uint8_t)BL_VER_PATCH;
+            /* 填充 96 位 (12 字节) 芯片硬件唯一标识符 UID */
+#if (defined(STM32F401xC) || defined(STM32F4)) && (defined(__arm__) || defined(__thumb__))
+            const volatile uint32_t *uid_reg = (const volatile uint32_t *)0x1FFF7A10UL;
+            uint32_t tmp_uid[3];
+            tmp_uid[0] = uid_reg[0];
+            tmp_uid[1] = uid_reg[1];
+            tmp_uid[2] = uid_reg[2];
+            bl_memcpy(d->uuid, tmp_uid, 12U);
+#else
+            static const uint8_t mock_bl_uid[12] = {0x00, 0x1B, 0x00, 0x25, 0x34, 0x34, 0x51, 0x07, 0x38, 0x39, 0x35, 0x37};
+            bl_memcpy(d->uuid, mock_bl_uid, 12U);
+#endif
             d->max_payload_size = BL_NLK_MTU - sizeof(struct nlk_pkt_hdr);
             d->cap_count = 1U;
             out_len = sizeof(*d);
