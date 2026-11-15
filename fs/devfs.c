@@ -156,26 +156,31 @@ const struct file_operations devfs_zero_fops = {
 static int devfs_readdir(struct file *file, void *dirent, filldir_t filldir)
 {
     struct inode *inode = file->f_inode;
+    const char *names[DEVFS_MAX_DEVICES];
     int i;
 
     if (inode == NULL || inode->i_ino != DEVFS_ROOT_INO) {
         return -ENOTDIR;
     }
 
+    /* A callback such as ls -l can look up a device in the same table. */
     spin_lock(&devfs_lock);
     for (i = 0; i < DEVFS_MAX_DEVICES; i++) {
-        if (devfs_table[i].name == NULL) {
-            continue;
-        }
-        if (i >= file->f_pos) {
-            const char *name = devfs_table[i].name;
-            if (filldir(dirent, name, (int)strlen(name), i, (u64)(i + 2), DT_CHR)) {
-                break;
-            }
-            file->f_pos++;
-        }
+        names[i] = devfs_table[i].name;
     }
     spin_unlock(&devfs_lock);
+
+    for (i = 0; i < DEVFS_MAX_DEVICES; i++) {
+        const char *name = names[i];
+
+        if (name == NULL || i < file->f_pos) {
+            continue;
+        }
+        if (filldir(dirent, name, (int)strlen(name), i, (u64)(i + 2), DT_CHR)) {
+            break;
+        }
+        file->f_pos = i + 1;
+    }
     return 0;
 }
 

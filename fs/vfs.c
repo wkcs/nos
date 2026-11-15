@@ -1290,22 +1290,20 @@ int vfs_list_filesystems(char *buf, size_t size)
 
 static struct dentry *vfs_create_mount_point(struct dentry *parent, const char *name)
 {
-    unsigned int len;
-    struct dentry *dentry;
+    struct dentry *dentry = NULL;
     struct inode *inode;
 
     if (parent == NULL || name == NULL) {
         return NULL;
     }
-    len = (unsigned int)strlen(name);
-    spin_lock(&vfs_mount_lock);
-    dentry = vfs_find_cached_child(parent, name, len);
-    spin_unlock(&vfs_mount_lock);
+    /* Backend readdir can only enumerate entries created in the filesystem. */
+    (void)vfs_make_dir(parent, name, 0755, &dentry);
     if (dentry != NULL) {
-        return dentry;
+        return S_ISDIR(dentry->d_inode->i_mode) ? dentry : NULL;
     }
 
-    dentry = vfs_alloc_dentry(parent, name, len);
+    /* Keep system paths usable if the root cannot create a directory. */
+    dentry = vfs_alloc_dentry(parent, name, (unsigned int)strlen(name));
     if (dentry == NULL) {
         return NULL;
     }
