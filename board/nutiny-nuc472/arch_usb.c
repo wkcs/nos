@@ -62,10 +62,16 @@ int usb_hw_init(void)
         return ret;
     }
 
-    /* 覆盖板级自定义设备描述符与字符串 */
+    /* 覆盖板级自定义设备描述符与字符串（保留 usb_device_init 已装配的 bNumConfigurations） */
     udevice_t udevice = usbd_find_device(&g_nuc472_udcd);
     if (udevice != NULL) {
-        usbd_device_set_descriptor(udevice, &s_nutiny_dev_desc);
+        struct udevice_descriptor desc = s_nutiny_dev_desc;
+        if (udevice->dev_desc.bNumConfigurations > 0) {
+            desc.bNumConfigurations = udevice->dev_desc.bNumConfigurations;
+        } else {
+            desc.bNumConfigurations = 1;
+        }
+        usbd_device_set_descriptor(udevice, &desc);
         usbd_device_set_string(udevice, s_nutiny_ustring);
     }
 

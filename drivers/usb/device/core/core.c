@@ -1072,12 +1072,18 @@ int usbd_device_set_controller(udevice_t device, udcd_t dcd)
  */
 int usbd_device_set_descriptor(udevice_t device, udev_desc_t dev_desc)
 {
-    /* parameter check */
-    // WK_ERROR(device != NULL);
-    // WK_ERROR(dev_desc != NULL);
+    uint8_t prev_num_cfg;
 
-    /* copy the usb device descriptor to the device */
+    if (device == NULL || dev_desc == NULL) {
+        return -EINVAL;
+    }
+
+    /* 若已添加配置且新描述符将配置数留空 (USB_DYNAMIC)，保留既有的有效配置数 */
+    prev_num_cfg = device->dev_desc.bNumConfigurations;
     memcpy((void *)&device->dev_desc, (void *)dev_desc, USB_DESC_LENGTH_DEVICE);
+    if (device->dev_desc.bNumConfigurations == USB_DYNAMIC && prev_num_cfg > 0) {
+        device->dev_desc.bNumConfigurations = prev_num_cfg;
+    }
 
     return 0;
 }

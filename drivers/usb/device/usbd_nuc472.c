@@ -25,7 +25,8 @@
 #define nuc472_cep_read_byte()     ((uint8_t)NUC472_USBD->CEPDAT_BYTE)
 #define nuc472_ep_read_byte(slot)  ((uint8_t)NUC472_USBD->EP[slot].EPDAT_BYTE)
 #else
-#define nuc472_w1c_write(reg, val) do { (reg) &= ~(val); } while (0)
+extern void nuc472_host_w1c_write(volatile uint32_t *reg, uint32_t val);
+#define nuc472_w1c_write(reg, val) nuc472_host_w1c_write(&(reg), (val))
 extern uint8_t nuc472_host_cep_read_byte(void);
 extern uint8_t nuc472_host_ep_read_byte(int slot);
 #define nuc472_cep_read_byte()     nuc472_host_cep_read_byte()
@@ -39,6 +40,7 @@ struct nuc472_ep_slot {
     bool in_use;           /* 是否已被逻辑端点占用使能 */
     bool is_in;            /* true 为 IN 端点，false 为 OUT 端点 */
     bool rx_pending;       /* 是否处于 OUT 准备接收状态 */
+    bool rx_drained;       /* 标记最近一次 OUT 包已由 ISR 从 FIFO 搬空 */
     void *rx_buf;          /* 用户准备接收缓冲区 */
     size_t rx_buf_size;    /* 用户准备接收缓冲区大小 */
     size_t last_tx_len;    /* 最近一次 IN 发送字节数 */
@@ -206,6 +208,12 @@ static int nuc472_usbd_ep_enable(struct uendpoint *ep)
         NUC472_USBD->EP[slot].EPRSPCTL = NUC472_USBD_EPRSPCTL_MODE_AUTO | NUC472_USBD_EPRSPCTL_FLUSH;
     }
 
+    /* 清除端点残留历史中断标志 (含借由 ERRIF 清除 SHORTRXIF)，防止使能后立即误触发 */
+    NUC472_USBD->EP[slot].EPINTEN = 0;
+    nuc472_w1c_write(NUC472_USBD->EP[slot].EPINTSTS,
+                     NUC472_USBD_EPINT_TXPK | NUC472_USBD_EPINT_RXPK |
+                     NUC472_USBD_EPINT_ERR | NUC472_USBD_EPINT_SHORTRX);
+
     /* 使能该端点的全局中断 */
     NUC472_USBD->GINTEN |= (1UL << (NUC472_USBD_GINTSTS_EP_SHIFT + slot));
     enable_irq_save(flags);
@@ -249,12 +257,32 @@ static size_t nuc472_usbd_ep_read_prepare(uint8_t address, void *buffer, size_t 
     int slot = nuc472_find_slot_by_addr(address);
     if (slot >= 0) {
         g_ep_slots[slot].rx_pending = true;
+        g_ep_slots[slot].rx_drained = false;
         g_ep_slots[slot].rx_buf = buffer;
         g_ep_slots[slot].rx_buf_size = size;
-        NUC472_USBD->EP[slot].EPINTEN |= (NUC472_USBD_EPINT_RXPK | NUC472_USBD_EPINT_SHORTRX);
+        /* 仅使能 RXPKIEN：NUC472 收到满包、短包或 0 字节包均会置位 RXPKIF；
+         * 不使能 SHORTRXIEN，避免硬件特性下 SHORTRXIF 挂起时导致死循环重入 */
+        NUC472_USBD->EP[slot].EPINTEN |= NUC472_USBD_EPINT_RXPK;
     }
     enable_irq_save(flags);
     return size;
+}
+
+/* 从硬件 OUT 端点 FIFO 搬运数据至缓冲区，并将超出部分彻底读出排空 */
+static size_t nuc472_ep_drain_fifo(int slot, uint8_t *dst, size_t limit)
+{
+    uint32_t cnt = NUC472_USBD->EP[slot].EPDATCNT & 0xFFFF;
+    size_t copy_len = (dst != NULL && limit > 0U) ? ((cnt < limit) ? cnt : limit) : 0U;
+
+    for (size_t k = 0; k < copy_len; k++) {
+        dst[k] = nuc472_ep_read_byte(slot);
+    }
+    /* 将超出接收缓冲区或未准备接收时的多余硬件 FIFO 字节读出丢弃，防止 FIFO 残留失步 */
+    for (size_t k = copy_len; k < cnt; k++) {
+        volatile uint8_t dummy = nuc472_ep_read_byte(slot);
+        (void)dummy;
+    }
+    return copy_len;
 }
 
 /* 搬取端点 FIFO 数据 */
@@ -278,21 +306,19 @@ static size_t nuc472_usbd_ep_read(uint8_t address, void *buffer)
         return 0;
     }
 
-    uint32_t cnt = NUC472_USBD->EP[slot].EPDATCNT & 0xFFFF;
+    /* 若 ISR 已将本次 OUT 数据搬运并排空 FIFO（包括 ZLP），core.c 触发回退读取时直接返回 0，避免误读后续新包 */
+    if (g_ep_slots[slot].rx_drained) {
+        g_ep_slots[slot].rx_drained = false;
+        enable_irq_save(flags);
+        return 0;
+    }
+
     size_t limit = g_ep_slots[slot].rx_buf_size;
-    if (limit == 0) {
+    if (limit == 0U) {
         limit = NUC472_USBD_MPS;
     }
-    size_t copy_len = (cnt < limit) ? cnt : limit;
-    uint8_t *dst = (uint8_t *)buffer;
-    for (size_t k = 0; k < copy_len; k++) {
-        dst[k] = nuc472_ep_read_byte(slot);
-    }
-    /* 将超出接收缓冲区的多余硬件 FIFO 字节读出丢弃，防止 FIFO 残留导致硬件失步 */
-    for (size_t k = copy_len; k < cnt; k++) {
-        volatile uint8_t dummy = nuc472_ep_read_byte(slot);
-        (void)dummy;
-    }
+    size_t copy_len = nuc472_ep_drain_fifo(slot, (uint8_t *)buffer, limit);
+    g_ep_slots[slot].rx_pending = false;
     g_ep_slots[slot].last_rx_len = copy_len;
     g_ep_slots[slot].rx_buf = NULL;
     g_ep_slots[slot].rx_buf_size = 0;
@@ -435,6 +461,18 @@ static int nuc472_usbd_init(void)
     NUC472_SYS->IPRST1 &= ~NUC472_SYS_IPRST1_USBDRST_Msk;
     nuc472_sys_lock();
 
+    /*
+     * 硬件时序要求：先保留 PHYCTL 出厂默认配置 (0x0420) 并仅置位 PHYEN 启动 UTMI PHY，
+     * 通过写/读 EP[0].EPMPS 等待 UTMI 时钟稳定后再写其余 USBD 寄存器，避免写操作被静默丢弃。
+     */
+    NUC472_USBD->PHYCTL |= NUC472_USBD_PHYCTL_PHYEN;
+    for (uint32_t wait = 0; wait < 100000U; wait++) {
+        NUC472_USBD->EP[0].EPMPS = 0x20U;
+        if (NUC472_USBD->EP[0].EPMPS == 0x20U) {
+            break;
+        }
+    }
+
     /* 强制清零 HISPDEN 锁定为全速 (12 Mbps) */
     NUC472_USBD->OPER &= ~NUC472_USBD_OPER_HISPDEN;
     g_nuc472_udcd.device_is_hs = 0;
@@ -468,7 +506,7 @@ static int nuc472_usbd_init(void)
                             NUC472_USBD_BUSINTEN_SUSPENDIEN;
 
     /* 清除并使能 CEP 控制端点中断 (SETUPPK, TXPK, RXPK, STSDONE) */
-    nuc472_w1c_write(NUC472_USBD->CEPINTSTS, 0x7FF);
+    nuc472_w1c_write(NUC472_USBD->CEPINTSTS, 0x1FFF);
     NUC472_USBD->CEPINTEN = NUC472_USBD_CEPINT_SETUPPK |
                             NUC472_USBD_CEPINT_TXPK |
                             NUC472_USBD_CEPINT_RXPK |
@@ -477,12 +515,12 @@ static int nuc472_usbd_init(void)
     /* 使能 USBD 全局总线与 CEP 中断 */
     NUC472_USBD->GINTEN = NUC472_USBD_GINTEN_USBIE | NUC472_USBD_GINTEN_CEPIE;
 
-    /* 开启片内 USB PHY 与 D+ 内部上拉电阻 */
-    NUC472_USBD->PHYCTL = NUC472_USBD_PHYCTL_PHYEN | NUC472_USBD_PHYCTL_DPPUEN;
-
 #ifndef NUC472_HOST_TEST
     hal_irq_enable(NUC472_USBD_IRQn);
 #endif
+
+    /* 控制器、端点及中断全部就绪后再使能 D+ 上拉电阻通知主机发起枚举 */
+    NUC472_USBD->PHYCTL |= NUC472_USBD_PHYCTL_DPPUEN;
 
     return 0;
 }
@@ -495,6 +533,12 @@ void USBD_IRQHandler(void)
     /* 1. 总线事件中断 (Bus Reset, Resume, Suspend) */
     if (gintsts & NUC472_USBD_GINTSTS_USBIF) {
         uint32_t busintsts = NUC472_USBD->BUSINTSTS;
+        uint32_t unwanted_bus = busintsts & ~NUC472_USBD->BUSINTEN &
+                                (NUC472_USBD_BUSINTSTS_PHYCLKVLDIF |
+                                 NUC472_USBD_BUSINTSTS_VBUSDETIF);
+        if (unwanted_bus != 0) {
+            nuc472_w1c_write(NUC472_USBD->BUSINTSTS, unwanted_bus);
+        }
 
         /* 总线复位事件 */
         if (busintsts & NUC472_USBD_BUSINTSTS_RSTIF) {
@@ -551,7 +595,6 @@ void USBD_IRQHandler(void)
 
         /* EP0 OUT 接收完成中断 */
         if (cepintsts & NUC472_USBD_CEPINT_RXPK) {
-            nuc472_w1c_write(NUC472_USBD->CEPINTSTS, NUC472_USBD_CEPINT_RXPK);
             uint32_t rx_cnt = NUC472_USBD->CEPRXCNT & 0xFFFF;
             if (rx_cnt == 0) {
                 rx_cnt = NUC472_USBD->CEPDATCNT & 0xFFFF;
@@ -577,6 +620,8 @@ void USBD_IRQHandler(void)
                     (void)dummy;
                 }
             }
+            /* 排空 CEP FIFO 后再清除 RXPK 标志，避免硬件因 FIFO 未空重触发 */
+            nuc472_w1c_write(NUC472_USBD->CEPINTSTS, NUC472_USBD_CEPINT_RXPK);
             usbd_ep0_out_handler(&g_nuc472_udcd, copied);
         }
 
@@ -607,14 +652,31 @@ void USBD_IRQHandler(void)
         }
 
         /* OUT 端点接收完成 (满包或短包到达) */
-        if (epintsts & (NUC472_USBD_EPINT_RXPK | NUC472_USBD_EPINT_SHORTRX)) {
+        if (!g_ep_slots[i].is_in &&
+            (epintsts & NUC472_USBD->EP[i].EPINTEN &
+             (NUC472_USBD_EPINT_RXPK | NUC472_USBD_EPINT_SHORTRX))) {
             uint32_t clear_mask = epintsts & (NUC472_USBD_EPINT_RXPK | NUC472_USBD_EPINT_SHORTRX);
-            nuc472_w1c_write(NUC472_USBD->EP[i].EPINTSTS, clear_mask);
+            if ((clear_mask & NUC472_USBD_EPINT_SHORTRX) != 0U) {
+                /* 实测 NUC472 硬件向 SHORTRXIF(Bit12) 写 1 无法清零，需一并置位 ERRIF(Bit11) 清除 */
+                clear_mask |= NUC472_USBD_EPINT_ERR;
+            }
+            size_t limit = g_ep_slots[i].rx_buf_size;
+            if (limit == 0U && g_ep_slots[i].rx_buf != NULL) {
+                limit = NUC472_USBD_MPS;
+            }
+            uint8_t *dst = g_ep_slots[i].rx_pending ? (uint8_t *)g_ep_slots[i].rx_buf : NULL;
+            size_t copied = nuc472_ep_drain_fifo(i, dst, limit);
+
             NUC472_USBD->EP[i].EPINTEN &= ~(NUC472_USBD_EPINT_RXPK | NUC472_USBD_EPINT_SHORTRX);
             g_ep_slots[i].rx_pending = false;
-            uint32_t rx_cnt = NUC472_USBD->EP[i].EPDATCNT & 0xFFFF;
-            g_ep_slots[i].last_rx_len = rx_cnt;
-            usbd_ep_out_handler(&g_nuc472_udcd, g_ep_slots[i].ep_addr, rx_cnt);
+            g_ep_slots[i].rx_drained = true;
+            g_ep_slots[i].rx_buf = NULL;
+            g_ep_slots[i].rx_buf_size = 0;
+            g_ep_slots[i].last_rx_len = copied;
+
+            /* 在排空硬件 FIFO 之后再写 1 清除标志，防止 FIFO 未空时立刻重触发 SHORTRXIF */
+            nuc472_w1c_write(NUC472_USBD->EP[i].EPINTSTS, clear_mask);
+            usbd_ep_out_handler(&g_nuc472_udcd, g_ep_slots[i].ep_addr, copied);
         }
     }
 }

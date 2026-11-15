@@ -26,6 +26,9 @@ int nuc472_emac_mdio_read_timeout_sim(uint32_t phy_addr, uint32_t reg_addr, uint
 
 int nuc472_emac_phy_init(void)
 {
+    /* 解锁系统寄存器以配置 EMAC 时钟与引脚复用 */
+    nuc472_sys_unlock();
+
     /* 开启 AHBCLK EMAC 外设时钟 */
     NUC472_CLK->AHBCLK |= NUC472_CLK_AHBCLK_EMACCKEN;
 
@@ -37,7 +40,6 @@ int nuc472_emac_phy_init(void)
                           (127U << NUC472_CLK_CLKDIV3_EMACDIV_Pos);
 
     /* 配置 CON1 接口上的 RMII MDC (PB.14) 与 MDIO (PB.15) 多功能引脚复用 (功能号 6) */
-    nuc472_sys_unlock();
     NUC472_SYS->GPB_MFPH = (NUC472_SYS->GPB_MFPH & ~NUC472_SYS_GPB_MFPH_RMII_MDIO_Msk) |
                            NUC472_SYS_GPB_MFPH_RMII_MDIO_Val;
     nuc472_sys_lock();
@@ -122,6 +124,19 @@ int nuc472_emac_mdio_write(uint32_t phy_addr, uint32_t reg_addr, uint16_t val)
     return 0;
 }
 
+/**
+ * @brief 确保 EMAC 时钟与 MDIO 引脚复用已初始化（幂等）
+ */
+static void nuc472_emac_ensure_init(void)
+{
+    if ((NUC472_CLK->AHBCLK & NUC472_CLK_AHBCLK_EMACCKEN) == 0UL ||
+        (NUC472_CLK->CLKDIV3 & NUC472_CLK_CLKDIV3_EMACDIV_Msk) == 0UL ||
+        (NUC472_SYS->GPB_MFPH & NUC472_SYS_GPB_MFPH_RMII_MDIO_Msk) !=
+        NUC472_SYS_GPB_MFPH_RMII_MDIO_Val) {
+        (void)nuc472_emac_phy_init();
+    }
+}
+
 int nuc472_emac_phy_probe(uint32_t phy_addr, struct nuc472_phy_info *info)
 {
     uint16_t id1 = 0;
@@ -132,6 +147,8 @@ int nuc472_emac_phy_probe(uint32_t phy_addr, struct nuc472_phy_info *info)
     if (info == NULL || phy_addr > 31U) {
         return -EINVAL;
     }
+
+    nuc472_emac_ensure_init();
 
     /* 读取 PHY ID 1 (寄存器 0x02) */
     ret = nuc472_emac_mdio_read(phy_addr, 2U, &id1);

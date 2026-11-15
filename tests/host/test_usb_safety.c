@@ -1052,6 +1052,27 @@ static void test_in_completion_preempts_submitter(void)
     }
 }
 
+static void test_set_descriptor_preserves_num_configurations(void)
+{
+    struct udevice dev = {0};
+    struct udevice_descriptor custom_desc = {
+        .bLength            = USB_DESC_LENGTH_DEVICE,
+        .type               = USB_DESC_TYPE_DEVICE,
+        .bcdUSB             = 0x0200,
+        .bMaxPacketSize0    = 0x40,
+        .idVendor           = 0x0416,
+        .idProduct          = 0x5011,
+        .bNumConfigurations = USB_DYNAMIC,
+    };
+
+    puts("[Test 7] usbd_device_set_descriptor preserves bNumConfigurations...");
+    dev.dev_desc.bNumConfigurations = 1;
+    assert(usbd_device_set_descriptor(&dev, &custom_desc) == 0);
+    assert(dev.dev_desc.idVendor == 0x0416);
+    assert(dev.dev_desc.idProduct == 0x5011);
+    assert(dev.dev_desc.bNumConfigurations == 1);
+}
+
 /* 主函数                                                                    */
 /* ========================================================================= */
 
@@ -1068,6 +1089,7 @@ int main(void)
     test_control_transfer_length_clamp();
     test_set_configuration_transition();
     test_in_completion_preempts_submitter();
+    test_set_descriptor_preserves_num_configurations();
 
     printf("================================================================\n");
     printf("所有 USB 安全与状态机单元测试全部通过 (ALL PASSED)!\n");

@@ -22,11 +22,36 @@ extern int board_led_set(bool on);
 extern uint32_t board_read_boot_flag(void);
 extern int board_write_boot_flag(uint32_t flag);
 
+/**
+ * @brief 确保 EADC 时钟与核心已就绪，未初始化时按需初始化
+ */
+static int nutiny_ensure_eadc_ready(void)
+{
+    if ((NUC472_CLK->APBCLK1 & NUC472_CLK_APBCLK1_EADCCKEN) == 0UL ||
+        (NUC472_EADC->CTL & NUC472_EADC_CTL_ADCEN) == 0UL) {
+        return nuc472_eadc_init();
+    }
+    return 0;
+}
+
+/**
+ * @brief 探测板载 PHY ADDR=1 的 EMAC PHY（内部会自动按需开启 EMAC 时钟与 MDIO 引脚复用）
+ */
+static int nutiny_probe_emac_phy(struct nuc472_phy_info *info)
+{
+    return nuc472_emac_phy_probe(1U, info);
+}
+
 /* 导出给 Lua 及系统的硬件信息接口 */
 int32_t board_adc_temp_mc(void)
 {
     int32_t temp_c = 0;
-    int ret = nuc472_eadc_read_temp_celsius(&temp_c);
+    int ret = nutiny_ensure_eadc_ready();
+
+    if (ret != 0) {
+        return 25000;
+    }
+    ret = nuc472_eadc_read_temp_celsius(&temp_c);
     if (ret != 0) {
         return 25000;
     }
@@ -120,9 +145,10 @@ static int cmd_hwinfo(int argc, char *argv[])
                      (unsigned int)mm_block_free_size());
 
     nos_shell_printf("-----------------------------------------------------------\n");
-    phy_ret = nuc472_emac_phy_probe(1, &phy_info);
+    phy_ret = nutiny_probe_emac_phy(&phy_info);
     if (phy_ret == 0) {
-        nos_shell_printf("EMAC PHY:     IP101GR (PHY ID: 0x%04X:0x%04X, Link: %s)\n",
+        nos_shell_printf("EMAC PHY:     %s (PHY ID: 0x%04X:0x%04X, Link: %s)\n",
+                         phy_info.is_ip101gr ? "IP101GR" : "PHY",
                          (unsigned int)phy_info.phy_id1,
                          (unsigned int)phy_info.phy_id2,
                          phy_info.link_up ? "UP" : "DOWN");
@@ -143,6 +169,11 @@ static int run_test_adc(void)
     int ret;
 
     nos_shell_printf("[TEST] EADC VBG & Temperature Sensor...\n");
+    ret = nutiny_ensure_eadc_ready();
+    if (ret != 0) {
+        nos_shell_error("  EADC init failed: %d\n", ret);
+        return ret;
+    }
     ret = nuc472_eadc_read_vbg_mv(&vbg_mv);
     if (ret != 0) {
         nos_shell_error("  EADC read VBG failed: %d\n", ret);
@@ -160,11 +191,31 @@ static int run_test_adc(void)
 static int run_test_timer(void)
 {
     uint64_t t1, t2;
+    bool need_start;
+    int ret;
 
     nos_shell_printf("[TEST] TIMER0 microsecond tick counter...\n");
+    need_start = (NUC472_CLK->APBCLK0 & NUC472_CLK_APBCLK0_TMR0CKEN) == 0UL ||
+                 (NUC472_TMR0->CTL & NUC472_TIMER_CTL_CNTEN) == 0UL;
+    if (need_start) {
+        ret = nuc472_timer0_init(1000U);
+        if (ret != 0) {
+            nos_shell_error("  TIMER0 init failed: %d\n", ret);
+            return ret;
+        }
+        ret = nuc472_timer0_start();
+        if (ret != 0) {
+            nos_shell_error("  TIMER0 start failed: %d\n", ret);
+            return ret;
+        }
+    }
+
     t1 = nuc472_timer0_get_ticks();
     msleep(10);
     t2 = nuc472_timer0_get_ticks();
+    if (need_start) {
+        (void)nuc472_timer0_stop();
+    }
     if (t2 <= t1) {
         nos_shell_error("  TIMER0 tick did not advance: t1=%u, t2=%u\n",
                         (unsigned int)t1, (unsigned int)t2);
@@ -224,7 +275,7 @@ static int run_test_emac(void)
     int ret;
 
     nos_shell_printf("[TEST] EMAC MDIO IP101GR PHY probe...\n");
-    ret = nuc472_emac_phy_probe(1, &info);
+    ret = nutiny_probe_emac_phy(&info);
     if (ret != 0) {
         nos_shell_error("  PHY probe returned %d (PHY may be unpowered)\n", ret);
         return ret;

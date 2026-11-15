@@ -413,8 +413,29 @@ static void test_emac_phy_probe_periph(void)
     printf("[TEST] EMAC MDIO PHY (IP101GR) 探测测试...\n");
     memset(&g_test_emac, 0, sizeof(g_test_emac));
     memset(&g_test_clk, 0, sizeof(g_test_clk));
+    memset(&g_test_sys, 0, sizeof(g_test_sys));
 
-    int ret = nuc472_emac_phy_init();
+    /*
+     * 6.0 验证未提前调用 nuc472_emac_phy_init() 时，nuc472_emac_phy_probe()
+     * 能自动按需开启 EMAC 时钟、配置 MDC 分频与 PB.14/PB.15 引脚复用
+     */
+    g_test_emac.MIIMDAT = 0xFFFFU;
+    struct nuc472_phy_info no_phy_info;
+    memset(&no_phy_info, 0, sizeof(no_phy_info));
+    int ret = nuc472_emac_phy_probe(0U, &no_phy_info);
+    assert(ret == -ENODEV);
+    assert(no_phy_info.link_up == false);
+    assert((g_test_clk.AHBCLK & NUC472_CLK_AHBCLK_EMACCKEN) != 0UL);
+    uint32_t auto_div = (g_test_clk.CLKDIV3 & NUC472_CLK_CLKDIV3_EMACDIV_Msk) >> NUC472_CLK_CLKDIV3_EMACDIV_Pos;
+    assert(auto_div == 127U);
+    assert((g_test_sys.GPB_MFPH & NUC472_SYS_GPB_MFPH_RMII_MDIO_Msk) == NUC472_SYS_GPB_MFPH_RMII_MDIO_Val);
+
+    /* 6.1 显式调用 nuc472_emac_phy_init() 并校验寄存器配置 */
+    memset(&g_test_emac, 0, sizeof(g_test_emac));
+    memset(&g_test_clk, 0, sizeof(g_test_clk));
+    memset(&g_test_sys, 0, sizeof(g_test_sys));
+
+    ret = nuc472_emac_phy_init();
     assert(ret == 0);
     assert((g_test_clk.AHBCLK & NUC472_CLK_AHBCLK_EMACCKEN) != 0UL);
 
@@ -427,15 +448,14 @@ static void test_emac_phy_probe_periph(void)
     assert((g_test_sys.GPB_MFPH & NUC472_SYS_GPB_MFPH_RMII_MDIO_Msk) == NUC472_SYS_GPB_MFPH_RMII_MDIO_Val);
 
     /* 模拟 IP101GR 在 PHYADDR=1 上的 MDIO 交互 */
-    /* 6.1 模拟无 PHY 浮空总线 (返回 0xFFFF) 必须返回 -ENODEV 且 link_up=false */
+    /* 6.2 模拟无 PHY 浮空总线 (返回 0xFFFF) 必须返回 -ENODEV 且 link_up=false */
     g_test_emac.MIIMDAT = 0xFFFFU;
-    struct nuc472_phy_info no_phy_info;
     memset(&no_phy_info, 0, sizeof(no_phy_info));
     ret = nuc472_emac_phy_probe(0U, &no_phy_info);
     assert(ret == -ENODEV);
     assert(no_phy_info.link_up == false);
 
-    /* 6.2 正常探测并验证 BMSR 连续读取两次消抖 Latch Low */
+    /* 6.3 正常探测并验证 BMSR 连续读取两次消抖 Latch Low */
     struct nuc472_phy_info info;
     memset(&info, 0, sizeof(info));
 
