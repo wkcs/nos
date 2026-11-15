@@ -44,7 +44,7 @@ uint32_t nuc472_clk_init_84mhz(void)
         /* 84 MHz HCLK 需先关闭或配置 Flash 存取周期安全模式 (FTCTL.FOM = 000 为 >72 MHz) */
         NUC472_FMC->FTCTL &= ~NUC472_FMC_FTCTL_FOM_Msk;
 
-        /* 12 MHz / 2 * 28 / 2 = 84 MHz (NUC472_CLK_PLLCTL_84MHZ_HXT = 0x0000401AUL) */
+        /* 配置锁相环 PLL 输出 84 MHz 时钟：12 MHz / 2 * 28 / 2 = 84 MHz (NUC472_CLK_PLLCTL_84MHZ_HXT = 0x0000401AUL) */
         NUC472_CLK->PLLCTL = NUC472_CLK_PLLCTL_84MHZ_HXT;
         if (clk_wait_ready(NUC472_CLK_STATUS_PLLSTB)) {
             NUC472_CLK->CLKDIV0 = (NUC472_CLK->CLKDIV0 &

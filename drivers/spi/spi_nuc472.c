@@ -292,6 +292,11 @@ static int nuc472_spi_init(struct device *dev)
     mutex_init(&data->lock);
     data->pclk_hz = nuc472_clk_get_pclk_hz();
 
+    /* 显式锁定 SPI0 外设时钟源为 PCLK (0=PLL, 1=PCLK) */
+    nuc472_sys_unlock();
+    NUC472_CLK->CLKSEL1 = (NUC472_CLK->CLKSEL1 & ~NUC472_CLK_CLKSEL1_SPI0SEL_Msk) |
+                          NUC472_CLK_CLKSEL1_SPI0SEL_PCLK;
+
 #ifndef NUC472_HOST_TEST
     /* 使能 SPI0 模块时钟与引脚配置 */
     NUC472_CLK->APBCLK0 |= NUC472_CLK_APBCLK0_SPI0CKEN;
@@ -300,6 +305,7 @@ static int nuc472_spi_init(struct device *dev)
     NUC472_SYS->IPRST1 |= NUC472_SYS_IPRST1_SPI0RST_Msk;
     NUC472_SYS->IPRST1 &= ~NUC472_SYS_IPRST1_SPI0RST_Msk;
 #endif
+    nuc472_sys_lock();
 
 #if defined(CONFIG_DEVICE_TREE)
     const struct nos_dt_node *node = nos_dt_find_compatible("nuvoton,nuc472-spi");

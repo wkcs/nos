@@ -115,6 +115,7 @@ static void test_eadc_periph(void)
     memset(&g_test_eadc, 0, sizeof(g_test_eadc));
     memset(&g_test_clk, 0, sizeof(g_test_clk));
     memset(&g_test_sys, 0, sizeof(g_test_sys));
+    g_test_clk.STATUS = NUC472_CLK_STATUS_HXTSTB;
 
     int ret = nuc472_eadc_init();
     assert(ret == 0);
@@ -155,6 +156,29 @@ static void test_eadc_periph(void)
     assert(ret == -ETIMEDOUT);
 
     printf("  -> EADC 测试通过!\n");
+}
+
+static void test_eadc_hxt_fallback_hirc(void)
+{
+    printf("[TEST] EADC 外部晶振失效自适应回退片内 HIRC 测试...\n");
+    memset(&g_test_eadc, 0, sizeof(g_test_eadc));
+    memset(&g_test_clk, 0, sizeof(g_test_clk));
+    memset(&g_test_sys, 0, sizeof(g_test_sys));
+
+    /* 显式不置位 HXTSTB，模拟晶振失效/未起振 */
+    g_test_clk.STATUS = 0U;
+
+    int ret = nuc472_eadc_init();
+    assert(ret == 0);
+
+    /* 校验回退到片内 HIRC (22.1184 MHz) 与分频比 2 (ADCDIV=1 -> 11.06 MHz <= 16 MHz) */
+    assert((g_test_clk.APBCLK1 & NUC472_CLK_APBCLK1_EADCCKEN) != 0UL);
+    assert((g_test_clk.CLKSEL1 & NUC472_CLK_CLKSEL1_ADCSEL_Msk) == NUC472_CLK_CLKSEL1_ADCSEL_HIRC);
+    assert(((g_test_clk.CLKDIV0 & NUC472_CLK_CLKDIV0_ADCDIV_Msk) >> NUC472_CLK_CLKDIV0_ADCDIV_Pos) == 1U);
+    assert((g_test_sys.VREFCTL & NUC472_SYS_VREFCTL_ADCMODESEL_Msk) != 0UL);
+    assert((g_test_eadc.CTL & NUC472_EADC_CTL_ADCEN) != 0UL);
+
+    printf("  -> EADC 晶振失效回退测试通过!\n");
 }
 
 /* =========================================================================
@@ -436,6 +460,7 @@ int main(void)
 {
     printf("===== NUC472 片上外设驱动主机回归测试 =====\n");
     test_eadc_periph();
+    test_eadc_hxt_fallback_hirc();
     test_pwm0_periph();
     test_timer0_periph();
     test_rtc_periph();

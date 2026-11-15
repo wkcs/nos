@@ -202,6 +202,16 @@ static int lua_run_repl(lua_State *L)
     return 0;
 }
 
+static void lua_print_usage(void)
+{
+    nos_shell_printf("用法: lua [选项] [脚本路径]\n");
+    nos_shell_printf("选项:\n");
+    nos_shell_printf("  -e <代码>    执行单行 Lua 表达式或代码片段\n");
+    nos_shell_printf("  -h, --help  显示此帮助信息\n");
+    nos_shell_printf("说明:\n");
+    nos_shell_printf("  未带任何参数时，将直接进入交互式 REPL 命令行。\n");
+}
+
 /**
  * cmd_lua - nShell lua 扩展命令入口
  */
@@ -209,6 +219,24 @@ static int cmd_lua(int argc, char *argv[])
 {
     lua_State *L;
     int status = 0;
+
+    if (argc >= 2) {
+        if (strcmp(argv[1], "-h") == 0 || strcmp(argv[1], "--help") == 0) {
+            lua_print_usage();
+            return 0;
+        }
+        if (strcmp(argv[1], "-e") == 0) {
+            if (argc < 3) {
+                nos_shell_error("lua: 选项 '-e' 缺少代码参数\n");
+                lua_print_usage();
+                return -EINVAL;
+            }
+        } else if (argv[1][0] == '-') {
+            nos_shell_error("lua: 未知选项 '%s'\n", argv[1]);
+            lua_print_usage();
+            return -EINVAL;
+        }
+    }
 
     L = luaL_newstate();
     if (L == NULL) {

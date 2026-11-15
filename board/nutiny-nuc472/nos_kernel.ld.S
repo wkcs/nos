@@ -160,6 +160,7 @@ SECTIONS
   __mm_pool_start = .;
   __mm_pool_end = _estack - _Min_Stack_Size;
   ASSERT(__mm_pool_start < __mm_pool_end, "NUC472 SRAM exhausted")
+  ASSERT(_sidata + SIZEOF(.data) <= ORIGIN(LFS_FLASH), "NUC472 Flash kernel partition overflow into LittleFS")
 
   /* MEMORY_bank1 section, code must be located here explicitly            */
   /* Example: extern int foo(void) __attribute__ ((section (".mb1text"))); */

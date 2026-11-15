@@ -72,6 +72,14 @@ const struct nos_dt_node *nos_dt_find_phandle(uint32_t phandle)
     return NULL;
 }
 
+/**
+ * nos_dt_find_compatible - 按 compatible 属性查找第一个匹配的设备树节点
+ * @compatible: 兼容性标识字符串
+ *
+ * 注：若 SoC 存在多个相同兼容性的控制器实例（例如多个同型号 UART/SPI 控制器），
+ * 本函数默认返回设备树节点表中的首个匹配节点。调用方若需绑定特定控制器，
+ * 可通过遍历节点或在获取节点后根据 reg 属性（物理基地址）进行精确区分。
+ */
 const struct nos_dt_node *nos_dt_find_compatible(const char *compatible)
 {
     size_t i;

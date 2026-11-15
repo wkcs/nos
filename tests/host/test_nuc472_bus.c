@@ -296,6 +296,7 @@ static void test_spi0_bus(void)
 {
     printf("[Test 2] 验证 SPI0: CLKDIV 分频计算、SS0 片选控制与 transceive 全双工移位...\n");
     memset(&g_test_spi0, 0, sizeof(g_test_spi0));
+    memset(&g_test_clk, 0, sizeof(g_test_clk));
     g_spi_tx_count = 0;
     g_spi_rx_count = 0;
     g_spi_rx_pos = 0;
@@ -305,6 +306,8 @@ static void test_spi0_bus(void)
     int init_rc = nuc472_spi_init(spi_dev);
     assert(init_rc == 0);
     assert(device_is_ready(spi_dev));
+    /* 校验 SPI0 外设时钟源显式锁定为 PCLK (0=PLL, 1=PCLK) */
+    assert((g_test_clk.CLKSEL1 & NUC472_CLK_CLKSEL1_SPI0SEL_Msk) == NUC472_CLK_CLKSEL1_SPI0SEL_PCLK);
 
     /* 2.1 验证 session_begin: freq=1MHz, cs=0, word_size=8, mode=0 */
     struct spi_config cfg = {

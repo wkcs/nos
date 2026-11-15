@@ -19,14 +19,28 @@ class NuTinyNUC472FootprintTests(unittest.TestCase):
         if not ELF_PATH.exists():
             raise unittest.SkipTest(f"固件未构建: {ELF_PATH}")
 
-        # 使用 arm-none-eabi-size 获取段大小
-        out = subprocess.check_output(["arm-none-eabi-size", str(ELF_PATH)], text=True)
-        lines = out.strip().splitlines()
-        cls.assertTrue(cls, len(lines) >= 2, "arm-none-eabi-size 输出格式异常")
-        parts = lines[1].split()
-        cls.text_size = int(parts[0])
-        cls.data_size = int(parts[1])
-        cls.bss_size = int(parts[2])
+        # 使用 arm-none-eabi-size -A 获取各段精确大小（解决 Berkeley 格式将 .ramfunc 误计入 text 问题）
+        out = subprocess.check_output(["arm-none-eabi-size", "-A", str(ELF_PATH)], text=True)
+        cls.sections = {}
+        for line in out.splitlines():
+            parts = line.split()
+            if len(parts) >= 2 and parts[1].isdigit():
+                cls.sections[parts[0]] = int(parts[1])
+
+        cls.data_size = cls.sections.get(".data", 0)
+        cls.bss_size = cls.sections.get(".bss", 0)
+
+        # 真实进入 Flash LMA 存储的物理段集合（不含 .debug_*、.bss、.ARM.attributes 等）
+        cls.flash_lma_sections = [
+            ".isr_vector",
+            ".text",
+            ".ARM.extab",
+            ".ARM",
+            ".init_array",
+            ".fini_array",
+            ".data",
+        ]
+        cls.flash_size = sum(cls.sections.get(s, 0) for s in cls.flash_lma_sections)
 
         # 使用 arm-none-eabi-nm 获取符号表
         nm_out = subprocess.check_output(["arm-none-eabi-nm", str(ELF_PATH)], text=True)
@@ -37,12 +51,11 @@ class NuTinyNUC472FootprintTests(unittest.TestCase):
                 cls.symbols.add(cols[2])
 
     def test_nuc472_flash_footprint(self):
-        """校验 Flash (text + data) <= 368,640 B (360 KiB)"""
-        flash_used = self.text_size + self.data_size
+        """校验物理 Flash LMA 总占用 <= 368,640 B (360 KiB)"""
         self.assertLessEqual(
-            flash_used,
+            self.flash_size,
             MAX_FLASH_BYTES,
-            f"Flash 超标: 已使用 {flash_used} B, 预算上限 {MAX_FLASH_BYTES} B (超出 {flash_used - MAX_FLASH_BYTES} B)"
+            f"Flash 超标: 已使用 {self.flash_size} B, 预算上限 {MAX_FLASH_BYTES} B (超出 {self.flash_size - MAX_FLASH_BYTES} B)"
         )
 
     def test_nuc472_ram_footprint(self):
@@ -77,6 +90,10 @@ class NuTinyNUC472FootprintTests(unittest.TestCase):
             "fmc_isp_trigger_ramfunc",
             "cmd_lua",
             "nutiny_fs_init",
+            "nutiny_usbd_register",
+            "nutiny_nlk_register",
+            "board_read_boot_flag",
+            "board_write_boot_flag",
         ]
         for sym in required:
             self.assertIn(sym, self.symbols, f"缺少关键符号: {sym}")

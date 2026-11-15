@@ -74,19 +74,31 @@ config ARM_MPU_FLASH_BASE
 	hex "ARMv7-M MPU static flash region base address"
 	default 0x00000000 if SOC_NUC472
 	default 0x08000000
+	help
+	  ARMv7-M MPU 保护的片上 Flash 静态区域物理基地址。
+	  NUC472 默认为 0x00000000，STM32 等芯片通常为 0x08000000。
 
 config ARM_MPU_FLASH_SIZE
 	hex "ARMv7-M MPU static flash region size in bytes"
 	default 0x80000 if SOC_NUC472
 	default 0x100000
+	help
+	  ARMv7-M MPU 保护的片上 Flash 静态区域大小（字节数）。
+	  必须为 2 的整数次幂（如 512 KiB 为 0x80000，1 MiB 为 0x100000）。
 
 config ARM_MPU_SRAM_BASE
 	hex "ARMv7-M MPU static SRAM region base address"
 	default 0x20000000
+	help
+	  ARMv7-M MPU 保护的片上 SRAM 静态区域物理基地址。
+	  ARM Cortex-M 架构通常统一映射在 0x20000000。
 
 config ARM_MPU_SRAM_SIZE
 	hex "ARMv7-M MPU static SRAM region size in bytes"
 	default 0x10000 if SOC_NUC472
 	default 0x20000
+	help
+	  ARMv7-M MPU 保护的片上 SRAM 静态区域大小（字节数）。
+	  必须为 2 的整数次幂（如 64 KiB 为 0x10000，128 KiB 为 0x20000）。
 
 endif # ARCH_ARM

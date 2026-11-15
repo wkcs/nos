@@ -6,6 +6,12 @@
  * Email: huqihan@live.com
  */
 
+/**
+ * SHELL_EXT_CMD_HOST_TEST 桩逻辑：
+ * 仅用于宿主机单元测试（如 test_shell_ext_cmd.c）验证扩展命令链表的增删查行为。
+ * 桩实现必须与下方内核运行态中的 nos_shell_register_cmd / nos_shell_find_cmd /
+ * nos_shell_get_ext_cmds 接口契约保持严格同步，避免测试与运行时逻辑分叉。
+ */
 #ifdef SHELL_EXT_CMD_HOST_TEST
 #include <stdio.h>
 #include <string.h>
@@ -6590,6 +6596,11 @@ static const struct shell_cmd *nshell_find_builtin(const char *name)
 {
     size_t i;
     const struct nos_shell_cmd *ext;
+    /*
+     * 静态适配器单例：将解耦的 nos_shell_cmd 转换为内部使用的 struct shell_cmd。
+     * 该静态实例仅适用于 nShell 当前的单会话串行命令查找与执行模型；
+     * 若未来支持多终端并发会话，需改为会话上下文私有存储或重构内置命令调用栈。
+     */
     static struct shell_cmd s_ext_cmd_adapter;
 
     for (i = 0U; i < sizeof(builtin_cmds) / sizeof(builtin_cmds[0]); i++) {

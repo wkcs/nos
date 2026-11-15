@@ -20,11 +20,22 @@ int nuc472_eadc_init(void)
     /* 开启 APBCLK1 EADC 外设时钟 */
     NUC472_CLK->APBCLK1 |= NUC472_CLK_APBCLK1_EADCCKEN;
 
-    /* 配置 EADC 时钟源为 HXT (12 MHz)，分频比为 1，确保 EADC 采样时钟 <= 16 MHz */
-    NUC472_CLK->CLKSEL1 = (NUC472_CLK->CLKSEL1 & ~NUC472_CLK_CLKSEL1_ADCSEL_Msk) |
-                          NUC472_CLK_CLKSEL1_ADCSEL_HXT;
-    NUC472_CLK->CLKDIV0 = (NUC472_CLK->CLKDIV0 & ~NUC472_CLK_CLKDIV0_ADCDIV_Msk) |
-                          (0U << NUC472_CLK_CLKDIV0_ADCDIV_Pos);
+    /*
+     * 配置 EADC 采样时钟源与分频：
+     * 若外部高速晶振 HXT 就绪，选用 12 MHz HXT 且分频比为 1 (ADCDIV=0，时钟 12 MHz <= 16 MHz)；
+     * 若外部晶振失效或未起振，自适应安全回退到片内 HIRC (22.1184 MHz)，分频比为 2 (ADCDIV=1，时钟 11.06 MHz <= 16 MHz)。
+     */
+    if ((NUC472_CLK->STATUS & NUC472_CLK_STATUS_HXTSTB) != 0UL) {
+        NUC472_CLK->CLKSEL1 = (NUC472_CLK->CLKSEL1 & ~NUC472_CLK_CLKSEL1_ADCSEL_Msk) |
+                              NUC472_CLK_CLKSEL1_ADCSEL_HXT;
+        NUC472_CLK->CLKDIV0 = (NUC472_CLK->CLKDIV0 & ~NUC472_CLK_CLKDIV0_ADCDIV_Msk) |
+                              (0U << NUC472_CLK_CLKDIV0_ADCDIV_Pos);
+    } else {
+        NUC472_CLK->CLKSEL1 = (NUC472_CLK->CLKSEL1 & ~NUC472_CLK_CLKSEL1_ADCSEL_Msk) |
+                              NUC472_CLK_CLKSEL1_ADCSEL_HIRC;
+        NUC472_CLK->CLKDIV0 = (NUC472_CLK->CLKDIV0 & ~NUC472_CLK_CLKDIV0_ADCDIV_Msk) |
+                              (1U << NUC472_CLK_CLKDIV0_ADCDIV_Pos);
+    }
 
     /* 配置 EADC 模块基准源为 AVDD，并切换 ADC IP 模式为 EADC */
     NUC472_SYS->VREFCTL = (NUC472_SYS->VREFCTL & ~NUC472_SYS_VREFCTL_VREFCTL_Msk) |
