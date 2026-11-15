@@ -20,7 +20,7 @@
 
         led0: led_0 {
             label = "board:led";
-            gpios = <&gpiob 10 0>;
+            gpios = <&gpiob 10 1>; /* GPIO_ACTIVE_LOW */
             default-state = "off";
         };
     };

@@ -22,7 +22,8 @@ int board_led_set(bool on)
     NUC472_SYS->GPB_MFPH &= ~(0xFU << 8);
     nuc472_sys_lock();
     nuc472_gpio_config(NUC472_PORT_B, 10, NUC472_GPIO_MODE_OUTPUT);
-    nuc472_gpio_write(NUC472_PORT_B, 10, on ? 1 : 0);
+    /* NuTiny-NUC472 板载 LED 为低电平点亮 (Active-Low) */
+    nuc472_gpio_write(NUC472_PORT_B, 10, on ? 0 : 1);
     return 0;
 }
 
@@ -35,9 +36,9 @@ static void nutiny_led_task(void *parameter)
     NUC472_SYS->GPB_MFPH &= ~(0xFU << 8);
     nuc472_sys_lock();
 
-    /* 使用 NUC472 GPIO 驱动配置 PB.10 为推挽输出，默认低电平 */
+    /* 使用 NUC472 GPIO 驱动配置 PB.10 为推挽输出，默认高电平熄灭 (Active-Low) */
     nuc472_gpio_config(NUC472_PORT_B, 10, NUC472_GPIO_MODE_OUTPUT);
-    nuc472_gpio_write(NUC472_PORT_B, 10, 0);
+    nuc472_gpio_write(NUC472_PORT_B, 10, 1);
 
     while (true) {
         msleep(LED_BLINK_INTERVAL_MS);
