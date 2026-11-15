@@ -994,8 +994,22 @@ static void test_keyboard_load_small_heap(void)
     nlk_cap_keyboard_deinit(&kb);
 }
 
+static void test_nlk_node_uuid_population(void)
+{
+    struct nlk_node node;
+    uint8_t zero_uuid[12] = {0};
+
+    assert(nlk_node_init(&node, NLK_ADDR_PRIMARY, 0x1234, 0x5678,
+                         NLK_DEV_CLASS_KEYBOARD, "TEST-NODE") == 0);
+
+    /* 验证 desc.uuid 不再是全 0 */
+    assert(memcmp(node.desc.uuid, zero_uuid, sizeof(zero_uuid)) != 0);
+    printf("test_nlk_node_uuid_population passed\n");
+}
+
 int main(void)
 {
+    test_nlk_node_uuid_population();
     test_current_keyboard_config_format();
     test_keyboard_load_small_heap();
     test_light_action_lifecycle();

@@ -5,8 +5,22 @@
  */
 
 #include <nos/nlk_core.h>
+#include <kernel/board.h>
 #include <uapi/nos/errno.h>
 #include <string.h>
+
+/* 若板级未提供硬件 UID 读取实现，使用默认弱符号兜底保证 UID 非全 0 */
+__attribute__((weak)) int board_get_chip_uid(uint8_t uid[12])
+{
+    static const uint8_t default_uid[12] = {
+        0x4E, 0x4F, 0x53, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09
+    };
+    if (uid == NULL) {
+        return -EINVAL;
+    }
+    memcpy(uid, default_uid, 12);
+    return 0;
+}
 
 static struct nlk_node g_nlk_default_node;
 static bool g_nlk_default_inited;
@@ -44,6 +58,8 @@ int nlk_node_init(struct nlk_node *node, nlk_addr_t initial_addr,
     node->desc.max_payload_size = CONFIG_NLK_PACKET_MTU;
     node->desc.dev_flags = NLK_DEV_FLAG_BRIDGE;
     node->desc.parent_addr = NLK_ADDR_HOST;
+
+    (void)board_get_chip_uid(node->desc.uuid);
 
     return nlk_node_set_identity(node, vendor_id, product_id, device_class, name);
 }
