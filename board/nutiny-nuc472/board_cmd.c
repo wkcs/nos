@@ -9,6 +9,7 @@
 #include <kernel/errno.h>
 #include <kernel/sleep.h>
 #include <kernel/mm.h>
+#include <kernel/board.h>
 #include <soc/nuc472_soc.h>
 #include <drivers/gpio_nuc472.h>
 #include <drivers/nuc472_periphs.h>
@@ -56,6 +57,29 @@ int32_t board_adc_temp_mc(void)
         return 25000;
     }
     return temp_c * 1000;
+}
+
+/**
+ * 获取 NUC472 硬件唯一标识符 (UID)
+ *
+ * 通过 FMC ISP 读取 96 位 (3 个 32 位字) UID
+ */
+int board_get_chip_uid(uint8_t uid[12])
+{
+    uint32_t tmp[3] = {0};
+    int ret;
+
+    if (uid == NULL) {
+        return -EINVAL;
+    }
+
+    ret = nuc472_fmc_read_uid(tmp);
+    if (ret != 0) {
+        return ret;
+    }
+
+    memcpy(uid, tmp, sizeof(tmp));
+    return 0;
 }
 
 int board_chip_uid(char *buf, size_t max_len)

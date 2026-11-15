@@ -8,6 +8,7 @@
 #include <kernel/board.h>
 #include <uapi/nos/errno.h>
 #include <string.h>
+#include <stdio.h>
 
 /* 若板级未提供硬件 UID 读取实现，使用默认弱符号兜底保证 UID 非全 0 */
 __attribute__((weak)) int board_get_chip_uid(uint8_t uid[12])
@@ -19,6 +20,28 @@ __attribute__((weak)) int board_get_chip_uid(uint8_t uid[12])
         return -EINVAL;
     }
     memcpy(uid, default_uid, 12);
+    return 0;
+}
+
+/* 若板级未提供 UID 十六进制转换实现，使用通用弱符号兜底实现 */
+__attribute__((weak)) int board_get_chip_uid_hex(char *buf, size_t max_len)
+{
+    uint8_t uid[12] = {0};
+    int ret;
+
+    if (buf == NULL || max_len < 25) {
+        return -EINVAL;
+    }
+
+    ret = board_get_chip_uid(uid);
+    if (ret != 0) {
+        return ret;
+    }
+
+    for (int i = 0; i < 12; i++) {
+        snprintf(&buf[i * 2], 3, "%02X", uid[i]);
+    }
+    buf[24] = '\0';
     return 0;
 }
 

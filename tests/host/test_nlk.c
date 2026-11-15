@@ -17,6 +17,7 @@
 #include <kernel/types.h>
 #include <kernel/printk.h>
 #include <kernel/boot.h>
+#include <kernel/board.h>
 #include <fs/fs.h>
 #include <fs/vfs.h>
 #include <nos/nlk_core.h>
@@ -998,6 +999,14 @@ static void test_nlk_node_uuid_population(void)
 {
     struct nlk_node node;
     uint8_t zero_uuid[12] = {0};
+    char hex_buf[32] = {0};
+
+    /* 参数有效性负向检查 */
+    assert(board_get_chip_uid(NULL) == -EINVAL);
+    assert(board_get_chip_uid_hex(NULL, 0) == -EINVAL);
+    assert(board_get_chip_uid_hex(hex_buf, 24) == -EINVAL);
+    assert(board_get_chip_uid_hex(hex_buf, sizeof(hex_buf)) == 0);
+    assert(strlen(hex_buf) == 24);
 
     assert(nlk_node_init(&node, NLK_ADDR_PRIMARY, 0x1234, 0x5678,
                          NLK_DEV_CLASS_KEYBOARD, "TEST-NODE") == 0);
