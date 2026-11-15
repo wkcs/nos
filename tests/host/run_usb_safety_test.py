@@ -4,6 +4,7 @@
 from pathlib import Path
 import os
 import subprocess
+import sys
 import tempfile
 
 
@@ -14,18 +15,21 @@ TEST_DIR = ROOT / "tests" / "host"
 def main():
     with tempfile.TemporaryDirectory(prefix="nos-usb-safety-test-") as tmp:
         exe = Path(tmp) / "test_usb_safety"
+        cmd = [
+            os.environ.get("CC", "cc"),
+            "-std=gnu11",
+            "-Wno-incompatible-function-pointer-types",
+            "-I", str(TEST_DIR / "stubs"),
+            "-I", str(ROOT / "include"),
+            "-I", str(ROOT),
+            "-DCONFIG_SYS_TICK_MS=1",
+            str(TEST_DIR / "test_usb_safety.c"),
+            "-o", str(exe),
+        ]
+        if sys.platform == "darwin":
+            cmd.extend(["-Wl,-no_fixup_chains", "-Wl,-w"])
         subprocess.run(
-            [
-                os.environ.get("CC", "cc"),
-                "-std=gnu11",
-                "-Wno-incompatible-function-pointer-types",
-                "-I", str(TEST_DIR / "stubs"),
-                "-I", str(ROOT / "include"),
-                "-I", str(ROOT),
-                "-DCONFIG_SYS_TICK_MS=1",
-                str(TEST_DIR / "test_usb_safety.c"),
-                "-o", str(exe),
-            ],
+            cmd,
             check=True,
         )
         subprocess.run([str(exe)], check=True)

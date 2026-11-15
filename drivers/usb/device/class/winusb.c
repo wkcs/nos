@@ -145,7 +145,7 @@ struct winusb_descriptor _winusb_desc = {
 static char s_serial_str[32] = "000000000000000000000000";
 
 __aligned(4)
-const char* _ustring[] =
+static const char* _ustring[] =
 {
     "Language",
     "wkcs",
@@ -168,25 +168,11 @@ const char *winusb_get_serial_str(void)
     return s_serial_str;
 }
 
-#if defined(__APPLE__) && defined(__aarch64__)
-struct usb_os_proerty winusb_proerty[1];
-__attribute__((constructor))
-static void init_winusb_proerty(void) {
-    /* macOS aarch64 宿主机单测环境运行态初始化，避免 Mach-O 链接器对 pack(1) 结构中未对齐指针报错 */
-    winusb_proerty[0].dwSize = sizeof(struct usb_os_proerty) - sizeof(const char *)*2 + sizeof("DeviceInterfaceGUID")*2 + sizeof(WINUSB_GUID)*2;
-    winusb_proerty[0].dwPropertyDataType = USB_OS_PROERTY_TYPE_REG_SZ;
-    winusb_proerty[0].wPropertyNameLength = sizeof("DeviceInterfaceGUID")*2;
-    winusb_proerty[0].bPropertyName = "DeviceInterfaceGUID";
-    winusb_proerty[0].dwPropertyDataLength = sizeof(WINUSB_GUID)*2;
-    winusb_proerty[0].bPropertyData = WINUSB_GUID;
-}
-#else
 __aligned(4)
 struct usb_os_proerty winusb_proerty[] =
 {
     USB_OS_PROERTY_DESC(USB_OS_PROERTY_TYPE_REG_SZ,"DeviceInterfaceGUID", WINUSB_GUID),
 };
-#endif
 
 __aligned(4)
 struct usb_os_function_comp_id_descriptor winusb_func_comp_id_desc =
@@ -559,13 +545,6 @@ static int usb_winusb_init(ufunction_t func)
     winusb_device->func = func;
     winusb_init_serial();
 
-#ifdef NOS_TEST_DEVICE_H
-    (void)winusb_read;
-    (void)winusb_write;
-    (void)winusb_read_timeout;
-    (void)winusb_write_timeout;
-    (void)winusb_control;
-#else
     device_init(&winusb_device->dev);
     winusb_device->dev.name = "winusb";
     winusb_device->dev.ops.read = winusb_read;
@@ -574,7 +553,6 @@ static int usb_winusb_init(ufunction_t func)
     winusb_device->dev.ops.write_timeout = winusb_write_timeout;
     winusb_device->dev.ops.control = winusb_control;
     device_register(&winusb_device->dev);
-#endif
 
     return 0;
 }

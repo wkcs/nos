@@ -26,7 +26,6 @@ struct winusb_descriptor
 typedef struct winusb_descriptor* winusb_desc_t;
 
 extern struct winusb_descriptor _winusb_desc;
-extern const char* _ustring[];
 
 int winusb_init_serial(void);
 const char *winusb_get_serial_str(void);

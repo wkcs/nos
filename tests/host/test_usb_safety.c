@@ -22,7 +22,16 @@
 #ifndef min_t
 #define min_t(type, a, b) (((type)(a) < (type)(b)) ? (type)(a) : (type)(b))
 #endif
-static inline void pr_warning(const char *fmt, ...) { (void)fmt; }
+static inline void __maybe_unused pr_warning(const char *fmt, ...) { (void)fmt; }
+
+#define __NOS_INIT_H__
+#define __ASM_INIT_H__
+#define NOS_TEST_DEVICE_H
+#include "../../include/kernel/device.h"
+int device_init(struct device *dev);
+int device_register(struct device *dev);
+int device_init(struct device *dev) { (void)dev; return 0; }
+int device_register(struct device *dev) { (void)dev; return 0; }
 
 #include <kernel/task.h>
 #include <nos/msgq.h>

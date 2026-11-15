@@ -10,16 +10,19 @@
 
 #include <kernel/errno.h>
 #include <kernel/printk.h>
+#include <kernel/board.h>
 #include <drivers/usb/usb_common.h>
 #include <drivers/usb/usb_device.h>
 
 #ifdef CONFIG_USB_DEVICE_COMPOSITE
+static char composite_serial_str[32] = "000000000000000000000000";
+
 static const char* ustring[] =
 {
     "Language",
     "wkcs",
     "NOS Composite Device",
-    "320219198301",
+    composite_serial_str,
     "Configuration",
     "Interface",
     USB_STRING_OS
@@ -189,6 +192,8 @@ int usb_device_init(udcd_t udc)
     /* set device descriptor to the device */
 #ifdef CONFIG_USB_DEVICE_COMPOSITE
     pr_info("composite device config\n");
+    board_get_chip_uid_hex(composite_serial_str, sizeof(composite_serial_str));
+    ustring[USB_STRING_SERIAL_INDEX] = composite_serial_str;
     usbd_device_set_descriptor(udevice, &compsit_desc);
     usbd_device_set_string(udevice, ustring);
     if(udevice->dcd->device_is_hs)
