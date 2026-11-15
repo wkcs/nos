@@ -121,10 +121,14 @@ static const struct luaL_Reg nos_lib[] = {
  */
 static void lua_init_context(lua_State *L)
 {
-    luaopen_base(L);
-    luaopen_math(L);
-    luaopen_string(L);
-    luaopen_table(L);
+    luaL_requiref(L, "_G", luaopen_base, 1);
+    lua_pop(L, 1);
+    luaL_requiref(L, LUA_MATHLIBNAME, luaopen_math, 1);
+    lua_pop(L, 1);
+    luaL_requiref(L, LUA_STRLIBNAME, luaopen_string, 1);
+    lua_pop(L, 1);
+    luaL_requiref(L, LUA_TABLIBNAME, luaopen_table, 1);
+    lua_pop(L, 1);
 
     /* 替换全局 print 函数 */
     lua_pushcfunction(L, lua_custom_print);
@@ -240,7 +244,8 @@ static int cmd_lua(int argc, char *argv[])
 
     L = luaL_newstate();
     if (L == NULL) {
-        nos_shell_error("lua: failed to create Lua state (out of memory)\n");
+        nos_shell_error("lua: failed to create Lua state (out of memory, heap free: %u B)\n",
+                        (unsigned int)mm_block_free_size());
         return -ENOMEM;
     }
 

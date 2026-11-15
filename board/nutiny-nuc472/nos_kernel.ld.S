@@ -15,7 +15,7 @@ _estack = 0x20010000;    /* end of 64 KiB SRAM */
 
 /* Generate a link error if heap and stack don't fit into RAM */
 _Min_Heap_Size = 0;      /* required amount of heap  */
-_Min_Stack_Size = 0x800; /* required amount of stack */
+_Min_Stack_Size = 0x400; /* required amount of stack (1024 B for MSP) */
 
 /* Specify the memory areas */
 MEMORY
