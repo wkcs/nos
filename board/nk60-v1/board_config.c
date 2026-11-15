@@ -7,6 +7,10 @@
  */
 
 #include <kernel/kernel.h>
+#include <kernel/errno.h>
+#include <kernel/board.h>
+#include <string.h>
+#include <stdio.h>
 
 #include "board.h"
 
@@ -123,3 +127,50 @@ struct uart_config_t uart_log_dev = {
         .USART_Mode = USART_Mode_Rx | USART_Mode_Tx
     }
 };
+
+/**
+ * 获取 STM32F401 硬件唯一标识符 (UID)
+ *
+ * STM32F401 UID 存储在 0x1FFF7A10 开始的 96 位 (12 字节) 寄存器中
+ */
+int board_get_chip_uid(uint8_t uid[12])
+{
+    const volatile uint32_t *src;
+    uint32_t tmp[3];
+
+    if (uid == NULL) {
+        return -EINVAL;
+    }
+
+    src = (const volatile uint32_t *)0x1FFF7A10UL;
+    tmp[0] = src[0];
+    tmp[1] = src[1];
+    tmp[2] = src[2];
+    memcpy(uid, tmp, sizeof(tmp));
+    return 0;
+}
+
+/**
+ * 获取硬件 UID 的十六进制大写字符串表示
+ */
+int board_get_chip_uid_hex(char *buf, size_t max_len)
+{
+    uint8_t uid[12] = {0};
+    int ret;
+
+    if (buf == NULL || max_len < 25) {
+        return -EINVAL;
+    }
+
+    ret = board_get_chip_uid(uid);
+    if (ret != 0) {
+        return ret;
+    }
+
+    for (int i = 0; i < 12; i++) {
+        snprintf(&buf[i * 2], 3, "%02X", uid[i]);
+    }
+    buf[24] = '\0';
+    return 0;
+}
+

@@ -6,7 +6,10 @@
 #include <kernel/mm.h>
 #include <kernel/boot.h>
 #include <kernel/errno.h>
+#include <kernel/board.h>
 #include <soc/nuc472_soc.h>
+#include <string.h>
+#include <stdio.h>
 #ifdef CONFIG_NLK_SERVER
 #include <nos/nlk_core.h>
 #endif
@@ -103,3 +106,51 @@ uint32_t board_read_boot_flag(void)
 
     return spr0;
 }
+
+/**
+ * 获取 NUC472 硬件唯一标识符 (UID)
+ *
+ * 通过 FMC ISP 读取 96 位 (3 个 32 位字) UID
+ */
+int board_get_chip_uid(uint8_t uid[12])
+{
+    uint32_t tmp[3] = {0};
+    int ret;
+
+    if (uid == NULL) {
+        return -EINVAL;
+    }
+
+    ret = nuc472_fmc_read_uid(tmp);
+    if (ret != 0) {
+        return ret;
+    }
+
+    memcpy(uid, tmp, sizeof(tmp));
+    return 0;
+}
+
+/**
+ * 获取硬件 UID 的十六进制大写字符串表示
+ */
+int board_get_chip_uid_hex(char *buf, size_t max_len)
+{
+    uint8_t uid[12] = {0};
+    int ret;
+
+    if (buf == NULL || max_len < 25) {
+        return -EINVAL;
+    }
+
+    ret = board_get_chip_uid(uid);
+    if (ret != 0) {
+        return ret;
+    }
+
+    for (int i = 0; i < 12; i++) {
+        snprintf(&buf[i * 2], 3, "%02X", uid[i]);
+    }
+    buf[24] = '\0';
+    return 0;
+}
+

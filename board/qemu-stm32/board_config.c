@@ -7,6 +7,10 @@
  */
 
 #include <kernel/kernel.h>
+#include <kernel/errno.h>
+#include <kernel/board.h>
+#include <string.h>
+#include <stdio.h>
 
 #include "board.h"
 
@@ -123,3 +127,64 @@ struct uart_config_t uart_log_dev = {
         .USART_Mode = USART_Mode_Rx | USART_Mode_Tx
     }
 };
+
+/**
+ * 获取 QEMU-STM32 模拟硬件唯一标识符 (UID)
+ *
+ * 优先尝试从 STM32 UID 寄存器读取；若在 QEMU 虚拟环境下读出全 0，
+ * 则使用固定的 QEMU-STM32 模拟 UID，确保序列号非空且唯一稳定。
+ */
+int board_get_chip_uid(uint8_t uid[12])
+{
+    const volatile uint32_t *src;
+    uint32_t tmp[3];
+    static const uint8_t qemu_default_uid[12] = {
+        'Q', 'E', 'M', 'U', 'S', 'T', 'M', '3', '2', '0', '0', '1'
+    };
+
+    if (uid == NULL) {
+        return -EINVAL;
+    }
+
+#if defined(CONFIG_SOC_STM32F4)
+    src = (const volatile uint32_t *)0x1FFF7A10UL;
+#else
+    src = (const volatile uint32_t *)0x1FFFF7E8UL;
+#endif
+    tmp[0] = src[0];
+    tmp[1] = src[1];
+    tmp[2] = src[2];
+
+    /* 若 QEMU 未模拟真实 UID 寄存器（读出全 0），采用模拟默认 UID */
+    if (tmp[0] == 0 && tmp[1] == 0 && tmp[2] == 0) {
+        memcpy(uid, qemu_default_uid, sizeof(qemu_default_uid));
+    } else {
+        memcpy(uid, tmp, sizeof(tmp));
+    }
+    return 0;
+}
+
+/**
+ * 获取硬件 UID 的十六进制大写字符串表示
+ */
+int board_get_chip_uid_hex(char *buf, size_t max_len)
+{
+    uint8_t uid[12] = {0};
+    int ret;
+
+    if (buf == NULL || max_len < 25) {
+        return -EINVAL;
+    }
+
+    ret = board_get_chip_uid(uid);
+    if (ret != 0) {
+        return ret;
+    }
+
+    for (int i = 0; i < 12; i++) {
+        snprintf(&buf[i * 2], 3, "%02X", uid[i]);
+    }
+    buf[24] = '\0';
+    return 0;
+}
+
