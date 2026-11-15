@@ -42,6 +42,23 @@ config USB_CDC
 	help
 	  启用 USB CDC 支持（虚拟串口）。
 
+config USB_CDC_LOG_BACKEND
+	bool "Register USB CDC VCOM as kernel log backend"
+	depends on USB_CDC
+	default y
+	help
+	  将 USB CDC 虚拟串口 (VCOM) 注册为一个可用的内核日志后端，
+	  在 ISR 与多线程场景下无阻塞入队输出日志。
+
+config LOG_DEFAULT_VCOM
+	bool "Use USB CDC VCOM as default runtime log backend"
+	depends on USB_CDC_LOG_BACKEND
+	default n
+	help
+	  启用后在早期启动与 panic 时仍使用 console 紧急通道；
+	  当 USB CDC VCOM 日志后端注册就绪后自动注销默认 console 日志后端，
+	  使常规运行期内核日志默认输出到 VCOM。
+
 config USB_WINUSB
 	bool "USB WinUSB support"
 	default n

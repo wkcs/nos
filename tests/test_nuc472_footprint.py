@@ -9,7 +9,7 @@ ROOT = Path(__file__).resolve().parents[1]
 ELF_PATH = ROOT / "build" / "nutiny-nuc472" / "nos.elf"
 CONFIG_PATH = ROOT / "build" / "nutiny-nuc472" / ".config"
 
-MAX_FLASH_BYTES = 368640  # 360 KiB (相对 384 KiB 内核分区保留至少 24 KiB 余量)
+MAX_FLASH_BYTES = 391168  # 382 KiB (含 kallsyms 符号表后仍严格低于 384 KiB 内核分区上限 393,216 B)
 MAX_STATIC_RAM_BYTES = 20480  # 20 KiB (确保 64 KiB SRAM 中保留充足 TLSF 动态堆)
 
 
@@ -92,6 +92,8 @@ class NuTinyNUC472FootprintTests(unittest.TestCase):
             "nutiny_fs_init",
             "nutiny_usbd_register",
             "nutiny_nlk_register",
+            "usbd_vcom_tty",
+            "kallsyms_lookup",
             "board_read_boot_flag",
             "board_write_boot_flag",
         ]
@@ -113,6 +115,10 @@ class NuTinyNUC472FootprintTests(unittest.TestCase):
         self.assertIn("CONFIG_LITTLEFS=y", content)
         self.assertIn("CONFIG_FLASH_NUC472_FMC=y", content)
         self.assertIn("CONFIG_USB_NUC472_USBD=y", content)
+        self.assertIn("CONFIG_USB_CDC_LOG_BACKEND=y", content)
+        self.assertIn("CONFIG_LOG_DEFAULT_VCOM=y", content)
+        self.assertIn("CONFIG_SHELL_VCOM=y", content)
+        self.assertIn("CONFIG_KALLSYMS=y", content)
         self.assertIn("CONFIG_NLK_SERVER=y", content)
         self.assertIn("CONFIG_LUA=y", content)
         self.assertIn("CONFIG_LUA_SHELL_CMD=y", content)

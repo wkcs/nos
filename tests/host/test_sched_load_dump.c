@@ -471,6 +471,64 @@ static void test_unwind_fp_and_thumb_scanner(void)
     assert(pcs[2] == (ret_blx16 & ~(uintptr_t)1U));
 }
 
+static void test_unwind_deep_scan_and_fp_filter(void)
+{
+    uint16_t fake_text[32] __attribute__((aligned(4)));
+    uintptr_t fake_stack[256];
+    struct unwind_frame frame;
+    uintptr_t pcs[8];
+    uintptr_t text_start;
+    uintptr_t text_end;
+    uintptr_t non_call_addr;
+    uintptr_t ret_bl32;
+    uintptr_t ret_blx16;
+    size_t n;
+
+    memset(fake_text, 0, sizeof(fake_text));
+    memset(fake_stack, 0, sizeof(fake_stack));
+
+    /* fake_text[4] 为非调用点后续指令，Stage 1 必须过滤该伪造返回地址 */
+    fake_text[2] = 0x4600U;
+    fake_text[3] = 0x4600U;
+    fake_text[4] = 0x4600U;
+    /* fake_text[10..11] 为 32 位 Thumb BL，后续返回地址在 fake_text[12] */
+    fake_text[10] = 0xF000U;
+    fake_text[11] = 0xF800U;
+    fake_text[12] = 0x4600U;
+    /* fake_text[20] 为 16 位 Thumb BLX r0，后续返回地址在 fake_text[21] */
+    fake_text[20] = 0x4780U;
+    fake_text[21] = 0x4600U;
+
+    text_start = (uintptr_t)&fake_text[0];
+    text_end = (uintptr_t)&fake_text[32];
+    non_call_addr = (uintptr_t)&fake_text[4] | 1U;
+    ret_bl32 = (uintptr_t)&fake_text[12] | 1U;
+    ret_blx16 = (uintptr_t)&fake_text[21] | 1U;
+
+    /* 构造指向非 BL 返回地址的伪造 FP 帧 */
+    fake_stack[1] = (uintptr_t)&fake_stack[8];
+    fake_stack[2] = non_call_addr;
+    fake_stack[8] = 0U;
+    fake_stack[9] = ret_bl32;
+
+    /* 将真实调用返回地址放在距离 SP 超过 512 字节但小于 1024 字节的位置 */
+    fake_stack[96] = ret_bl32;
+    fake_stack[104] = ret_blx16;
+
+    frame.pc = (uintptr_t)&fake_text[2] | 1U;
+    frame.lr = 0U;
+    frame.sp = (uintptr_t)&fake_stack[0];
+    frame.fp = (uintptr_t)&fake_stack[1];
+    frame.stack_low = (uintptr_t)&fake_stack[0];
+    frame.stack_high = (uintptr_t)&fake_stack[256];
+
+    n = unwind_frames_from_state(&frame, text_start, text_end, true, pcs, 8U);
+    assert(n == 3U);
+    assert(pcs[0] == ((uintptr_t)&fake_text[2] & ~(uintptr_t)1U));
+    assert(pcs[1] == (ret_bl32 & ~(uintptr_t)1U));
+    assert(pcs[2] == (ret_blx16 & ~(uintptr_t)1U));
+}
+
 static void test_pelt_and_ps_dump(void)
 {
     static addr_t stack0[256];
@@ -596,6 +654,7 @@ int main(void)
 {
     test_kallsyms_binary_search();
     test_unwind_fp_and_thumb_scanner();
+    test_unwind_deep_scan_and_fp_filter();
     test_pelt_and_ps_dump();
     puts("sched load, kallsyms binary search, dual-mode unwinder, and ps dump checks passed");
     return 0;

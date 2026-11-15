@@ -7053,4 +7053,15 @@ static int nshell_init(void)
 task_init(nshell_init);
 #endif
 
+#ifdef CONFIG_SHELL_VCOM
+#include <drivers/usb/usb_device.h>
+
+/* 在 USB CDC VCOM TTY 上启动独立交互式 nShell 会话 */
+static int nshell_vcom_init(void)
+{
+    return nshell_spawn(usbd_vcom_tty(), "nshell_vcom", true);
+}
+task_init(nshell_vcom_init);
+#endif
+
 #endif /* !SHELL_EXT_CMD_HOST_TEST */

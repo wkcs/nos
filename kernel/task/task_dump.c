@@ -245,7 +245,8 @@ size_t unwind_frames_from_state(const struct unwind_frame *init_frame,
         uintptr_t next_fp = ((const uintptr_t *)fp)[0];
         uintptr_t ret_lr = ((const uintptr_t *)fp)[1];
 
-        if (addr_is_valid_text(ret_lr, text_start, text_end, false)) {
+        if (addr_is_valid_text(ret_lr, text_start, text_end, false) &&
+            (!thumb_check_bl || thumb_is_preceded_by_bl(ret_lr, text_start))) {
             size_t prev = count;
             count = push_unique_pc(out_pcs, count, max_frames, ret_lr);
             if (count > prev) {
@@ -271,8 +272,8 @@ size_t unwind_frames_from_state(const struct unwind_frame *init_frame,
             init_frame->sp < init_frame->stack_high) {
             scan = (init_frame->sp + (sizeof(uintptr_t) - 1U)) & ~(sizeof(uintptr_t) - 1U);
             limit = init_frame->stack_high;
-            if (limit - scan > 512U) {
-                limit = scan + 512U;
+            if (limit - scan > 1024U) {
+                limit = scan + 1024U;
             }
             for (; scan + sizeof(uintptr_t) <= limit && count < max_frames;
                  scan += sizeof(uintptr_t)) {
@@ -309,7 +310,15 @@ static void get_kernel_text_bounds(uintptr_t *text_start,
     {
         extern char _etext[];
         if (start == 0U) {
-            start = 0x08000000U;
+            /* 无符号表时以 Kconfig 配置的片上 Flash 基址作为代码段起点，
+             * 兼容 Flash 位于 0x00000000 (NUC472) 或 0x08000000 (STM32) 的芯片。
+             * 基址为 0 时跳过首个字（初始 MSP），避免 0 被当作无效地址。 */
+#ifdef CONFIG_ARM_MPU_FLASH_BASE
+            start = (uintptr_t)CONFIG_ARM_MPU_FLASH_BASE;
+#endif
+            if (start == 0U) {
+                start = sizeof(uint32_t);
+            }
         }
         if ((uintptr_t)_etext > end) {
             end = (uintptr_t)_etext;
@@ -340,16 +349,40 @@ size_t unwind_task_frames(struct task_struct *task,
 
     if (task == current) {
 #if defined(__arm__) || defined(__thumb__)
-        uintptr_t cur_sp;
-        uintptr_t cur_fp;
-        uintptr_t cur_lr;
-        __asm__ volatile ("mov %0, sp" : "=r"(cur_sp));
-        __asm__ volatile ("mov %0, r7" : "=r"(cur_fp));
-        __asm__ volatile ("mov %0, lr" : "=r"(cur_lr));
-        frame.sp = cur_sp;
-        frame.fp = cur_fp;
-        frame.lr = cur_lr;
-        frame.pc = (uintptr_t)unwind_task_frames;
+        uintptr_t ipsr = 0U;
+        __asm__ volatile ("mrs %0, ipsr" : "=r"(ipsr));
+        if (ipsr == 0U) {
+            uintptr_t cur_sp;
+            uintptr_t cur_fp;
+            __asm__ volatile ("mov %0, sp" : "=r"(cur_sp));
+            __asm__ volatile ("mov %0, r7" : "=r"(cur_fp));
+            frame.sp = cur_sp;
+            frame.fp = cur_fp;
+            /* 使用 __builtin_return_address(0) 避免前述函数调用破坏 LR 寄存器 */
+            frame.lr = (uintptr_t)__builtin_return_address(0);
+            frame.pc = (uintptr_t)unwind_task_frames;
+        } else {
+            /* 中断/异常上下文使用 MSP，当前任务真实现场保存在硬件压栈后的 PSP 上 */
+            uintptr_t psp = 0U;
+            __asm__ volatile ("mrs %0, psp" : "=r"(psp));
+            frame.sp = psp;
+            frame.fp = 0U;
+            frame.pc = task->wchan_addr;
+            if (psp >= frame.stack_low &&
+                psp + 8U * sizeof(uintptr_t) <= frame.stack_high &&
+                (psp & (sizeof(uintptr_t) - 1U)) == 0U) {
+                const uintptr_t *exc = (const uintptr_t *)psp;
+                uint32_t xpsr = (uint32_t)exc[7];
+                frame.lr = exc[5];
+                frame.pc = exc[6];
+                exc += 8;
+                if ((xpsr & (1UL << 9)) != 0U &&
+                    (uintptr_t)(exc + 1) <= frame.stack_high) {
+                    exc += 1;
+                }
+                frame.sp = (uintptr_t)exc;
+            }
+        }
 #else
         frame.sp = (uintptr_t)&frame;
         frame.fp = (uintptr_t)__builtin_frame_address(0);
@@ -385,9 +418,21 @@ size_t unwind_task_frames(struct task_struct *task,
             }
 #endif
             if ((uintptr_t)(ctx + 8) <= frame.stack_high) {
+                uint32_t xpsr = (uint32_t)ctx[7];
                 frame.lr = ctx[5];
                 frame.pc = ctx[6];
-                frame.sp = (uintptr_t)(ctx + 8);
+                ctx += 8;
+#if defined(__VFP_FP__) && !defined(__SOFTFP__)
+                /* EXC_RETURN[4]==0 时硬件额外压栈了 s0..s15 + fpscr + reserved 共 18 字 */
+                if (fpu_flag != 0U && (uintptr_t)(ctx + 18) <= frame.stack_high) {
+                    ctx += 18;
+                }
+#endif
+                if ((xpsr & (1UL << 9)) != 0U &&
+                    (uintptr_t)(ctx + 1) <= frame.stack_high) {
+                    ctx += 1;
+                }
+                frame.sp = (uintptr_t)ctx;
             } else {
                 frame.sp = (uintptr_t)ctx;
                 frame.pc = task->wchan_addr;

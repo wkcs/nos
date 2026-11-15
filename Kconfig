@@ -398,6 +398,14 @@ config SHELL_CONSOLE
 	  在默认 console TTY 上启动独立 nshell 交互任务。如果禁用，
 	  系统初始化时不自动派生 console 任务，但仍可通过 NLK 等通道派生 shell。
 
+config SHELL_VCOM
+	bool "Enable USB CDC VCOM TTY shell session"
+	depends on SHELL && USB_CDC && TTY
+	default n
+	help
+	  在 USB CDC 虚拟串口 (VCOM) TTY 上启动交互式 nshell 会话，
+	  主机连接并打开串口终端后自动呈现提示符与完整命令行交互。
+
 config SHELL_STACK_SIZE
 	int "Shell task stack size"
 	depends on SHELL

@@ -385,6 +385,8 @@ size_t usbd_ep0_read(udevice_t device, void *buffer, size_t size,
     int (*rx_ind)(udevice_t device, size_t size));
 
 int usbd_vcom_class_register(void);
+struct nos_tty;
+struct nos_tty *usbd_vcom_tty(void);
 int usbd_ecm_class_register(void);
 int usbd_hid_class_register(void);
 int usbd_msc_class_register(void);
