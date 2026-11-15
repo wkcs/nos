@@ -967,6 +967,168 @@ static void test_light_action_lifecycle(void)
 }
 
 /* Each object kind accepts only its current layout. */
+static void test_keyboard_action_pages(void)
+{
+    struct nlk_keyboard_ctx kb;
+    struct nlk_pkt_hdr hdr = { .cmd_op = NLK_KB_OP_GET_ACTIONS };
+    struct nlk_kb_action_list_resp legacy;
+    uint8_t page[CONFIG_NLK_PACKET_MTU];
+    uint8_t request[] = { 6U, 0U, 0U, 0U };
+    uint16_t len;
+    uint8_t i;
+
+    assert(nlk_cap_keyboard_init_sized(NULL, &kb, 1U, 1U, 1U, 1U, NULL, NULL) == 0);
+    for (i = 0U; i < 8U; i++) {
+        char name[16];
+        snprintf(name, sizeof(name), "custom_%u", i);
+        assert(nlk_cap_keyboard_register_action(&kb, name, "", NULL, NULL) == 0);
+    }
+    assert(kb.cap.ops->on_rpc(NULL, &kb.cap, &hdr, NULL, 0U,
+                              &legacy, &len) == 0);
+    assert(len == 244U && legacy.action_count == 6U);
+    hdr.cmd_op = 0x32U;
+    assert(kb.cap.ops->on_rpc(NULL, &kb.cap, &hdr, request, sizeof(request),
+                              page, &len) == 0);
+    assert(page[0] == 11U && page[1] == 5U);
+    assert(len == 4U + 5U * sizeof(struct nlk_kb_action_desc));
+    assert(strcmp((const char *)page + 8U, "custom_3") == 0);
+    nlk_cap_keyboard_deinit(&kb);
+}
+
+static void test_macos_flash_profile(const char *path, const char *hardware)
+{
+    static const struct nlk_kb_layout_info layout = {
+        .layout_id = NLK_KB_LAYOUT_STD_60_ANSI, .key_count = 61U,
+        .matrix_rows = 5U, .matrix_cols = 14U, .name = "ANSI-61",
+    };
+    const uint8_t media_bits[] = { 2U, 8U, 1U, 16U, 64U, 32U };
+    const uint8_t shortcut_index[] = { 24U, 25U, 37U };
+    const uint8_t shortcut_key[] = { 0x20U, 0x21U, 0x14U };
+    const uint8_t shortcut_modifiers[] = { 0x0AU, 0x0AU, 0x09U };
+    struct nlk_keyboard_ctx kb;
+    uint8_t profile[2048];
+    uint32_t keys[2];
+    FILE *file = fopen(path, "rb");
+    size_t length;
+    int fd;
+
+    assert(file != NULL);
+    length = fread(profile, 1U, sizeof(profile), file);
+    assert(length < sizeof(profile) && feof(file) && fclose(file) == 0);
+
+    mock_vfs_init();
+    assert(nos_mkdir("/data", 0755) == 0);
+    assert(nos_mkdir("/data/keyboard", 0755) == 0);
+    assert(nos_mkdir("/data/keyboard/config", 0755) == 0);
+    fd = nos_open("/data/keyboard/config/macos.nkc", O_CREAT | O_WRONLY, 0644);
+    assert(fd >= 0);
+    assert(nos_write(fd, profile, length) == (ssize_t)length);
+    assert(nos_close(fd) == 0);
+    assert(nlk_cap_keyboard_init_sized(NULL, &kb, 5U, 14U, 61U, 3U, NULL, NULL) == 0);
+    assert(nlk_cap_keyboard_register_layout(&kb, &layout) == 0);
+    assert(nlk_cap_keyboard_register_action(&kb, "key_chord", "",
+                                            nlk_cap_keyboard_chord_action, NULL) == 0);
+    assert(keyboard_config_file_load(&kb, hardware, "/data/keyboard",
+                                     "macos", KEYBOARD_CONFIG_KEYBOARD, 0U) == 0);
+
+    /* ANSI key indices 54 and 55 put Option before Command. */
+    assert(kb.keymap[0][54] == 0xE2U && kb.keymap[0][55] == 0xE3U);
+    assert(kb.keymap[0][57] == 0xE7U);
+    for (uint8_t i = 0U; i < 12U; i++) {
+        assert(kb.keymap[2][1U + i] == 0x3AU + i);
+    }
+
+    for (uint8_t i = 0U; i < sizeof(media_bits); i++) {
+        keys[0] = 1U << (7U + i);
+        keys[1] = 1U << (60U - 32U); /* Fn */
+        assert(nlk_cap_keyboard_update_local_keys(&kb, keys, 61U) == 0);
+        assert(kb.consumer_report == media_bits[i] && kb.last_report.keys[0] == 0U);
+        keys[1] = 0U; /* Release Fn first. */
+        assert(nlk_cap_keyboard_update_local_keys(&kb, keys, 61U) == 0);
+        assert(kb.consumer_report == media_bits[i]);
+        keys[0] = 0U;
+        assert(nlk_cap_keyboard_update_local_keys(&kb, keys, 61U) == 0);
+        assert(kb.consumer_report == 0U);
+    }
+
+    for (uint8_t i = 0U; i < sizeof(shortcut_index); i++) {
+        uint8_t key = shortcut_index[i];
+
+        keys[0] = 0U;
+        keys[1] = 1U << (41U - 32U); /* Physically held Shift for screenshot. */
+        if (i == 2U) {
+            keys[1] = 0U;
+        }
+        assert(nlk_cap_keyboard_update_local_keys(&kb, keys, 61U) == 0);
+        keys[1] |= 1U << (60U - 32U);
+        keys[key / 32U] |= 1U << (key % 32U);
+        assert(nlk_cap_keyboard_update_local_keys(&kb, keys, 61U) == 0);
+        assert(kb.last_report.modifiers == shortcut_modifiers[i]);
+        assert(kb.last_report.keys[0] == shortcut_key[i]);
+        keys[1] &= ~(1U << (60U - 32U));
+        assert(nlk_cap_keyboard_update_local_keys(&kb, keys, 61U) == 0);
+        assert(kb.last_report.keys[0] == shortcut_key[i]);
+        keys[key / 32U] &= ~(1U << (key % 32U));
+        assert(nlk_cap_keyboard_update_local_keys(&kb, keys, 61U) == 0);
+        assert(kb.last_report.keys[0] == 0U);
+        assert(kb.last_report.modifiers == (i == 2U ? 0U : 2U));
+
+        nlk_cap_keyboard_release_held_keys(&kb);
+        assert(nlk_cap_keyboard_update_local_keys(&kb, keys, 61U) == 0);
+        assert(kb.last_report.modifiers == 0U);
+        keys[1] = 0U;
+        assert(nlk_cap_keyboard_update_local_keys(&kb, keys, 61U) == 0);
+    }
+    nlk_cap_keyboard_deinit(&kb);
+}
+
+static void test_saved_config_target(void)
+{
+    struct nlk_keyboard_ctx kb;
+    struct nlk_pkt_hdr hdr = { .cmd_op = NLK_KB_OP_BIND_ACTION };
+    struct {
+        struct nlk_kb_bind_action_req binding;
+        uint8_t hash[4];
+    } req = { .binding = { .action_name = "config_select" } };
+    struct nlk_kb_get_key_actions_req get = {0};
+    struct nlk_kb_key_actions_resp actions;
+    char id[KEYBOARD_CONFIG_ID_SIZE];
+    uint32_t hash = nlk_fnv1a_24("profile_5605");
+    uint16_t len;
+
+    mock_vfs_init();
+    assert(nlk_cap_keyboard_init_sized(NULL, &kb, 1U, 1U, 1U, 1U, NULL, NULL) == 0);
+    assert(nlk_cap_keyboard_register_action(&kb, "config_select", "", NULL, NULL) == 0);
+    req.hash[0] = (uint8_t)hash;
+    req.hash[1] = (uint8_t)(hash >> 8);
+    req.hash[2] = (uint8_t)(hash >> 16);
+    kb.keymap[0][0] = 0x14U;
+    assert(kb.cap.ops->on_rpc(NULL, &kb.cap, &hdr, &req, sizeof(req), NULL, &len) == 0);
+
+    assert(keyboard_config_file_save(&kb, "NK60-v2", "/profiles", "profile_5605",
+                                     "Target", "", KEYBOARD_CONFIG_KEYBOARD, 0U) == 0);
+    assert(keyboard_config_file_save(&kb, "NK60-v2", "/profiles", "profile_5605",
+                                     "Target", "", KEYBOARD_CONFIG_KEYBOARD, 0U) == -EEXIST);
+    assert(keyboard_config_find_by_hash("/profiles", "NK60-v2", hash, id) == 0);
+    assert(strcmp(id, "profile_5605") == 0);
+    assert(keyboard_config_find_by_hash("/profiles", "different", hash, id) == -ENOENT);
+    kb.keymap[0][0] = 4U;
+    assert(keyboard_config_file_load(&kb, "NK60-v2", "/profiles", "profile_5605",
+                                     KEYBOARD_CONFIG_KEYBOARD, 0U) == 0);
+    assert(kb.keymap[0][0] == (hash << 8 | 0x14U));
+    hdr.cmd_op = NLK_KB_OP_GET_KEY_ACTIONS;
+    assert(kb.cap.ops->on_rpc(NULL, &kb.cap, &hdr, &get, sizeof(get), &actions, &len) == 0);
+    assert(actions.action_count == 1U && strcmp(actions.action_names[0], "config_select") == 0);
+    assert(memcmp(actions.target_hash, req.hash, sizeof(actions.target_hash)) == 0);
+
+    assert(nlk_fnv1a_24("profile_10862") == hash);
+    assert(keyboard_config_file_save(&kb, "NK60-v2", "/profiles", "profile_10862",
+                                     "Collision", "", KEYBOARD_CONFIG_KEYBOARD, 0U) == 0);
+    assert(keyboard_config_find_by_hash("/profiles", "NK60-v2", hash, id) == -EEXIST);
+    assert(id[0] == '\0');
+    nlk_cap_keyboard_deinit(&kb);
+}
+
 static void test_current_keyboard_config_format(void)
 {
     struct nlk_keyboard_ctx kb;
@@ -1049,8 +1211,13 @@ static void test_nlk_node_uuid_population(void)
     printf("test_nlk_node_uuid_population passed\n");
 }
 
-int main(void)
+int main(int argc, char **argv)
 {
+    assert(argc == 3);
+    test_keyboard_action_pages();
+    test_macos_flash_profile(argv[1], "NK60-V2-ANSI61-v1");
+    test_macos_flash_profile(argv[2], "NK60-V1-ANSI61-v1");
+    test_saved_config_target();
     test_nlk_node_uuid_population();
     test_current_keyboard_config_format();
     test_keyboard_load_small_heap();

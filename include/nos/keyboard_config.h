@@ -86,6 +86,8 @@ int keyboard_config_file_load(struct nlk_keyboard_ctx *ctx, const char *hardware
                               uint8_t macro_id);
 int keyboard_config_file_next(const char *dir, const char *hardware, uint8_t kind,
                               uint32_t *cursor, struct keyboard_config_file_info *info);
+int keyboard_config_find_by_hash(const char *dir, const char *hardware, uint32_t hash,
+                                 char id[KEYBOARD_CONFIG_ID_SIZE]);
 int keyboard_config_file_delete(const char *dir, const char *id, uint8_t kind);
 /* Remove a library object, its resident cache, and bindings in all saved snapshots. */
 int keyboard_config_macro_delete(struct nlk_keyboard_ctx *ctx, const char *hardware,

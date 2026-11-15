@@ -35,6 +35,12 @@ config USB_DEVICE_HID_KEYBOARD
 	help
 	  启用 USB HID 键盘设备。
 
+config USB_DEVICE_HID_MEDIA
+	bool "USB HID Consumer Control"
+	depends on USB_DEVICE_HID_KEYBOARD
+	help
+	  启用独立的播放和音量控制 HID 报告。
+
 config USB_CDC
 	bool "USB CDC (Communications Device Class)"
 	default n

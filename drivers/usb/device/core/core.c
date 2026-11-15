@@ -949,6 +949,7 @@ static size_t usbd_ep_write(udevice_t device, uep_t ep, __maybe_unused void *buf
 {
     uint8_t *packet_buffer;
     size_t packet_size;
+    size_t submitted;
 
     mutex_lock(&ep_write_lock);
     packet_buffer = ep->request.buffer;
@@ -959,7 +960,12 @@ static size_t usbd_ep_write(udevice_t device, uep_t ep, __maybe_unused void *buf
     if (packet_size > 0U) {
         ep->request.buffer += packet_size;
     }
-    dcd_ep_write(device->dcd, EP_ADDRESS(ep), packet_buffer, packet_size);
+    submitted = dcd_ep_write(device->dcd, EP_ADDRESS(ep), packet_buffer, packet_size);
+    if (submitted != packet_size) {
+        ep->request.remain_size += packet_size;
+        ep->request.buffer = packet_buffer;
+        size = 0U;
+    }
     mutex_unlock(&ep_write_lock);
     return size;
 }

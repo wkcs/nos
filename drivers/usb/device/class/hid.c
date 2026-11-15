@@ -15,6 +15,7 @@
 #include <kernel/device.h>
 #include <kernel/printk.h>
 #include <kernel/init.h>
+#include <kernel/mutex.h>
 #include <drivers/usb/usb_common.h>
 #include <drivers/usb/usb_device.h>
 
@@ -29,6 +30,10 @@ struct hid_s {
     uint16_t protocol;
     uint8_t report_buf[MAX_REPORT_SIZE];
     struct hid_report tx_report;
+    struct mutex tx_lock;
+    uint32_t session;
+    bool tx_enabled;
+    bool tx_busy;
     struct nos_msgq hid_mq;
     uint8_t mq_storage[8 * sizeof(struct hid_report)];
 };
@@ -163,7 +168,7 @@ const uint8_t _report_desc[]=
 #endif
 #endif
     // Media Control
-#ifdef USB_DEVICE_HID_MEDIA
+#ifdef CONFIG_USB_DEVICE_HID_MEDIA
     USAGE_PAGE(1),      0x0C,
     USAGE(1),           0x01,
     COLLECTION(1),      0x01,
@@ -286,12 +291,12 @@ static const struct uhid_comm_descriptor _hid_comm_desc =
         USB_DYNAMIC,
         0x01,
         0x03,                       /* bInterfaceClass: HID */
-#if defined(CONFIG_USB_DEVICE_HID_KEYBOARD)||defined(USB_DEVICE_HID_MOUSE)
+#if !defined(CONFIG_USB_DEVICE_HID_MEDIA) && (defined(CONFIG_USB_DEVICE_HID_KEYBOARD) || defined(USB_DEVICE_HID_MOUSE))
         USB_HID_SUBCLASS_BOOT,    /* bInterfaceSubClass : 1=BOOT, 0=no boot */
 #else
         USB_HID_SUBCLASS_NOBOOT,    /* bInterfaceSubClass : 1=BOOT, 0=no boot */
 #endif
-#if !defined(CONFIG_USB_DEVICE_HID_KEYBOARD)||!defined(USB_DEVICE_HID_MOUSE)||!defined(USB_DEVICE_HID_MEDIA)
+#if !defined(CONFIG_USB_DEVICE_HID_KEYBOARD)||!defined(USB_DEVICE_HID_MOUSE)||!defined(CONFIG_USB_DEVICE_HID_MEDIA)
         USB_HID_PROTOCOL_NONE,      /* nInterfaceProtocol : 0=none, 1=keyboard, 2=mouse */
 #elif !defined(USB_DEVICE_HID_MOUSE)
         USB_HID_PROTOCOL_KEYBOARD,  /* nInterfaceProtocol : 0=none, 1=keyboard, 2=mouse */
@@ -309,12 +314,12 @@ static const struct uhid_comm_descriptor _hid_comm_desc =
         0x00,                       /* bAlternateSetting: Alternate setting */
         0x02,                       /* bNumEndpoints */
         0x03,                       /* bInterfaceClass: HID */
-#if defined(CONFIG_USB_DEVICE_HID_KEYBOARD)||defined(USB_DEVICE_HID_MOUSE)
+#if !defined(CONFIG_USB_DEVICE_HID_MEDIA) && (defined(CONFIG_USB_DEVICE_HID_KEYBOARD) || defined(USB_DEVICE_HID_MOUSE))
         USB_HID_SUBCLASS_BOOT,    /* bInterfaceSubClass : 1=BOOT, 0=no boot */
 #else
         USB_HID_SUBCLASS_NOBOOT,    /* bInterfaceSubClass : 1=BOOT, 0=no boot */
 #endif
-#if !defined(CONFIG_USB_DEVICE_HID_KEYBOARD)||!defined(USB_DEVICE_HID_MOUSE)||!defined(USB_DEVICE_HID_MEDIA)
+#if !defined(CONFIG_USB_DEVICE_HID_KEYBOARD)||!defined(USB_DEVICE_HID_MOUSE)||!defined(CONFIG_USB_DEVICE_HID_MEDIA)
         USB_HID_PROTOCOL_NONE,      /* nInterfaceProtocol : 0=none, 1=keyboard, 2=mouse */
 #elif !defined(USB_DEVICE_HID_MOUSE)
         USB_HID_PROTOCOL_KEYBOARD,  /* nInterfaceProtocol : 0=none, 1=keyboard, 2=mouse */
@@ -406,15 +411,14 @@ static int _ep_out_handler(ufunction_t func, size_t size)
     return 0;
 }
 
-static int _ep_in_handler(ufunction_t func, __always_unused size_t size)
+static int _ep_in_handler(ufunction_t func, size_t size)
 {
-    __maybe_unused struct hid_s *data;
+    struct hid_s *data = func->user_data;
 
-    data = (struct hid_s *) func->user_data;
-    /*if(data->parent.tx_complete != NULL)
-    {
-        data->parent.tx_complete(&data->parent,NULL);
-    }*/
+    (void)size;
+    mutex_lock(&data->tx_lock);
+    data->tx_busy = false;
+    mutex_unlock(&data->tx_lock);
     return 0;
 }
 
@@ -528,6 +532,11 @@ static int _function_enable(ufunction_t func)
 
     usbd_io_request(func->device, data->ep_out, &data->ep_out->request);
 
+    mutex_lock(&data->tx_lock);
+    data->session++;
+    data->tx_busy = false;
+    data->tx_enabled = true;
+    mutex_unlock(&data->tx_lock);
     return 0;
 }
 
@@ -546,6 +555,10 @@ static int _function_disable(ufunction_t func)
 
     pr_info("hid function disable\n");
 
+    mutex_lock(&data->tx_lock);
+    data->tx_enabled = false;
+    data->tx_busy = false;
+    mutex_unlock(&data->tx_lock);
     if(data->ep_out->buffer != NULL)
     {
         kfree(data->ep_out->buffer);
@@ -555,7 +568,7 @@ static int _function_disable(ufunction_t func)
     return 0;
 }
 
-static struct ufunction_ops ops =
+static struct ufunction_ops hid_function_ops =
 {
     _function_enable,
     _function_disable,
@@ -583,24 +596,54 @@ static int _hid_descriptor_config(__maybe_unused uhid_comm_desc_t hid, __maybe_u
 }
 static ssize_t _hid_write(struct device *dev, addr_t pos, const void *buffer, size_t size)
 {
-    struct hid_s *hid_dev;
+    struct hid_s *hid_dev = container_of(dev, struct hid_s, dev);
+    udevice_t device = hid_dev->func->device;
+    uep_t ep = hid_dev->ep_in;
+    ssize_t ret;
 
-    hid_dev = container_of(dev, struct hid_s, dev);
-    if (hid_dev->func->device->state == USB_STATE_CONFIGURED)
-    {
-        if (size > sizeof(hid_dev->tx_report.report))
-            return -EINVAL;
-        hid_dev->tx_report.report_id = pos;
-        memcpy((void *)hid_dev->tx_report.report, (void *)buffer, size);
-        hid_dev->tx_report.size = size;
-        hid_dev->ep_in->request.buffer = (void *)&hid_dev->tx_report;
-        hid_dev->ep_in->request.size = (size + 1) > 64 ? 64 : size + 1;
-        hid_dev->ep_in->request.req_type = UIO_REQUEST_WRITE;
-        usbd_io_request(hid_dev->func->device, hid_dev->ep_in, &hid_dev->ep_in->request);
-        return size;
+    if (buffer == NULL || size == 0U || size > sizeof(hid_dev->tx_report.report) ||
+        size + 1U > EP_MAXPACKET(ep)) {
+        return -EINVAL;
     }
 
-    return 0;
+    mutex_lock(&hid_dev->tx_lock);
+    if (!hid_dev->tx_enabled || device->state != USB_STATE_CONFIGURED) {
+        ret = -ENOTCONN;
+    } else if (hid_dev->tx_busy || ep->stalled) {
+        ret = -EAGAIN;
+    } else {
+        hid_dev->tx_report.report_id = pos;
+        memcpy(hid_dev->tx_report.report, buffer, size);
+        ep->request.buffer = (void *)&hid_dev->tx_report;
+        ep->request.size = size + 1U;
+        ep->request.req_type = UIO_REQUEST_WRITE;
+        hid_dev->tx_busy = true;
+        if (usbd_io_request(device, ep, &ep->request) == size + 1U) {
+            ret = size;
+        } else {
+            hid_dev->tx_busy = false;
+            ret = -EAGAIN;
+        }
+    }
+    mutex_unlock(&hid_dev->tx_lock);
+    return ret;
+}
+
+static int _hid_control(struct device *dev, int cmd, void *arg)
+{
+    struct hid_s *hid_dev = container_of(dev, struct hid_s, dev);
+    int ret = -ENOTCONN;
+
+    if (cmd != USB_HID_CTRL_GET_SESSION || arg == NULL) {
+        return -EINVAL;
+    }
+    mutex_lock(&hid_dev->tx_lock);
+    if (hid_dev->tx_enabled && hid_dev->func->device->state == USB_STATE_CONFIGURED) {
+        *(uint32_t *)arg = hid_dev->session;
+        ret = 0;
+    }
+    mutex_unlock(&hid_dev->tx_lock);
+    return ret;
 }
 __weak void HID_Report_Received(hid_report_t report)
 {
@@ -631,6 +674,8 @@ static void usb_hid_init(struct ufunction *func)
     device_init(&hiddev->dev);
     hiddev->dev.name = "hidd";
     hiddev->dev.ops.write = _hid_write;
+    hiddev->dev.ops.control = _hid_control;
+    mutex_init(&hiddev->tx_lock);
     device_register(&hiddev->dev);
 
     hid_task = task_create("hidd", hid_task_entry, (void *)hiddev, 5, 1024, 5, NULL);
@@ -667,7 +712,7 @@ ufunction_t usbd_function_hid_create(udevice_t device)
     usbd_device_set_string(device, _ustring);
 
     /* create a cdc function */
-    func = usbd_function_new(device, &_dev_desc, &ops);
+    func = usbd_function_new(device, &_dev_desc, &hid_function_ops);
     //not support hs
     //usbd_device_set_qualifier(device, &_dev_qualifier);
 

@@ -38,6 +38,7 @@
 #include <fs/fs.h>
 #include <fs/vfs.h>
 #include <lib/vsprintf.h>
+#include <drivers/usb/usb_hid.h>
 
 #ifndef CONFIG_KEY_DEV
 #define CONFIG_KEY_DEV "nk60_v2-key"
@@ -45,8 +46,16 @@
 
 #define KS_MAX_KEY_WORDS    KEY_RAW_WORDS(KEY_MAX_NUM)
 #define KS_NLK_HID_QUEUE_LEN 8U
+#define KS_USB_HID_QUEUE_LEN 8U
 #define KS_CONFIG_SAVE_DELAY_MS 5000U
+#define KS_HID_KEYS  1U
+#define KS_HID_MEDIA 2U
 
+struct ks_hid_state {
+    uint8_t keys[8];
+    uint8_t media;
+    uint8_t pending;
+};
 
 struct keyboard_server {
     struct task_struct     *task;
@@ -61,6 +70,7 @@ struct keyboard_server {
     struct nos_completion   comp;
     struct nlk_maintenance  config_maintenance;
     struct mutex            lock;
+    struct mutex            hid_lock;
     bool                    enable;
     bool                    config_dirty;
     bool                    config_loading;
@@ -71,11 +81,17 @@ struct keyboard_server {
     struct nlk_kb_light_cfg  logged_light_cfg;
     uint8_t                 logged_indicators;
     uint32_t                sync_deadline_ms;
+    uint32_t                pending_config_hash;
     uint8_t                 active_slot_id;
     uint8_t                 saved_slots_mask;
     uint32_t                raw_prev[KS_MAX_KEY_WORDS];
     uint32_t                raw_stable[KS_MAX_KEY_WORDS];
-    uint8_t                 last_usb_hid[8];
+    struct ks_hid_state     hid_state;
+    struct ks_hid_state     usb_queue[KS_USB_HID_QUEUE_LEN];
+    uint32_t                usb_session;
+    uint8_t                 usb_tail;
+    uint8_t                 usb_count;
+    bool                    usb_connected;
     struct nlk_kb_hid_report pending_nlk_hid[KS_NLK_HID_QUEUE_LEN];
     uint8_t                 nlk_hid_head;
     uint8_t                 nlk_hid_tail;
@@ -87,6 +103,7 @@ static struct keyboard_light_state g_light_state;
 static SPINLOCK(g_light_state_lock);
 
 static int ks_persistent_store_ready(struct keyboard_server *ks);
+static void ks_apply_config_selection(struct keyboard_server *ks, uint32_t hash);
 static void ks_on_light_cfg(const struct nlk_kb_light_cfg *cfg,
                             const struct nlk_kb_light_sync_beacon *beacon,
                             uint8_t indicators, void *priv);
@@ -99,10 +116,74 @@ void keyboard_server_register_profile(const struct keyboard_profile *profile)
     g_registered_kb_profile = profile;
 }
 
+static uint8_t ks_usb_reports(void)
+{
+#ifdef CONFIG_USB_DEVICE_HID_MEDIA
+    return KS_HID_KEYS | KS_HID_MEDIA;
+#else
+    return KS_HID_KEYS;
+#endif
+}
+
+static void ks_queue_usb_report(struct keyboard_server *ks, uint8_t pending)
+{
+    uint8_t head;
+
+    if (ks->usb_count == KS_USB_HID_QUEUE_LEN) {
+        /* Fall back to both current states so a dropped release cannot stick. */
+        ks->usb_tail = 0U;
+        ks->usb_count = 0U;
+        pending = ks_usb_reports();
+    }
+    head = (ks->usb_tail + ks->usb_count) % KS_USB_HID_QUEUE_LEN;
+    ks->usb_queue[head] = ks->hid_state;
+    ks->usb_queue[head].pending = pending;
+    ks->usb_count++;
+}
+
+static void ks_flush_usb_reports(struct keyboard_server *ks)
+{
+    uint32_t session;
+
+    if (ks->hid_dev == NULL) {
+        ks->hid_dev = device_find_by_name("hidd");
+    }
+    if (ks->hid_dev == NULL || ks->hid_dev->ops.control == NULL ||
+        ks->hid_dev->ops.write == NULL ||
+        ks->hid_dev->ops.control(ks->hid_dev, USB_HID_CTRL_GET_SESSION, &session) != 0) {
+        ks->usb_connected = false;
+        ks->usb_count = 0U;
+        return;
+    }
+    if (!ks->usb_connected || ks->usb_session != session) {
+        ks->usb_session = session;
+        ks->usb_connected = true;
+        ks->usb_count = 0U;
+        ks_queue_usb_report(ks, ks_usb_reports());
+    }
+    while (ks->usb_count != 0U) {
+        struct ks_hid_state *state = &ks->usb_queue[ks->usb_tail];
+        uint8_t pending = (state->pending & KS_HID_KEYS) ? KS_HID_KEYS : KS_HID_MEDIA;
+        uint8_t id = pending == KS_HID_KEYS ? HID_REPORT_ID_KEYBOARD1 : HID_REPORT_ID_MEDIA;
+        const uint8_t *buf = pending == KS_HID_KEYS ? state->keys : &state->media;
+        size_t size = pending == KS_HID_KEYS ? sizeof(state->keys) : sizeof(state->media);
+
+        if (ks->hid_dev->ops.write(ks->hid_dev, id, buf, size) != (ssize_t)size) {
+            break;
+        }
+        state->pending &= (uint8_t)~pending;
+        if (state->pending == 0U) {
+            ks->usb_tail = (ks->usb_tail + 1U) % KS_USB_HID_QUEUE_LEN;
+            ks->usb_count--;
+        }
+    }
+}
+
 static void ks_on_hid_report(const struct nlk_kb_hid_report *report, void *priv)
 {
     struct keyboard_server *ks = (struct keyboard_server *)priv;
     uint8_t usb_hid[8];
+    uint8_t pending = 0U;
 
     if (ks == NULL || report == NULL) {
         return;
@@ -111,16 +192,23 @@ static void ks_on_hid_report(const struct nlk_kb_hid_report *report, void *priv)
     usb_hid[1] = report->reserved;
     memcpy(&usb_hid[2], report->keys, 6U);
 
-    if (memcmp(usb_hid, ks->last_usb_hid, sizeof(usb_hid)) == 0) {
+    mutex_lock(&ks->hid_lock);
+    if (memcmp(usb_hid, ks->hid_state.keys, sizeof(usb_hid)) != 0) {
+        memcpy(ks->hid_state.keys, usb_hid, sizeof(usb_hid));
+        pending |= KS_HID_KEYS;
+    }
+#ifdef CONFIG_USB_DEVICE_HID_MEDIA
+    if (ks->hid_state.media != ks->kb_cap.consumer_report) {
+        ks->hid_state.media = ks->kb_cap.consumer_report;
+        pending |= KS_HID_MEDIA;
+    }
+#endif
+    if (pending != 0U && ks->usb_connected) {
+        ks_queue_usb_report(ks, pending);
+    }
+    mutex_unlock(&ks->hid_lock);
+    if ((pending & KS_HID_KEYS) == 0U) {
         return;
-    }
-    memcpy(ks->last_usb_hid, usb_hid, sizeof(usb_hid));
-
-    if (ks->hid_dev == NULL) {
-        ks->hid_dev = device_find_by_name("hidd");
-    }
-    if (ks->hid_dev != NULL && ks->hid_dev->ops.write != NULL) {
-        (void)ks->hid_dev->ops.write(ks->hid_dev, 1, usb_hid, sizeof(usb_hid));
     }
 
     /*
@@ -200,6 +288,7 @@ int ks_switch_keyboard_config(struct keyboard_server *ks, const char *target_id)
     if (ret != 0) {
         return ret;
     }
+    nlk_cap_keyboard_release_held_keys(&ks->kb_cap);
 
     memcpy(ks->kb_cap.active_keyboard_id, target_id, sizeof(ks->kb_cap.active_keyboard_id));
 
@@ -478,12 +567,21 @@ static bool ks_valid_config_id(const char *id)
 static void ks_flush_config(void *parameter)
 {
     struct keyboard_server *ks = parameter;
+    uint32_t select_hash;
+    addr_t flags;
     size_t len = 0U;
     void *snapshot = NULL;
     int rc = 0;
     bool retry = false;
 
     if (ks == NULL) return;
+    flags = disable_irq_save();
+    select_hash = ks->pending_config_hash;
+    ks->pending_config_hash = 0U;
+    enable_irq_save(flags);
+    if (select_hash != 0U) {
+        ks_apply_config_selection(ks, select_hash);
+    }
     mutex_lock(&ks->lock);
     if (!ks->sync_pending) {
         mutex_unlock(&ks->lock);
@@ -683,6 +781,9 @@ static noinline int ks_load_config_file(struct keyboard_server *ks,
         ks->config_loading = false;
     }
     if (ret == 0) {
+        if (file_req->kind == NLK_KB_CONFIG_KEYBOARD) {
+            nlk_cap_keyboard_release_held_keys(&ks->kb_cap);
+        }
         ks->config_dirty = true;
         ks->sync_deadline_ms = (uint32_t)tick_to_msec_64(cpu_run_ticks()) + KS_CONFIG_SAVE_DELAY_MS;
     }
@@ -902,26 +1003,26 @@ static int ks_action_profile_next(const struct key_action_context *ctx, void *pr
 static int ks_action_config_select(const struct key_action_context *ctx, void *priv)
 {
     struct keyboard_server *ks = (struct keyboard_server *)priv;
-    uint32_t target_hash;
-    const char *target_id;
 
-    if (ks == NULL || ctx == NULL || ctx->event_type != 1U) {
-        return KEY_ACTION_PASS;
+    if (ks != NULL && ctx != NULL && ctx->event_type == 1U) {
+        addr_t flags = disable_irq_save();
+        ks->pending_config_hash = ctx->initial_code >> 8;
+        enable_irq_save(flags);
     }
+    return KEY_ACTION_DROP;
+}
 
-    /* 从 32 位键码的高 24 位提取目标配置的 FNV-1a 24-bit Hash */
-    target_hash = (ctx->key_code >> 8) & 0x00FFFFFFU;
-    if (target_hash == 0U) {
-        return KEY_ACTION_PASS;
+static void ks_apply_config_selection(struct keyboard_server *ks, uint32_t hash)
+{
+    struct nlk_kb_config_file_req req = { .kind = KEYBOARD_CONFIG_KEYBOARD };
+    int rc = keyboard_config_find_by_hash("/data/keyboard", ks->profile.hardware_id,
+                                          hash, req.id);
+
+    if (rc == 0) {
+        (void)ks_load_config_file(ks, &req, sizeof(req), NULL);
+    } else {
+        pr_warning("config selection hash=%06lx failed: %d\n", (unsigned long)hash, rc);
     }
-
-    target_id = keyboard_config_manifest_lookup_config(&ks->kb_cap.manifest, target_hash);
-    if (target_id != NULL) {
-        (void)ks_switch_keyboard_config(ks, target_id);
-        return KEY_ACTION_DROP;
-    }
-
-    return KEY_ACTION_PASS;
 }
 
 static void ks_on_light_cfg(const struct nlk_kb_light_cfg *cfg,
@@ -1103,10 +1204,18 @@ static int ks_register_nlk_capability(struct keyboard_server *ks)
     (void)nlk_cap_keyboard_register_action(&ks->kb_cap, "config_next",
                                            "Next config/profile",
                                            ks_action_profile_next, ks);
-    (void)nlk_cap_keyboard_register_action(&ks->kb_cap, "config_select",
-                                           "Select config/prof",
-                                           ks_action_config_select, ks);
+    ret = nlk_cap_keyboard_register_action(&ks->kb_cap, "config_select",
+                                          "Select saved config", ks_action_config_select, ks);
+    if (ret != 0) {
+        return ret;
+    }
 
+    ret = nlk_cap_keyboard_register_action(&ks->kb_cap, "key_chord",
+                                          "Key with modifiers",
+                                          nlk_cap_keyboard_chord_action, NULL);
+    if (ret != 0) {
+        return ret;
+    }
 
     /* Bind default profile actions by capability name */
     if (ks->profile.default_action_binding_count > 0U &&
@@ -1396,6 +1505,9 @@ static void keyboard_server_task_entry(void *parameter)
                 }
             }
 
+            mutex_lock(&ks->hid_lock);
+            ks_flush_usb_reports(ks);
+            mutex_unlock(&ks->hid_lock);
             if (ks->nlk_node != NULL) {
                 for (;;) {
                     struct nlk_kb_hid_report next_report;
@@ -1451,6 +1563,7 @@ static int keyboard_server_init(void)
 
     nos_completion_init(&ks->comp);
     mutex_init(&ks->lock);
+    mutex_init(&ks->hid_lock);
 
     device_init(&ks->ks_dev);
     ks->ks_dev.name = "keyboard-server";

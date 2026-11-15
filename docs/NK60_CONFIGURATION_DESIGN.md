@@ -36,8 +36,9 @@ legacy `macro_play` binding with another keycode continues to select slot zero.
 
 Named objects are stored in three subdirectories under `/data/keyboard`:
 `/data/keyboard/config/<id>.nkc`, `/data/keyboard/light/<id>.nkc` and
-`/data/keyboard/macro/<id>.nkc`. No default named objects are pre-generated
-on boot. The currently active configuration (including the active keyboard and
+`/data/keyboard/macro/<id>.nkc`. NK60-V1 and NK60-V2 builds produce separate macOS
+profile for installation in this filesystem. The currently active configuration
+(including the active keyboard and
 lighting object IDs, keyboard state and lighting state) is stored in
 `/data/keyboard/active.nkc`, restored on boot and updated automatically when
 the user modifies runtime configuration or saves/loads a named profile. The
@@ -225,7 +226,7 @@ struct nlk_kb_manifest {
 2. **动态保存与删除同步**:
    - 当上位机通过 NLK RPC 执行 `SAVE` 或 `DELETE` 操作时，存储模块调用 `keyboard_config_manifest_update()` 同步原子更新清单，保证内存索引与文件系统始终一致。
 3. **按键常数时间检索**:
-   - 按键按下触发 `macro_play` 或 `config_select` 时，直接在 `manifest` 数组中匹配 24 位哈希（比对整数），耗时在微秒级内，避免了对文件系统的任何磁盘 I/O 操作。
+   - `macro_play` 在已装载的宏中匹配目标。`config_select` 将哈希交给后台任务，在 Flash 中校验目标并切换，键盘扫描可继续运行。
 
 ---
 
@@ -235,7 +236,46 @@ struct nlk_kb_manifest {
   - `struct nlk_kb_macro_info` 仅保留 `id[12]`、`name[14]` 及元数据（单项共 30 字节），8 个宏总长 240 字节，加上响应头严格限制在 244 字节内。
   - 详细描述（`desc`）通过单项宏查询 `NLK_KB_OP_GET_MACRO` 或文件系统分页查询 `NLK_KB_OP_CONFIG_FILES_LIST` 获取，杜绝栈与堆缓冲区写穿溢出。
 - **动作查询 (`NLK_KB_OP_GET_ACTIONS`)**:
-  - `NLK_KB_MAX_ACTIONS` 严格限定在 6 个内置核心动作以内，确保响应包不超过 244 字节。
+  - 键盘可注册 24 个动作。`GET_ACTIONS` 保留 244 字节的原有响应并返回前 6 项。
+  - `NLK_KB_OP_GET_ACTIONS_PAGE`（`0x32`）接收 4 字节请求，首字节是从零开始的索引，其余置零。响应头包含总数、当前页项目数和两个保留字节，随后是当前页实际返回的动作描述符。将索引加上返回项目数，直至达到总数。
+
+## 安装 NK60-V1 / NK60-V2 的 macOS 配置
+
+在 NOS 根目录构建并上传数据文件：
+
+```sh
+cmake --preset nk60-v2
+cmake --build --preset nk60-v2
+nlk push build/nk60-v2/data/keyboard/config/macos.nkc /data/keyboard/config/macos.nkc
+nlk keyboard config load macos
+```
+
+NK60-V1 使用 `nk60-v1` preset，上传
+`build/nk60-v1/data/keyboard/config/macos.nkc`。两个版本的文件分别带有
+`NK60-V1-ANSI61-v1` 和 `NK60-V2-ANSI61-v1` 硬件标识，加载器会校验匹配关系。
+连接多台 NOS 设备时在 `nlk` 后加 `-s <序列号>` 选择目标。
+
+`/data` 由 NK60 的外置 Flash 提供。更新键位时可编辑
+对应板型的 `configs/keyboard/nk60-v1/macos.json` 或
+`configs/keyboard/nk60-v2/macos.json`，重新构建数据文件并上传。JSON 的三层依次是基础、Fn 和 PN。每一项是十六进制键码，按 ANSI 61 的物理键顺序排列。
+对于 `key_chord`，最低字节是键码，下一字节是 HID 修饰键位图，例如 `0a20` 表示 Shift + Command + 3。
+
+Mac 底排为 Control、Option、Command、空格、右 Command、PN、右 Control、Fn。
+Fn + 7 / 8 / 9 用于上一曲、播放或暂停、下一曲。Fn + 0 / - / = 用于静音、减小和增大音量。
+Fn + P 截取全屏，Fn + [ 选择区域，Fn + L 锁屏。PN + 1 到 PN + = 对应 F1 到 F12。
+字符由 macOS 当前输入源解释，可直接使用系统的 ANSI 键盘布局。
+截屏和锁屏组合采用 Apple 的默认系统快捷键，修改过系统快捷键时也应相应编辑配置。
+参考 [Apple 截屏说明](https://support.apple.com/en-us/102646) 和
+[Mac 键盘快捷键](https://support.apple.com/en-us/102650)。
+
+可以在当前配置把 Fn + M（层 1，索引 48）绑定到 Flash 中名为 `macos` 的配置：
+
+```sh
+nlk keyboard bind 1 48 config_select --target macos
+```
+
+先将常用布局保存为一个命名配置，再用相同方式把按键绑定到其 ID，即可切回。
+`config_select` 与 `macro_play` 共用 `BIND_ACTION` 的目标参数。固件按配置文件 ID 的 FNV-1a 24 位哈希查找目标，匹配多个记录时保持当前配置。
 
 ---
 

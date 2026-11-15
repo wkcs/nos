@@ -670,6 +670,7 @@ enum nlk_kb_opcode {
     NLK_KB_OP_MACRO_STATUS          = 0x2FU,
     NLK_KB_OP_GET_LIGHT_LAYERS      = 0x30U,
     NLK_KB_OP_SET_LIGHT_LAYERS      = 0x31U,
+    NLK_KB_OP_GET_ACTIONS_PAGE      = 0x32U,
     NLK_KB_EVT_SWITCH_DELTA         = 0x20U,
     NLK_KB_EVT_HID_REPORT           = 0x21U,
     NLK_KB_EVT_LIGHT_SYNC_BEACON    = 0x22U,
@@ -1080,7 +1081,9 @@ struct nlk_kb_light_effect_page_resp {
 } __attribute__((packed));
 
 /* Key Action Binding & Metadata */
-#define NLK_KB_MAX_ACTIONS              6U
+#define NLK_KB_LEGACY_ACTIONS           6U
+#define NLK_KB_ACTIONS_PER_PAGE         6U
+#define NLK_KB_MAX_ACTIONS              24U
 #define NLK_KB_ACTION_NAME_MAX          16U
 #define NLK_KB_ACTION_DESC_MAX          20U
 #define NLK_KB_MAX_KEY_ACTIONS          4U
@@ -1101,7 +1104,7 @@ struct key_action_context {
 
 /* 动作实际处理回调函数
  * 返回值:
- *  > 0 (1..255)            : 输出了新的 HID keycode，流水线以最后一个输出的为准；
+ *  > 0                     : 输出新的键码或内部 HID 动作值，以最后一个输出为准；
  *  0 (KEY_ACTION_PASS)     : 未返回按键值 (如仅用于点灯/旁路通知)，保持原有键码继续流转；
  *  < 0 (KEY_ACTION_DROP)   : 显式拦截按键，丢弃该按键，不产生 HID 上报。
  */
@@ -1129,8 +1132,31 @@ struct nlk_kb_action_desc {
 struct nlk_kb_action_list_resp {
     uint8_t  action_count;         /* Number of registered actions */
     uint8_t  reserved[3];
-    struct nlk_kb_action_desc actions[NLK_KB_MAX_ACTIONS];
+    struct nlk_kb_action_desc actions[NLK_KB_LEGACY_ACTIONS];
 } __attribute__((packed));
+
+struct nlk_kb_action_page_req {
+    uint8_t start_index;           /* Zero-based index in registration order */
+    uint8_t reserved[3];
+} __attribute__((packed));
+
+/* Only count descriptors follow this header. */
+struct nlk_kb_action_page_hdr {
+    uint8_t total_count;
+    uint8_t count;
+    uint8_t reserved[2];
+} __attribute__((packed));
+
+/* Keymap codes in a reserved range of the HID Keyboard/Keypad page.
+ * These are NOS functions and are never sent as USB keyboard usages. */
+enum nlk_kb_function_keycode {
+    NLK_KC_MEDIA_NEXT = 0xA5U,
+    NLK_KC_MEDIA_PREV,
+    NLK_KC_MEDIA_PLAY_PAUSE,
+    NLK_KC_MEDIA_MUTE,
+    NLK_KC_MEDIA_VOL_UP,
+    NLK_KC_MEDIA_VOL_DOWN,
+};
 
 /* 绑定动作请求 */
 struct nlk_kb_bind_action_req {
@@ -1140,6 +1166,11 @@ struct nlk_kb_bind_action_req {
     uint8_t reserved;
     char    action_name[NLK_KB_ACTION_NAME_MAX]; /* 动作名字字符串 */
 } __attribute__((packed));
+
+/* BIND_ACTION optionally accepts a trailing LE32 action parameter.
+ * For config_select and macro_play this is an FNV-1a 24-bit ID hash.
+ * For key_chord this is the 8-bit HID modifier mask for the mapped key.
+ * A parameterized binding applies to one concrete key and layer. */
 
 /* 解绑动作请求 */
 struct nlk_kb_unbind_action_req {
@@ -1159,7 +1190,7 @@ struct nlk_kb_get_key_actions_req {
 /* 查询按键动作响应 */
 struct nlk_kb_key_actions_resp {
     uint8_t action_count; /* 该按键绑定的动作数量 */
-    uint8_t target_hash[3]; /* LE24 target hash from keymap bits 8..31; was reserved */
+    uint8_t target_hash[3]; /* LE24 action parameter from keymap bits 8..31 */
     char    action_names[NLK_KB_MAX_KEY_ACTIONS][NLK_KB_ACTION_NAME_MAX];
 } __attribute__((packed));
 

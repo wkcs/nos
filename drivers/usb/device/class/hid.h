@@ -11,6 +11,7 @@
 
 #include <kernel/types.h>
 #include <drivers/usb/usb_common.h>
+#include <drivers/usb/usb_hid.h>
 
 #define USB_DEVICE_HID_KEYBOARD_NUMBER 1
 
@@ -249,11 +250,9 @@ struct uhid_comm_descriptor
 };
 typedef struct uhid_comm_descriptor* uhid_comm_desc_t;
 
-#define HID_REPORT_ID_KEYBOARD1         1
 #define HID_REPORT_ID_KEYBOARD2         2
 #define HID_REPORT_ID_KEYBOARD3         3
 #define HID_REPORT_ID_KEYBOARD4         7
-#define HID_REPORT_ID_MEDIA             4
 #define HID_REPORT_ID_GENERAL           5
 #define HID_REPORT_ID_MOUSE             6
 

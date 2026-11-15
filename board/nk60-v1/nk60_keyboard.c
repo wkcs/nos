@@ -172,7 +172,10 @@ static const struct keyboard_profile g_nk60_kb_profile = {
     .form_factor        = NLK_KB_FORM_60,
     .switch_type        = NLK_KB_SW_MECH,
     .kb_flags           = NLK_KB_FLAG_6KRO | NLK_KB_FLAG_NKRO |
-                          NLK_KB_FLAG_MEDIA_KEYS | NLK_KB_FLAG_MODULAR_HUB |
+                          NLK_KB_FLAG_MODULAR_HUB |
+#ifdef CONFIG_USB_DEVICE_HID_MEDIA
+                          NLK_KB_FLAG_MEDIA_KEYS |
+#endif
                           NLK_KB_FLAG_LIGHT_RGB_KEY |
                           NLK_KB_FLAG_LIGHT_INDICATORS,
     .debounce_ms        = 10U,

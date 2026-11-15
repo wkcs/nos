@@ -4,6 +4,7 @@
 from pathlib import Path
 import os
 import subprocess
+import sys
 import tempfile
 
 
@@ -54,7 +55,14 @@ def main():
             "-o", str(exe),
         ]
         subprocess.run(cmd, check=True)
-        subprocess.run([str(exe)], check=True)
+        profiles = []
+        for board in ("nk60-v2", "nk60-v1"):
+            profile = Path(tmp) / f"{board}-macos.nkc"
+            subprocess.run([sys.executable, str(ROOT / "scripts/pack_keyboard_config.py"),
+                            str(ROOT / f"configs/keyboard/{board}/macos.json"), str(profile)],
+                           check=True)
+            profiles.append(str(profile))
+        subprocess.run([str(exe), *profiles], check=True)
 
 
 if __name__ == "__main__":

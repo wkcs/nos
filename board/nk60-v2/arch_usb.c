@@ -193,8 +193,7 @@ static size_t _ep_read_prepare(uint8_t address, void *buffer, size_t size)
 
 static size_t _ep_write(uint8_t address, void *buffer, size_t size)
 {
-    HAL_PCD_EP_Transmit(&_stm_pcd, address, buffer, size);
-    return size;
+    return HAL_PCD_EP_Transmit(&_stm_pcd, address, buffer, size) == HAL_OK ? size : 0U;
 }
 
 static int _ep0_send_status(void)

@@ -205,6 +205,7 @@ struct nlk_keyboard_ctx {
     uint8_t                         layer_capacity;
     struct nlk_kb_hid_report        last_report;
     struct nlk_kb_nkro_report       last_nkro;
+    uint8_t                         consumer_report;
     struct nlk_kb_analog_cfg        analog_cfg;
     struct nlk_kb_light_cfg         light_cfg;
     uint8_t                         light_layer_count;
@@ -337,6 +338,7 @@ int nlk_cap_keyboard_register_action(struct nlk_keyboard_ctx *ctx,
                                      const char *desc,
                                      key_action_handler_fn_t handler,
                                      void *priv);
+int nlk_cap_keyboard_chord_action(const struct key_action_context *ctx, void *priv);
 int nlk_cap_keyboard_bind_key_action(struct nlk_keyboard_ctx *ctx,
                                      uint8_t layer,
                                      uint8_t key_index,
@@ -386,6 +388,7 @@ int nlk_cap_keyboard_load_layout32(struct nlk_keyboard_ctx *ctx, uint8_t layer,
 int nlk_cap_keyboard_update_local_keys(struct nlk_keyboard_ctx *ctx,
                                        const uint32_t *raw_bitmap,
                                        uint8_t key_count);
+void nlk_cap_keyboard_release_held_keys(struct nlk_keyboard_ctx *ctx);
 int nlk_cap_keyboard_report_switches(struct nlk_keyboard_ctx *ctx,
                                      nlk_addr_t target_addr, uint8_t dst_cap,
                                      uint8_t module_id,

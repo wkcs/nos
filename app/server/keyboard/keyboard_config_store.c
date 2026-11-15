@@ -394,6 +394,7 @@ out:
 struct config_dir_cursor {
     uint32_t wanted;
     uint32_t seen;
+    uint32_t match_hash;
     char id[KEYBOARD_CONFIG_ID_SIZE];
     int found;
 };
@@ -411,6 +412,7 @@ static int config_filldir(void *arg, const char *name, int len, loff_t offset,
     memcpy(scan->id, name, id_len);
     scan->id[id_len] = '\0';
     if (!config_valid_id(scan->id)) return 0;
+    if (scan->match_hash != 0U && nlk_fnv1a_24(scan->id) != scan->match_hash) return 0;
     if (scan->seen++ != scan->wanted) return 0;
     scan->found = 1;
     return 1;
@@ -428,7 +430,7 @@ struct config_file_workspace {
 
 static int config_file_next(const char *dir, const char *hardware, uint8_t kind,
                             uint32_t *cursor, struct keyboard_config_file_info *info,
-                            struct config_file_workspace *work)
+                            struct config_file_workspace *work, uint32_t match_hash)
 {
     struct dentry *dentry;
     const char *sub = config_subdir(kind);
@@ -456,6 +458,7 @@ static int config_file_next(const char *dir, const char *hardware, uint8_t kind,
         }
         memset(&work->scan, 0, sizeof(work->scan));
         work->scan.wanted = *cursor;
+        work->scan.match_hash = match_hash;
         ret = work->file.f_op->readdir(&work->file, &work->scan, config_filldir);
         if (work->file.f_op->release != NULL) (void)work->file.f_op->release(work->file.f_inode, &work->file);
         if (ret < 0) return ret;
@@ -492,9 +495,43 @@ int keyboard_config_file_next(const char *dir, const char *hardware, uint8_t kin
         config_subdir(kind) == NULL) return -EINVAL;
     work = kmalloc(sizeof(*work), GFP_KERNEL);
     if (work == NULL) return -ENOMEM;
-    ret = config_file_next(dir, hardware, kind, cursor, info, work);
+    ret = config_file_next(dir, hardware, kind, cursor, info, work, 0U);
     kfree(work);
     return ret;
+}
+
+int keyboard_config_find_by_hash(const char *dir, const char *hardware, uint32_t hash,
+                                 char id[KEYBOARD_CONFIG_ID_SIZE])
+{
+    struct config_file_workspace *work;
+    struct keyboard_config_file_info info;
+    uint32_t cursor = 0U;
+    int ret;
+
+    if (dir == NULL || hardware == NULL || id == NULL || hash == 0U ||
+        hash > 0xFFFFFFU) {
+        return -EINVAL;
+    }
+    id[0] = '\0';
+    work = kmalloc(sizeof(*work), GFP_KERNEL);
+    if (work == NULL) {
+        return -ENOMEM;
+    }
+    /* The manifest is a bounded cache. Check the full list for collisions. */
+    while ((ret = config_file_next(dir, hardware, KEYBOARD_CONFIG_KEYBOARD,
+                                   &cursor, &info, work, hash)) > 0) {
+        if (id[0] != '\0') {
+            ret = -EEXIST;
+            break;
+        }
+        memcpy(id, info.id, sizeof(info.id));
+    }
+    kfree(work);
+    if (ret < 0) {
+        id[0] = '\0';
+        return ret;
+    }
+    return id[0] == '\0' ? -ENOENT : 0;
 }
 
 int keyboard_config_file_delete(const char *dir, const char *id, uint8_t kind)

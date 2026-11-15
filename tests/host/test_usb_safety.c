@@ -112,6 +112,27 @@ int board_get_chip_uid_hex(char *b, size_t l) {
 #define __ASM_INIT_H__
 #include "../../drivers/usb/device/class/winusb.c"
 
+#undef pr_fmt
+#define CONFIG_USB_DEVICE_HID_KEYBOARD 1
+#define CONFIG_USB_DEVICE_HID_MEDIA 1
+#define dev_qualifier hid_dev_qualifier
+#define _ustring hid_strings
+#define _ep_in_handler hid_ep_in_handler
+#define _ep_out_handler hid_ep_out_handler
+#define _interface_handler hid_interface_handler
+#define _function_enable hid_function_enable
+#define _function_disable hid_function_disable
+#undef __weak
+#define __weak __attribute__((weak))
+#include "../../drivers/usb/device/class/hid.c"
+#undef _function_disable
+#undef _function_enable
+#undef _interface_handler
+#undef _ep_out_handler
+#undef _ep_in_handler
+#undef _ustring
+#undef dev_qualifier
+
 /* ========================================================================= */
 /* 辅助结构与 Canary 哨兵测试脚手架                                           */
 /* ========================================================================= */
@@ -423,6 +444,7 @@ static struct {
 } mock_dcd_stats;
 
 static void (*mock_write_observer)(uint8_t address, const void *buffer, size_t size);
+static bool mock_write_reject;
 
 static size_t mock_ep_write(uint8_t address, void *buffer, size_t size)
 {
@@ -430,6 +452,9 @@ static size_t mock_ep_write(uint8_t address, void *buffer, size_t size)
     mock_dcd_stats.write_addr = address;
     mock_dcd_stats.write_buf = buffer;
     mock_dcd_stats.write_len = size;
+    if (mock_write_reject) {
+        return 0U;
+    }
     if (mock_write_observer != NULL) {
         mock_write_observer(address, buffer, size);
     }
@@ -1119,6 +1144,62 @@ static void test_set_descriptor_preserves_num_configurations(void)
     assert(dev.dev_desc.bNumConfigurations == 1);
 }
 
+static void test_hid_consumer_and_keyboard_share_endpoint(void)
+{
+    struct udcd dcd = { .ops = &mock_udcd_ops };
+    struct udevice device = { .dcd = &dcd, .state = USB_STATE_CONFIGURED };
+    struct ufunction func = { .device = &device };
+    struct uendpoint ep_in = { .ep_desc = (struct uendpoint_descriptor *)&_hid_comm_desc.ep_in_desc };
+    struct uendpoint ep_out = { .ep_desc = (struct uendpoint_descriptor *)&_hid_comm_desc.ep_out_desc };
+    struct hid_s hid = { .func = &func, .ep_in = &ep_in, .ep_out = &ep_out };
+    const uint8_t consumer_collection[] = { 0x05U, 0x0CU, 0x09U, 1U, 0xA1U, 1U, 0x85U, 4U };
+    uint8_t keys[8] = { 8U, 0U, 4U };
+    uint8_t volume = 32U;
+    uint8_t release = 0U;
+    uint32_t first_session;
+    uint32_t second_session;
+    bool has_consumer = false;
+    size_t i;
+
+    for (i = 0; i + sizeof(consumer_collection) <= sizeof(_report_desc); i++) {
+        if (memcmp(_report_desc + i, consumer_collection, sizeof(consumer_collection)) == 0) {
+            has_consumer = true;
+            break;
+        }
+    }
+    assert(has_consumer);
+    assert(_hid_comm_desc.intf_desc.bInterfaceSubClass == 0U);
+    mutex_init(&hid.tx_lock);
+    func.user_data = &hid;
+    assert(hid_function_enable(&func) == 0);
+    assert(_hid_control(&hid.dev, USB_HID_CTRL_GET_SESSION, &first_session) == 0);
+    reset_mock_dcd_stats();
+    assert(_hid_write(&hid.dev, HID_REPORT_ID_KEYBOARD1, keys, sizeof(keys)) == sizeof(keys));
+    assert(mock_dcd_stats.write_len == 9U);
+    assert(_hid_write(&hid.dev, HID_REPORT_ID_MEDIA, &volume, sizeof(volume)) == -EAGAIN);
+    assert(mock_dcd_stats.write_calls == 1);
+    assert(((uint8_t *)mock_dcd_stats.write_buf)[0] == HID_REPORT_ID_KEYBOARD1);
+    assert(hid_ep_in_handler(&func, 9U) == 0);
+    mock_write_reject = true;
+    assert(_hid_write(&hid.dev, HID_REPORT_ID_MEDIA, &volume, sizeof(volume)) == -EAGAIN);
+    mock_write_reject = false;
+    assert(_hid_write(&hid.dev, HID_REPORT_ID_MEDIA, &volume, sizeof(volume)) == sizeof(volume));
+    assert(mock_dcd_stats.write_len == 2U);
+    assert(((uint8_t *)mock_dcd_stats.write_buf)[0] == HID_REPORT_ID_MEDIA);
+    assert(((uint8_t *)mock_dcd_stats.write_buf)[1] == volume);
+    assert(hid_ep_in_handler(&func, 2U) == 0);
+    assert(_hid_write(&hid.dev, HID_REPORT_ID_MEDIA, &release, sizeof(release)) == sizeof(release));
+    assert(((uint8_t *)mock_dcd_stats.write_buf)[1] == 0U);
+
+    assert(hid_function_disable(&func) == 0);
+    assert(_hid_control(&hid.dev, USB_HID_CTRL_GET_SESSION, &second_session) == -ENOTCONN);
+    assert(hid_function_enable(&func) == 0);
+    assert(_hid_control(&hid.dev, USB_HID_CTRL_GET_SESSION, &second_session) == 0);
+    assert(second_session != first_session);
+    assert(_hid_write(&hid.dev, HID_REPORT_ID_MEDIA, &release, sizeof(release)) == sizeof(release));
+    assert(hid_function_disable(&func) == 0);
+}
+
 static void test_winusb_descriptor_and_dynamic_serial(void)
 {
     puts("[Test 8] WinUSB 描述符 NLK v1 三元组与硬件 SoC 序列号动态绑定验证...");
@@ -1168,6 +1249,7 @@ int main(void)
     test_in_completion_preempts_submitter();
     test_set_descriptor_preserves_num_configurations();
     test_winusb_descriptor_and_dynamic_serial();
+    test_hid_consumer_and_keyboard_share_endpoint();
 
     printf("================================================================\n");
     printf("所有 USB 安全与状态机单元测试全部通过 (ALL PASSED)!\n");
