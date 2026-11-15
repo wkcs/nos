@@ -608,8 +608,40 @@ static int fatfs_sync_fs(struct super_block *sb, int wait)
     return 0;
 }
 
+static int fatfs_statfs(struct dentry *dentry, struct kstatfs *stats)
+{
+    FATFS *fs = NULL;
+    DWORD free_clusters;
+    uint32_t sector_size;
+    FRESULT res;
+
+    res = f_getfree("0:", &free_clusters, &fs);
+    if (res != FR_OK) {
+        return res == FR_TIMEOUT ? -EBUSY : -EIO;
+    }
+    if (fs != dentry->d_sb->s_fs_info || fs->n_fatent < 2U ||
+        free_clusters > fs->n_fatent - 2U) {
+        return -EIO;
+    }
+
+#if _MAX_SS == _MIN_SS
+    sector_size = _MAX_SS;
+#else
+    sector_size = fs->ssize;
+#endif
+    *stats = (struct kstatfs){
+        .bsize = sector_size * fs->csize,
+        .blocks = fs->n_fatent - 2U,
+        .bfree = free_clusters,
+        .bavail = free_clusters,
+        .namelen = min(_MAX_LFN, FS_NAME_LEN - 1),
+    };
+    return 0;
+}
+
 static const struct super_operations fatfs_super_ops = {
     .sync_fs = fatfs_sync_fs,
+    .statfs = fatfs_statfs,
 };
 
 

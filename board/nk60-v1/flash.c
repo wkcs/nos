@@ -27,9 +27,9 @@
 struct w25qxx_info {
     struct device dev;
     struct w25q_flash flash;
-    struct w25q_wl assets_wl;
-    struct device assets_dev;
-    bool assets_ready;
+    struct w25q_wl data_wl;
+    struct device data_dev;
+    bool data_ready;
 };
 
 static struct w25qxx_info *g_nk60_flash_info;
@@ -163,23 +163,23 @@ static const struct nos_dt_driver w25qxx_driver = {
 };
 #endif
 
-struct w25q_wl *nk60_flash_get_assets_wl(void)
+struct w25q_wl *nk60_flash_get_data_wl(void)
 {
-    if (g_nk60_flash_info == NULL || !g_nk60_flash_info->assets_ready) {
+    if (g_nk60_flash_info == NULL || !g_nk60_flash_info->data_ready) {
         return NULL;
     }
-    return &g_nk60_flash_info->assets_wl;
+    return &g_nk60_flash_info->data_wl;
 }
 
-int nk60_assets_mount(void)
+int nk60_data_mount(void)
 {
-#if defined(CONFIG_VFS) && (defined(CONFIG_ASSETS_FS_LITTLEFS) || defined(CONFIG_FATFS))
+#if defined(CONFIG_VFS) && (defined(CONFIG_DATA_FS_LITTLEFS) || defined(CONFIG_FATFS))
     struct dentry *root;
     struct dentry *dir = NULL;
     struct dentry *mnt_root = NULL;
     const char *fs_name = NULL;
 
-    if (g_nk60_flash_info == NULL || !g_nk60_flash_info->assets_ready) {
+    if (g_nk60_flash_info == NULL || !g_nk60_flash_info->data_ready) {
         return -ENODEV;
     }
 
@@ -188,9 +188,9 @@ int nk60_assets_mount(void)
         return -ENOENT;
     }
 
-    (void)vfs_make_dir(root, "assets", 0755, &dir);
+    (void)vfs_make_dir(root, "data", 0755, &dir);
     if (dir == NULL) {
-        dir = vfs_lookup_path(root, "/assets");
+        dir = vfs_lookup_path(root, "/data");
     }
     if (dir == NULL) {
         return -ENOENT;
@@ -198,8 +198,8 @@ int nk60_assets_mount(void)
 
     (void)vfs_unmount(dir);
 
-#if defined(CONFIG_ASSETS_FS_LITTLEFS)
-    mnt_root = vfs_mount("littlefs", 0, "nk60_v1-assets", NULL);
+#if defined(CONFIG_DATA_FS_LITTLEFS)
+    mnt_root = vfs_mount("littlefs", 0, "nk60_v1-data", NULL);
     if (mnt_root != NULL) {
         fs_name = "LittleFS";
     }
@@ -207,8 +207,8 @@ int nk60_assets_mount(void)
 
 #if defined(CONFIG_FATFS)
     if (mnt_root == NULL) {
-        fatfs_set_block_device(&g_nk60_flash_info->assets_dev);
-        mnt_root = vfs_mount("fatfs", 0, "nk60_v1-assets", NULL);
+        fatfs_set_block_device(&g_nk60_flash_info->data_dev);
+        mnt_root = vfs_mount("fatfs", 0, "nk60_v1-data", NULL);
         if (mnt_root != NULL) {
             fs_name = "FatFs";
         }
@@ -216,41 +216,41 @@ int nk60_assets_mount(void)
 #endif
 
     if (mnt_root == NULL) {
-        pr_err("w25qxx: failed to mount assets filesystem on /assets\n");
+        pr_err("w25qxx: failed to mount data filesystem on /data\n");
         return -EIO;
     }
     if (vfs_bind_mount(dir, mnt_root) != 0) {
-        pr_err("w25qxx: failed to bind /assets mount\n");
+        pr_err("w25qxx: failed to bind /data mount\n");
         return -EIO;
     }
 
-    pr_info("w25qxx: mounted wear-leveled assets %s at /assets (%u KB, %u spares)\n",
+    pr_info("w25qxx: mounted wear-leveled data %s at /data (%u KB, %u spares)\n",
             fs_name ? fs_name : "FS",
-            (unsigned int)(g_nk60_flash_info->assets_wl.logical_blocks * 4U),
-            (unsigned int)g_nk60_flash_info->assets_wl.spare_sectors);
+            (unsigned int)(g_nk60_flash_info->data_wl.logical_blocks * 4U),
+            (unsigned int)g_nk60_flash_info->data_wl.spare_sectors);
     return 0;
 #else
     return 0;
 #endif
 }
 
-int nk60_assets_mount_fatfs(void)
+int nk60_data_mount_fatfs(void)
 {
-    return nk60_assets_mount();
+    return nk60_data_mount();
 }
 
-int nk60_assets_reload(void)
+int nk60_data_reload(void)
 {
     int ret;
 
-    if (g_nk60_flash_info == NULL || !g_nk60_flash_info->assets_ready) {
+    if (g_nk60_flash_info == NULL || !g_nk60_flash_info->data_ready) {
         return -ENODEV;
     }
-    ret = w25q_wl_reset(&g_nk60_flash_info->assets_wl);
+    ret = w25q_wl_reset(&g_nk60_flash_info->data_wl);
     if (ret != 0) {
         return ret;
     }
-    return nk60_assets_mount();
+    return nk60_data_mount();
 }
 
 int spi_w25qxx_init(void)
@@ -288,19 +288,19 @@ int spi_w25qxx_init(void)
     }
 
     g_nk60_flash_info = info;
-    if (info->flash.capacity > NK60_W25Q_ASSETS_ADDR) {
-        uint32_t assets_region = info->flash.capacity - NK60_W25Q_ASSETS_ADDR;
+    if (info->flash.capacity > NK60_W25Q_DATA_ADDR) {
+        uint32_t data_region = info->flash.capacity - NK60_W25Q_DATA_ADDR;
 
-        if (w25q_wl_init(&info->assets_wl, &info->flash,
-                         NK60_W25Q_ASSETS_ADDR, assets_region) == 0 &&
-            device_init(&info->assets_dev) == 0) {
-            info->assets_dev.name = "nk60_v1-assets";
-            info->assets_dev.data = &info->assets_wl;
-            info->assets_dev.api = &w25q_wl_block_driver_api;
-            info->assets_dev.ready = true;
-            if (device_register(&info->assets_dev) == 0) {
-                info->assets_ready = true;
-                (void)nk60_assets_mount();
+        if (w25q_wl_init(&info->data_wl, &info->flash,
+                         NK60_W25Q_DATA_ADDR, data_region) == 0 &&
+            device_init(&info->data_dev) == 0) {
+            info->data_dev.name = "nk60_v1-data";
+            info->data_dev.data = &info->data_wl;
+            info->data_dev.api = &w25q_wl_block_driver_api;
+            info->data_dev.ready = true;
+            if (device_register(&info->data_dev) == 0) {
+                info->data_ready = true;
+                (void)nk60_data_mount();
             }
         }
     }

@@ -5,10 +5,46 @@
  */
 
 #include <fs/fs.h>
+#include <fs/vfs.h>
 #include <kernel/init.h>
 #include <kernel/printk.h>
 #include <kernel/task.h>
 #include <string.h>
+
+#if defined(CONFIG_FATFS) && defined(CONFIG_BOARD_QEMU_STM32)
+static int check_fatfs_statfs(struct dentry *root)
+{
+    struct kstatfs before, written, removed;
+    const struct super_operations *ops;
+    struct vfs_mount_info info;
+    int fd;
+    ssize_t count;
+
+    if (root == NULL || root->d_sb == NULL) {
+        return -EIO;
+    }
+    ops = root->d_sb->s_op;
+    if (vfs_get_mount_info(0, &info) != 0 || strcmp(info.mount_path, "/") != 0 ||
+        strcmp(info.fs_name, "fatfs") != 0 || !info.has_statfs ||
+        ops == NULL || ops->statfs == NULL || ops->statfs(root, &before) != 0 ||
+        before.bsize == 0U || before.bfree == 0U || before.bfree > before.blocks) {
+        return -EIO;
+    }
+    fd = nos_open("/statfs.tmp", O_CREAT | O_EXCL | O_WRONLY);
+    if (fd < 0) {
+        return fd;
+    }
+    count = nos_write(fd, "x", 1);
+    if (nos_close(fd) != 0 || count != 1 ||
+        ops->statfs(root, &written) != 0 || written.blocks != before.blocks ||
+        written.bfree != before.bfree - 1U || written.bavail != written.bfree ||
+        nos_unlink("/statfs.tmp") != 0 || ops->statfs(root, &removed) != 0 ||
+        removed.bfree != before.bfree) {
+        return -EIO;
+    }
+    return 0;
+}
+#endif
 
 static int vfs_smoke(void)
 {
@@ -138,6 +174,13 @@ static int vfs_smoke(void)
             return -EIO;
         }
     }
+
+#if defined(CONFIG_FATFS) && defined(CONFIG_BOARD_QEMU_STM32)
+    if (check_fatfs_statfs(vfs_get_root()) != 0) {
+        pr_err("vfs_smoke: FatFs allocation statistics mismatch\n");
+        return -EIO;
+    }
+#endif
 
     pr_info("vfs_smoke OK\n");
     return 0;

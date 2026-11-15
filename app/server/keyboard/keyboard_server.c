@@ -194,7 +194,7 @@ int ks_switch_keyboard_config(struct keyboard_server *ks, const char *target_id)
 
     if (ks->config_loading || ks->kb_cap.recording_macro_id != 0xFFU) return -EBUSY;
 
-    dir = (ks_persistent_store_ready(ks) == 0) ? "/assets/keyboard" : "/keyboard";
+    dir = (ks_persistent_store_ready(ks) == 0) ? "/data/keyboard" : "/keyboard";
     ret = keyboard_config_file_load(&ks->kb_cap, ks->profile.hardware_id, dir, target_id,
                                     KEYBOARD_CONFIG_KEYBOARD, 0U);
     if (ret != 0) {
@@ -250,7 +250,7 @@ int ks_switch_next_keyboard_config(struct keyboard_server *ks)
         return -EINVAL;
     }
 
-    dir = (ks_persistent_store_ready(ks) == 0) ? "/assets/keyboard" : "/keyboard";
+    dir = (ks_persistent_store_ready(ks) == 0) ? "/data/keyboard" : "/keyboard";
 
     while (keyboard_config_file_next(dir, ks->profile.hardware_id, KEYBOARD_CONFIG_KEYBOARD, &cursor, &info) > 0) {
         if (first_id[0] == '\0') {
@@ -282,7 +282,7 @@ int keyboard_config_save_profile(uint8_t slot_id)
         return -EINVAL;
     }
     snprintf(id, sizeof(id), "slot_%u", (unsigned int)slot_id);
-    dir = (ks_persistent_store_ready(ks) == 0) ? "/assets/keyboard" : "/keyboard";
+    dir = (ks_persistent_store_ready(ks) == 0) ? "/data/keyboard" : "/keyboard";
     return keyboard_config_file_save(&ks->kb_cap,
                                      (ks->profile.hardware_id != NULL && ks->profile.hardware_id[0] != '\0')
                                          ? ks->profile.hardware_id
@@ -421,10 +421,10 @@ static int ks_persistent_store_ready(struct keyboard_server *ks)
     int i;
     bool mounted = false;
     static const char *const dirs[] = {
-        "/assets/keyboard",
-        "/assets/keyboard/config",
-        "/assets/keyboard/light",
-        "/assets/keyboard/macro",
+        "/data/keyboard",
+        "/data/keyboard/config",
+        "/data/keyboard/light",
+        "/data/keyboard/macro",
     };
 
     if (ks == NULL || ks->profile.hardware_id == NULL) {
@@ -434,10 +434,10 @@ static int ks_persistent_store_ready(struct keyboard_server *ks)
     for (i = 0; i < vfs_get_mount_count(); i++) {
         if (vfs_get_mount_entry(i, &mount) == 0 && mount.mount_path != NULL &&
             mount.fs_name != NULL && mount.dev_name != NULL &&
-            strcmp(mount.mount_path, "/assets") == 0 &&
+            strcmp(mount.mount_path, "/data") == 0 &&
             (strcmp(mount.fs_name, "fatfs") == 0 || strcmp(mount.fs_name, "littlefs") == 0) &&
-            (strcmp(mount.dev_name, "nk60_v2-assets") == 0 ||
-             strcmp(mount.dev_name, "nk60_v1-assets") == 0)) {
+            (strcmp(mount.dev_name, "nk60_v2-data") == 0 ||
+             strcmp(mount.dev_name, "nk60_v1-data") == 0)) {
             mounted = true;
             break;
         }
@@ -508,7 +508,7 @@ static void ks_flush_config(void *parameter)
     if (rc == 0 && snapshot != NULL) {
         rc = ks_persistent_store_ready(ks);
         if (rc == 0) {
-            rc = keyboard_config_snapshot_write("/assets/keyboard", snapshot, len);
+            rc = keyboard_config_snapshot_write("/data/keyboard", snapshot, len);
             if (rc > 0) {
                 ks->sync_flush_pending = true;
                 rc = 0;
@@ -587,7 +587,7 @@ static noinline int ks_load_config_file(struct keyboard_server *ks,
     } else {
         return -EINVAL;
     }
-    snprintf(path, sizeof(path), "/assets/keyboard/%s/%s.nkc", sub, file_req->id);
+    snprintf(path, sizeof(path), "/data/keyboard/%s/%s.nkc", sub, file_req->id);
 
     /* 1. 无锁读取文件 */
     fd = nos_open(path, O_RDONLY, 0);
@@ -670,7 +670,7 @@ static noinline int ks_load_config_file(struct keyboard_server *ks,
     if (ret == 0 && file_req->kind == NLK_KB_CONFIG_KEYBOARD && macro_bindings) {
         stage = "macros";
         ret = keyboard_config_activate_macros(&ks->kb_cap, ks->profile.hardware_id,
-                                              "/assets/keyboard", &ks->lock);
+                                              "/data/keyboard", &ks->lock);
     }
     mutex_lock(&ks->lock);
     if (load_started) {
@@ -757,7 +757,7 @@ static int ks_on_config_files(uint8_t op, const void *req, uint16_t req_len,
     if (op == NLK_KB_OP_CONFIG_FILES_INFO) {
         mutex_lock(&ks->lock);
         ret = keyboard_config_file_rpc(&ks->kb_cap, ks->profile.hardware_id,
-                                       "/assets/keyboard", op, req, req_len,
+                                       "/data/keyboard", op, req, req_len,
                                        resp, resp_len);
         mutex_unlock(&ks->lock);
         return ret;
@@ -787,7 +787,7 @@ static int ks_on_config_files(uint8_t op, const void *req, uint16_t req_len,
         ks->config_loading = true;
         mutex_unlock(&ks->lock);
         ret = keyboard_config_macro_delete(&ks->kb_cap, ks->profile.hardware_id,
-                                            "/assets/keyboard",
+                                            "/data/keyboard",
                                             ((const struct nlk_kb_config_file_req *)req)->id);
         if (resp_len != NULL) *resp_len = 0U;
         mutex_lock(&ks->lock);
@@ -806,7 +806,7 @@ static int ks_on_config_files(uint8_t op, const void *req, uint16_t req_len,
      * 绝不在持有 ks->lock 期间挂起等待 Flash 擦写。
      */
     ret = keyboard_config_file_rpc(&ks->kb_cap, ks->profile.hardware_id,
-                                   "/assets/keyboard", op, req, req_len,
+                                   "/data/keyboard", op, req, req_len,
                                    resp, resp_len);
     if (ret == 0 && op == NLK_KB_OP_CONFIG_FILES_SAVE && req != NULL &&
         req_len >= sizeof(struct nlk_kb_config_file_req) &&
@@ -1138,14 +1138,14 @@ static int ks_register_nlk_capability(struct keyboard_server *ks)
 
 static void ks_init_filesystem_profiles(struct keyboard_server *ks)
 {
-    const char *dir = "/assets/keyboard";
+    const char *dir = "/data/keyboard";
     int rc;
 
-    (void)nos_mkdir("/assets", 0755);
+    (void)nos_mkdir("/data", 0755);
     (void)nos_mkdir(dir, 0755);
-    (void)nos_mkdir("/assets/keyboard/config", 0755);
-    (void)nos_mkdir("/assets/keyboard/light", 0755);
-    (void)nos_mkdir("/assets/keyboard/macro", 0755);
+    (void)nos_mkdir("/data/keyboard/config", 0755);
+    (void)nos_mkdir("/data/keyboard/light", 0755);
+    (void)nos_mkdir("/data/keyboard/macro", 0755);
 
     if (ks_persistent_store_ready(ks) != 0) {
         return;
@@ -1154,7 +1154,7 @@ static void ks_init_filesystem_profiles(struct keyboard_server *ks)
     /* 构建轻量级清单索引表 (Manifest) */
     (void)keyboard_config_manifest_build(dir, ks->profile.hardware_id, &ks->kb_cap.manifest);
 
-    /* 优先从 /assets/keyboard/active.nkc 恢复当前生效工作态 */
+    /* 优先从 /data/keyboard/active.nkc 恢复当前生效工作态 */
     rc = keyboard_config_file_restore(&ks->kb_cap, ks->profile.hardware_id, dir, KEYBOARD_CONFIG_ACTIVE);
     if (rc == 0) {
         pr_info("Restored active keyboard state from %s/active.nkc\n", dir);

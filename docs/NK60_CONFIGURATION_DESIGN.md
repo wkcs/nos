@@ -12,8 +12,8 @@ to a graphical client. See [QMK keymaps](https://docs.qmk.fm/keymap),
 [VIA layouts](https://caniusevia.com/docs/layouts/) and
 [VIA custom UI](https://www.caniusevia.com/docs/custom_ui/).
 
-NK60-V2 has 61 physical keys and three default layers. `/assets` is the
-external-flash FAT filesystem when its board mount succeeds. The root filesystem
+NK60-V2 has 61 physical keys and three default layers. `/data` is the
+external-flash partition, mounted as LittleFS by default. The root filesystem
 can instead be RAMFS. A successful configuration save must not be reported as
 persistent unless the configured persistent filesystem is actually mounted.
 The current NK60 LED driver drives 61 key LEDs; the capability advertises one
@@ -34,14 +34,14 @@ profiles embed the current macro contents. To bind a macro slot, set the keycode
 to `NLK_KB_MACRO_KEYCODE_BASE + slot` and bind the `macro_play` action. The
 legacy `macro_play` binding with another keycode continues to select slot zero.
 
-Named objects are stored in three subdirectories under `/assets/keyboard`:
-`/assets/keyboard/config/<id>.nkc`, `/assets/keyboard/light/<id>.nkc` and
-`/assets/keyboard/macro/<id>.nkc`. No default named objects are pre-generated
+Named objects are stored in three subdirectories under `/data/keyboard`:
+`/data/keyboard/config/<id>.nkc`, `/data/keyboard/light/<id>.nkc` and
+`/data/keyboard/macro/<id>.nkc`. No default named objects are pre-generated
 on boot. The currently active configuration (including the active keyboard and
 lighting object IDs, keyboard state and lighting state) is stored in
-`/assets/keyboard/active.nkc`, restored on boot and updated automatically when
+`/data/keyboard/active.nkc`, restored on boot and updated automatically when
 the user modifies runtime configuration or saves/loads a named profile. The
-NK60 backend checks that `/assets` is the expected external-flash FAT mount;
+NK60 backend checks that `/data` is the expected external-flash LittleFS or FatFs mount;
 it does not use RAMFS as a substitute. The active named object cannot be
 deleted until another one is selected. Failed `active.nkc` updates during
 loading restore the previous runtime configuration. Storage is subject to
@@ -171,9 +171,9 @@ and leave the source file untouched.
 ### 2. 对象标识三元组体系与灯效规范
 在系统内，键盘配置、灯效配置和宏均统称为具名对象（Named Object），统一采用结构化三元组标识：
 - **`id` (1–23 字符 ASCII)**: 机器与文件系统级别的唯一标识符。对应外部存储路径文件名：
-  - 键盘配置: `/assets/keyboard/config/<id>.nkc`
-  - 灯效配置: `/assets/keyboard/light/<id>.nkc`
-  - 宏定义: `/assets/keyboard/macro/<id>.nkc`
+  - 键盘配置: `/data/keyboard/config/<id>.nkc`
+  - 灯效配置: `/data/keyboard/light/<id>.nkc`
+  - 宏定义: `/data/keyboard/macro/<id>.nkc`
 - **`name` (最长 31 字节 UTF-8 字符串)**: 面向人机界面的友好展示名称（如 `"Programming Mode"`、`"Vim Copy"`）。
 - **`desc` (最长 63 字节 UTF-8 字符串)**: 对象的详细功能说明（如 `"Caps mapped to Ctrl, Arrow keys enabled on layer 1"`），帮助用户明确该配置或宏的具体用途。
 
@@ -221,7 +221,7 @@ struct nlk_kb_manifest {
 
 #### 工作流与维护策略
 1. **启动与挂载初始化**:
-   - 在系统启动挂载 `/assets` 文件系统时，调用 `keyboard_config_manifest_build()` 快速扫描 `/assets/keyboard/config` 与 `/assets/keyboard/macro` 目录，提取文件 ID 并计算 24 位哈希，填充至 `manifest`。
+   - 在系统启动挂载 `/data` 文件系统时，调用 `keyboard_config_manifest_build()` 快速扫描 `/data/keyboard/config` 与 `/data/keyboard/macro` 目录，提取文件 ID 并计算 24 位哈希，填充至 `manifest`。
 2. **动态保存与删除同步**:
    - 当上位机通过 NLK RPC 执行 `SAVE` 或 `DELETE` 操作时，存储模块调用 `keyboard_config_manifest_update()` 同步原子更新清单，保证内存索引与文件系统始终一致。
 3. **按键常数时间检索**:

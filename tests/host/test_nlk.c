@@ -453,6 +453,7 @@ struct mock_vfs_node {
 
 static struct mock_vfs_node g_vfs_nodes[MOCK_VFS_MAX_NODES];
 static struct super_block   g_vfs_sb = { .s_blocksize = 4096UL };
+static struct super_block   g_vfs_data_sb;
 static int                  g_vfs_fd_node[8] = { -1, -1, -1, -1, -1, -1, -1, -1 };
 static loff_t               g_vfs_fd_pos[8];
 static bool                 g_vfs_fail_selection_write;
@@ -497,6 +498,38 @@ static int mock_vfs_dir_readdir(struct file *file, void *dirent, filldir_t filld
 static const struct file_operations g_mock_dir_fop = {
     .readdir = mock_vfs_dir_readdir,
 };
+
+static int mock_data_statfs(struct dentry *dentry, struct kstatfs *stats)
+{
+    assert(dentry->d_sb == &g_vfs_data_sb);
+    *stats = (struct kstatfs){
+        .bsize = 4096U,
+        .blocks = 177U,
+        .bfree = 165U,
+        .bavail = 164U,
+        .namelen = 31U,
+    };
+    return 0;
+}
+
+static const struct super_operations g_mock_data_ops = {
+    .statfs = mock_data_statfs,
+};
+
+int vfs_get_mount_info(int index, struct vfs_mount_info *info)
+{
+    static const struct vfs_mount_info mounts[] = {
+        {"/", "ramfs", "ramfs", false},
+        {"/data", "littlefs", "nk60_v2-data", true},
+        {"/dev", "devfs", "devfs", false},
+    };
+
+    if (index < 0 || (size_t)index >= sizeof(mounts) / sizeof(mounts[0])) {
+        return -ENOENT;
+    }
+    *info = mounts[index];
+    return 0;
+}
 
 static void mock_vfs_init(void)
 {
@@ -1091,7 +1124,7 @@ int main(void)
             .commit     = mock_part_commit,
         },
         {
-            .name       = "assets",
+            .name       = "data",
             .max_size   = 728UL * 1024UL,
             .erase_size = 4096UL,
             .flags      = NLK_FLASH_PART_F_WRITABLE,
@@ -2030,7 +2063,7 @@ int main(void)
         assert(strcmp(qresp.parts[0].name, "bootloader") == 0);
         assert(strcmp(qresp.parts[1].name, "kernel") == 0);
         assert((qresp.parts[1].flags & NLK_FLASH_PART_F_NEEDS_BL) != 0U);
-        assert(strcmp(qresp.parts[2].name, "assets") == 0);
+        assert(strcmp(qresp.parts[2].name, "data") == 0);
 
         /* 5b. Preparing "kernel" (part_id=1) while NEEDS_BL is set returns -EBUSY */
         memset(&prep, 0, sizeof(prep));
@@ -2824,13 +2857,62 @@ int main(void)
                                      NLK_VFS_OP_REMOVE, &preq, sizeof(preq),
                                      NULL, &rlen, 100U) == 0);
 
+            assert(nos_mkdir("/data", 0755U) == 0);
+            struct dentry *data = vfs_lookup_path(vfs_get_root(), "/data");
+            assert(data != NULL);
+            data->d_sb = &g_vfs_data_sb;
+            data->d_inode->i_sb = &g_vfs_data_sb;
+            g_vfs_data_sb.s_op = &g_mock_data_ops;
+            g_vfs_data_sb.s_root = data;
+
             memset(&preq, 0, sizeof(preq));
-            strncpy(preq.path, "/", sizeof(preq.path) - 1U);
+            strcpy(preq.path, "/data/");
             rlen = sizeof(fsresp);
             assert(nlk_node_rpc_call(&node_host, 0x0001U, 6U,
                                      NLK_VFS_OP_STATFS, &preq, sizeof(preq),
                                      &fsresp, &rlen, 100U) == 0);
-            assert(fsresp.bsize == 4096U);
+            assert(rlen == sizeof(fsresp));
+            assert(fsresp.bsize == 4096U && fsresp.blocks == 177U);
+            assert(fsresp.bfree == 165U && fsresp.bavail == 164U);
+            assert(fsresp.namelen == 31U);
+
+            strcpy(preq.path, "/");
+            rlen = sizeof(fsresp);
+            assert(nlk_node_rpc_call(&node_host, 0x0001U, 6U,
+                                     NLK_VFS_OP_STATFS, &preq, sizeof(preq),
+                                     &fsresp, &rlen, 100U) == -ENOTSUP);
+
+            strcpy(preq.path, "/etc");
+            rlen = sizeof(fsresp);
+            assert(nlk_node_rpc_call(&node_host, 0x0001U, 6U,
+                                     NLK_VFS_OP_STATFS, &preq, sizeof(preq),
+                                     &fsresp, &rlen, 100U) == -ENOTSUP);
+
+            strcpy(preq.path, "/missing");
+            rlen = sizeof(fsresp);
+            assert(nlk_node_rpc_call(&node_host, 0x0001U, 6U,
+                                     NLK_VFS_OP_STATFS, &preq, sizeof(preq),
+                                     &fsresp, &rlen, 100U) == -ENOENT);
+        }
+
+        /* Mounts describe root, persistent and virtual filesystems separately. */
+        {
+            static const uint8_t expected[] = {
+                3, 0, 1, 3,
+                0, 1, 5, 5, '/', 'r', 'a', 'm', 'f', 's', 'r', 'a', 'm', 'f', 's',
+                NLK_VFS_MOUNT_HAS_STATFS, 5, 8, 12,
+                '/', 'd', 'a', 't', 'a', 'l', 'i', 't', 't', 'l', 'e', 'f', 's',
+                'n', 'k', '6', '0', '_', 'v', '2', '-', 'd', 'a', 't', 'a',
+                0, 4, 5, 5, '/', 'd', 'e', 'v', 'd', 'e', 'v', 'f', 's', 'd', 'e', 'v', 'f', 's',
+            };
+            struct nlk_vfs_list_mounts_req mreq = {0};
+
+            rlen = sizeof(resp_buf);
+            assert(nlk_node_rpc_call(&node_host, 0x0001U, 6U,
+                                     NLK_VFS_OP_LIST_MOUNTS, &mreq, sizeof(mreq),
+                                     resp_buf, &rlen, 100U) == 0);
+            assert(rlen == sizeof(expected));
+            assert(memcmp(resp_buf, expected, sizeof(expected)) == 0);
         }
     }
 

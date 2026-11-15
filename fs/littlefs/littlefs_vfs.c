@@ -827,8 +827,67 @@ static int littlefs_sync_fs(struct super_block *sb, int wait)
     return 0;
 }
 
+struct littlefs_block_usage {
+    uint8_t *seen;
+    uint32_t blocks;
+    uint32_t used;
+};
+
+static int littlefs_count_used_block(void *data, lfs_block_t block)
+{
+    struct littlefs_block_usage *usage = data;
+    uint8_t mask = (uint8_t)(1U << (block % 8U));
+
+    if (block >= usage->blocks) {
+        return LFS_ERR_CORRUPT;
+    }
+    if ((usage->seen[block / 8U] & mask) == 0U) {
+        usage->seen[block / 8U] |= mask;
+        usage->used++;
+    }
+    return 0;
+}
+
+static int littlefs_statfs(struct dentry *dentry, struct kstatfs *stats)
+{
+    struct littlefs_sb_info *sbi = dentry->d_sb->s_fs_info;
+    struct littlefs_block_usage usage = {0};
+    struct lfs_fsinfo info;
+    int rc;
+
+    rc = lfs_fs_stat(&sbi->lfs, &info);
+    if (rc < 0) {
+        return lfs_to_errno(rc);
+    }
+    if (info.block_count == 0U) {
+        return -EIO;
+    }
+
+    usage.blocks = info.block_count;
+    usage.seen = kzalloc((usage.blocks - 1U) / 8U + 1U, GFP_KERNEL);
+    if (usage.seen == NULL) {
+        return -ENOMEM;
+    }
+    /* Shared metadata and copy-on-write blocks can be visited more than once. */
+    rc = lfs_fs_traverse(&sbi->lfs, littlefs_count_used_block, &usage);
+    kfree(usage.seen);
+    if (rc < 0) {
+        return lfs_to_errno(rc);
+    }
+
+    *stats = (struct kstatfs){
+        .bsize = info.block_size,
+        .blocks = info.block_count,
+        .bfree = info.block_count - usage.used,
+        .bavail = info.block_count - usage.used,
+        .namelen = min(info.name_max, (lfs_size_t)(FS_NAME_LEN - 1U)),
+    };
+    return 0;
+}
+
 static const struct super_operations littlefs_super_ops = {
     .sync_fs = littlefs_sync_fs,
+    .statfs = littlefs_statfs,
 };
 
 /*

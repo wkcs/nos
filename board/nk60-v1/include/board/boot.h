@@ -26,15 +26,15 @@
 /* NK60-V2 External W25QXX SPI NOR Flash Partition Indices */
 #define NK60_PART_BOOTLOADER        0U
 #define NK60_PART_KERNEL            1U
-#define NK60_PART_ASSETS            2U
+#define NK60_PART_DATA            2U
 #define NK60_PART_COUNT             3U
 
 /* NK60-V2 External W25QXX SPI NOR Flash Layout (4 KB sector aligned) */
 #define NK60_W25Q_SECTOR_SIZE       4096UL
 #define NK60_W25Q_BOOTLOADER_ADDR   0x000000UL
 #define NK60_W25Q_KERNEL_ADDR       0x008000UL
-#define NK60_W25Q_ASSETS_ADDR       0x048000UL
-#define NK60_W25Q_ASSETS_MAX_SIZE   (736UL * 1024UL)
+#define NK60_W25Q_DATA_ADDR       0x048000UL
+#define NK60_W25Q_DATA_MAX_SIZE   (736UL * 1024UL)
 
 /* 内核与 Bootloader 共享的 RTC->BKP0R 启动模式编码（与 <kernel/boot.h> 完全一致） */
 #define NK60_BOOT_FLAG_MAGIC        0x20300000UL
@@ -86,10 +86,10 @@ static inline bool nk60_validate_vector_table(const uint32_t *vec,
 struct w25q_wl;
 int board_write_boot_flag(u32 flag);
 u32 board_read_boot_flag(void);
-struct w25q_wl *nk60_flash_get_assets_wl(void);
-int nk60_assets_mount(void);
-int nk60_assets_mount_fatfs(void);
-int nk60_assets_reload(void);
+struct w25q_wl *nk60_flash_get_data_wl(void);
+int nk60_data_mount(void);
+int nk60_data_mount_fatfs(void);
+int nk60_data_reload(void);
 #endif
 
 #endif /* __BOARD_BOOT_H__ */

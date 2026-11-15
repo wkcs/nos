@@ -49,6 +49,29 @@ struct mount_point {
 static struct mount_point mount_points[VFS_MAX_MOUNT_POINTS];
 static int mount_count = 0;
 
+/* A parent operation must not detach a registered mount from the dentry tree. */
+static bool vfs_has_mount_below_locked(struct dentry *target, bool include_target)
+{
+    int i;
+
+    for (i = 0; i < mount_count; i++) {
+        struct dentry *entry = mount_points[i].target;
+
+        if (!include_target) {
+            entry = entry->d_parent;
+        }
+        for (; entry != NULL; entry = entry->d_parent) {
+            if (entry == target) {
+                return true;
+            }
+            if (entry->d_parent == entry) {
+                break;
+            }
+        }
+    }
+    return false;
+}
+
 /* Persistent backends allocate an inode per cached dentry. RAMFS owns its
  * inodes through directory links instead, and releases them in its own ops. */
 static bool vfs_owns_cached_inode(struct inode *inode)
@@ -392,35 +415,33 @@ struct dentry *vfs_mount(const char *fs_name, int flags, const char *dev_name,
   return mnt_root;
 }
 
-static void vfs_build_dentry_path(struct dentry *dentry, char *buf, size_t size)
+static int vfs_build_dentry_path(struct dentry *dentry, char *buf, size_t size)
 {
     struct dentry *root = vfs_get_root();
     char *p;
 
-    if (buf == NULL || size == 0U) {
-        return;
-    }
-    if (dentry == NULL || dentry == root) {
-        strncpy(buf, "/", size - 1U);
-        buf[size - 1U] = '\0';
-        return;
+    if (root == NULL || dentry == root) {
+        return -EINVAL;
     }
     p = buf + size - 1U;
     *p = '\0';
-    while (dentry != NULL && dentry != root) {
-        unsigned int len = dentry->d_name.len;
-        if ((size_t)(p - buf) <= len + 1U) {
-            break;
+    while (dentry != root) {
+        unsigned int len;
+
+        if (dentry == NULL || dentry->d_parent == dentry) {
+            return -EINVAL;
+        }
+        len = dentry->d_name.len;
+        if ((size_t)(p - buf) < len + 1U) {
+            return -ENAMETOOLONG;
         }
         p -= len;
         memcpy(p, dentry->d_name.name, len);
         *--p = '/';
         dentry = dentry->d_parent;
     }
-    if (*p == '\0') {
-        *--p = '/';
-    }
     memmove(buf, p, (size_t)((buf + size) - p));
+    return 0;
 }
 
 struct dentry *vfs_lookup_path(struct dentry *base, const char *path)
@@ -671,11 +692,9 @@ int vfs_remove_entry(struct dentry *dir, const char *name, bool is_dir)
     target = vfs_lookup(dir, &q);
     if (target == NULL || target->d_inode == NULL) return -ENOENT;
     spin_lock(&vfs_mount_lock);
-    for (i = 0; i < mount_count; i++) {
-        if (mount_points[i].target == target) {
-            spin_unlock(&vfs_mount_lock);
-            return -EBUSY;
-        }
+    if (vfs_has_mount_below_locked(target, true)) {
+        spin_unlock(&vfs_mount_lock);
+        return -EBUSY;
     }
     spin_unlock(&vfs_mount_lock);
     if (is_dir && !S_ISDIR(target->d_inode->i_mode)) return -ENOTDIR;
@@ -724,7 +743,7 @@ int vfs_rename_entry(struct dentry *old_dir, const char *old_name,
     struct inode *refreshed = NULL;
     struct qstr old_q, new_q;
     unsigned int old_len, new_len;
-    int i, rc;
+    int rc;
 
     if (old_dir == NULL || new_dir == NULL ||
         old_dir->d_inode == NULL || new_dir->d_inode == NULL ||
@@ -766,11 +785,10 @@ int vfs_rename_entry(struct dentry *old_dir, const char *old_name,
         }
         if (ancestor->d_parent == ancestor) break;
     }
-    for (i = 0; i < mount_count; i++) {
-        if (mount_points[i].target == cached_old || mount_points[i].target == cached_new) {
-            spin_unlock(&vfs_mount_lock);
-            return -EBUSY;
-        }
+    if (vfs_has_mount_below_locked(cached_old, true) ||
+        (cached_new != NULL && vfs_has_mount_below_locked(cached_new, true))) {
+        spin_unlock(&vfs_mount_lock);
+        return -EBUSY;
     }
     for (ancestor = new_dir; ancestor != NULL && ancestor->d_parent != NULL &&
          ancestor->d_parent != ancestor; ancestor = ancestor->d_parent) {
@@ -1057,7 +1075,7 @@ int vfs_bind_mount(struct dentry *target, struct dentry *mnt_root)
     char path_buf[128];
     const char *fs_name = "unknown";
     const char *dev_str = "none";
-    int i;
+    int i, rc;
 
     if (target == NULL || target->d_parent == NULL ||
         target->d_parent->d_inode == NULL || target->d_name.name == NULL ||
@@ -1074,9 +1092,16 @@ int vfs_bind_mount(struct dentry *target, struct dentry *mnt_root)
             dev_str = fs_name;
         }
     }
-    vfs_build_dentry_path(target, path_buf, sizeof(path_buf));
+    rc = vfs_build_dentry_path(target, path_buf, sizeof(path_buf));
+    if (rc != 0) {
+        return rc;
+    }
 
     spin_lock(&vfs_mount_lock);
+    if (vfs_has_mount_below_locked(target, false)) {
+        spin_unlock(&vfs_mount_lock);
+        return -EBUSY;
+    }
     for (i = 0; i < mount_count; i++) {
         if (mount_points[i].parent == target->d_parent->d_inode &&
             strcmp(mount_points[i].name, (const char *)target->d_name.name) == 0) {
@@ -1101,12 +1126,13 @@ int vfs_bind_mount(struct dentry *target, struct dentry *mnt_root)
         return -ENOMEM;
     }
     spin_lock(&vfs_mount_lock);
-    if (mount_count >= VFS_MAX_MOUNT_POINTS) {
+    if (mount_count >= VFS_MAX_MOUNT_POINTS || vfs_has_mount_below_locked(target, true)) {
+        rc = mount_count >= VFS_MAX_MOUNT_POINTS ? -ENOSPC : -EBUSY;
         spin_unlock(&vfs_mount_lock);
         kfree(name);
         kfree(mpath);
         kfree(dev);
-        return -ENOSPC;
+        return rc;
     }
     mount_points[mount_count].parent = target->d_parent->d_inode;
     mount_points[mount_count].name = name;
@@ -1133,6 +1159,10 @@ int vfs_unmount(struct dentry *target)
         return -EBUSY;
     }
     spin_lock(&vfs_mount_lock);
+    if (vfs_has_mount_below_locked(target, false)) {
+        spin_unlock(&vfs_mount_lock);
+        return -EBUSY;
+    }
     for (i = 0; i < mount_count; i++) {
         if (mount_points[i].target == target ||
             (target->d_parent &&
@@ -1171,14 +1201,9 @@ int vfs_get_mount_count(void)
     return count;
 }
 
-int vfs_get_mount_entry(int index, struct vfs_mount_entry *entry)
+static int vfs_get_mount_entry_locked(int index, struct vfs_mount_entry *entry)
 {
-    if (entry == NULL || index < 0) {
-        return -EINVAL;
-    }
-    spin_lock(&vfs_mount_lock);
     if (root_dentry == NULL) {
-        spin_unlock(&vfs_mount_lock);
         return -ENOENT;
     }
     if (index == 0) {
@@ -1186,20 +1211,57 @@ int vfs_get_mount_entry(int index, struct vfs_mount_entry *entry)
         entry->mount_path = "/";
         entry->fs_name = root_fs_name;
         entry->dentry = root_dentry;
-        spin_unlock(&vfs_mount_lock);
         return 0;
     }
     index -= 1;
     if (index >= mount_count) {
-        spin_unlock(&vfs_mount_lock);
         return -ENOENT;
     }
     entry->dev_name = mount_points[index].dev_name;
     entry->mount_path = mount_points[index].mount_path;
     entry->fs_name = mount_points[index].fs_name;
     entry->dentry = mount_points[index].target;
-    spin_unlock(&vfs_mount_lock);
     return 0;
+}
+
+int vfs_get_mount_entry(int index, struct vfs_mount_entry *entry)
+{
+    int rc;
+
+    if (entry == NULL || index < 0) {
+        return -EINVAL;
+    }
+    spin_lock(&vfs_mount_lock);
+    rc = vfs_get_mount_entry_locked(index, entry);
+    spin_unlock(&vfs_mount_lock);
+    return rc;
+}
+
+int vfs_get_mount_info(int index, struct vfs_mount_info *info)
+{
+    struct vfs_mount_entry entry;
+    int rc;
+
+    if (info == NULL || index < 0) {
+        return -EINVAL;
+    }
+    /* Copy the strings while unmount cannot remove the entry. */
+    spin_lock(&vfs_mount_lock);
+    rc = vfs_get_mount_entry_locked(index, &entry);
+    if (rc == 0) {
+        const struct super_block *sb = index == 0 ? root_sb : mount_points[index - 1].root->d_sb;
+        const char *dev_name = sb != NULL && sb->s_id[0] != '\0' ? sb->s_id : entry.fs_name;
+
+        strncpy(info->mount_path, entry.mount_path, sizeof(info->mount_path) - 1U);
+        info->mount_path[sizeof(info->mount_path) - 1U] = '\0';
+        strncpy(info->fs_name, entry.fs_name, sizeof(info->fs_name) - 1U);
+        info->fs_name[sizeof(info->fs_name) - 1U] = '\0';
+        strncpy(info->dev_name, dev_name, sizeof(info->dev_name) - 1U);
+        info->dev_name[sizeof(info->dev_name) - 1U] = '\0';
+        info->has_statfs = sb != NULL && sb->s_op != NULL && sb->s_op->statfs != NULL;
+    }
+    spin_unlock(&vfs_mount_lock);
+    return rc;
 }
 
 int vfs_list_filesystems(char *buf, size_t size)

@@ -486,6 +486,7 @@ enum nlk_vfs_opcode {
     NLK_VFS_OP_REMOVE           = 0x08U,
     NLK_VFS_OP_RENAME           = 0x09U,
     NLK_VFS_OP_STATFS           = 0x0AU,
+    NLK_VFS_OP_LIST_MOUNTS      = 0x0BU,
 };
 
 /* 跨平台文件打开标志位 */
@@ -598,6 +599,26 @@ struct nlk_vfs_statfs_resp {
     uint32_t bfree;
     uint32_t bavail;
     uint32_t namelen;
+} __attribute__((packed));
+
+#define NLK_VFS_MOUNT_HAS_STATFS     (1U << 0)
+
+struct nlk_vfs_list_mounts_req {
+    uint16_t start_index;
+} __attribute__((packed));
+
+struct nlk_vfs_list_mounts_resp_hdr {
+    uint16_t next_index;
+    uint8_t eof;
+    uint8_t entry_count;
+} __attribute__((packed));
+
+struct nlk_vfs_mount_wire {
+    uint8_t flags;
+    uint8_t path_len;
+    uint8_t fs_name_len;
+    uint8_t dev_name_len;
+    /* Mount path, filesystem type, then device name, without terminators. */
 } __attribute__((packed));
 
 /* =========================================================================

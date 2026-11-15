@@ -77,12 +77,12 @@ config LITTLEFS
 	help
 	  启用 LittleFS 文件系统支持（专为 MCU 与 NOR Flash 设计的轻量级掉电安全文件系统）。
 
-config ASSETS_FS_LITTLEFS
-	bool "Mount LittleFS on /assets"
+config DATA_FS_LITTLEFS
+	bool "Mount LittleFS on /data"
 	default y if LITTLEFS && (BOARD_NK60 || BOARD_NK60_V1)
 	default n
 	depends on LITTLEFS
 	help
-	  在系统引导阶段，将 W25Q assets 分区以 LittleFS 文件系统格式挂载至 /assets。
+	  在系统引导阶段，将 W25Q data 分区以 LittleFS 文件系统格式挂载至 /data。
 
 endmenu

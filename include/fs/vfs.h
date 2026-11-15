@@ -40,7 +40,13 @@ struct timespec {
 };
 #endif
 
-struct kstatfs; /* Forward declaration */
+struct kstatfs {
+    u32 bsize;   /* Bytes per allocation block */
+    u32 blocks;
+    u32 bfree;
+    u32 bavail;
+    u32 namelen; /* Maximum filename length exposed by VFS */
+};
 
 #define FS_NAME_LEN 32
 
@@ -234,6 +240,13 @@ struct vfs_mount_entry {
   struct dentry *dentry;
 };
 
+struct vfs_mount_info {
+    char mount_path[128];
+    char fs_name[FS_NAME_LEN];
+    char dev_name[FS_NAME_LEN];
+    bool has_statfs;
+};
+
 struct dentry *vfs_alloc_dentry(struct dentry *parent, const char *name,
                                 unsigned int len);
 struct dentry *vfs_lookup_path(struct dentry *base, const char *path);
@@ -247,6 +260,7 @@ int vfs_rename_entry(struct dentry *old_dir, const char *old_name,
 int vfs_truncate_dentry(struct dentry *dentry, loff_t length);
 int vfs_get_mount_count(void);
 int vfs_get_mount_entry(int index, struct vfs_mount_entry *entry);
+int vfs_get_mount_info(int index, struct vfs_mount_info *info);
 int vfs_list_filesystems(char *buf, size_t size);
 void vfs_setup_standard_mounts(void);
 

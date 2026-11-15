@@ -6,7 +6,7 @@
  * - NLK_CAP_FLASH 通用分区注册：
  *     1. "bootloader" -> 直接擦写 STM32F401 内部 Flash Sector 0 (0x08000000, 16 KB)
  *     2. "kernel"     -> STM32F401 内部 Flash Sector 1~5 (0x08004000, 240 KB, 需进入 Bootloader 直刷)
- *     3. "assets"     -> 外部 W25QXX SPI Flash (0x048000, 736 KB FatFs 资源区)
+ *     3. "data"     -> 外部 W25QXX SPI Flash (0x048000, 736 KB 数据区)
  * - 上行 WinUSB Bearer 挂载
  */
 
@@ -195,21 +195,21 @@ static int nk60_bl_commit(uint32_t total_size, uint32_t expected_crc32, void *pr
 }
 
 /* =========================================================================
- * 分区 2 ("assets")：擦写外部 W25QXX SPI Flash 资源区 (0x048000)
+ * 分区 2 ("data")：擦写外部 W25QXX SPI Flash 数据区 (0x048000)
  * ========================================================================= */
-static int nk60_assets_prepare(uint32_t total_size, uint32_t expected_crc32, void *priv)
+static int nk60_data_prepare(uint32_t total_size, uint32_t expected_crc32, void *priv)
 {
     struct nk60_nlk_board *brd = (struct nk60_nlk_board *)priv;
 
     (void)expected_crc32;
-    if (brd == NULL || total_size == 0UL || total_size > NK60_W25Q_ASSETS_MAX_SIZE) {
+    if (brd == NULL || total_size == 0UL || total_size > NK60_W25Q_DATA_MAX_SIZE) {
         return -EINVAL;
     }
     brd->erased_up_to = 0UL;
     return 0;
 }
 
-static int nk60_assets_write(uint32_t offset, const uint8_t *data,
+static int nk60_data_write(uint32_t offset, const uint8_t *data,
                              uint32_t len, void *priv)
 {
     struct nk60_nlk_board *brd = (struct nk60_nlk_board *)priv;
@@ -217,7 +217,7 @@ static int nk60_assets_write(uint32_t offset, const uint8_t *data,
     uint32_t end_off;
 
     if (brd == NULL || data == NULL ||
-        offset + len > NK60_W25Q_ASSETS_MAX_SIZE) {
+        offset + len > NK60_W25Q_DATA_MAX_SIZE) {
         return -EINVAL;
     }
 
@@ -229,7 +229,7 @@ static int nk60_assets_write(uint32_t offset, const uint8_t *data,
     end_off = offset + len;
     if (fdev->ops.control != NULL) {
         while (brd->erased_up_to < end_off) {
-            uint32_t sec_addr = NK60_W25Q_ASSETS_ADDR + brd->erased_up_to;
+            uint32_t sec_addr = NK60_W25Q_DATA_ADDR + brd->erased_up_to;
             if (fdev->ops.control(fdev, W25Q_FLASH_CTRL_ERASE_SECTOR, &sec_addr) < 0) {
                 return -EIO;
             }
@@ -237,14 +237,14 @@ static int nk60_assets_write(uint32_t offset, const uint8_t *data,
         }
     }
 
-    if (fdev->ops.write(fdev, NK60_W25Q_ASSETS_ADDR + offset,
+    if (fdev->ops.write(fdev, NK60_W25Q_DATA_ADDR + offset,
                         (const void *)data, len) < 0) {
         return -EIO;
     }
     return 0;
 }
 
-static int nk60_assets_commit(uint32_t total_size, uint32_t expected_crc32, void *priv)
+static int nk60_data_commit(uint32_t total_size, uint32_t expected_crc32, void *priv)
 {
     struct nk60_nlk_board *brd = (struct nk60_nlk_board *)priv;
     struct device *fdev;
@@ -265,7 +265,7 @@ static int nk60_assets_commit(uint32_t total_size, uint32_t expected_crc32, void
         if (chunk > sizeof(buf)) {
             chunk = sizeof(buf);
         }
-        if (fdev->ops.read(fdev, NK60_W25Q_ASSETS_ADDR + offset,
+        if (fdev->ops.read(fdev, NK60_W25Q_DATA_ADDR + offset,
                            buf, chunk) != (ssize_t)chunk) {
             return -EIO;
         }
@@ -274,13 +274,13 @@ static int nk60_assets_commit(uint32_t total_size, uint32_t expected_crc32, void
     }
 
     if (expected_crc32 != 0UL && readback_crc != expected_crc32) {
-        pr_err("W25QXX assets CRC mismatch: calc=0x%08x != exp=0x%08x\n",
+        pr_err("W25QXX data CRC mismatch: calc=0x%08x != exp=0x%08x\n",
                (unsigned int)readback_crc, (unsigned int)expected_crc32);
         return -EBADMSG;
     }
 
-    (void)nk60_assets_reload();
-    pr_info("NK60 assets partition commit OK (size=%u, crc=0x%08x)\n",
+    (void)nk60_data_reload();
+    pr_info("NK60 data partition commit OK (size=%u, crc=0x%08x)\n",
             (unsigned int)total_size, (unsigned int)readback_crc);
     return 0;
 }
@@ -309,8 +309,8 @@ static void nk60_on_reboot(uint32_t boot_flag, void *priv)
 static int nk60_nlk_board_setup(struct nlk_node *node)
 {
     struct nk60_nlk_board *brd = &g_nk60_nlk;
-    struct w25q_wl *assets_wl;
-    uint32_t assets_max = NK60_W25Q_ASSETS_MAX_SIZE;
+    struct w25q_wl *data_wl;
+    uint32_t data_max = NK60_W25Q_DATA_MAX_SIZE;
     uint32_t ver_code = 0x00010000UL;
     int i;
 
@@ -334,9 +334,9 @@ static int nk60_nlk_board_setup(struct nlk_node *node)
     /* 初始化 NLK_CAP_FLASH 并注册板级分区表 */
     (void)nlk_cap_flash_init(node, &brd->flash_cap, BOOT_NORMAL, ver_code);
 
-    assets_wl = nk60_flash_get_assets_wl();
-    if (assets_wl != NULL) {
-        assets_max = (uint32_t)assets_wl->logical_blocks * NK60_W25Q_SECTOR_SIZE;
+    data_wl = nk60_flash_get_data_wl();
+    if (data_wl != NULL) {
+        data_max = (uint32_t)data_wl->logical_blocks * NK60_W25Q_SECTOR_SIZE;
     }
 
     {
@@ -362,20 +362,20 @@ static int nk60_nlk_board_setup(struct nlk_node *node)
             .write      = NULL,
             .commit     = NULL,
         };
-        const struct nlk_flash_part_ops assets_part = {
-            .name       = "assets",
-            .max_size   = assets_max,
+        const struct nlk_flash_part_ops data_part = {
+            .name       = "data",
+            .max_size   = data_max,
             .erase_size = NK60_W25Q_SECTOR_SIZE,
             .flags      = NLK_FLASH_PART_F_WRITABLE,
             .priv       = brd,
-            .prepare    = nk60_assets_prepare,
-            .write      = nk60_assets_write,
-            .commit     = nk60_assets_commit,
+            .prepare    = nk60_data_prepare,
+            .write      = nk60_data_write,
+            .commit     = nk60_data_commit,
         };
 
         (void)nlk_cap_flash_register_part(&brd->flash_cap, &bl_part);
         (void)nlk_cap_flash_register_part(&brd->flash_cap, &kernel_part);
-        (void)nlk_cap_flash_register_part(&brd->flash_cap, &assets_part);
+        (void)nlk_cap_flash_register_part(&brd->flash_cap, &data_part);
     }
 
     /* 挂载上行 WinUSB Bearer */

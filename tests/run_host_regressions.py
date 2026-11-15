@@ -64,6 +64,7 @@ TESTS = [
     ("run_arm_mpu_test.py",),
     ("run_mm_vmm_test.py",),
     ("run_fatfs_config_test.py",),
+    ("run_littlefs_statfs_test.py",),
     ("run_mutex_test.py",),
     ("run_task_stack_layout_test.py",),
     ("run_sched_multi_policy_test.py",),

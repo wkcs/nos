@@ -369,7 +369,7 @@ NLK 将能力划分为四大标准能力族：
 ```c
 /* FW_OP_PREPARE 请求载荷 (16 字节) */
 struct nlk_fw_prepare_req {
-    uint8_t  part_index;        /* 0=BOOTLOADER, 1=KERNEL_A, 2=KERNEL_B, 3=ASSETS */
+    uint8_t  part_index;        /* Partition index advertised by QUERY_PARTS */
     uint8_t  flags;             /* BIT0: 写入完成后自动校验提交 */
     uint16_t window_pkts;       /* 期望的滑动窗口包数 (1..8) */
     uint32_t total_size;        /* 固件镜像总字节数 */
@@ -568,6 +568,15 @@ struct nlk_kb_hid_report {
   2. **NLK 软总线隧道（NLK-over-BLE / NLK-over-2.4G / NLK-over-WiFi）**：无线模块在 BLE GATT（自定义 Service UUID）或 2.4G/Wi-Fi 上同时暴露一个 **NLK Tunnel 特征值/端口**。上位机通过无线发出的任何 NLK 报文（如读取键盘电量、无线修改配列、无线打开 `nshell`、无线升级固件），无线模块直接作为 L3 路由包转发给 NK60 (`0x0001`) 及其级联子设备！
 
 ---
+
+### 6.8 文件系统挂载与空间查询 (`NLK_CAP_VFS`, `cap_type = 0x0004`)
+
+- `LIST_MOUNTS (0x0B)`：请求为 LE16 起始索引，首次传 `0`。响应头为
+  `{ next_index: LE16, eof: u8, entry_count: u8 }`，随后是 `entry_count` 条挂载记录。
+  每条记录为 `{ flags: u8, path_len: u8, fs_name_len: u8, dev_name_len: u8 }`，随后依次是对应长度的挂载路径、文件系统类型和设备名，无 NUL 结尾。`eof` 为 `0` 时使用 `next_index` 查询下一页。
+- 挂载记录的 `flags` 位 0 表示支持 `STATFS`。`STATFS (0x0A)` 的请求路径可使用
+  挂载点；响应是五个 LE32 字段 `{ bsize, blocks, bfree, bavail, namelen }`。
+  总容量为 `bsize × blocks`，已用容量为 `bsize × (blocks - bfree)`；不支持统计时返回 `-ENOTSUP`。
 
 ## 7. NOS 内核与服务层软件架构设计
 

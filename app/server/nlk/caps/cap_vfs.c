@@ -195,6 +195,61 @@ static int cap_vfs_filldir(void *dirent, const char *name, int namelen,
     return 0;
 }
 
+static int cap_vfs_list_mounts(const void *req, uint16_t req_len,
+                               void *resp, uint16_t *resp_len)
+{
+    const struct nlk_vfs_list_mounts_req *mreq = req;
+    struct nlk_vfs_list_mounts_resp_hdr *mhdr = resp;
+    struct vfs_mount_info info;
+    size_t used = sizeof(*mhdr);
+    uint16_t index;
+
+    if (req == NULL || req_len != sizeof(*mreq) || resp == NULL) {
+        return -EINVAL;
+    }
+    index = mreq->start_index;
+    memset(mhdr, 0, sizeof(*mhdr));
+    while (mhdr->entry_count < UINT8_MAX) {
+        struct nlk_vfs_mount_wire *wire;
+        size_t path_len, fs_len, dev_len, size;
+        uint8_t *dst;
+        int rc = vfs_get_mount_info(index, &info);
+
+        if (rc == -ENOENT) {
+            mhdr->eof = 1U;
+            break;
+        }
+        if (rc != 0) {
+            return rc;
+        }
+        path_len = strlen(info.mount_path);
+        fs_len = strlen(info.fs_name);
+        dev_len = strlen(info.dev_name);
+        size = sizeof(*wire) + path_len + fs_len + dev_len;
+        if (used + size > CONFIG_NLK_PACKET_MTU) {
+            if (mhdr->entry_count == 0U) {
+                return -EMSGSIZE;
+            }
+            break;
+        }
+        wire = (struct nlk_vfs_mount_wire *)((uint8_t *)resp + used);
+        wire->flags = info.has_statfs ? NLK_VFS_MOUNT_HAS_STATFS : 0U;
+        wire->path_len = (uint8_t)path_len;
+        wire->fs_name_len = (uint8_t)fs_len;
+        wire->dev_name_len = (uint8_t)dev_len;
+        dst = (uint8_t *)(wire + 1);
+        memcpy(dst, info.mount_path, path_len);
+        memcpy(dst + path_len, info.fs_name, fs_len);
+        memcpy(dst + path_len + fs_len, info.dev_name, dev_len);
+        used += size;
+        index++;
+        mhdr->entry_count++;
+    }
+    mhdr->next_index = index;
+    *resp_len = (uint16_t)used;
+    return 0;
+}
+
 static int cap_vfs_on_rpc(struct nlk_node *node, struct nlk_capability *cap,
                           const struct nlk_pkt_hdr *hdr,
                           const void *req, uint16_t req_len,
@@ -474,7 +529,10 @@ static int cap_vfs_on_rpc(struct nlk_node *node, struct nlk_capability *cap,
     case NLK_VFS_OP_STATFS: {
         const struct nlk_vfs_path_req *preq = (const struct nlk_vfs_path_req *)req;
         struct nlk_vfs_statfs_resp *fresp = (struct nlk_vfs_statfs_resp *)resp;
+        struct kstatfs stats;
         struct dentry *dentry;
+        struct super_block *sb;
+        int rc;
 
         if (req == NULL || req_len < sizeof(*preq) || resp == NULL) {
             return -EINVAL;
@@ -484,17 +542,26 @@ static int cap_vfs_on_rpc(struct nlk_node *node, struct nlk_capability *cap,
         if (dentry == NULL || dentry->d_inode == NULL) {
             return -ENOENT;
         }
+        sb = dentry->d_sb;
+        if (sb == NULL || sb->s_op == NULL || sb->s_op->statfs == NULL) {
+            return -ENOTSUP;
+        }
+        rc = sb->s_op->statfs(sb->s_root, &stats);
+        if (rc != 0) {
+            return rc;
+        }
 
-        memset(fresp, 0, sizeof(*fresp));
-        fresp->bsize = (dentry->d_sb != NULL && dentry->d_sb->s_blocksize != 0UL) ?
-                       (uint32_t)dentry->d_sb->s_blocksize : 4096U;
-        fresp->blocks = 1024U;
-        fresp->bfree = 512U;
-        fresp->bavail = 512U;
-        fresp->namelen = FS_NAME_LEN - 1U;
+        fresp->bsize = stats.bsize;
+        fresp->blocks = stats.blocks;
+        fresp->bfree = stats.bfree;
+        fresp->bavail = stats.bavail;
+        fresp->namelen = stats.namelen;
         *resp_len = sizeof(*fresp);
         return 0;
     }
+
+    case NLK_VFS_OP_LIST_MOUNTS:
+        return cap_vfs_list_mounts(req, req_len, resp, resp_len);
 
     default:
         return -ENOTSUP;
