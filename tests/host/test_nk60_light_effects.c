@@ -4,10 +4,19 @@
 #include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
-#include "../../board/nk60-v2/nk60_light_effects.h"
+#include <nos/keyboard_definitions.h>
 #define __NOS_INIT_H__
 #define SYS_INIT(fn, level) static void *const test_init_ref __attribute__((unused)) = (void *)&fn
+#ifdef TEST_NK60_V1
+#include "../../board/nk60-v1/nk60_keyboard.c"
+#else
 #include "../../board/nk60-v2/nk60_keyboard.c"
+#endif
+
+static nlk_kb_effect_render_fn_t find_effect(const char *name);
+#define nk60_effect_static find_effect("static")
+#define nk60_effect_breath find_effect("breath")
+#define nk60_effect_rainbow find_effect("rainbow")
 
 void keyboard_server_register_profile(const struct keyboard_profile *profile)
 {
@@ -24,9 +33,9 @@ static int compare_colors(const void *left, const void *right)
 
 static void test_breath(void)
 {
-    const struct nlk_kb_light_cfg white = { .color_r = 255U, .color_g = 255U, .color_b = 255U };
-    const struct nlk_kb_light_cfg color = { .color_r = 200U, .color_g = 100U, .color_b = 0U };
-    const uint8_t samples[] = { 0U, 6U, 64U, 182U, 255U };
+    const struct nlk_kb_light_cfg white = {.color_r = 255U, .color_g = 255U, .color_b = 255U};
+    const struct nlk_kb_light_cfg color = {.color_r = 200U, .color_g = 100U, .color_b = 0U};
+    const uint8_t samples[] = {0U, 6U, 64U, 182U, 255U};
     uint8_t rgb[3];
     uint8_t other[3];
     uint8_t previous = 0U;
@@ -68,10 +77,12 @@ static void test_breath(void)
 
 static void test_rainbow(void)
 {
-    const struct nlk_kb_light_cfg cfg = { 0 };
+    const struct nlk_kb_light_cfg cfg = {0};
     const uint8_t samples[4][3] = {
-        { 255U, 16U, 32U }, { 224U, 240U, 32U },
-        { 32U, 240U, 224U }, { 176U, 32U, 240U },
+        {255U, 16U, 32U},
+        {224U, 240U, 32U},
+        {32U, 240U, 224U},
+        {176U, 32U, 240U},
     };
     uint32_t colors[8192];
     unsigned int distinct = 1U;
@@ -148,24 +159,24 @@ static nlk_kb_effect_render_fn_t find_effect(const char *name)
 
 static void test_additional_effects(void)
 {
-    const char *names[] = { "cycle", "wave", "comet", "gradient", "ripple", "twinkle" };
-    const struct nlk_kb_light_cfg cfg = { .color_r = 200U, .color_g = 100U, .color_b = 0U };
-    const struct nlk_kb_light_cfg black = { 0 };
+    const char *names[] = {"cycle", "wave", "comet", "gradient", "ripple", "twinkle"};
+    const struct nlk_kb_light_cfg cfg = {.color_r = 200U, .color_g = 100U, .color_b = 0U};
+    const struct nlk_kb_light_cfg black = {0};
     uint8_t rgb[3];
     uint8_t other[3];
     uint8_t i;
     uint8_t j;
 
-    assert(g_nk60_kb_profile.light_effect_count == 10U);
-    assert(NK60_EFFECT_OFF == 0 && NK60_EFFECT_STATIC == 1 &&
-           NK60_EFFECT_BREATH == 2 && NK60_EFFECT_RAINBOW == 3);
+    assert(g_nk60_kb_profile.light_effect_count == 9U);
+    assert(NK60_EFFECT_STATIC == 0 && NK60_EFFECT_BREATH == 1 && NK60_EFFECT_RAINBOW == 2);
     for (i = 0U; i < g_nk60_kb_profile.light_zone_count; i++) {
-        assert(g_nk60_light_zones[i].supported_effects == 0x03ffU);
+        assert(g_nk60_light_zones[i].supported_effects == 0x01ffU);
     }
     for (i = 0U; i < g_nk60_kb_profile.light_effect_count; i++) {
         const struct keyboard_light_effect *effect = &g_nk60_light_effects[i];
 
         assert(effect->render != NULL);
+        assert(strcmp(effect->name, "off") != 0);
         assert(strlen(effect->name) < NLK_KB_LIGHT_EFFECT_NAME_MAX);
         assert(strlen(effect->desc) < NLK_KB_LIGHT_EFFECT_DESC_MAX);
         for (j = 0U; j < i; j++) {
@@ -243,15 +254,16 @@ static void test_additional_effects(void)
 
 int main(void)
 {
-    struct nlk_kb_light_cfg cfg = { .color_r = 200U, .color_g = 100U, .color_b = 50U };
+    struct nlk_kb_light_cfg cfg = {.color_r = 200U, .color_g = 100U, .color_b = 50U};
     uint8_t rgb[3];
     uint8_t other[3];
 
+    assert(nk60_keyboard_profile_init() == 0);
+    assert(g_nk60_kb_profile.default_keymap == kb_selected_layout.default_keymap);
+    assert(g_nk60_layouts[0].default_keymap == kb_selected_layout.default_keymap);
     test_breath();
     test_rainbow();
     test_additional_effects();
-    nk60_effect_off(&cfg, 0U, 0U, 0U, rgb, NULL);
-    assert(rgb[0] == 0U && rgb[1] == 0U && rgb[2] == 0U);
     nk60_effect_static(&cfg, 0U, 0U, 0U, rgb, NULL);
     assert(rgb[0] == 200U && rgb[1] == 100U && rgb[2] == 50U);
     nk60_effect_breath(&cfg, 0U, 0U, 0U, rgb, NULL);

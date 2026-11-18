@@ -192,6 +192,22 @@ int nlk_node_poll_bearers(struct nlk_node *node, uint32_t timeout_ms)
     return (active > 0) ? active : -EAGAIN;
 }
 
+void nlk_node_poll_capabilities(struct nlk_node *node, uint32_t now_ms)
+{
+    if (node == NULL) {
+        return;
+    }
+
+    uint8_t count = node->cap_count;
+    for (uint8_t i = 0; i < count; i++) {
+        struct nlk_capability *cap = node->caps[i];
+
+        if (cap != NULL && cap->ops->on_poll != NULL) {
+            cap->ops->on_poll(node, cap, now_ms);
+        }
+    }
+}
+
 int nlk_node_register_cap(struct nlk_node *node, struct nlk_capability *cap)
 {
     uint8_t i;

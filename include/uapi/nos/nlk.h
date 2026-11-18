@@ -626,6 +626,89 @@ struct nlk_vfs_mount_wire {
  * Supports diverse keyboard form factors, switch types, NKRO, analog/RT,
  * and integrated keyboard lighting (per-key RGB, underglow, indicators, sync).
  * ========================================================================= */
+#define NLK_KB_CAP_VERSION 0x20U
+
+/* KEYBOARD v2 RPC namespace. Hardware descriptor uses CORE GET_CAP_DESC. */
+enum nlk_kb_v2_opcode {
+    NLK_KB_V2_INFO = 1,
+    NLK_KB_V2_STATE,
+    NLK_KB_V2_LIST,
+    NLK_KB_V2_READ,
+    NLK_KB_V2_EDIT_BEGIN,
+    NLK_KB_V2_EDIT_PATCH,
+    NLK_KB_V2_EDIT_SET_ENABLED,
+    NLK_KB_V2_EDIT_COMMIT,
+    NLK_KB_V2_EDIT_ABORT,
+    NLK_KB_V2_EDIT_KEEPALIVE,
+    NLK_KB_V2_RUN,
+    NLK_KB_V2_DELETE,
+    NLK_KB_V2_RESULT,
+    NLK_KB_V2_EDIT_READ,
+    NLK_KB_V2_STORAGE_STATUS,
+};
+enum nlk_kb_resource {
+    NLK_KB_RESOURCE_LAYOUT = 1,
+    NLK_KB_RESOURCE_ACTION,
+    NLK_KB_RESOURCE_EFFECT,
+    NLK_KB_RESOURCE_BASE,
+    NLK_KB_RESOURCE_LIGHT,
+    NLK_KB_RESOURCE_MACRO,
+};
+
+enum nlk_kb_state_flag {
+    NLK_KB_STATE_LIGHT_ENABLED = 1U << 0,
+    NLK_KB_STATE_SAVE_PENDING = 1U << 1,
+    NLK_KB_STATE_WRITE_ERROR = 1U << 2,
+    NLK_KB_STATE_READ_ONLY = 1U << 3,
+    NLK_KB_STATE_DRAFT_APPLIED = 1U << 4,
+    NLK_KB_STATE_DRAFT_UNSYNCED = 1U << 5,
+};
+
+enum nlk_kb_save_mode {
+    NLK_KB_SAVE_OVERWRITE = 0,
+    NLK_KB_SAVE_NEW = 1,
+};
+
+enum nlk_kb_run_verb {
+    NLK_KB_RUN_BASE_SELECT = 1,
+    NLK_KB_RUN_LIGHT_SELECT,
+    NLK_KB_RUN_BASE_NEXT,
+    NLK_KB_RUN_BASE_PREVIOUS,
+    NLK_KB_RUN_LIGHT_NEXT,
+    NLK_KB_RUN_LIGHT_PREVIOUS,
+    NLK_KB_RUN_LIGHT_ENABLE,
+    NLK_KB_RUN_MACRO_PLAY,
+    NLK_KB_RUN_MACRO_CANCEL,
+};
+
+enum nlk_kb_operation_state {
+    NLK_KB_OPERATION_QUEUED,
+    NLK_KB_OPERATION_APPLIED,
+    NLK_KB_OPERATION_COMMITTED,
+    NLK_KB_OPERATION_FAILED,
+};
+
+enum nlk_kb_document_tag {
+    NLK_KB_TAG_METADATA = 0x01,
+    NLK_KB_TAG_LAYOUT = 0x02,
+    NLK_KB_TAG_LAYOUT_KEY = 0x03,
+    NLK_KB_TAG_PARAMETER = 0x04,
+    NLK_KB_TAG_BASE_HEADER = 0x05,
+    NLK_KB_TAG_BASE_KEY = 0x06,
+    NLK_KB_TAG_LIGHT_LAYER = 0x11,
+    NLK_KB_TAG_MACRO_STEP = 0x21,
+    NLK_KB_TAG_LAYOUT_EXTENSION_FIRST = 0x1000,
+    NLK_KB_TAG_LAYOUT_EXTENSION_LAST = 0x1fff,
+};
+
+enum nlk_kb_storage_state {
+    NLK_KB_STORAGE_STARTING,
+    NLK_KB_STORAGE_READY,
+    NLK_KB_STORAGE_UNAVAILABLE,
+    NLK_KB_STORAGE_READ_ONLY,
+};
+
+/* Historical v1 encodings retained for isolated codec/engine regression fixtures. */
 enum nlk_kb_opcode {
     NLK_KB_OP_GET_DESC              = 0x01U,
     NLK_KB_OP_GET_KEYMAP            = 0x02U,
@@ -1094,6 +1177,7 @@ struct key_action_context {
     uint8_t  key_index;    /* 按键逻辑序号 (0..key_count-1) */
     uint8_t  event_type;   /* 触发事件类型: 1 = 按下, 0 = 释放 */
     uint8_t  state;        /* 按键物理状态: 1 = pressed, 0 = released */
+    uint8_t  action_slot;  /* Index of this binding in the key action chain. */
     uint32_t initial_code; /* 初始配置的 32 位按键码 ([31:8]=参数/Hash, [7:0]=HID 键码) */
     uint32_t key_code;     /* 当前输入 32 位按键码 (上一动作输出，初始为 initial_code) */
 } __attribute__((packed));

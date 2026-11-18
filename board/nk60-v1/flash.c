@@ -5,6 +5,7 @@
  */
 #define pr_fmt(fmt) "[W25QXX]:%s[%d]:" fmt, __func__, __LINE__
 
+#include "nk60_storage.h"
 #include <drivers/stm32_spi.h>
 #include <drivers/w25q_flash.h>
 #ifdef CONFIG_DEVICE_TREE
@@ -199,7 +200,7 @@ int nk60_data_mount(void)
     (void)vfs_unmount(dir);
 
 #if defined(CONFIG_DATA_FS_LITTLEFS)
-    mnt_root = vfs_mount("littlefs", 0, "nk60_v1-data", NULL);
+    mnt_root = vfs_mount("littlefs", 0, NK60_DATA_DEVICE, NULL);
     if (mnt_root != NULL) {
         fs_name = "LittleFS";
     }
@@ -208,7 +209,7 @@ int nk60_data_mount(void)
 #if defined(CONFIG_FATFS)
     if (mnt_root == NULL) {
         fatfs_set_block_device(&g_nk60_flash_info->data_dev);
-        mnt_root = vfs_mount("fatfs", 0, "nk60_v1-data", NULL);
+        mnt_root = vfs_mount("fatfs", 0, NK60_DATA_DEVICE, NULL);
         if (mnt_root != NULL) {
             fs_name = "FatFs";
         }
@@ -294,7 +295,7 @@ int spi_w25qxx_init(void)
         if (w25q_wl_init(&info->data_wl, &info->flash,
                          NK60_W25Q_DATA_ADDR, data_region) == 0 &&
             device_init(&info->data_dev) == 0) {
-            info->data_dev.name = "nk60_v1-data";
+            info->data_dev.name = NK60_DATA_DEVICE;
             info->data_dev.data = &info->data_wl;
             info->data_dev.api = &w25q_wl_block_driver_api;
             info->data_dev.ready = true;

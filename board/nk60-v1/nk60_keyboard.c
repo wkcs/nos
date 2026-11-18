@@ -6,58 +6,28 @@
  * Email: huqihan@live.com
  *
  * NK60-V1 Keyboard Profile Configuration:
- * - Default 3-layer keycode layout (def_key_code_layout) & action map (def_action_layout)
- * - Multi-Layout, Multi-Zone Backlight, Actions & Macro definitions
+ * - Hardware profile and factory lighting/action defaults
+ * - Selected shared layout, lighting effects and action definitions
  * - Registered with the generic Keyboard Server at application init time
  */
 
+#include "nk60_storage.h"
 #include <kernel/init.h>
-#include <nos/keyboard.h>
+#include <nos/keyboard_definitions.h>
 #include "nk60_light_effects.h"
 
 #define NK60_KEY_NUM        61U
 #define NK60_KEY_LAYER_NUM  3U
-
-static const uint8_t g_nk60_def_key_code_layout[NK60_KEY_LAYER_NUM][NK60_KEY_NUM] = {
-    KEYMAP(
-        ESC, 1,   2,   3,   4,   5,   6,   7,   8,   9,   0,   MINS,EQL, BSPC, \
-        TAB, Q,   W,   E,   R,   T,   Y,   U,   I,   O,   P,   LBRC,RBRC,BSLS, \
-        CAPS,A,   S,   D,   F,   G,   H,   J,   K,   L,   SCLN,QUOT,     ENT,  \
-        LSFT,Z,   X,   C,   V,   B,   N,   M,   COMM,DOT, SLSH,          RSFT, \
-        LCTL,LGUI,LALT,          SPC,                     RALT, PN, RCTL,FN    ),
-    KEYMAP(
-        GRV, F1,  F2,  F3,  F4,  F5,  F6,  F7,  F8,  F9,  F10, F11, F12, DEL, \
-        NO,  NO , UP,  NO,  NO,  NO,  NO,  NO,  NO,  NO,  NO,  NO,  NO,  INS, \
-        NO,  LEFT,DOWN,RGHT,NO,  NO,  PSCR,SLCK,PAUS,NO,  NO,  END,      NO,  \
-        NO,  NO , NO,  NO,  NO,  NO,  NO,  NO,  PGUP,PGDN,UP,            NO,  \
-        NO,  NO,  NO,            NO,                      LEFT,DOWN,RGHT,NO   ),
-    KEYMAP(
-        GRV, F1,  F2,  F3,  F4,  F5,  F6,  F7,  F8,  F9,  F10, F11, F12, DEL, \
-        NO,  NO , UP,  NO,  NO,  NO,  NO,  NO,  NO,  NO,  NO,  NO,  NO,  INS, \
-        NO,  LEFT,DOWN,RGHT,NO,  NO,  PSCR,SLCK,PAUS,NO,  NO,  END,      NO,  \
-        NO,  NO , NO,  NO,  NO,  NO,  NO,  NO,  NO  ,NO  ,NO,            NO,  \
-        NO,  NO,  NO,            NO,                      NO,  NO,  NO,  NO   ),
-};
 
 static const struct key_action_default_binding g_nk60_default_action_bindings[] = {
     { 0U, 28U, "caps_lock" },    /* Layer 0 Key 28: 普通动作，可绑定灯效 */
     { 2U, 47U, "light_toggle" }, /* Layer 2 Key 47: 背光开关动作 */
 };
 
-static const struct keyboard_profile_layout g_nk60_layouts[] = {
-    {
-        .info = {
-            .layout_id   = NLK_KB_LAYOUT_STD_60_ANSI,
-            .key_count   = NK60_KEY_NUM,
-            .matrix_rows = 5U,
-            .matrix_cols = 14U,
-            .name        = "ANSI-61",
-        },
-        .default_keymap     = &g_nk60_def_key_code_layout[0][0],
-    },
-};
+static struct keyboard_profile_layout g_nk60_layouts[1];
+static struct keyboard_light_effect g_nk60_light_effects[KB_EFFECT_ENGINE_LIMIT];
 
-static const struct nlk_kb_light_zone_desc g_nk60_light_zones[] = {
+static struct nlk_kb_light_zone_desc g_nk60_light_zones[] = {
     {
         .zone_id           = 0U,
         .type              = NLK_KB_LIGHT_TYPE_RGB_MATRIX,
@@ -117,54 +87,10 @@ static const struct keyboard_light_layer_default g_nk60_factory_light_layers[] =
     },
 };
 
-static const struct nlk_kb_action_desc g_nk60_actions[6] = {
-    {
-        .action_id = 1U,
-        .flags     = 0U,
-        .reserved  = 0U,
-        .name      = "light_toggle",
-        .desc      = "Toggle RGB backlight",
-    },
-    {
-        .action_id = 2U,
-        .flags     = 0U,
-        .reserved  = 0U,
-        .name      = "caps_lock",
-        .desc      = "Toggle Caps Lock",
-    },
-    {
-        .action_id = 3U,
-        .flags     = 0U,
-        .reserved  = 0U,
-        .name      = "macro_play",
-        .desc      = "Play keyboard macro",
-    },
-    {
-        .action_id = 4U,
-        .flags     = 0U,
-        .reserved  = 0U,
-        .name      = "key_light",
-        .desc      = "Per-key reactive",
-    },
-    {
-        .action_id = 5U,
-        .flags     = 0U,
-        .reserved  = 0U,
-        .name      = "config_next",
-        .desc      = "Switch next config",
-    },
-    {
-        .action_id = 6U,
-        .flags     = 0U,
-        .reserved  = 0U,
-        .name      = "win_lock",
-        .desc      = "Lock Windows key",
-    },
-};
-
-static const struct keyboard_profile g_nk60_kb_profile = {
+static struct keyboard_profile g_nk60_kb_profile = {
     .name               = "NK60-V1",
     .hardware_id        = "NK60-V1-ANSI61-v1",
+    .storage_device     = NK60_DATA_DEVICE,
     .rows               = 5U,
     .cols               = 14U,
     .key_count          = NK60_KEY_NUM,
@@ -184,18 +110,17 @@ static const struct keyboard_profile g_nk60_kb_profile = {
     .underglow_leds     = 0U,
     .led_count          = 61U,
     .poll_rate_hz       = 100U,
-    .default_keymap     = &g_nk60_def_key_code_layout[0][0],
 
     /* Default Action Bindings */
     .default_action_binding_count = (uint8_t)(sizeof(g_nk60_default_action_bindings) /
                                               sizeof(g_nk60_default_action_bindings[0])),
     .default_action_bindings      = g_nk60_default_action_bindings,
 
-    /* Multi-Layout Registration */
+    /* Single Kconfig-selected layout; descriptor is filled at init. */
     .layout_count       = 1U,
     .layouts            = g_nk60_layouts,
 
-    .light_effect_count = (uint8_t)(sizeof(g_nk60_light_effects) / sizeof(g_nk60_light_effects[0])),
+    .light_effect_count = NK60_EFFECT_COUNT,
     .light_effects      = g_nk60_light_effects,
 
     /* Per-key RGB backlight and shared Caps Lock indicator */
@@ -206,15 +131,26 @@ static const struct keyboard_profile g_nk60_kb_profile = {
     .light_layer_count = sizeof(g_nk60_factory_light_layers) / sizeof(g_nk60_factory_light_layers[0]),
     .light_layers = g_nk60_factory_light_layers,
 
-    /* Dynamic Action Registration */
-    .action_count       = 6U,
-    .action_descs       = g_nk60_actions,
-    .action_handlers    = NULL,
 
 };
 
 static int nk60_keyboard_profile_init(void)
 {
+    int ret = kb_definitions_apply_profile(&g_nk60_kb_profile, g_nk60_layouts,
+                                           g_nk60_light_effects);
+
+    size_t i;
+    uint16_t effect_mask = 0U;
+
+    if (ret != 0) {
+        return ret;
+    }
+    for (i = 0U; i < kb_effect_definition_count; i++) {
+        effect_mask |= (uint16_t)(1U << kb_effect_definitions[i]->engine_id);
+    }
+    for (i = 0U; i < sizeof(g_nk60_light_zones) / sizeof(g_nk60_light_zones[0]); i++) {
+        g_nk60_light_zones[i].supported_effects = effect_mask;
+    }
     keyboard_server_register_profile(&g_nk60_kb_profile);
     return 0;
 }

@@ -9,7 +9,8 @@
 #include <kernel/clk.h>
 #include <kernel/init.h>
 #include <nos/display.h>
-#include <nos/keyboard.h>
+#include <nos/keyboard_definitions.h>
+#include <string.h>
 
 /* Preserve effect timing while advancing at every display refresh. */
 #define KEYBOARD_LIGHT_PHASE_MS 30U
@@ -18,6 +19,7 @@ static struct keyboard_light_state g_frame_state;
 /* Per-frame workspace. Layer definitions and ordering come from the active configuration. */
 static struct ds_render_layer g_frame_layers[CONFIG_KEYBOARD_LIGHT_MAX_LAYERS];
 static uint32_t g_phase[CONFIG_KEYBOARD_LIGHT_MAX_LAYERS];
+static uint8_t g_effect_state[CONFIG_KEYBOARD_LIGHT_MAX_LAYERS][KB_EFFECT_STATE_MAX];
 static uint8_t g_phase_remainder[CONFIG_KEYBOARD_LIGHT_MAX_LAYERS];
 
 static void keyboard_render_light_layer(struct ds_frame *frame, uint8_t opacity, void *ctx)
@@ -34,8 +36,12 @@ static void keyboard_render_light_layer(struct ds_frame *frame, uint8_t opacity,
             uint8_t rgb[3];
             uint8_t pixel[DS_COLOR_DATA_MAX];
 
-            state->render(&layer->cfg, layer->x + x, layer->y + y, g_phase[index],
-                          rgb, state->priv);
+            if (state->definition && state->definition->render_configured) {
+                state->definition->render_configured(&layer->cfg, &state->parameters,
+                    layer->x + x, layer->y + y, g_phase[index], rgb, g_effect_state[index]);
+            } else {
+                state->render(&layer->cfg, layer->x + x, layer->y + y, g_phase[index], rgb, state->priv);
+            }
             pixel[DS_COLOR_R] = (uint8_t)((uint16_t)rgb[0] * layer->cfg.brightness / 255U);
             pixel[DS_COLOR_G] = (uint8_t)((uint16_t)rgb[1] * layer->cfg.brightness / 255U);
             pixel[DS_COLOR_B] = (uint8_t)((uint16_t)rgb[2] * layer->cfg.brightness / 255U);
@@ -66,6 +72,7 @@ static const struct ds_render_layer *keyboard_prepare_light_layers(void *ctx, si
         size_t pos = *count;
 
         if (generation != g_frame_state.generation || !was_active[i]) {
+            memset(g_effect_state[i], 0, sizeof(g_effect_state[i]));
             g_phase[i] = 0U;
             g_phase_remainder[i] = 0U;
         } else if (state->active) {

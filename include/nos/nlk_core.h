@@ -25,6 +25,8 @@ struct nlk_capability;
 struct nlk_node;
 
 struct nlk_cap_ops {
+    /* Called on the node's service task between request dispatches. */
+    void (*on_poll)(struct nlk_node *node, struct nlk_capability *cap, uint32_t now_ms);
     int (*init)(struct nlk_node *node, struct nlk_capability *cap);
     int (*get_desc)(struct nlk_node *node, struct nlk_capability *cap,
                     void *buf, uint16_t max_len);
@@ -105,6 +107,8 @@ struct nlk_node {
     struct nlk_device_desc  desc;
     struct nlk_bearer      *bearers[CONFIG_NLK_MAX_BEARERS];
     uint8_t                 bearer_count;
+    /* Valid only during a capability RPC callback. */
+    struct nlk_bearer      *rpc_ingress;
     struct nlk_capability  *caps[CONFIG_NLK_MAX_CAPS];
     uint8_t                 cap_count;
     struct nlk_child_entry  children[CONFIG_NLK_MAX_CHILDREN];
@@ -126,14 +130,6 @@ struct nlk_node *nlk_default_node(void);
 typedef int (*nlk_board_setup_fn)(struct nlk_node *node);
 void nlk_server_register_board_setup(nlk_board_setup_fn setup_fn);
 
-/* Product maintenance runs between requests on the existing service stack.
- * The registered object must remain alive for the lifetime of the service. */
-struct nlk_maintenance {
-    void (*run)(void *priv);
-    void *priv;
-};
-int nlk_server_register_maintenance(struct nlk_maintenance *maintenance);
-
 /* Node lifecycle & configuration */
 int nlk_node_init(struct nlk_node *node, nlk_addr_t initial_addr,
                   uint16_t vendor_id, uint16_t product_id,
@@ -147,6 +143,7 @@ void nlk_node_set_reboot_handler(struct nlk_node *node,
 int nlk_node_register_bearer(struct nlk_node *node, struct nlk_bearer *bearer);
 int nlk_node_set_upstream_port(struct nlk_node *node, uint8_t port_id);
 int nlk_node_poll_bearers(struct nlk_node *node, uint32_t timeout_ms);
+void nlk_node_poll_capabilities(struct nlk_node *node, uint32_t now_ms);
 int nlk_node_register_cap(struct nlk_node *node, struct nlk_capability *cap);
 struct nlk_capability *nlk_node_find_cap_by_id(struct nlk_node *node, uint8_t cap_id);
 struct nlk_capability *nlk_node_find_cap_by_type(struct nlk_node *node, uint16_t cap_type);

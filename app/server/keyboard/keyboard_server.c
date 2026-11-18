@@ -30,7 +30,8 @@
 #include <string.h>
 
 #include <nos/keyboard.h>
-#include <nos/keyboard_config.h>
+#include <nos/nlk_caps.h>
+#include <nos/keyboard_config_service.h>
 #include <nos/display.h>
 #include <nos/nlk_core.h>
 #include <nos/nlk_caps.h>
@@ -44,11 +45,11 @@
 #define CONFIG_KEY_DEV "nk60_v2-key"
 #endif
 
-#define KS_MAX_KEY_WORDS    KEY_RAW_WORDS(KEY_MAX_NUM)
+#define KS_MAX_KEY_WORDS KEY_RAW_WORDS(KEY_MAX_NUM)
 #define KS_NLK_HID_QUEUE_LEN 8U
 #define KS_USB_HID_QUEUE_LEN 8U
 #define KS_CONFIG_SAVE_DELAY_MS 5000U
-#define KS_HID_KEYS  1U
+#define KS_HID_KEYS 1U
 #define KS_HID_MEDIA 2U
 
 struct ks_hid_state {
@@ -58,56 +59,40 @@ struct ks_hid_state {
 };
 
 struct keyboard_server {
-    struct task_struct     *task;
-    struct device          *key_dev;
-    struct device          *hid_dev;
-    struct device          *ds_dev;
-    struct device           ks_dev;
-    struct key_dev_info     dev_info;
+    struct task_struct *task;
+    struct device *key_dev;
+    struct device *hid_dev;
+    struct device *ds_dev;
+    struct device ks_dev;
+    struct key_dev_info dev_info;
     struct keyboard_profile profile;
-    struct nlk_node        *nlk_node;
+    struct nlk_node *nlk_node;
     struct nlk_keyboard_ctx kb_cap;
-    struct nos_completion   comp;
-    struct nlk_maintenance  config_maintenance;
-    struct mutex            lock;
-    struct mutex            hid_lock;
-    bool                    enable;
-    bool                    config_dirty;
-    bool                    config_loading;
-    bool                    sync_pending;
-    bool                    sync_busy;
-    bool                    sync_flush_pending;
-    bool                    light_log_valid;
-    struct nlk_kb_light_cfg  logged_light_cfg;
-    uint8_t                 logged_indicators;
-    uint32_t                sync_deadline_ms;
-    uint32_t                pending_config_hash;
-    uint8_t                 active_slot_id;
-    uint8_t                 saved_slots_mask;
-    uint32_t                raw_prev[KS_MAX_KEY_WORDS];
-    uint32_t                raw_stable[KS_MAX_KEY_WORDS];
-    struct ks_hid_state     hid_state;
-    struct ks_hid_state     usb_queue[KS_USB_HID_QUEUE_LEN];
-    uint32_t                usb_session;
-    uint8_t                 usb_tail;
-    uint8_t                 usb_count;
-    bool                    usb_connected;
+    struct keyboard_config_service config;
+    struct nos_completion comp;
+    struct mutex lock;
+    struct mutex hid_lock;
+    bool enable;
+    uint32_t raw_prev[KS_MAX_KEY_WORDS];
+    uint32_t raw_stable[KS_MAX_KEY_WORDS];
+    struct ks_hid_state hid_state;
+    struct ks_hid_state usb_queue[KS_USB_HID_QUEUE_LEN];
+    uint32_t usb_session;
+    uint8_t usb_tail;
+    uint8_t usb_count;
+    bool usb_connected;
     struct nlk_kb_hid_report pending_nlk_hid[KS_NLK_HID_QUEUE_LEN];
-    uint8_t                 nlk_hid_head;
-    uint8_t                 nlk_hid_tail;
-    uint8_t                 nlk_hid_count;
+    uint8_t nlk_hid_head;
+    uint8_t nlk_hid_tail;
+    uint8_t nlk_hid_count;
 };
 
 static struct keyboard_server *g_keyboard_server;
-static struct keyboard_light_state g_light_state;
-static SPINLOCK(g_light_state_lock);
 
-static int ks_persistent_store_ready(struct keyboard_server *ks);
-static void ks_apply_config_selection(struct keyboard_server *ks, uint32_t hash);
+static int ks_persistent_store_ready(void *context);
 static void ks_on_light_cfg(const struct nlk_kb_light_cfg *cfg,
-                            const struct nlk_kb_light_sync_beacon *beacon,
-                            uint8_t indicators, void *priv);
-static void ks_trigger_config_snapshot(struct keyboard_server *ks);
+                            const struct nlk_kb_light_sync_beacon *beacon, uint8_t indicators,
+                            void *priv);
 
 static const struct keyboard_profile *g_registered_kb_profile;
 
@@ -148,8 +133,7 @@ static void ks_flush_usb_reports(struct keyboard_server *ks)
     if (ks->hid_dev == NULL) {
         ks->hid_dev = device_find_by_name("hidd");
     }
-    if (ks->hid_dev == NULL || ks->hid_dev->ops.control == NULL ||
-        ks->hid_dev->ops.write == NULL ||
+    if (ks->hid_dev == NULL || ks->hid_dev->ops.control == NULL || ks->hid_dev->ops.write == NULL ||
         ks->hid_dev->ops.control(ks->hid_dev, USB_HID_CTRL_GET_SESSION, &session) != 0) {
         ks->usb_connected = false;
         ks->usb_count = 0U;
@@ -218,8 +202,7 @@ static void ks_on_hid_report(const struct nlk_kb_hid_report *report, void *priv)
      * receives keystrokes via "hidd", and writing unsolicited packets to
      * WinUSB Bulk IN without an open WinUSB client would stall on IN tokens.
      */
-    if (ks->nlk_node != NULL && ks->nlk_node->bearer_count > 0U &&
-        ks->kb_cap.cap.cap_id != 0U &&
+    if (ks->nlk_node != NULL && ks->nlk_node->bearer_count > 0U && ks->kb_cap.cap.cap_id != 0U &&
         (ks->hid_dev == NULL || ks->nlk_node->upstream_port != 0U)) {
         addr_t irq_flags = disable_irq_save();
         if (ks->nlk_hid_count >= KS_NLK_HID_QUEUE_LEN) {
@@ -233,700 +216,63 @@ static void ks_on_hid_report(const struct nlk_kb_hid_report *report, void *priv)
     }
 }
 
-
-static int ks_apply_layout_id(struct keyboard_server *ks, uint8_t layout_id)
+void keyboard_server_get_light_state(struct keyboard_light_state *state)
 {
-    uint8_t i, l;
-
-    if (ks == NULL || ks->profile.layouts == NULL || ks->profile.layout_count == 0U) {
-        return -ENODEV;
+    struct keyboard_server *server = __atomic_load_n(&g_keyboard_server, __ATOMIC_ACQUIRE);
+    if (state == NULL) {
+        return;
     }
-    for (i = 0U; i < ks->profile.layout_count; i++) {
-        if (ks->profile.layouts[i].info.layout_id == layout_id) {
-            const struct keyboard_profile_layout *playout = &ks->profile.layouts[i];
-            uint8_t kcnt = playout->info.key_count;
-
-            if (kcnt == 0U || kcnt > ks->kb_cap.key_capacity) {
-                return -EINVAL;
-            }
-            ks->profile.key_count = kcnt;
-            ks->kb_cap.desc.key_count = kcnt;
-            ks->kb_cap.active_layout_id = layout_id;
-            ks->kb_cap.params.active_layout_id = layout_id;
-
-            for (l = 0U; l < ks->profile.layer_count && l < NLK_KB_MAX_LAYERS; l++) {
-                const uint8_t *kmap = NULL;
-                uint32_t offset = (uint32_t)l * kcnt;
-                if (playout->default_keymap != NULL) {
-                    kmap = playout->default_keymap + offset;
-                }
-                (void)nlk_cap_keyboard_load_layout(&ks->kb_cap, l, kmap, kcnt);
-            }
-            pr_info("Keyboard layout switched to id=%u (%s)\n",
-                    layout_id, playout->info.name);
-            return 0;
-        }
-    }
-    return -EINVAL;
-}
-
-/* 切换指定名称的键盘配置，并自动联动加载其引用的灯效与应用覆盖 */
-int ks_switch_keyboard_config(struct keyboard_server *ks, const char *target_id)
-{
-    const char *dir;
-    int ret;
-
-    if (ks == NULL || target_id == NULL || target_id[0] == '\0') {
-        return -EINVAL;
+    memset(state, 0, sizeof(*state));
+    if (server == NULL) {
+        return;
     }
 
-    if (ks->config_loading || ks->kb_cap.recording_macro_id != 0xFFU) return -EBUSY;
-
-    dir = (ks_persistent_store_ready(ks) == 0) ? "/data/keyboard" : "/keyboard";
-    ret = keyboard_config_file_load(&ks->kb_cap, ks->profile.hardware_id, dir, target_id,
-                                    KEYBOARD_CONFIG_KEYBOARD, 0U);
-    if (ret != 0) {
-        return ret;
-    }
-    nlk_cap_keyboard_release_held_keys(&ks->kb_cap);
-
-    memcpy(ks->kb_cap.active_keyboard_id, target_id, sizeof(ks->kb_cap.active_keyboard_id));
-
-    /* 检查键盘配置中是否关联了灯效模板 */
-    if (ks->kb_cap.active_light_override.light_id[0] != '\0') {
-        (void)keyboard_config_file_load(&ks->kb_cap, ks->profile.hardware_id, dir,
-                                        ks->kb_cap.active_light_override.light_id,
-                                        KEYBOARD_CONFIG_LIGHT, 0U);
-        memcpy(ks->kb_cap.active_light_id, ks->kb_cap.active_light_override.light_id,
-               sizeof(ks->kb_cap.active_light_id));
-
-        /* 应用覆盖参数 */
-        if ((ks->kb_cap.active_light_override.override_flags & NLK_KB_LIGHT_OVERRIDE_BRIGHTNESS) != 0U) {
-            ks->kb_cap.light_cfg.brightness = ks->kb_cap.active_light_override.brightness;
-        }
-        if ((ks->kb_cap.active_light_override.override_flags & NLK_KB_LIGHT_OVERRIDE_SPEED) != 0U) {
-            ks->kb_cap.light_cfg.speed = ks->kb_cap.active_light_override.speed;
-        }
-        if ((ks->kb_cap.active_light_override.override_flags & NLK_KB_LIGHT_OVERRIDE_COLOR) != 0U) {
-            ks->kb_cap.light_cfg.color_r = ks->kb_cap.active_light_override.color_r;
-            ks->kb_cap.light_cfg.color_g = ks->kb_cap.active_light_override.color_g;
-            ks->kb_cap.light_cfg.color_b = ks->kb_cap.active_light_override.color_b;
-        }
-        if (ks->kb_cap.light_cb != NULL) {
-            ks->kb_cap.light_cb(&ks->kb_cap.light_cfg, NULL, ks->kb_cap.indicator_leds, ks->kb_cap.light_priv);
-        }
-    }
-
-    /* 触发防抖更新 active.nkc */
-    uint32_t now_ms = (uint32_t)tick_to_msec_64(cpu_run_ticks());
-    ks->config_dirty = true;
-    ks->sync_deadline_ms = now_ms + KS_CONFIG_SAVE_DELAY_MS;
-    pr_info("Keyboard switched to config: %s\n", target_id);
-    return 0;
-}
-
-/* 循环遍历并切换到下一个键盘配置 */
-int ks_switch_next_keyboard_config(struct keyboard_server *ks)
-{
-    const char *dir;
-    uint32_t cursor = 0U;
-    struct keyboard_config_file_info info;
-    char first_id[KEYBOARD_CONFIG_ID_SIZE] = {0};
-    char next_id[KEYBOARD_CONFIG_ID_SIZE] = {0};
-    bool found_curr = false;
-
-    if (ks == NULL) {
-        return -EINVAL;
-    }
-
-    dir = (ks_persistent_store_ready(ks) == 0) ? "/data/keyboard" : "/keyboard";
-
-    while (keyboard_config_file_next(dir, ks->profile.hardware_id, KEYBOARD_CONFIG_KEYBOARD, &cursor, &info) > 0) {
-        if (first_id[0] == '\0') {
-            memcpy(first_id, info.id, sizeof(first_id));
-        }
-        if (found_curr) {
-            memcpy(next_id, info.id, sizeof(next_id));
-            break;
-        }
-        if (strcmp(ks->kb_cap.active_keyboard_id, info.id) == 0) {
-            found_curr = true;
-        }
-    }
-
-    const char *target = (next_id[0] != '\0') ? next_id : first_id;
-    if (target[0] == '\0') {
-        return -ENOENT;
-    }
-    return ks_switch_keyboard_config(ks, target);
-}
-
-int keyboard_config_save_profile(uint8_t slot_id)
-{
-    struct keyboard_server *ks = g_keyboard_server;
-    char id[KEYBOARD_CONFIG_ID_SIZE];
-    const char *dir;
-
-    if (ks == NULL) {
-        return -EINVAL;
-    }
-    snprintf(id, sizeof(id), "slot_%u", (unsigned int)slot_id);
-    dir = (ks_persistent_store_ready(ks) == 0) ? "/data/keyboard" : "/keyboard";
-    return keyboard_config_file_save(&ks->kb_cap,
-                                     (ks->profile.hardware_id != NULL && ks->profile.hardware_id[0] != '\0')
-                                         ? ks->profile.hardware_id
-                                         : "nk60_v2-rev1",
-                                     dir, id, id, "", KEYBOARD_CONFIG_KEYBOARD, 0U);
-}
-
-int keyboard_config_load_profile(uint8_t slot_id)
-{
-    struct keyboard_server *ks = g_keyboard_server;
-    char id[KEYBOARD_CONFIG_ID_SIZE];
-
-    if (ks == NULL) {
-        return -EINVAL;
-    }
-    snprintf(id, sizeof(id), "slot_%u", (unsigned int)slot_id);
-    return ks_switch_keyboard_config(ks, id);
-}
-
-int keyboard_config_switch_profile(uint8_t slot_id)
-{
-    return keyboard_config_load_profile(slot_id);
-}
-
-int keyboard_config_switch_named(const char *config_id)
-{
-    return ks_switch_keyboard_config(g_keyboard_server, config_id);
-}
-
-int keyboard_config_switch_next(void)
-{
-    return ks_switch_next_keyboard_config(g_keyboard_server);
-}
-
-uint8_t keyboard_config_get_active_slot(void)
-{
-    if (g_keyboard_server != NULL) {
-        const char *id = g_keyboard_server->kb_cap.active_keyboard_id;
-        if (strncmp(id, "slot_", 5) == 0 && id[5] >= '0' && id[5] <= '9') {
-            unsigned int slot = 0U;
-            const char *p = &id[5];
-            while (*p >= '0' && *p <= '9') {
-                slot = slot * 10U + (unsigned int)(*p - '0');
-                p++;
-            }
-            if (*p == '\0' && slot < 256U) {
-                return (uint8_t)slot;
+    /* The display owns this frame copy; a second published snapshot is unnecessary. */
+    mutex_lock(&server->lock);
+    const struct nlk_keyboard_ctx *keyboard = &server->kb_cap;
+    state->enabled = keyboard->light_cfg.enable != 0;
+    state->count = keyboard->light_layer_count;
+    state->generation = keyboard->light_layer_generation;
+    for (uint8_t i = 0; i < state->count; i++) {
+        struct keyboard_light_layer_state *output = &state->layers[i];
+        output->layer = keyboard->light_layers[i];
+        output->active = keyboard->light_layer_active[i];
+        output->parameters = keyboard->effect_parameters[i];
+        for (size_t j = 0; j < kb_effect_definition_count; j++) {
+            const struct kb_effect_definition *definition = kb_effect_definitions[j];
+            if (definition->engine_id == output->layer.cfg.effect_id) {
+                output->definition = definition;
+                break;
             }
         }
-    }
-    return 0U;
-}
-
-uint8_t keyboard_config_get_saved_mask(void)
-{
-    return 0x0FU; /* 向上层虚拟返回支持掩码 */
-}
-
-static void ks_publish_light_state(const struct nlk_keyboard_ctx *kb)
-{
-    struct keyboard_light_state state = {0};
-    uint8_t i;
-
-    spin_lock_irq(&g_light_state_lock);
-    state.enabled = kb->light_cfg.enable != 0U;
-    state.count = kb->light_layer_count;
-    state.generation = kb->light_layer_generation;
-    for (i = 0U; i < state.count; i++) {
-        struct keyboard_light_layer_state *output = &state.layers[i];
-        const struct nlk_kb_effect_entry *effect;
-
-        output->layer = kb->light_layers[i];
-        output->active = kb->light_layer_active[i];
-        if (output->layer.zone_id != NLK_KB_LIGHT_LAYER_OWN_CFG) {
-            const struct nlk_kb_zone_light_cfg *zone = &kb->zone_cfgs[output->layer.zone_id];
-
-            if (output->layer.zone_id == 0U) {
-                output->layer.cfg = kb->light_cfg;
-            } else {
-                output->layer.cfg.enable = zone->enable;
-                output->layer.cfg.effect_id = zone->effect_id;
-                output->layer.cfg.brightness = zone->brightness;
-                output->layer.cfg.speed = zone->speed;
-                output->layer.cfg.color_r = zone->color_r;
-                output->layer.cfg.color_g = zone->color_g;
-                output->layer.cfg.color_b = zone->color_b;
-            }
-        }
-        effect = nlk_cap_keyboard_find_light_effect(kb, output->layer.cfg.effect_id);
+        const struct nlk_kb_effect_entry *effect =
+            nlk_cap_keyboard_find_light_effect(keyboard, output->layer.cfg.effect_id);
         if (effect != NULL) {
             output->render = effect->render;
             output->priv = effect->priv;
         }
     }
-    g_light_state = state;
-    spin_unlock_irq(&g_light_state_lock);
+    mutex_unlock(&server->lock);
 }
 
-void keyboard_server_get_light_state(struct keyboard_light_state *state)
+static int ks_persistent_store_ready(void *context)
 {
-    if (state == NULL) {
-        return;
-    }
-    spin_lock_irq(&g_light_state_lock);
-    *state = g_light_state;
-    spin_unlock_irq(&g_light_state_lock);
-}
-
-static int ks_on_profile_save(uint8_t slot_id, void *priv)
-{
-    (void)priv;
-    return keyboard_config_save_profile(slot_id);
-}
-
-static int ks_on_profile_load(uint8_t slot_id, void *priv)
-{
-    (void)priv;
-    return keyboard_config_load_profile(slot_id);
-}
-
-static int ks_on_profile_info(uint8_t *active_slot, uint8_t *saved_mask, void *priv)
-{
-    (void)priv;
-    if (active_slot != NULL) {
-        *active_slot = keyboard_config_get_active_slot();
-    }
-    if (saved_mask != NULL) {
-        *saved_mask = keyboard_config_get_saved_mask();
-    }
-    return 0;
-}
-
-static int ks_persistent_store_ready(struct keyboard_server *ks)
-{
+    const struct keyboard_server *ks = context;
     struct vfs_mount_entry mount;
     int i;
-    bool mounted = false;
-    static const char *const dirs[] = {
-        "/data/keyboard",
-        "/data/keyboard/config",
-        "/data/keyboard/light",
-        "/data/keyboard/macro",
-    };
 
-    if (ks == NULL || ks->profile.hardware_id == NULL) {
+    if (ks->profile.storage_device == NULL) {
         return -ENOTSUP;
     }
-    /* Do not report a RAMFS write as a persistent configuration save. */
+    /* A mount at this path could belong to RAMFS while storage is starting. */
     for (i = 0; i < vfs_get_mount_count(); i++) {
         if (vfs_get_mount_entry(i, &mount) == 0 && mount.mount_path != NULL &&
-            mount.fs_name != NULL && mount.dev_name != NULL &&
-            strcmp(mount.mount_path, "/data") == 0 &&
-            (strcmp(mount.fs_name, "fatfs") == 0 || strcmp(mount.fs_name, "littlefs") == 0) &&
-            (strcmp(mount.dev_name, "nk60_v2-data") == 0 ||
-             strcmp(mount.dev_name, "nk60_v1-data") == 0)) {
-            mounted = true;
-            break;
+            mount.dev_name != NULL && strcmp(mount.mount_path, KB_STORE_MOUNT) == 0 &&
+            strcmp(mount.dev_name, ks->profile.storage_device) == 0) {
+            return 0;
         }
     }
-    if (!mounted) {
-        return -ENODEV;
-    }
-    for (i = 0; i < (int)(sizeof(dirs) / sizeof(dirs[0])); i++) {
-        int rc = nos_mkdir(dirs[i], 0755);
-        if (rc != 0 && rc != -EEXIST) {
-            return rc;
-        }
-    }
-    return 0;
-}
-
-static bool ks_valid_config_id(const char *id)
-{
-    size_t i;
-    if (id == NULL || id[0] == '\0') {
-        return false;
-    }
-    for (i = 0U; i < KEYBOARD_CONFIG_ID_SIZE; i++) {
-        char c = id[i];
-        if (c == '\0') {
-            return true;
-        }
-        if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
-              (c >= '0' && c <= '9') || c == '_' || c == '-')) {
-            return false;
-        }
-    }
-    return false;
-}
-
-/* Reuse the NLK service's existing 4 KiB stack between requests. Flash I/O
- * stays outside the keyboard lock and the higher-priority scanner can run. */
-static void ks_flush_config(void *parameter)
-{
-    struct keyboard_server *ks = parameter;
-    uint32_t select_hash;
-    addr_t flags;
-    size_t len = 0U;
-    void *snapshot = NULL;
-    int rc = 0;
-    bool retry = false;
-
-    if (ks == NULL) return;
-    flags = disable_irq_save();
-    select_hash = ks->pending_config_hash;
-    ks->pending_config_hash = 0U;
-    enable_irq_save(flags);
-    if (select_hash != 0U) {
-        ks_apply_config_selection(ks, select_hash);
-    }
-    mutex_lock(&ks->lock);
-    if (!ks->sync_pending) {
-        mutex_unlock(&ks->lock);
-        return;
-    }
-    ks->sync_pending = false;
-    if (ks->config_loading || ks->kb_cap.recording_macro_id != 0xFFU) {
-        rc = -EBUSY;
-    } else {
-        rc = keyboard_config_encode_persistent(&ks->kb_cap, ks->profile.hardware_id,
-                                    "active", "", KEYBOARD_CONFIG_ACTIVE,
-                                    0U, NULL, 0U, &len);
-        if (rc == 0) {
-            snapshot = kmalloc(len, GFP_KERNEL);
-            rc = snapshot != NULL ? keyboard_config_encode_persistent(&ks->kb_cap, ks->profile.hardware_id,
-                  "active", "", KEYBOARD_CONFIG_ACTIVE,
-                  0U, snapshot, len, &len) : -ENOMEM;
-        }
-    }
-    mutex_unlock(&ks->lock);
-
-    if (rc == 0 && snapshot != NULL) {
-        rc = ks_persistent_store_ready(ks);
-        if (rc == 0) {
-            rc = keyboard_config_snapshot_write("/data/keyboard", snapshot, len);
-            if (rc > 0) {
-                ks->sync_flush_pending = true;
-                rc = 0;
-            }
-            if (rc == 0 && ks->sync_flush_pending) {
-                rc = nos_sync();
-                if (rc == 0) ks->sync_flush_pending = false;
-            }
-        }
-        kfree(snapshot);
-        snapshot = NULL;
-        if (rc == 0) {
-            pr_info("config save complete bytes=%u heap_free=%u\n",
-                    (unsigned int)len, (unsigned int)mm_block_free_size());
-        }
-    }
-    if (snapshot != NULL) kfree(snapshot);
-    if (rc != 0) {
-        retry = true;
-        if (rc != -EBUSY) pr_err("config save failed rc=%d heap_free=%u\n",
-                                 rc, (unsigned int)mm_block_free_size());
-    }
-
-    mutex_lock(&ks->lock);
-    ks->sync_busy = false;
-    if (retry && !ks->config_dirty) {
-        ks->config_dirty = true;
-        ks->sync_deadline_ms = (uint32_t)tick_to_msec_64(cpu_run_ticks()) + KS_CONFIG_SAVE_DELAY_MS;
-    }
-    mutex_unlock(&ks->lock);
-}
-
-static void ks_trigger_config_snapshot(struct keyboard_server *ks)
-{
-    if (ks == NULL) return;
-    mutex_lock(&ks->lock);
-    if (ks->config_dirty && !ks->config_loading && !ks->sync_busy &&
-        ks->kb_cap.recording_macro_id == 0xFFU) {
-        ks->sync_pending = true;
-        ks->sync_busy = true;
-        ks->config_dirty = false;
-    }
-    mutex_unlock(&ks->lock);
-}
-
-/* Separate LOAD's file header/path frame from all other RPC operations. */
-static noinline int ks_load_config_file(struct keyboard_server *ks,
-                                        const void *req, uint16_t req_len,
-                                        uint16_t *resp_len)
-{
-    const struct nlk_kb_config_file_req *file_req = req;
-    char path[64];
-    const char *sub = NULL;
-    const char *stage = "snapshot";
-    int fd;
-    struct keyboard_config_header header;
-    char previous_keyboard_id[KEYBOARD_CONFIG_ID_SIZE];
-    void *file_buf = NULL, *backup = NULL;
-    size_t file_len = 0U, backup_len = 0U;
-    bool load_started = false;
-    bool macro_bindings = true;
-    ssize_t count;
-    loff_t file_size;
-    int ret;
-
-    if (file_req == NULL || req_len < sizeof(*file_req) ||
-        !ks_valid_config_id(file_req->id)) {
-        return -EINVAL;
-    }
-    if (file_req->kind == NLK_KB_CONFIG_KEYBOARD) {
-        sub = "config";
-    } else if (file_req->kind == NLK_KB_CONFIG_LIGHT) {
-        sub = "light";
-    } else if (file_req->kind == NLK_KB_CONFIG_MACRO) {
-        sub = "macro";
-    } else {
-        return -EINVAL;
-    }
-    snprintf(path, sizeof(path), "/data/keyboard/%s/%s.nkc", sub, file_req->id);
-
-    /* 1. 无锁读取文件 */
-    fd = nos_open(path, O_RDONLY, 0);
-    if (fd < 0) {
-        return fd;
-    }
-    count = nos_read(fd, &header, sizeof(header));
-    file_size = nos_lseek(fd, 0, SEEK_END);
-    if (count != (ssize_t)sizeof(header) || header.version != keyboard_config_version(file_req->kind) ||
-        header.length < sizeof(header) ||
-        file_size != (loff_t)header.length || nos_lseek(fd, 0, SEEK_SET) < 0) {
-        (void)nos_close(fd);
-        pr_warning("config load rejected id=%s stage=header bytes=%d\n",
-                   file_req->id, (int)count);
-        return -EINVAL;
-    }
-    file_len = header.length;
-    file_buf = kmalloc(file_len, GFP_KERNEL);
-    if (file_buf == NULL) {
-        (void)nos_close(fd);
-        return -ENOMEM;
-    }
-    count = nos_read(fd, file_buf, file_len);
-    (void)nos_close(fd);
-    if (count != (ssize_t)file_len) {
-        kfree(file_buf);
-        return -EIO;
-    }
-
-    /* Snapshot before activation so an unreadable referenced macro can roll back. */
-    mutex_lock(&ks->lock);
-    ret = 0;
-    if (ks->config_loading || (file_req->kind != NLK_KB_CONFIG_LIGHT &&
-        ks->kb_cap.recording_macro_id != 0xFFU)) {
-        ret = -EBUSY;
-    }
-    if (ret == 0 && file_req->kind == NLK_KB_CONFIG_KEYBOARD) {
-        ret = keyboard_config_validate(&ks->kb_cap, ks->profile.hardware_id,
-                                       file_req->kind, file_req->macro_id,
-                                       file_buf, file_len, &macro_bindings);
-    }
-    if (ret == 0 && file_req->kind == NLK_KB_CONFIG_KEYBOARD && macro_bindings) {
-        memcpy(previous_keyboard_id, ks->kb_cap.active_keyboard_id, sizeof(previous_keyboard_id));
-        /* Keep rollback scoped to the fields a keyboard profile can change. */
-        ret = keyboard_config_encode(&ks->kb_cap, ks->profile.hardware_id,
-                                      "backup", "", KEYBOARD_CONFIG_KEYBOARD,
-                                      0U, NULL, 0U, &backup_len);
-        if (ret == 0) {
-            backup = kmalloc(backup_len, GFP_KERNEL);
-            ret = backup != NULL ? keyboard_config_encode(&ks->kb_cap, ks->profile.hardware_id,
-                   "backup", "", KEYBOARD_CONFIG_KEYBOARD, 0U, backup, backup_len, &backup_len) : -ENOMEM;
-        }
-        if (ret == 0) {
-            ks->config_loading = true;
-            load_started = true;
-        }
-    }
-    if (ret == 0) {
-        stage = "decode";
-        ret = keyboard_config_decode(&ks->kb_cap, ks->profile.hardware_id,
-                                     file_req->kind, file_req->macro_id, file_buf, file_len);
-        if (ret == 0 && file_req->kind == NLK_KB_CONFIG_KEYBOARD && !macro_bindings) {
-            /* Validation/commit is atomic under the lock. No fallible macro
-             * library I/O follows, so a second heap-sized snapshot is needless. */
-            nlk_cap_keyboard_replace_macros(&ks->kb_cap, NULL, 0U);
-        }
-    }
-    if (ret == 0) {
-        if (file_req->kind == NLK_KB_CONFIG_KEYBOARD) {
-            memcpy(ks->kb_cap.active_keyboard_id, file_req->id,
-                   sizeof(ks->kb_cap.active_keyboard_id));
-        } else if (file_req->kind == NLK_KB_CONFIG_LIGHT) {
-            memcpy(ks->kb_cap.active_light_id, file_req->id,
-                   sizeof(ks->kb_cap.active_light_id));
-        }
-    }
-    mutex_unlock(&ks->lock);
-    kfree(file_buf);
-
-    if (ret == 0 && file_req->kind == NLK_KB_CONFIG_KEYBOARD && macro_bindings) {
-        stage = "macros";
-        ret = keyboard_config_activate_macros(&ks->kb_cap, ks->profile.hardware_id,
-                                              "/data/keyboard", &ks->lock);
-    }
-    mutex_lock(&ks->lock);
-    if (load_started) {
-        if (ret != 0) {
-            nlk_cap_keyboard_replace_macros(&ks->kb_cap, NULL, 0U);
-            (void)keyboard_config_decode(&ks->kb_cap, ks->profile.hardware_id,
-                                         KEYBOARD_CONFIG_KEYBOARD, 0U, backup, backup_len);
-            memcpy(ks->kb_cap.active_keyboard_id, previous_keyboard_id, sizeof(previous_keyboard_id));
-        }
-        ks->config_loading = false;
-    }
-    if (ret == 0) {
-        if (file_req->kind == NLK_KB_CONFIG_KEYBOARD) {
-            nlk_cap_keyboard_release_held_keys(&ks->kb_cap);
-        }
-        ks->config_dirty = true;
-        ks->sync_deadline_ms = (uint32_t)tick_to_msec_64(cpu_run_ticks()) + KS_CONFIG_SAVE_DELAY_MS;
-    }
-    mutex_unlock(&ks->lock);
-    kfree(backup);
-
-    if (ret != 0) {
-        pr_warning("config load failed id=%s kind=%u version=%u stage=%s rc=%d\n",
-                   file_req->id, file_req->kind, header.version, stage, ret);
-    }
-    if (ret == 0) {
-        if (file_req->kind == NLK_KB_CONFIG_KEYBOARD) {
-            if (ks->key_dev != NULL && ks->key_dev->ops.control != NULL) {
-                uint16_t deb = ks->kb_cap.params.debounce_ms;
-                uint16_t poll = ks->kb_cap.params.poll_rate_hz;
-                if (deb > 0U) {
-                    (void)ks->key_dev->ops.control(ks->key_dev, KEY_CTRL_SET_DEBOUNCE, &deb);
-                }
-                if (poll > 0U) {
-                    (void)ks->key_dev->ops.control(ks->key_dev, KEY_CTRL_SET_POLL_RATE, &poll);
-                }
-            }
-        } else if (file_req->kind == NLK_KB_CONFIG_LIGHT) {
-            if (ks->ds_dev == NULL) {
-                ks->ds_dev = device_find_by_name("display-server");
-            }
-            if (ks->ds_dev != NULL && ks->ds_dev->ops.control != NULL) {
-                int cmd = (ks->kb_cap.light_cfg.enable != 0U) ? DS_CTRL_ENABLE : DS_CTRL_DISABLE;
-                (void)ks->ds_dev->ops.control(ks->ds_dev, cmd, NULL);
-            }
-        }
-
-    }
-
-    if (resp_len != NULL) {
-        *resp_len = 0U;
-    }
-    return ret;
-}
-
-static int ks_on_config_files(uint8_t op, const void *req, uint16_t req_len,
-                              void *resp, uint16_t *resp_len, void *priv)
-{
-    struct keyboard_server *ks = priv;
-    int ret;
-
-    if (ks == NULL) {
-        return -EINVAL;
-    }
-    ret = ks_persistent_store_ready(ks);
-    if (ret != 0) {
-        return ret;
-    }
-
-    /*
-     * RPC 改灯、改键、调参在 cap_keyboard 中已在 RAM 完成更新。
-     * op == 0 (kb_sync_active_config) 仅标记脏位并刷新 5000ms 写回防抖截止时间，
-     * 避免持锁同步写 Flash 挂起按键扫描任务（时延 < 1ms 返回 ACK）。
-     */
-    if (op == 0U) {
-        uint32_t now_ms = (uint32_t)tick_to_msec_64(cpu_run_ticks());
-        mutex_lock(&ks->lock);
-        ks->config_dirty = true;
-        ks->sync_deadline_ms = now_ms + KS_CONFIG_SAVE_DELAY_MS;
-        mutex_unlock(&ks->lock);
-        if (resp_len != NULL) {
-            *resp_len = 0U;
-        }
-        return 0;
-    }
-
-    if (op == NLK_KB_OP_CONFIG_FILES_INFO) {
-        mutex_lock(&ks->lock);
-        ret = keyboard_config_file_rpc(&ks->kb_cap, ks->profile.hardware_id,
-                                       "/data/keyboard", op, req, req_len,
-                                       resp, resp_len);
-        mutex_unlock(&ks->lock);
-        return ret;
-    }
-
-    /*
-     * LOAD 操作：
-     * 1. 无锁状态下执行文件读 I/O，绝不阻塞按键扫描主循环；
-     * 2. 在持有 ks->lock 保护下安全解码并覆写到 ks->kb_cap，杜绝并发竞争；
-     * 3. 标记脏位，由后台任务持久化 active 配置。
-     */
-    if (op == NLK_KB_OP_CONFIG_FILES_LOAD) {
-        return ks_load_config_file(ks, req, req_len, resp_len);
-    }
-
-    if (op == NLK_KB_OP_CONFIG_FILES_DELETE && req != NULL &&
-        req_len >= sizeof(struct nlk_kb_config_file_req) &&
-        ((const struct nlk_kb_config_file_req *)req)->kind == KEYBOARD_CONFIG_MACRO) {
-        /* Do not let an older in-flight snapshot restore the deleted macro.
-         * The delete helper locks only runtime updates, never filesystem I/O. */
-        mutex_lock(&ks->lock);
-        if (ks->config_loading || ks->sync_busy ||
-            ks->kb_cap.recording_macro_id != 0xFFU) {
-            mutex_unlock(&ks->lock);
-            return -EBUSY;
-        }
-        ks->config_loading = true;
-        mutex_unlock(&ks->lock);
-        ret = keyboard_config_macro_delete(&ks->kb_cap, ks->profile.hardware_id,
-                                            "/data/keyboard",
-                                            ((const struct nlk_kb_config_file_req *)req)->id);
-        if (resp_len != NULL) *resp_len = 0U;
-        mutex_lock(&ks->lock);
-        ks->config_loading = false;
-        if (ret == 0) {
-            /* Preserve any key-triggered edits made while the file scan ran. */
-            ks->config_dirty = true;
-            ks->sync_deadline_ms = (uint32_t)tick_to_msec_64(cpu_run_ticks()) + KS_CONFIG_SAVE_DELAY_MS;
-        }
-        mutex_unlock(&ks->lock);
-        return ret;
-    }
-
-    /*
-     * 文件列表、保存、删除等操作在无锁状态下执行文件 I/O，
-     * 绝不在持有 ks->lock 期间挂起等待 Flash 擦写。
-     */
-    ret = keyboard_config_file_rpc(&ks->kb_cap, ks->profile.hardware_id,
-                                   "/data/keyboard", op, req, req_len,
-                                   resp, resp_len);
-    if (ret == 0 && op == NLK_KB_OP_CONFIG_FILES_SAVE && req != NULL &&
-        req_len >= sizeof(struct nlk_kb_config_file_req) &&
-        ((const struct nlk_kb_config_file_req *)req)->kind != KEYBOARD_CONFIG_MACRO) {
-        /*
-         * SAVE 操作已经在 keyboard_config_file_rpc 中完成了文件写入与 active 配置同步，
-         * 清除 config_dirty 标记，严禁冗余触发二次落盘。
-         */
-        mutex_lock(&ks->lock);
-        ks->config_dirty = false;
-        mutex_unlock(&ks->lock);
-    }
-    return ret;
-}
-
-static int ks_on_layout_change(uint8_t new_layout_id, void *priv)
-{
-    struct keyboard_server *ks = (struct keyboard_server *)priv;
-    return ks_apply_layout_id(ks, new_layout_id);
+    return -ENODEV;
 }
 
 static int ks_on_param_change(const struct nlk_kb_params *params, void *priv)
@@ -945,89 +291,19 @@ static int ks_on_param_change(const struct nlk_kb_params *params, void *priv)
     return 0;
 }
 
-static void ks_on_zone_light_cfg(uint8_t zone_id,
-                                 const struct nlk_kb_zone_light_cfg *cfg,
+static void ks_on_zone_light_cfg(uint8_t zone_id, const struct nlk_kb_zone_light_cfg *cfg,
                                  void *priv)
 {
     struct keyboard_server *ks = priv;
 
-    if (ks != NULL && cfg != NULL && zone_id != 0U) {
-        const struct nlk_kb_effect_entry *effect =
-            nlk_cap_keyboard_find_light_effect(&ks->kb_cap, cfg->effect_id);
-
-        pr_info("light zone=%u effect=%u/%s on=%u bright=%u speed=%u\n",
-                zone_id, cfg->effect_id, effect != NULL ? effect->info.name : "unknown",
-                cfg->enable, cfg->brightness, cfg->speed);
-        ks_publish_light_state(&ks->kb_cap);
-    }
-}
-
-static int ks_action_light_toggle(const struct key_action_context *ctx, void *priv)
-{
-    struct keyboard_server *ks = (struct keyboard_server *)priv;
-
-    if (ks != NULL && ctx != NULL && ctx->event_type == 1U) {
-        ks->kb_cap.light_cfg.enable = !ks->kb_cap.light_cfg.enable;
-        if (ks->kb_cap.light_zone_count > 0U) {
-            ks->kb_cap.zone_cfgs[0].enable = ks->kb_cap.light_cfg.enable;
-        }
-        ks_on_light_cfg(&ks->kb_cap.light_cfg, NULL, ks->kb_cap.indicator_leds, ks);
-        if (ks_persistent_store_ready(ks) == 0) {
-            uint32_t now_ms = (uint32_t)tick_to_msec_64(cpu_run_ticks());
-            ks->config_dirty = true;
-            ks->sync_deadline_ms = now_ms + KS_CONFIG_SAVE_DELAY_MS;
-        }
-    }
-    return KEY_ACTION_PASS; /* 未返回按键值，保持原有按键值 */
-}
-
-static int ks_action_key_light(const struct key_action_context *ctx, void *priv)
-{
-    struct keyboard_server *ks = (struct keyboard_server *)priv;
-
-    if (ks != NULL && ctx != NULL && ctx->event_type == 1U) {
-        pr_debug("action=key_light key=%u\n", ctx->key_index);
-    }
-    return KEY_ACTION_PASS; /* 未返回按键值，保持原有按键值 */
-}
-
-static int ks_action_profile_next(const struct key_action_context *ctx, void *priv)
-{
-    struct keyboard_server *ks = (struct keyboard_server *)priv;
-    if (ks != NULL && ctx != NULL && ctx->event_type == 1U) {
-        (void)ks_switch_next_keyboard_config(ks);
-    }
-    return KEY_ACTION_DROP; /* 显式拦截按键 */
-}
-
-static int ks_action_config_select(const struct key_action_context *ctx, void *priv)
-{
-    struct keyboard_server *ks = (struct keyboard_server *)priv;
-
-    if (ks != NULL && ctx != NULL && ctx->event_type == 1U) {
-        addr_t flags = disable_irq_save();
-        ks->pending_config_hash = ctx->initial_code >> 8;
-        enable_irq_save(flags);
-    }
-    return KEY_ACTION_DROP;
-}
-
-static void ks_apply_config_selection(struct keyboard_server *ks, uint32_t hash)
-{
-    struct nlk_kb_config_file_req req = { .kind = KEYBOARD_CONFIG_KEYBOARD };
-    int rc = keyboard_config_find_by_hash("/data/keyboard", ks->profile.hardware_id,
-                                          hash, req.id);
-
-    if (rc == 0) {
-        (void)ks_load_config_file(ks, &req, sizeof(req), NULL);
-    } else {
-        pr_warning("config selection hash=%06lx failed: %d\n", (unsigned long)hash, rc);
-    }
+    (void)ks;
+    (void)cfg;
+    (void)zone_id;
 }
 
 static void ks_on_light_cfg(const struct nlk_kb_light_cfg *cfg,
-                            const struct nlk_kb_light_sync_beacon *beacon,
-                            uint8_t indicators, void *priv)
+                            const struct nlk_kb_light_sync_beacon *beacon, uint8_t indicators,
+                            void *priv)
 {
     struct keyboard_server *ks = (struct keyboard_server *)priv;
 
@@ -1035,28 +311,11 @@ static void ks_on_light_cfg(const struct nlk_kb_light_cfg *cfg,
     if (ks == NULL || cfg == NULL) {
         return;
     }
-    if (!ks->light_log_valid || memcmp(&ks->logged_light_cfg, cfg, sizeof(*cfg)) != 0) {
-        const struct nlk_kb_effect_entry *effect =
-            nlk_cap_keyboard_find_light_effect(&ks->kb_cap, cfg->effect_id);
-
-        pr_info("light zone=0 effect=%u/%s on=%u bright=%u speed=%u\n",
-                cfg->effect_id, effect != NULL ? effect->info.name : "unknown",
-                cfg->enable, cfg->brightness, cfg->speed);
-        pr_debug("light rgb=%02x%02x%02x\n", cfg->color_r, cfg->color_g, cfg->color_b);
-        ks->logged_light_cfg = *cfg;
-    }
-    if (!ks->light_log_valid || ks->logged_indicators != indicators) {
-        pr_info("indicators=%02x\n", indicators);
-        ks->logged_indicators = indicators;
-    }
-    ks->light_log_valid = true;
-    ks_publish_light_state(&ks->kb_cap);
     if (ks->ds_dev == NULL) {
         ks->ds_dev = device_find_by_name("display-server");
     }
     if (ks->ds_dev != NULL && ks->ds_dev->ops.control != NULL) {
-        int status = ks->ds_dev->ops.control(ks->ds_dev,
-                                             DS_CTRL_GET_ENABLE_STATUS, NULL);
+        int status = ks->ds_dev->ops.control(ks->ds_dev, DS_CTRL_GET_ENABLE_STATUS, NULL);
         if (cfg->enable != 0U && status == 0) {
             (void)ks->ds_dev->ops.control(ks->ds_dev, DS_CTRL_ENABLE, NULL);
         } else if (cfg->enable == 0U && status > 0) {
@@ -1079,8 +338,7 @@ static int ks_register_nlk_capability(struct keyboard_server *ks)
     ks->nlk_node = NULL;
 #endif
 
-    ret = nlk_cap_keyboard_init_sized(ks->nlk_node, &ks->kb_cap,
-                                      ks->profile.rows, ks->profile.cols,
+    ret = nlk_cap_keyboard_init_sized(NULL, &ks->kb_cap, ks->profile.rows, ks->profile.cols,
                                       ks->profile.key_count, ks->profile.layer_count,
                                       ks_on_hid_report, ks);
     if (ret < 0) {
@@ -1118,23 +376,21 @@ static int ks_register_nlk_capability(struct keyboard_server *ks)
         if (ks->profile.default_keymap != NULL) {
             kmap = ks->profile.default_keymap + offset;
         }
-        (void)nlk_cap_keyboard_load_layout(&ks->kb_cap, layer,
-                                           kmap, ks->profile.key_count);
+        (void)nlk_cap_keyboard_load_layout(&ks->kb_cap, layer, kmap, ks->profile.key_count);
     }
 
     /* Register layout variants */
     if (ks->profile.layout_count > 0U && ks->profile.layouts != NULL) {
         for (i = 0U; i < ks->profile.layout_count; i++) {
-            (void)nlk_cap_keyboard_register_layout(&ks->kb_cap,
-                                                   &ks->profile.layouts[i].info);
+            (void)nlk_cap_keyboard_register_layout(&ks->kb_cap, &ks->profile.layouts[i].info);
         }
     }
 
     if (ks->profile.light_effects != NULL) {
         for (i = 0U; i < ks->profile.light_effect_count; i++) {
             const struct keyboard_light_effect *effect = &ks->profile.light_effects[i];
-            int rc = nlk_cap_keyboard_register_light_effect(&ks->kb_cap, effect->name,
-                                                            effect->desc, effect->render, ks);
+            int rc = nlk_cap_keyboard_register_light_effect(&ks->kb_cap, effect->name, effect->desc,
+                                                            effect->render, ks);
             if (rc < 0) {
                 pr_err("cannot register light effect %s: %d\n", effect->name, rc);
                 break;
@@ -1146,10 +402,8 @@ static int ks_register_nlk_capability(struct keyboard_server *ks)
     if (ks->profile.light_zone_count > 0U && ks->profile.light_zones != NULL) {
         for (i = 0U; i < ks->profile.light_zone_count; i++) {
             const struct nlk_kb_zone_light_cfg *icfg =
-                (ks->profile.default_zone_cfgs != NULL) ?
-                &ks->profile.default_zone_cfgs[i] : NULL;
-            (void)nlk_cap_keyboard_register_light_zone(&ks->kb_cap,
-                                                       &ks->profile.light_zones[i],
+                (ks->profile.default_zone_cfgs != NULL) ? &ks->profile.default_zone_cfgs[i] : NULL;
+            (void)nlk_cap_keyboard_register_light_zone(&ks->kb_cap, &ks->profile.light_zones[i],
                                                        icfg);
         }
     }
@@ -1174,46 +428,33 @@ static int ks_register_nlk_capability(struct keyboard_server *ks)
         if (ks->profile.light_layers[i].action != NULL) {
             layer.trigger = nlk_fnv1a_24(ks->profile.light_layers[i].action);
         }
+        if (layer.zone_id != NLK_KB_LIGHT_LAYER_OWN_CFG) {
+            if (layer.zone_id >= ks->kb_cap.light_zone_count) {
+                return -EINVAL;
+            }
+            const struct nlk_kb_zone_light_cfg *zone = &ks->kb_cap.zone_cfgs[layer.zone_id];
+            layer.cfg = (struct nlk_kb_light_cfg){
+                .enable = 1,
+                .zone_mask = NLK_KB_LIGHT_ZONE_ALL,
+                .effect_id = zone->effect_id,
+                .brightness = zone->brightness,
+                .speed = zone->speed,
+                .color_r = zone->color_r,
+                .color_g = zone->color_g,
+                .color_b = zone->color_b,
+            };
+            layer.zone_id = NLK_KB_LIGHT_LAYER_OWN_CFG;
+        }
         ks->kb_cap.light_layers[i] = layer;
     }
     ret = nlk_cap_keyboard_set_light_layers(&ks->kb_cap, ks->kb_cap.light_layers,
-                                             ks->profile.light_layer_count);
+                                            ks->profile.light_layer_count);
     if (ret != 0) {
         return ret;
     }
 
-    /* Register custom actions */
-    if (ks->profile.action_count > 0U && ks->profile.action_descs != NULL) {
-        for (i = 0U; i < ks->profile.action_count; i++) {
-            key_action_handler_fn_t h =
-                (ks->profile.action_handlers != NULL) ? ks->profile.action_handlers[i] : NULL;
-            (void)nlk_cap_keyboard_register_action(&ks->kb_cap,
-                                                   ks->profile.action_descs[i].name,
-                                                   ks->profile.action_descs[i].desc,
-                                                   h, ks);
-        }
-    }
-
-    /* Register built-in standard actions */
-    (void)nlk_cap_keyboard_register_action(&ks->kb_cap, "light_toggle",
-                                           "Toggle RGB backlight",
-                                           ks_action_light_toggle, ks);
-    (void)nlk_cap_keyboard_register_action(&ks->kb_cap, "key_light",
-                                           "Trigger per-key light",
-                                           ks_action_key_light, ks);
-    (void)nlk_cap_keyboard_register_action(&ks->kb_cap, "config_next",
-                                           "Next config/profile",
-                                           ks_action_profile_next, ks);
-    ret = nlk_cap_keyboard_register_action(&ks->kb_cap, "config_select",
-                                          "Select saved config", ks_action_config_select, ks);
-    if (ret != 0) {
-        return ret;
-    }
-
-    ret = nlk_cap_keyboard_register_action(&ks->kb_cap, "key_chord",
-                                          "Key with modifiers",
-                                          nlk_cap_keyboard_chord_action, NULL);
-    if (ret != 0) {
+    ret = keyboard_config_service_init(&ks->config, &ks->kb_cap, &ks->lock);
+    if (ret) {
         return ret;
     }
 
@@ -1221,59 +462,18 @@ static int ks_register_nlk_capability(struct keyboard_server *ks)
     if (ks->profile.default_action_binding_count > 0U &&
         ks->profile.default_action_bindings != NULL) {
         for (i = 0U; i < ks->profile.default_action_binding_count; i++) {
-            const struct key_action_default_binding *bind =
-                &ks->profile.default_action_bindings[i];
-            (void)nlk_cap_keyboard_bind_key_action(&ks->kb_cap,
-                                                   bind->layer,
-                                                   bind->key_index,
-                                                   bind->action_name,
-                                                   true);
+            const struct key_action_default_binding *bind = &ks->profile.default_action_bindings[i];
+            (void)nlk_cap_keyboard_bind_key_action(&ks->kb_cap, bind->layer, bind->key_index,
+                                                   bind->action_name, true);
         }
     }
 
-    ks->kb_cap.macro_rpc_lock = &ks->lock;
     (void)nlk_cap_keyboard_set_light_cb(&ks->kb_cap, ks_on_light_cfg, NULL, ks);
     (void)nlk_cap_keyboard_set_zone_light_cb(&ks->kb_cap, ks_on_zone_light_cfg, ks);
-    (void)nlk_cap_keyboard_set_layout_cb(&ks->kb_cap, ks_on_layout_change, ks);
     (void)nlk_cap_keyboard_set_param_cb(&ks->kb_cap, ks_on_param_change, ks);
-    (void)nlk_cap_keyboard_set_profile_cbs(&ks->kb_cap,
-                                           ks_on_profile_save,
-                                           ks_on_profile_load,
-                                           ks_on_profile_info,
-                                           ks);
-    (void)nlk_cap_keyboard_set_config_files_cb(&ks->kb_cap, ks_on_config_files, ks);
+    ks->config.check_storage = ks_persistent_store_ready;
+    ks->config.storage_context = ks;
     return 0;
-}
-
-static void ks_init_filesystem_profiles(struct keyboard_server *ks)
-{
-    const char *dir = "/data/keyboard";
-    int rc;
-
-    (void)nos_mkdir("/data", 0755);
-    (void)nos_mkdir(dir, 0755);
-    (void)nos_mkdir("/data/keyboard/config", 0755);
-    (void)nos_mkdir("/data/keyboard/light", 0755);
-    (void)nos_mkdir("/data/keyboard/macro", 0755);
-
-    if (ks_persistent_store_ready(ks) != 0) {
-        return;
-    }
-
-    /* 构建轻量级清单索引表 (Manifest) */
-    (void)keyboard_config_manifest_build(dir, ks->profile.hardware_id, &ks->kb_cap.manifest);
-
-    /* 优先从 /data/keyboard/active.nkc 恢复当前生效工作态 */
-    rc = keyboard_config_file_restore(&ks->kb_cap, ks->profile.hardware_id, dir, KEYBOARD_CONFIG_ACTIVE);
-    if (rc == 0) {
-        pr_info("Restored active keyboard state from %s/active.nkc\n", dir);
-    } else {
-        if (ks->kb_cap.active_keyboard_id[0] == '\0') {
-            memcpy(ks->kb_cap.active_keyboard_id, "default", 8);
-        }
-        (void)keyboard_config_active_save(&ks->kb_cap, ks->profile.hardware_id, dir);
-        pr_info("Initialized default active keyboard state in %s/active.nkc\n", dir);
-    }
 }
 
 static int keyboard_server_control(struct device *dev, int cmd, void *args)
@@ -1310,63 +510,15 @@ static int keyboard_server_control(struct device *dev, int cmd, void *args)
         }
         memcpy(args, &ks->kb_cap.params, sizeof(struct nlk_kb_params));
         break;
-    case KS_CTRL_SET_PARAMS:
-        if (args == NULL) {
-            return -EINVAL;
-        }
-        {
-            int rc;
-            mutex_lock(&ks->lock);
-            rc = nlk_cap_keyboard_set_params(&ks->kb_cap, (const struct nlk_kb_params *)args);
-            if (rc == 0 && ks_persistent_store_ready(ks) == 0) {
-                uint32_t now_ms = (uint32_t)tick_to_msec_64(cpu_run_ticks());
-                ks->config_dirty = true;
-                ks->sync_deadline_ms = now_ms + KS_CONFIG_SAVE_DELAY_MS;
-            }
-            mutex_unlock(&ks->lock);
-            return rc;
-        }
     case KS_CTRL_GET_ACTIVE_LAYOUT:
         return (int)ks->kb_cap.active_layout_id;
+    case KS_CTRL_SET_PARAMS:
     case KS_CTRL_SET_ACTIVE_LAYOUT:
-        if (args == NULL) {
-            return -EINVAL;
-        }
-        {
-            int rc;
-            mutex_lock(&ks->lock);
-            rc = ks_apply_layout_id(ks, *(const uint8_t *)args);
-            if (rc == 0 && ks_persistent_store_ready(ks) == 0) {
-                uint32_t now_ms = (uint32_t)tick_to_msec_64(cpu_run_ticks());
-                ks->config_dirty = true;
-                ks->sync_deadline_ms = now_ms + KS_CONFIG_SAVE_DELAY_MS;
-            }
-            mutex_unlock(&ks->lock);
-            return rc;
-        }
     case KS_CTRL_SAVE_PROFILE:
-        if (args == NULL) {
-            return -EINVAL;
-        }
-        return keyboard_config_save_profile(*(const uint8_t *)args);
     case KS_CTRL_LOAD_PROFILE:
-        if (args == NULL) {
-            return -EINVAL;
-        }
-        return keyboard_config_load_profile(*(const uint8_t *)args);
     case KS_CTRL_SWITCH_PROFILE:
-        if (args == NULL) {
-            return -EINVAL;
-        }
-        return keyboard_config_switch_profile(*(const uint8_t *)args);
     case KS_CTRL_GET_PROFILE_INFO:
-        if (args == NULL) {
-            return -EINVAL;
-        }
-        ((struct nlk_kb_profile_info_resp *)args)->active_slot = ks->active_slot_id;
-        ((struct nlk_kb_profile_info_resp *)args)->slot_count = KS_PROFILE_MAX_SLOTS;
-        ((struct nlk_kb_profile_info_resp *)args)->saved_slots_mask = ks->saved_slots_mask;
-        break;
+        return -ENOTSUP;
     case KS_CTRL_GET_LIGHT_CFG:
         if (args == NULL) {
             return -EINVAL;
@@ -1434,25 +586,26 @@ static void keyboard_server_task_entry(void *parameter)
     key_bytes = key_words * sizeof(uint32_t);
 
     /* Register and configure NLK_CAP_KEYBOARD on the local NLK node */
-    if (ks->profile.key_count != ks->dev_info.key_count ||
-        ks_register_nlk_capability(ks) < 0) {
+    if (ks->profile.key_count != ks->dev_info.key_count || ks_register_nlk_capability(ks) < 0) {
         pr_err("keyboard profile does not match hardware or allocation failed\n");
         return;
     }
-    g_keyboard_server = ks;
-    ks_init_filesystem_profiles(ks);
-    ks_on_light_cfg(&ks->kb_cap.light_cfg, NULL, ks->kb_cap.indicator_leds, ks);
-
     ks->hid_dev = device_find_by_name("hidd");
     ks->ds_dev = device_find_by_name("display-server");
+    ks_on_light_cfg(&ks->kb_cap.light_cfg, NULL, ks->kb_cap.indicator_leds, ks);
+
+    if (ks->nlk_node != NULL && nlk_cap_keyboard_attach(&ks->kb_cap, ks->nlk_node) < 0) {
+        pr_err("keyboard capability registration failed\n");
+        return;
+    }
+    __atomic_store_n(&g_keyboard_server, ks, __ATOMIC_RELEASE);
 
     ks->enable = true;
     ks->key_dev->ops.control(ks->key_dev, KEY_CTRL_ENABLE, NULL);
     device_register(&ks->ks_dev);
 
-    pr_info("keyboard device:[%s] %u*%u (%u keys, %u layers, cap_id=%u)\n",
-            CONFIG_KEY_DEV, ks->profile.rows, ks->profile.cols,
-            ks->profile.key_count, ks->profile.layer_count,
+    pr_info("keyboard device:[%s] %u*%u (%u keys, %u layers, cap_id=%u)\n", CONFIG_KEY_DEV,
+            ks->profile.rows, ks->profile.cols, ks->profile.key_count, ks->profile.layer_count,
             ks->kb_cap.cap.cap_id);
 
     while (true) {
@@ -1462,17 +615,12 @@ static void keyboard_server_task_entry(void *parameter)
             uint32_t scan_ms;
             uint32_t now_ms = (uint32_t)tick_to_msec_64(cpu_run_ticks());
 
-            /* 异步写回防抖：无改动持续 1000ms 后，瞬间持锁获取内存快照，唤醒后台持久化工作任务 */
-            if (ks->config_dirty && (int32_t)(now_ms - ks->sync_deadline_ms) >= 0) {
-                ks_trigger_config_snapshot(ks);
-            }
-
             mutex_lock(&ks->lock);
             (void)nlk_cap_keyboard_tick(&ks->kb_cap, now_ms);
             mutex_unlock(&ks->lock);
             scan_ms = (ks->kb_cap.desc.debounce_ms >= 2U)
-                      ? ((ks->kb_cap.desc.debounce_ms + 1U) / 2U)
-                      : 1U;
+                          ? ((ks->kb_cap.desc.debounce_ms + 1U) / 2U)
+                          : 1U;
 
             memset(key_sample, 0, sizeof(key_sample));
             if ((!scan_scheduled || (int32_t)(now_ms - next_scan_ms) >= 0) &&
@@ -1481,9 +629,8 @@ static void keyboard_server_task_entry(void *parameter)
                 next_scan_ms = now_ms + scan_ms;
                 /* Two-sample vertical-counter debounce across scan ticks */
                 for (w = 0U; w < key_words; w++) {
-                    uint32_t next_stable =
-                        (ks->raw_stable[w] & (key_sample[w] | ks->raw_prev[w])) |
-                        (key_sample[w] & ks->raw_prev[w]);
+                    uint32_t next_stable = (ks->raw_stable[w] & (key_sample[w] | ks->raw_prev[w])) |
+                                           (key_sample[w] & ks->raw_prev[w]);
                     ks->raw_prev[w] = key_sample[w];
                     if (next_stable != ks->raw_stable[w]) {
                         ks->raw_stable[w] = next_stable;
@@ -1491,16 +638,9 @@ static void keyboard_server_task_entry(void *parameter)
                     }
                 }
                 if (changed) {
-                    uint8_t recording;
                     mutex_lock(&ks->lock);
-                    recording = ks->kb_cap.recording_macro_id;
-                    (void)nlk_cap_keyboard_update_local_keys(
-                        &ks->kb_cap, ks->raw_stable, ks->profile.key_count);
-                    if (recording != 0xFFU &&
-                        ks->kb_cap.recording_macro_id == 0xFFU) {
-                        ks->config_dirty = true;
-                        ks->sync_deadline_ms = now_ms + KS_CONFIG_SAVE_DELAY_MS;
-                    }
+                    (void)nlk_cap_keyboard_update_local_keys(&ks->kb_cap, ks->raw_stable,
+                                                             ks->profile.key_count);
                     mutex_unlock(&ks->lock);
                 }
             }
@@ -1521,10 +661,8 @@ static void keyboard_server_task_entry(void *parameter)
                     next_report = ks->pending_nlk_hid[sent_tail];
                     enable_irq_save(irq_flags);
 
-                    int rc = nlk_node_send_event(ks->nlk_node, NLK_ADDR_HOST,
-                                                 ks->kb_cap.cap.cap_id,
-                                                 NLK_KB_EVT_HID_REPORT,
-                                                 &next_report,
+                    int rc = nlk_node_send_event(ks->nlk_node, NLK_ADDR_HOST, ks->kb_cap.cap.cap_id,
+                                                 NLK_KB_EVT_HID_REPORT, &next_report,
                                                  sizeof(next_report), false);
                     if (rc < 0) {
                         break;
@@ -1539,8 +677,7 @@ static void keyboard_server_task_entry(void *parameter)
                 }
             }
 
-            if (ks->kb_cap.macro_playing != 0U ||
-                ks->kb_cap.recording_macro_id != 0xFFU) {
+            if (ks->kb_cap.macro_playing != 0U) {
                 scan_ms = 1U;
             }
             msleep(scan_ms);
@@ -1549,6 +686,22 @@ static void keyboard_server_task_entry(void *parameter)
         }
     }
 }
+
+#if defined(CONFIG_NLK_SERVER) && defined(CONFIG_VFS)
+static const struct nlk_vfs_protected_path keyboard_store_paths[] = {
+    {KB_STORE_ROOT_PATH, false},
+    {KB_STORE_ROOT_TEMP, false},
+    {KB_STORE_CATALOG_DIR, true},
+    {KB_STORE_BASE_DIR, true},
+    {KB_STORE_LIGHT_DIR, true},
+    {KB_STORE_MACRO_DIR, true},
+};
+
+static struct nlk_vfs_write_policy keyboard_store_policy = {
+    .paths = keyboard_store_paths,
+    .count = sizeof(keyboard_store_paths) / sizeof(keyboard_store_paths[0]),
+};
+#endif
 
 static int keyboard_server_init(void)
 {
@@ -1570,20 +723,16 @@ static int keyboard_server_init(void)
     ks->ks_dev.ops.control = keyboard_server_control;
     ks->ks_dev.priv = ks;
 
-    ks->task = task_create("keyboard_server", keyboard_server_task_entry,
-                           ks, 3, 3072, 10, NULL);
+    ks->task = task_create("keyboard_server", keyboard_server_task_entry, ks, 3,
+                           CONFIG_KEYBOARD_STACK_SIZE, 10, NULL);
     if (ks->task == NULL) {
         pr_fatal("create keyboard_server task err\n");
         BUG_ON(true);
         return -EINVAL;
     }
-    ks->config_maintenance.run = ks_flush_config;
-    ks->config_maintenance.priv = ks;
-    if (nlk_server_register_maintenance(&ks->config_maintenance) != 0) {
-        pr_fatal("register keyboard configuration maintenance failed\n");
-        BUG_ON(true);
-        return -EINVAL;
-    }
+#if defined(CONFIG_NLK_SERVER) && defined(CONFIG_VFS)
+    nlk_cap_vfs_add_write_policy(&keyboard_store_policy);
+#endif
     task_ready(ks->task);
 
     return 0;

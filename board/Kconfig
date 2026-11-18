@@ -70,14 +70,27 @@ config QEMU
 # 服务器配置
 menu "Server Configuration"
 
+config NLK_CORE
+    bool
+
 config NLK_SERVER
 	bool "NLK (NOS Link Kit) distributed soft-bus server"
 	default y if BOARD_NK60 || BOARD_NK60_V1
 	default n
+	select NLK_CORE
 	help
 	  启用 NLK (NOS Link Kit) 分布式软总线协议栈与能力服务（替代原 NDK 与 Connect Server）。
 
 if NLK_SERVER
+
+config NLK_SERVER_STACK_SIZE
+    int "NLK service task stack size"
+    default 4096
+    range 4096 32768
+
+endif
+
+if NLK_CORE
 
 config NLK_PACKET_MTU
 	int "NLK maximum L3 payload size (bytes)"

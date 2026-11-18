@@ -31,6 +31,10 @@ int task_ready(struct task_struct *task);
 #include "../../app/display/nk60_display_server.c"
 #undef g_layer_source
 #include "../../board/nk60-v2/nk60_light_effects.h"
+extern const struct kb_effect_definition kb_effect_static, kb_effect_breath;
+#define nk60_effect_static kb_effect_static.render
+#define nk60_effect_breath kb_effect_breath.render
+
 
 static struct keyboard_light_state test_light_state;
 static uint64_t test_ticks;
@@ -204,6 +208,13 @@ static void test_lighting_layers(void)
     test_light_state.count = 1U;
     display_server_merge_buf(&ds);
     assert(memcmp(pixels + effect_index, red, 3U) == 0);
+    /* A globally enabled empty layer set renders black without a hidden base. */
+    test_light_state.count = 0U;
+    display_server_merge_buf(&ds);
+    for (size_t i = 0U; i < sizeof(pixels); i++) {
+        assert(pixels[i] == 0U);
+    }
+    test_light_state.count = 1U;
     test_light_state.enabled = false;
     display_server_merge_buf(&ds);
     for (size_t i = 0U; i < sizeof(pixels); i++) {

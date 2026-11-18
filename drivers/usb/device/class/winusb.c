@@ -22,6 +22,7 @@
 #include <drivers/usb/usb_device.h>
 
 #include "winusb.h"
+#include <drivers/usb/usb_winusb.h>
 
 #define WINUSB_BULK_MPS_FS  64U
 #define WINUSB_BULK_MPS_HS  512U
@@ -56,6 +57,7 @@ struct winusb_device {
     struct mutex write_lock;
     volatile bool tx_pending;   /* IN 传输已提交、尚未被主机取走 */
     volatile bool zlp_pending;  /* 本次传输长度为 MPS 整数倍，完成后需补发 ZLP */
+    uint32_t session;
     bool connected;             /* USB 连接使能状态 */
     bool rx_paused;             /* Bulk OUT 接收暂停状态 (背压) */
     uint8_t ep_rx_buf[] __aligned(4); /* Only one OUT packet is armed at a time. */
@@ -312,6 +314,7 @@ static int _function_enable(ufunction_t func)
         return -EINVAL;
 
     winusb_device = (struct winusb_device *)func->user_data;
+    winusb_device->session++;
     winusb_device->connected = true;
     winusb_device->rx_paused = false;
     kfifo_skip(&winusb_device->rx_fifo, kfifo_used(&winusb_device->rx_fifo));
@@ -342,6 +345,7 @@ static int _function_disable(ufunction_t func)
     winusb_device = (struct winusb_device *)func->user_data;
     pr_info("link disabled tx_pending=%u rx_queued=%u\n",
             winusb_device->tx_pending ? 1U : 0U, kfifo_used(&winusb_device->rx_fifo));
+    winusb_device->session++;
     winusb_device->connected = false;
     winusb_device->rx_paused = false;
     kfifo_skip(&winusb_device->rx_fifo, kfifo_used(&winusb_device->rx_fifo));
@@ -532,6 +536,11 @@ static ssize_t winusb_write_timeout(struct device *dev, addr_t pos,
 static int  winusb_control(struct device *dev, int cmd, void *args)
 {
     struct winusb_device *win_dev = container_of(dev, struct winusb_device, dev);
+    if (cmd == USB_WINUSB_CTRL_GET_SESSION) {
+        if (args == NULL) return -EINVAL;
+        *(uint32_t *)args = win_dev->session;
+        return win_dev->connected ? 0 : -ENOTCONN;
+    }
     if (cmd == 0x03 && win_dev->cmd_handler == NULL)
         win_dev->cmd_handler = (void(*)(uint8_t*, size_t))args;
 

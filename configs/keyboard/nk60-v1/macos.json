@@ -1,8 +1,6 @@
 {
-  "hardware": "NK60-V1-ANSI61-v1",
   "name": "macOS",
   "description": "ANSI with Mac media and shortcuts",
-  "layout_id": 1,
   "debounce_ms": 10,
   "poll_rate_hz": 100,
   "layers": [
@@ -15,8 +13,8 @@
     ],
     [
       "35 3a 3b 3c 3d 3e 3f a6 a7 a5 a8 aa a9 4c",
-      "00 00 52 00 00 00 00 00 00 00 0a20 0a21 00 49",
-      "00 50 51 4f 00 00 46 47 48 0914 00 4d 00",
+      "00 00 52 00 00 00 00 00 00 00 20 21 00 49",
+      "00 50 51 4f 00 00 46 47 48 14 00 4d 00",
       "e1 00 00 00 00 00 00 00 4b 4e 52 e5",
       "e0 e2 e3 00 50 51 4f 00"
     ],
@@ -29,10 +27,41 @@
     ]
   ],
   "actions": [
-    {"layer": 0, "key": 28, "name": "caps_lock"},
-    {"layer": 1, "key": 24, "name": "key_chord"},
-    {"layer": 1, "key": 25, "name": "key_chord"},
-    {"layer": 1, "key": 37, "name": "key_chord"},
-    {"layer": 2, "key": 47, "name": "light_toggle"}
-  ]
+    {
+      "layer": 0,
+      "key": 28,
+      "name": "caps_lock"
+    },
+    {
+      "layer": 1,
+      "key": 24,
+      "name": "key_chord",
+      "arguments": {
+        "modifiers": 10
+      }
+    },
+    {
+      "layer": 1,
+      "key": 25,
+      "name": "key_chord",
+      "arguments": {
+        "modifiers": 10
+      }
+    },
+    {
+      "layer": 1,
+      "key": 37,
+      "name": "key_chord",
+      "arguments": {
+        "modifiers": 9
+      }
+    },
+    {
+      "layer": 2,
+      "key": 47,
+      "name": "light_toggle"
+    }
+  ],
+  "layout": "ansi61",
+  "layout_version": 1
 }

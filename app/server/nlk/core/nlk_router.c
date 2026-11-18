@@ -245,8 +245,10 @@ static int nlk_dispatch_local(struct nlk_node *node,
             case NLK_MODE_RPC:
             case NLK_MODE_SYS:
                 if (cap->ops->on_rpc != NULL) {
+                    node->rpc_ingress = rx_bearer;
                     rc = cap->ops->on_rpc(node, cap, hdr, payload, payload_len,
                                           resp_buf, &resp_len);
+                    node->rpc_ingress = NULL;
                 } else {
                     rc = -ENOTSUP;
                 }
@@ -277,6 +279,7 @@ static int nlk_dispatch_local(struct nlk_node *node,
                                            (const uint8_t *)payload + sizeof(chunk_hdr),
                                            (uint16_t)(payload_len - sizeof(chunk_hdr)),
                                            resp_buf, &resp_len);
+                    node->rpc_ingress = NULL;
                 } else {
                     rc = -EINVAL;
                 }

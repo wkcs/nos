@@ -10,30 +10,33 @@ if(CONFIG_DISPLAY_SERVER)
 endif()
 
 if(CONFIG_KEYBOARD)
-    list(APPEND APP_SRCS server/keyboard/keyboard_server.c server/keyboard/keyboard_config.c
-                         server/keyboard/keyboard_config_store.c)
-    if(NOT (CONFIG_NLK_SERVER OR CONFIG_NDK_SERVER))
-        list(APPEND APP_SRCS
-            server/nlk/core/nlk_frame.c
-            server/nlk/core/nlk_discovery.c
-            server/nlk/core/nlk_router.c
-            server/nlk/core/nlk_core.c
-            server/nlk/caps/cap_keyboard.c
-        )
-    endif()
+    include("${CMAKE_CURRENT_SOURCE_DIR}/server/keyboard/definitions/sources.cmake")
+    list(APPEND APP_SRCS
+        server/keyboard/keyboard_engine.c
+        server/keyboard/keyboard_server.c
+        server/keyboard/keyboard_document.c
+        server/keyboard/keyboard_object_store.c
+        server/keyboard/keyboard_config_service.c
+        server/keyboard/keyboard_config_model.c
+        server/keyboard/keyboard_config_rpc.c
+    )
 endif()
 
-if(CONFIG_NLK_SERVER OR CONFIG_NDK_SERVER)
+if(CONFIG_NLK_CORE)
     list(APPEND APP_SRCS
         server/nlk/core/nlk_frame.c
         server/nlk/core/nlk_discovery.c
         server/nlk/core/nlk_router.c
         server/nlk/core/nlk_core.c
+    )
+endif()
+
+if(CONFIG_NLK_SERVER)
+    list(APPEND APP_SRCS
         server/nlk/caps/cap_flash.c
         server/nlk/caps/cap_log.c
         server/nlk/caps/cap_shell.c
         server/nlk/caps/cap_vfs.c
-        server/nlk/caps/cap_keyboard.c
         server/nlk/caps/cap_encoder.c
         server/nlk/caps/cap_display.c
         server/nlk/caps/cap_wireless.c
@@ -41,6 +44,9 @@ if(CONFIG_NLK_SERVER OR CONFIG_NDK_SERVER)
         server/nlk/bearers/bearer_bus_generic.c
         server/nlk/nlk_server.c
     )
+    if(CONFIG_VFS)
+        list(APPEND APP_SRCS server/nlk/caps/vfs_path_policy.c)
+    endif()
     list(APPEND APP_PRIVATE_INCLUDES "${CMAKE_CURRENT_SOURCE_DIR}/server/nlk")
 endif()
 

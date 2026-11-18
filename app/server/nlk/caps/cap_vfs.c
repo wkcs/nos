@@ -9,7 +9,7 @@
 #include <uapi/nos/errno.h>
 #include <string.h>
 
-#if defined(CONFIG_VFS) || defined(NLK_HOST_TEST)
+#ifdef CONFIG_VFS
 #include <fs/fs.h>
 #include <fs/vfs.h>
 
@@ -30,6 +30,36 @@ static void cap_vfs_copy_path(char *dst, size_t dst_size, const char *src, size_
         i--;
     }
     dst[i] = '\0';
+}
+
+static struct nlk_vfs_write_guard *write_guards;
+
+void nlk_cap_vfs_register_write_guard(struct nlk_vfs_write_guard *guard)
+{
+    struct nlk_vfs_write_guard *entry;
+
+    if (guard == NULL || guard->denies == NULL) {
+        return;
+    }
+    for (entry = write_guards; entry != NULL; entry = entry->next) {
+        if (entry == guard) {
+            return;
+        }
+    }
+    guard->next = write_guards;
+    write_guards = guard;
+}
+
+static bool cap_vfs_write_denied(const char *path)
+{
+    const struct nlk_vfs_write_guard *guard;
+
+    for (guard = write_guards; guard != NULL; guard = guard->next) {
+        if (guard->denies(path)) {
+            return true;
+        }
+    }
+    return false;
 }
 
 static int cap_vfs_to_os_flags(uint16_t wire_flags)
@@ -280,6 +310,11 @@ static int cap_vfs_on_rpc(struct nlk_node *node, struct nlk_capability *cap,
         }
         cap_vfs_copy_path(path_buf, sizeof(path_buf), oreq->path, NLK_VFS_PATH_MAX);
 
+        if ((cap_vfs_to_os_flags(oreq->flags) &
+             (O_ACCMODE | O_CREAT | O_TRUNC | O_APPEND | O_EXCL)) != O_RDONLY &&
+            cap_vfs_write_denied(path_buf)) {
+            return -EPERM;
+        }
         fd = nos_open(path_buf, cap_vfs_to_os_flags(oreq->flags),
                       (oreq->mode != 0U) ? (int)oreq->mode : 0644);
         if (fd < 0) {
@@ -486,6 +521,9 @@ static int cap_vfs_on_rpc(struct nlk_node *node, struct nlk_capability *cap,
             return -EINVAL;
         }
         cap_vfs_copy_path(path_buf, sizeof(path_buf), preq->path, NLK_VFS_PATH_MAX);
+        if (cap_vfs_write_denied(path_buf)) {
+            return -EPERM;
+        }
         rc = nos_mkdir(path_buf, (preq->mode != 0U) ? (mode_t)preq->mode : 0755U);
         return (rc < 0) ? rc : 0;
     }
@@ -499,6 +537,9 @@ static int cap_vfs_on_rpc(struct nlk_node *node, struct nlk_capability *cap,
             return -EINVAL;
         }
         cap_vfs_copy_path(path_buf, sizeof(path_buf), preq->path, NLK_VFS_PATH_MAX);
+        if (cap_vfs_write_denied(path_buf)) {
+            return -EPERM;
+        }
         dentry = vfs_lookup_path(vfs_get_root(), path_buf);
         if (dentry == NULL || dentry->d_inode == NULL) {
             return -ENOENT;
@@ -522,6 +563,10 @@ static int cap_vfs_on_rpc(struct nlk_node *node, struct nlk_capability *cap,
         }
         cap_vfs_copy_path(path_buf, sizeof(path_buf), rreq->old_path, NLK_VFS_PATH_MAX);
         cap_vfs_copy_path(new_buf, sizeof(new_buf), rreq->new_path, NLK_VFS_PATH_MAX);
+        if (cap_vfs_write_denied(path_buf) ||
+            cap_vfs_write_denied(new_buf)) {
+            return -EPERM;
+        }
         rc = nos_rename(path_buf, new_buf);
         return (rc < 0) ? rc : 0;
     }

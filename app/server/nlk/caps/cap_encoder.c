@@ -45,7 +45,7 @@ static int enc_on_rpc(struct nlk_node *node, struct nlk_capability *cap,
 
     case NLK_ENC_OP_SET_CONFIG: {
         const struct nlk_encoder_cfg *cfg = (const struct nlk_encoder_cfg *)req;
-        if (req == NULL || req_len < sizeof(*cfg) || cfg->layer >= NLK_KB_MAX_LAYERS) {
+        if (req == NULL || req_len < sizeof(*cfg) || cfg->layer >= NLK_ENCODER_MAX_LAYERS) {
             return -EINVAL;
         }
         ctx->cfg[cfg->layer] = *cfg;

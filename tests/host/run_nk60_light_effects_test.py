@@ -1,15 +1,6 @@
 #!/usr/bin/env python3
-"""Compile and run the NK60 lighting renderer regression."""
-from pathlib import Path
-import os
-import subprocess
-import tempfile
+"""Run identical shared renderer and factory profile checks for both NK60 boards."""
+from run_keyboard_definitions_test import compile_definitions
 
-root = Path(__file__).resolve().parents[2]
-with tempfile.TemporaryDirectory(prefix="nk60-light-test-") as tmp:
-    exe = Path(tmp) / "test"
-    subprocess.run([os.environ.get("CC", "cc"), "-std=gnu11", "-Wall", "-Wextra",
-                    "-I", str(root / "tests/host/stubs"), "-I", str(root / "include"),
-                    str(root / "tests/host/test_nk60_light_effects.c"), "-o", str(exe)],
-                   check=True)
-    subprocess.run([str(exe)], check=True)
+compile_definitions("test_nk60_light_effects.c")
+compile_definitions("test_nk60_light_effects.c", extra_flags=("-DTEST_NK60_V1",))

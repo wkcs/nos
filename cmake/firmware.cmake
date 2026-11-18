@@ -106,7 +106,7 @@ if(EXISTS "${BOARD_LD_S}")
     if((CONFIG_BOARD_NK60 OR CONFIG_BOARD_NK60_V1) AND CONFIG_KEYBOARD AND CONFIG_USB_DEVICE_HID_MEDIA)
         set(_macos_source "${CMAKE_CURRENT_SOURCE_DIR}/configs/keyboard/${CONFIG_BOARD}/macos.json")
         set(_nkc_packer "${CMAKE_CURRENT_SOURCE_DIR}/scripts/pack_keyboard_config.py")
-        set(_macos_nkc "${CMAKE_CURRENT_BINARY_DIR}/data/keyboard/config/macos.nkc")
+        set(_macos_nkc "${CMAKE_CURRENT_BINARY_DIR}/data/keyboard/base/macos.nkd")
         add_custom_command(
             OUTPUT "${_macos_nkc}"
             COMMAND "${Python3_EXECUTABLE}" "${_nkc_packer}" "${_macos_source}" "${_macos_nkc}"

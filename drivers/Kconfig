@@ -282,8 +282,21 @@ endmenu
 config KEYBOARD
 	bool "Keyboard server support"
 	default n
+	select NLK_CORE
 	help
 	  启用键盘系统服务（负责按键扫描消抖、层切换、HID 上报及 NLK keyboard 能力注册管理）。
+
+choice KEYBOARD_LAYOUT
+    prompt "Compiled keyboard layout"
+    depends on KEYBOARD
+    default KEYBOARD_LAYOUT_ANSI61
+    help
+      Compile exactly one physical layout and its factory keymaps.
+
+config KEYBOARD_LAYOUT_ANSI61
+    bool "ANSI 61-key layout"
+
+endchoice
 
 config KEYBOARD_LIGHT_MAX_LAYERS
     int "Maximum active keyboard lighting layers"
@@ -293,6 +306,12 @@ config KEYBOARD_LIGHT_MAX_LAYERS
     help
       Runtime lighting configurations can use up to this many composited layers.
       Eight layers fit in one NLK configuration RPC at the default packet MTU.
+
+config KEYBOARD_STACK_SIZE
+    int "Keyboard scan task stack size"
+    depends on KEYBOARD
+    range 2048 16384
+    default 3072
 
 # 显示驱动
 menu "Display Support"

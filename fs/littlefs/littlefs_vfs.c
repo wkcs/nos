@@ -909,6 +909,25 @@ static void littlefs_kill_sb(struct super_block *sb)
     }
 }
 
+/* A corrupt volume can contain user data. Only an entirely erased device is
+ * eligible for automatic first-use formatting; recovery never formats data. */
+static bool littlefs_device_erased(const struct device *dev, uint32_t sector_size,
+                                   uint32_t sector_count)
+{
+    uint8_t *buffer;
+    uint32_t sector, i;
+    bool erased = sector_count != 0 && sector_size != 0;
+    if (!erased) return false;
+    buffer = kmalloc(sector_size, GFP_KERNEL);
+    if (buffer == NULL) return false;
+    for (sector = 0; erased && sector < sector_count; sector++) {
+        if (block_read(dev, sector, buffer, 1) != 0) { erased = false; break; }
+        for (i = 0; i < sector_size; i++) if (buffer[i] != 0xff) { erased = false; break; }
+    }
+    kfree(buffer);
+    return erased;
+}
+
 static struct dentry *littlefs_mount(struct file_system_type *fs_type, int flags,
                                      const char *dev_name, void *data)
 {
@@ -970,7 +989,7 @@ static struct dentry *littlefs_mount(struct file_system_type *fs_type, int flags
     sbi->cfg.block_cycles = 500;
 
     res = lfs_mount(&sbi->lfs, &sbi->cfg);
-    if (res == LFS_ERR_CORRUPT) {
+    if (res == LFS_ERR_CORRUPT && littlefs_device_erased(bdev, sector_size, sector_count)) {
         pr_info("littlefs: No valid filesystem on %s, formatting...\n", dev_name);
         res = lfs_format(&sbi->lfs, &sbi->cfg);
         if (res == LFS_ERR_OK) {

@@ -27,34 +27,23 @@
 #endif
 
 struct nlk_server {
-    struct task_struct   *task;
-    struct nlk_node      *node;
-    struct timer          reboot_timer;
-    uint32_t              pending_boot_flag;
-    struct nlk_log_ctx    log_cap;
-    struct nlk_shell_ctx  shell_cap;
+    struct task_struct *task;
+    struct nlk_node *node;
+    struct timer reboot_timer;
+    uint32_t pending_boot_flag;
+    struct nlk_log_ctx log_cap;
+    struct nlk_shell_ctx shell_cap;
 #ifdef CONFIG_VFS
-    struct nlk_vfs_ctx    vfs_cap;
+    struct nlk_vfs_ctx vfs_cap;
 #endif
 };
 
 static struct nlk_server g_nlk_srv;
 static nlk_board_setup_fn g_board_setup_fn;
-static struct nlk_maintenance *g_maintenance;
 
 void nlk_server_register_board_setup(nlk_board_setup_fn setup_fn)
 {
     g_board_setup_fn = setup_fn;
-}
-
-int nlk_server_register_maintenance(struct nlk_maintenance *maintenance)
-{
-    struct nlk_maintenance *expected = NULL;
-
-    if (maintenance == NULL || maintenance->run == NULL) return -EINVAL;
-    if (__atomic_compare_exchange_n(&g_maintenance, &expected, maintenance, false,
-                                     __ATOMIC_RELEASE, __ATOMIC_RELAXED)) return 0;
-    return expected == maintenance ? 0 : -EEXIST;
 }
 
 static void nlk_server_reboot_timer_cb(void *parameter)
@@ -76,15 +65,18 @@ static void nlk_server_default_reboot(uint32_t boot_flag, void *priv)
     timer_start(&srv->reboot_timer, msec_to_tick(50));
 }
 
+#ifdef CONFIG_SHELL
+static int nlk_server_start_shell(void *priv)
+{
+    struct nlk_shell_ctx *ctx = priv;
+    return nshell_spawn(nlk_cap_shell_tty(ctx), "nshell_nlk", false);
+}
+#endif
+
 static void nlk_server_task_entry(void *parameter)
 {
     struct nlk_server *srv = (struct nlk_server *)parameter;
-    uint32_t tick_cnt = 0U;
     uint64_t next_health_ms = 0U;
-#ifdef CONFIG_SHELL
-    struct nlk_shell_ctx *shell_frontend;
-    uint64_t shell_retry_ms = 0U;
-#endif
 
     srv->node = nlk_default_node();
     srv->pending_boot_flag = BOOT_NORMAL;
@@ -104,7 +96,8 @@ static void nlk_server_task_entry(void *parameter)
         (void)nlk_cap_shell_init(srv->node, &srv->shell_cap);
     }
 #ifdef CONFIG_SHELL
-    shell_frontend = nlk_cap_shell_default_ctx();
+    struct nlk_shell_ctx *shell = nlk_cap_shell_default_ctx();
+    nlk_cap_shell_set_frontend_start(shell, nlk_server_start_shell, shell);
 #endif
 #ifdef CONFIG_VFS
     if (nlk_node_find_cap_by_type(srv->node, NLK_CAP_VFS) == NULL) {
@@ -113,41 +106,24 @@ static void nlk_server_task_entry(void *parameter)
 #endif
 
     pr_info("NLK server started (node=%s, addr=0x%04x, caps=%u, bearers=%u)\n",
-            srv->node->desc.name, srv->node->addr,
-            srv->node->cap_count, srv->node->bearer_count);
+            srv->node->desc.name, srv->node->addr, srv->node->cap_count, srv->node->bearer_count);
 
     while (true) {
         uint64_t health_ms = tick_to_msec_64(cpu_run_ticks());
 
         if (health_ms >= next_health_ms) {
             next_health_ms = health_ms + 10000U;
-            pr_info("alive rx=%u tx=%u drop=%u heap_free=%u\n",
-                    srv->node->rx_packets, srv->node->tx_packets,
-                    srv->node->dropped_packets, (unsigned int)mm_block_free_size());
+            pr_info("alive rx=%u tx=%u drop=%u heap_free=%u\n", srv->node->rx_packets,
+                    srv->node->tx_packets, srv->node->dropped_packets,
+                    (unsigned int)mm_block_free_size());
         }
-#ifdef CONFIG_SHELL
-        uint64_t now_ms = tick_to_msec_64(cpu_run_ticks());
-        if (shell_frontend != NULL && now_ms >= shell_retry_ms) {
-            int sh_rc = nshell_spawn(nlk_cap_shell_tty(shell_frontend), "nshell_nlk", false);
-
-            if (sh_rc == 0) {
-                nlk_cap_shell_frontend_ready(shell_frontend);
-                shell_frontend = NULL;
-            } else {
-                /* The boot task's stack may still be awaiting reclamation. */
-                shell_retry_ms = now_ms + 1000U;
-                pr_err("cannot start NLK shell frontend: %d\n", sh_rc);
-            }
-        }
-#endif
         int rc = nlk_node_poll_bearers(srv->node, 20U);
         if (rc <= 0) {
             msleep(20);
         }
 
         {
-            struct nlk_capability *shell_cap =
-                nlk_node_find_cap_by_type(srv->node, NLK_CAP_SHELL);
+            struct nlk_capability *shell_cap = nlk_node_find_cap_by_type(srv->node, NLK_CAP_SHELL);
             struct nlk_shell_ctx *ctx = nlk_cap_shell_default_ctx();
             if (shell_cap != NULL && ctx != NULL && shell_cap->priv == ctx) {
                 nlk_cap_shell_tick(ctx, (uint32_t)tick_to_msec_64(cpu_run_ticks()));
@@ -156,32 +132,16 @@ static void nlk_server_task_entry(void *parameter)
         }
         (void)nlk_cap_log_flush_pending(&srv->log_cap);
 
-        {
-            struct nlk_maintenance *maintenance =
-                __atomic_load_n(&g_maintenance, __ATOMIC_ACQUIRE);
-            if (maintenance != NULL) maintenance->run(maintenance->priv);
-        }
-
-        tick_cnt++;
-        if ((tick_cnt % 10U) == 0U && srv->node->desc.attached_children > 0U) {
-            struct nlk_capability *kb_cap =
-                nlk_node_find_cap_by_type(srv->node, NLK_CAP_KEYBOARD);
-            if (kb_cap != NULL && kb_cap->priv != NULL) {
-                (void)nlk_cap_keyboard_broadcast_light_beacon(
-                    (struct nlk_keyboard_ctx *)kb_cap->priv, tick_cnt);
-            }
-        }
+        nlk_node_poll_capabilities(srv->node, (uint32_t)tick_to_msec_64(cpu_run_ticks()));
     }
 }
 
 static int nlk_server_init(void)
 {
     memset(&g_nlk_srv, 0, sizeof(g_nlk_srv));
-    /* VFS/LittleFS/SPI calls execute synchronously on this RPC task. Board
-     * stress tests reach ~3 KiB during archive saves; leave room for uncached
-     * paths and exception frames as well as the small enumeration workspace. */
-    g_nlk_srv.task = task_create("nlk_server", nlk_server_task_entry,
-                                 &g_nlk_srv, 6, 4096, 10, NULL);
+    /* The board sizes this stack for all registered capability call chains. */
+    g_nlk_srv.task = task_create("nlk_server", nlk_server_task_entry, &g_nlk_srv, 6,
+                                 CONFIG_NLK_SERVER_STACK_SIZE, 10, NULL);
     if (g_nlk_srv.task == NULL) {
         pr_fatal("create nlk_server task failed\n");
         BUG_ON(true);

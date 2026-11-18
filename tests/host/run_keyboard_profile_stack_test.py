@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Measure NK60 persistence call chains with their actual compiler flags."""
+"""Measure production NK60 object-store and unified RPC stack paths."""
 from collections import defaultdict
 import json
 from pathlib import Path
@@ -10,10 +10,17 @@ import tempfile
 
 
 ROOT = Path(__file__).resolve().parents[2]
-BUILD = ROOT / "build/nk60-v2"
+import sys
+
+BOARD = sys.argv[1] if len(sys.argv) > 1 else "nk60-v2"
+BUILD = ROOT / "build" / BOARD
 SOURCES = (
     "app/server/keyboard/keyboard_server.c",
-    "app/server/keyboard/keyboard_config_store.c",
+    "app/server/keyboard/keyboard_config_service.c",
+    "app/server/keyboard/keyboard_config_model.c",
+    "app/server/keyboard/keyboard_config_rpc.c",
+    "app/server/keyboard/keyboard_object_store.c",
+    "app/server/keyboard/keyboard_document.c",
     "fs/vfs.c",
     "fs/vfs_io.c",
     "fs/vfs_fd.c",
@@ -25,11 +32,10 @@ SOURCES = (
     "kernel/ipc/mutex.c",
 )
 NLK_SOURCES = (
-    "app/server/keyboard/keyboard_config.c",
     "app/server/nlk/core/nlk_core.c",
     "app/server/nlk/core/nlk_router.c",
     "app/server/nlk/core/nlk_frame.c",
-    "app/server/nlk/caps/cap_keyboard.c",
+    "app/server/keyboard/keyboard_engine.c",
     "app/server/nlk/bearers/bearer_usb_winusb.c",
     "app/server/nlk/nlk_server.c",
 )
@@ -47,6 +53,7 @@ CALLBACKS = {
     "vfs_create_file": ("littlefs_create",),
     "vfs_make_dir": ("littlefs_mkdir",),
     "vfs_rename_entry": ("littlefs_rename",),
+    "nos_rename_noreplace": ("littlefs_rename",),
     "vfs_remove_entry": ("littlefs_unlink",),
     "vfs_lookup": ("littlefs_lookup",),
     "nos_open": ("littlefs_file_open",),
@@ -169,40 +176,51 @@ def longest_path(start, sizes, edges, tail_edges=frozenset()):
     return visit(start, set())
 
 
-def maintenance_wiring():
-    source = (ROOT / SOURCES[0]).read_text()
-    assert not re.search(r'task_create\(\s*"kb_config_worker"', source), \
-        "persistence must reuse NLK maintenance rather than allocate a worker stack"
-    assert re.search(r"\.run\s*=\s*ks_flush_config\b", source), \
-        "keyboard maintenance must register ks_flush_config as its run callback"
-    assert re.search(r"\bnlk_server_register_maintenance\s*\(", source), \
-        "keyboard maintenance must be registered with the NLK server"
+def maintenance_route(edges):
+    service = (ROOT / "app/server/keyboard/keyboard_config_service.c").read_text()
+    engine = (ROOT / "app/server/keyboard/keyboard_engine.c").read_text()
+    assert ".poll = kb_config_poll" in service
+    assert ".on_poll = kb_on_poll" in engine
+    route = ("nlk_server_task_entry", "nlk_node_poll_capabilities",
+             "kb_on_poll", "kb_config_poll")
+    indirect = {("nlk_node_poll_capabilities", "kb_on_poll"),
+                ("kb_on_poll", "kb_config_poll")}
+    for caller, child in zip(route, route[1:]):
+        assert child in edges[caller] or (caller, child) in indirect, \
+            f"configuration poll route changed: {caller} -> {child}"
+    return route
 
 
 def nlk_budget():
     source = (ROOT / "app/server/nlk/nlk_server.c").read_text()
-    creation = re.search(r'task_create\("nlk_server",\s*nlk_server_task_entry,\s*'
-                         r'&g_nlk_srv,\s*\d+[Uu]?,\s*(\d+)[Uu]?\s*,', source)
+    creation = re.search(r'task_create\(\s*"nlk_server",\s*nlk_server_task_entry,\s*'
+                         r'&g_nlk_srv,\s*\d+[Uu]?,\s*([A-Z_0-9]+)\s*,', source)
     assert creation, "cannot find the NLK server's task_create stack argument"
-    return int(creation[1])
+    value = creation[1]
+    if value.isdigit():
+        return int(value)
+    configured = (BUILD / "include/autocfg.h").read_text()
+    definition = re.search(rf"^#define\s+{re.escape(value)}\s+(\d+)[Uu]?\s*$",
+                           configured, re.MULTILINE)
+    assert definition, f"cannot resolve configured NLK stack size: {value}"
+    return int(definition[1])
 
 
 def check_nlk(sizes, edges, tail_edges):
     # Fix the request direction: the router's reply path can loop back into
     # itself for ACK delivery, which cannot dispatch this request again.
-    # All filesystem and codec branches below macro deletion remain measured.
+    # The service callback includes RAM patch/read and lease operations.
     route = ("nlk_server_task_entry", "nlk_node_poll_bearers", "winusb_rx_poll",
              "nlk_winusb_bearer_poll_rx", "nlk_bearer_rx_packet",
-             "nlk_node_input_packet", "nlk_dispatch_local", "kb_rpc_dispatch",
-             "ks_on_config_files")
+             "nlk_node_input_packet", "nlk_dispatch_local", "kb_on_rpc")
     callbacks = {("nlk_node_poll_bearers", "winusb_rx_poll"),
-                 ("nlk_dispatch_local", "kb_rpc_dispatch"),
-                 ("kb_rpc_dispatch", "ks_on_config_files")}
+                 ("nlk_dispatch_local", "kb_on_rpc")}
     for caller, child in zip(route, route[1:]):
         assert child in edges[caller] or (caller, child) in callbacks, \
             f"NLK request route changed: {caller} -> {child}"
-    endpoint = "keyboard_config_macro_delete"
-    assert endpoint in edges[route[-1]], "macro DELETE must use the guarded direct route"
+    endpoint = "kb_config_rpc"
+    assert ".rpc = kb_config_rpc" in (ROOT / SOURCES[1]).read_text(), \
+        "unified keyboard capability must use the production configuration service"
     cost, path = longest_path(endpoint, sizes, edges, tail_edges)
     for caller, child in reversed(list(zip(route, route[1:] + (endpoint,)))):
         if (caller, child) not in tail_edges:
@@ -210,26 +228,27 @@ def check_nlk(sizes, edges, tail_edges):
         cost = max(sizes[caller], cost)
     budget = nlk_budget()
     required = cost + CONTEXT_BYTES + CALLEE_MARGIN
-    print("NLK macro delete path:", " -> ".join(route + tuple(path)))
-    print(f"NLK macro delete stack: measured={cost}, context={CONTEXT_BYTES}, "
+    print("NLK configuration RPC path:", " -> ".join(route + tuple(path)))
+    print(f"NLK configuration RPC stack: measured={cost}, context={CONTEXT_BYTES}, "
           f"callee_margin={CALLEE_MARGIN}, required={required}, configured={budget}")
-    assert required <= budget, f"NLK macro delete requires {required} bytes, task has {budget}"
+    assert required <= budget, f"NLK configuration RPC requires {required} bytes, task has {budget}"
 
 
 def main():
-    maintenance_wiring()
     budget = nlk_budget()
     with tempfile.TemporaryDirectory(prefix="nos-keyboard-stack-") as tmp:
         sizes, edges, tail_edges = measure(Path(tmp))
-    for name in ("keyboard_config_save_profile", "keyboard_config_load_profile"):
+    for name in ("save_draft", "kb_config_load_object"):
         assert sizes[name] < 1024, f"{name} uses {sizes[name]} bytes of stack"
     # Measure complete routes, including mkdir/create, rename, compaction,
     # wear leveling and SPI locking, rather than checking isolated frames.
-    cost, path = longest_path("ks_flush_config", sizes, edges)
-    # Maintenance runs after request routing and stream flushing have returned,
-    # so only the server entry frame overlaps the save callback's call chain.
-    cost += sizes["nlk_server_task_entry"]
-    path = ["nlk_server_task_entry"] + path
+    route = maintenance_route(edges)
+    cost, path = longest_path(route[-1], sizes, edges, tail_edges)
+    for caller, child in reversed(list(zip(route, route[1:]))):
+        if (caller, child) not in tail_edges:
+            cost += sizes[caller]
+        cost = max(sizes[caller], cost)
+    path = list(route[:-1]) + path
     required = cost + CONTEXT_BYTES + CALLEE_MARGIN
     print("persistence path:", " -> ".join(
         f"{name}({sizes[name]})" for name in path))
@@ -238,7 +257,7 @@ def main():
     assert required <= budget, \
         f"persistence requires {required} bytes, NLK task has {budget}"
     check_nlk(sizes, edges, tail_edges)
-    print("keyboard profile and persistence stack checks passed")
+    print("production keyboard persistence and RPC stack checks passed")
 
 
 if __name__ == "__main__":

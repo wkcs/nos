@@ -91,6 +91,8 @@ int nlk_cap_log_flush_pending(struct nlk_log_ctx *ctx);
 
 struct nlk_shell_ctx {
     bool                  frontend_ready;
+    int                 (*start_frontend)(void *priv);
+    void                 *frontend_priv;
     bool                  session_open;
     bool                  non_interactive;
     bool                  exit_pending;
@@ -127,6 +129,8 @@ struct nlk_shell_ctx {
 
 int nlk_cap_shell_init(struct nlk_node *node, struct nlk_shell_ctx *ctx);
 void nlk_cap_shell_frontend_ready(struct nlk_shell_ctx *ctx);
+void nlk_cap_shell_set_frontend_start(struct nlk_shell_ctx *ctx,
+                                       int (*start)(void *priv), void *priv);
 int nlk_cap_shell_flush_pending(struct nlk_shell_ctx *ctx);
 void nlk_cap_shell_tick(struct nlk_shell_ctx *ctx, uint32_t now_ms);
 int nlk_cap_shell_read_session(struct nlk_shell_ctx *ctx, uint32_t generation,
@@ -146,268 +150,40 @@ struct nlk_vfs_ctx {
 
 int nlk_cap_vfs_init(struct nlk_node *node, struct nlk_vfs_ctx *ctx);
 
-/* 0x0100: Keyboard (Multi-Form-Factor, 6KRO/NKRO, Analog/RT & Integrated Lighting) */
-#ifndef NLK_KB_MAX_LAYERS
-#define NLK_KB_MAX_LAYERS           8U
-#endif
-#define NLK_KB_MAX_KEYS             128U
-
-#ifndef CONFIG_KEYBOARD_LIGHT_MAX_LAYERS
-#define CONFIG_KEYBOARD_LIGHT_MAX_LAYERS 8
-#endif
-
-typedef void (*nlk_kb_effect_render_fn_t)(const struct nlk_kb_light_cfg *cfg,
-                                          uint8_t x, uint8_t y, uint32_t phase,
-                                          uint8_t rgb[3], void *priv);
-struct nlk_kb_effect_entry {
-    struct nlk_kb_light_effect_desc info;
-    nlk_kb_effect_render_fn_t render;
-    void *priv;
-    struct nlk_kb_effect_entry *next;
+/* Guards run in the remote VFS task before a path can be modified.
+ * Register static guards before the export starts accepting requests. */
+struct nlk_vfs_write_guard {
+    bool (*denies)(const char *path);
+    struct nlk_vfs_write_guard *next;
 };
 
-typedef void (*nlk_kb_report_cb_t)(const struct nlk_kb_hid_report *report, void *priv);
-typedef void (*nlk_kb_nkro_cb_t)(const struct nlk_kb_nkro_report *report, void *priv);
-typedef void (*nlk_kb_light_cb_t)(const struct nlk_kb_light_cfg *cfg,
-                                  const struct nlk_kb_light_sync_beacon *beacon,
-                                  uint8_t indicators, void *priv);
-typedef void (*nlk_kb_zone_light_cb_t)(uint8_t zone_id,
-                                       const struct nlk_kb_zone_light_cfg *cfg,
-                                       void *priv);
-typedef void (*nlk_kb_light_frame_cb_t)(uint16_t start_led, uint16_t led_count,
-                                        const uint8_t *rgb_data, uint16_t len, void *priv);
-typedef int (*nlk_kb_layout_change_cb_t)(uint8_t new_layout_id, void *priv);
-typedef int (*nlk_kb_param_change_cb_t)(const struct nlk_kb_params *params, void *priv);
-typedef int (*nlk_kb_profile_save_cb_t)(uint8_t slot_id, void *priv);
-typedef int (*nlk_kb_profile_load_cb_t)(uint8_t slot_id, void *priv);
-typedef int (*nlk_kb_profile_info_cb_t)(uint8_t *active_slot, uint8_t *saved_mask, void *priv);
-typedef int (*nlk_kb_config_files_cb_t)(uint8_t op, const void *req, uint16_t req_len,
-                                        void *resp, uint16_t *resp_len, void *priv);
+void nlk_cap_vfs_register_write_guard(struct nlk_vfs_write_guard *guard);
 
-struct nlk_kb_macro {
-    struct nlk_kb_macro *next;
-    struct nlk_kb_macro_info info;
-    char desc[NLK_KB_MACRO_DESC_MAX];
-    struct nlk_kb_macro_step steps[];
+/* The service publishes immutable rules before exposing its objects. Policies
+ * protect the remote VFS export only. The owner and local VFS retain access.
+ * Register during system initialization. Paths are canonical absolute names.
+ * Registered policy objects and their paths must live for the system lifetime. */
+struct nlk_vfs_protected_path {
+    const char *path;
+    bool subtree;
 };
 
-struct nlk_keyboard_ctx {
-    struct nlk_kb_desc              desc;
-    uint8_t                         active_layer;
-    uint8_t                         default_layer;
-    uint8_t                         indicator_leds;
-    uint8_t                         module_key_offset[8];
-    uint32_t                       *keymap[NLK_KB_MAX_LAYERS];
-    struct nlk_kb_key_action_chain *action_chains[NLK_KB_MAX_LAYERS];
-    uint8_t                        *key_state;
-    uint32_t                       *active_code;
-    uint8_t                         key_capacity;
-    uint8_t                         layer_capacity;
-    struct nlk_kb_hid_report        last_report;
-    struct nlk_kb_nkro_report       last_nkro;
-    uint8_t                         consumer_report;
-    struct nlk_kb_analog_cfg        analog_cfg;
-    struct nlk_kb_light_cfg         light_cfg;
-    uint8_t                         light_layer_count;
-    struct nlk_kb_light_layer       light_layers[CONFIG_KEYBOARD_LIGHT_MAX_LAYERS];
-    bool                            light_layer_active[CONFIG_KEYBOARD_LIGHT_MAX_LAYERS];
-    uint32_t                        light_layer_generation;
-    struct nlk_kb_light_sync_beacon last_light_beacon;
-
-    /* Multi-layout management */
-    uint8_t                         layout_count;
-    uint8_t                         active_layout_id;
-    struct nlk_kb_layout_info       layouts[NLK_KB_MAX_LAYOUTS];
-    nlk_kb_layout_change_cb_t       layout_cb;
-    void                           *layout_priv;
-
-    /* Device-local lighting effects */
-    uint16_t                        light_effect_count;
-    struct nlk_kb_effect_entry     *light_effects;
-    struct nlk_kb_effect_entry     *light_effects_tail;
-
-    /* Multi-zone lighting */
-    uint8_t                         light_zone_count;
-    struct nlk_kb_light_zone_desc   light_zones[NLK_KB_MAX_LIGHT_ZONES];
-    struct nlk_kb_zone_light_cfg    zone_cfgs[NLK_KB_MAX_LIGHT_ZONES];
-    nlk_kb_zone_light_cb_t          zone_light_cb;
-    void                           *zone_light_priv;
-
-    /* Layer metadata */
-    struct nlk_kb_layer_desc        layers[NLK_KB_MAX_LAYERS];
-
-    /* Macro recording & playback */
-    uint8_t                         recording_macro_id; /* 0xFF = not recording */
-    uint32_t                        last_rec_tick;
-    uint32_t                        macro_clock_ms;
-    uint32_t                        macro_due_ms;
-    uint8_t                         macro_playing;
-    uint8_t                         macro_play_id;
-    uint8_t                         macro_play_index;
-    uint8_t                         macro_play_count;
-    uint8_t                         macro_repeats_left;
-    uint8_t                         macro_tap_pending;
-    uint8_t                         macro_modifiers;
-    uint8_t                         macro_keys[6];
-    struct nlk_kb_macro_step        macro_play_steps[NLK_KB_MAX_MACRO_STEPS];
-    struct nlk_kb_macro            *macros;
-    uint8_t                         macro_count;
-    struct mutex                   *macro_rpc_lock;
-
-    /* Dynamic Action Bindings */
-    uint8_t                         action_count;
-    struct nlk_kb_action_desc       action_descs[NLK_KB_MAX_ACTIONS];
-    key_action_handler_fn_t         action_handlers[NLK_KB_MAX_ACTIONS];
-    void                           *action_handler_privs[NLK_KB_MAX_ACTIONS];
-
-    /* Keyboard runtime parameters */
-    struct nlk_kb_params            params;
-    struct nlk_kb_params            default_params;
-    nlk_kb_param_change_cb_t        param_cb;
-    void                           *param_priv;
-
-    /* Profile persistence & preset slots */
-    uint8_t                         active_profile_slot;
-    uint8_t                         saved_profiles_mask;
-    nlk_kb_profile_save_cb_t        profile_save_cb;
-    nlk_kb_profile_load_cb_t        profile_load_cb;
-    nlk_kb_profile_info_cb_t        profile_info_cb;
-    void                           *profile_priv;
-    char                            active_keyboard_id[NLK_KB_CONFIG_ID_SIZE];
-    char                            active_light_id[NLK_KB_CONFIG_ID_SIZE];
-    struct nlk_kb_light_override    active_light_override;
-    nlk_kb_config_files_cb_t         config_files_cb;
-    void                           *config_files_priv;
-    struct nlk_kb_manifest          manifest;
-
-    nlk_kb_report_cb_t              report_cb;
-    nlk_kb_nkro_cb_t                nkro_cb;
-    void                           *report_priv;
-    nlk_kb_light_cb_t               light_cb;
-    nlk_kb_light_frame_cb_t         light_frame_cb;
-    void                           *light_priv;
-    struct nlk_node                *node;
-    struct nlk_capability           cap;
+struct nlk_vfs_write_policy {
+    const struct nlk_vfs_protected_path *paths;
+    size_t count;
+    struct nlk_vfs_write_policy *next;
 };
 
-int nlk_cap_keyboard_init(struct nlk_node *node, struct nlk_keyboard_ctx *ctx,
-                          uint8_t rows, uint8_t cols, uint8_t key_count,
-                          nlk_kb_report_cb_t report_cb, void *priv);
-int nlk_cap_keyboard_set_config_files_cb(struct nlk_keyboard_ctx *ctx,
-                                        nlk_kb_config_files_cb_t cb, void *priv);
-int nlk_cap_keyboard_init_sized(struct nlk_node *node, struct nlk_keyboard_ctx *ctx,
-                                uint8_t rows, uint8_t cols, uint8_t key_count,
-                                uint8_t layer_count, nlk_kb_report_cb_t report_cb,
-                                void *priv);
-/* Only for an unregistered context, or after its node is no longer in use. */
-void nlk_cap_keyboard_deinit(struct nlk_keyboard_ctx *ctx);
-int nlk_cap_keyboard_configure(struct nlk_keyboard_ctx *ctx,
-                               const struct nlk_kb_desc *desc);
-int nlk_cap_keyboard_set_light_cb(struct nlk_keyboard_ctx *ctx,
-                                  nlk_kb_light_cb_t light_cb,
-                                  nlk_kb_light_frame_cb_t frame_cb,
-                                  void *priv);
-int nlk_cap_keyboard_set_zone_light_cb(struct nlk_keyboard_ctx *ctx,
-                                       nlk_kb_zone_light_cb_t zone_light_cb,
-                                       void *priv);
-int nlk_cap_keyboard_set_layout_cb(struct nlk_keyboard_ctx *ctx,
-                                   nlk_kb_layout_change_cb_t layout_cb,
-                                   void *priv);
-int nlk_cap_keyboard_set_param_cb(struct nlk_keyboard_ctx *ctx,
-                                  nlk_kb_param_change_cb_t param_cb,
-                                  void *priv);
-int nlk_cap_keyboard_register_layout(struct nlk_keyboard_ctx *ctx,
-                                     const struct nlk_kb_layout_info *layout);
-const struct nlk_kb_effect_entry *nlk_cap_keyboard_find_light_effect(
-    const struct nlk_keyboard_ctx *ctx, uint8_t effect_id);
-/* Registry entries are allocated on demand and live as long as the context. */
-int nlk_cap_keyboard_register_light_effect(struct nlk_keyboard_ctx *ctx,
-                                           const char *name, const char *desc,
-                                           nlk_kb_effect_render_fn_t handler, void *priv);
-int nlk_cap_keyboard_register_light_zone(struct nlk_keyboard_ctx *ctx,
-                                         const struct nlk_kb_light_zone_desc *zone,
-                                         const struct nlk_kb_zone_light_cfg *initial_cfg);
-int nlk_cap_keyboard_validate_light_layer(const struct nlk_keyboard_ctx *ctx,
-                                          const struct nlk_kb_light_layer *layer);
-int nlk_cap_keyboard_set_light_layers(struct nlk_keyboard_ctx *ctx,
-                                      const struct nlk_kb_light_layer *layers, uint8_t count);
-int nlk_cap_keyboard_set_layer_desc(struct nlk_keyboard_ctx *ctx, uint8_t layer,
-                                    const char *name, uint8_t flags);
-int nlk_cap_keyboard_register_action(struct nlk_keyboard_ctx *ctx,
-                                     const char *name,
-                                     const char *desc,
-                                     key_action_handler_fn_t handler,
-                                     void *priv);
-int nlk_cap_keyboard_chord_action(const struct key_action_context *ctx, void *priv);
-int nlk_cap_keyboard_bind_key_action(struct nlk_keyboard_ctx *ctx,
-                                     uint8_t layer,
-                                     uint8_t key_index,
-                                     const char *action_name,
-                                     bool append);
-int nlk_cap_keyboard_unbind_key_action(struct nlk_keyboard_ctx *ctx,
-                                       uint8_t layer,
-                                       uint8_t key_index,
-                                       const char *action_name);
-int nlk_cap_keyboard_bind_all_keys(struct nlk_keyboard_ctx *ctx,
-                                   uint8_t layer_mask,
-                                   const char *action_name,
-                                   bool append);
-struct nlk_kb_macro *nlk_cap_keyboard_find_macro(const struct nlk_keyboard_ctx *ctx, uint8_t id);
-struct nlk_kb_macro *nlk_cap_keyboard_alloc_macro(uint8_t capacity);
-void nlk_cap_keyboard_free_macros(struct nlk_kb_macro *macro);
-uint8_t nlk_cap_keyboard_next_macro_id(const struct nlk_keyboard_ctx *ctx);
-void nlk_cap_keyboard_replace_macros(struct nlk_keyboard_ctx *ctx, struct nlk_kb_macro *macros,
-                                     uint8_t count);
-int nlk_cap_keyboard_set_macro(struct nlk_keyboard_ctx *ctx, uint8_t macro_id,
-                               const char *name,
-                               const struct nlk_kb_macro_step *steps,
-                               uint8_t step_count, uint8_t repeat_count);
-int nlk_cap_keyboard_set_macro_meta(struct nlk_keyboard_ctx *ctx, uint8_t macro_id,
-                                    const char *id,
-                                    const char *name,
-                                    const char *desc,
-                                    const struct nlk_kb_macro_step *steps,
-                                    uint8_t step_count, uint8_t repeat_count);
-int nlk_cap_keyboard_macro_start(struct nlk_keyboard_ctx *ctx, uint8_t macro_id,
-                                 uint32_t now_ms);
-int nlk_cap_keyboard_macro_cancel(struct nlk_keyboard_ctx *ctx);
-int nlk_cap_keyboard_tick(struct nlk_keyboard_ctx *ctx, uint32_t now_ms);
-int nlk_cap_keyboard_record_macro_step(struct nlk_keyboard_ctx *ctx,
-                                       uint8_t type, uint8_t key_code,
-                                       uint16_t delay_ms);
-int nlk_cap_keyboard_set_params(struct nlk_keyboard_ctx *ctx,
-                                const struct nlk_kb_params *params);
-int nlk_cap_keyboard_set_module_offset(struct nlk_keyboard_ctx *ctx,
-                                       uint8_t module_id, uint8_t key_offset);
-int nlk_cap_keyboard_load_layout(struct nlk_keyboard_ctx *ctx, uint8_t layer,
-                                 const uint8_t *key_codes,
-                                 uint8_t count);
-int nlk_cap_keyboard_load_layout32(struct nlk_keyboard_ctx *ctx, uint8_t layer,
-                                   const uint32_t *key_codes,
-                                   uint8_t count);
-int nlk_cap_keyboard_update_local_keys(struct nlk_keyboard_ctx *ctx,
-                                       const uint32_t *raw_bitmap,
-                                       uint8_t key_count);
-void nlk_cap_keyboard_release_held_keys(struct nlk_keyboard_ctx *ctx);
-int nlk_cap_keyboard_report_switches(struct nlk_keyboard_ctx *ctx,
-                                     nlk_addr_t target_addr, uint8_t dst_cap,
-                                     uint8_t module_id,
-                                     const struct nlk_kb_switch_item *items,
-                                     uint8_t count);
-int nlk_cap_keyboard_broadcast_light_beacon(struct nlk_keyboard_ctx *ctx,
-                                            uint32_t master_frame_tick);
-int nlk_cap_keyboard_set_profile_cbs(struct nlk_keyboard_ctx *ctx,
-                                     nlk_kb_profile_save_cb_t save_cb,
-                                     nlk_kb_profile_load_cb_t load_cb,
-                                     nlk_kb_profile_info_cb_t info_cb,
-                                     void *priv);
+void nlk_cap_vfs_add_write_policy(struct nlk_vfs_write_policy *policy);
 
 /* 0x0101: Rotary Encoder Capability */
 typedef void (*nlk_enc_event_cb_t)(const struct nlk_encoder_event *evt, void *priv);
 
+#define NLK_ENCODER_MAX_LAYERS 8U
+
 struct nlk_encoder_ctx {
     struct nlk_encoder_desc  desc;
-    struct nlk_encoder_cfg   cfg[NLK_KB_MAX_LAYERS];
+    struct nlk_encoder_cfg   cfg[NLK_ENCODER_MAX_LAYERS];
     struct nlk_encoder_event last_event;
     nlk_enc_event_cb_t       evt_cb;
     void                    *evt_priv;

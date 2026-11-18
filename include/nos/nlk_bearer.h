@@ -117,6 +117,7 @@ struct nlk_bearer {
     const struct nlk_bearer_ops *ops;
     struct nlk_node            *owner_node;
     void                       *priv;
+    uint32_t                    session_generation; /* Optional connection epoch; zero if unavailable. */
     uint8_t                     tx_busy;    /* Atomic whole-packet transmit ownership */
     struct nlk_stream_decoder   decoder;
     struct nlk_can_reasm        can_reasm;

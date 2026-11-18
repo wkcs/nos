@@ -4,7 +4,6 @@
 from pathlib import Path
 import os
 import subprocess
-import sys
 import tempfile
 
 
@@ -29,9 +28,7 @@ def main():
             NLK_DIR / "caps/cap_log.c",
             NLK_DIR / "caps/cap_shell.c",
             NLK_DIR / "caps/cap_vfs.c",
-            NLK_DIR / "caps/cap_keyboard.c",
-            ROOT / "app/server/keyboard/keyboard_config.c",
-            ROOT / "app/server/keyboard/keyboard_config_store.c",
+            ROOT / "app/server/keyboard/keyboard_engine.c",
             NLK_DIR / "caps/cap_encoder.c",
             NLK_DIR / "caps/cap_display.c",
             NLK_DIR / "caps/cap_wireless.c",
@@ -45,6 +42,7 @@ def main():
             "-Wall",
             "-Wextra",
             "-DNLK_HOST_TEST",
+            "-DCONFIG_VFS",
             "-DCONFIG_LOG_BUFFERED",
             "-DCONFIG_LOG_FIFO_BUF_SIZE=512",
             "-DCONFIG_LOG_MESSAGE_SIZE=128",
@@ -55,14 +53,7 @@ def main():
             "-o", str(exe),
         ]
         subprocess.run(cmd, check=True)
-        profiles = []
-        for board in ("nk60-v2", "nk60-v1"):
-            profile = Path(tmp) / f"{board}-macos.nkc"
-            subprocess.run([sys.executable, str(ROOT / "scripts/pack_keyboard_config.py"),
-                            str(ROOT / f"configs/keyboard/{board}/macos.json"), str(profile)],
-                           check=True)
-            profiles.append(str(profile))
-        subprocess.run([str(exe), *profiles], check=True)
+        subprocess.run([str(exe)], check=True)
 
 
 if __name__ == "__main__":

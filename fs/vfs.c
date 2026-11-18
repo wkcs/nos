@@ -555,8 +555,8 @@ static int vfs_split_parent(struct dentry *base, const char *path,
     return 0;
 }
 
-int vfs_create_file(struct dentry *dir, const char *name, int mode,
-                    struct dentry **out)
+static int vfs_create_file_internal(struct dentry *dir, const char *name, int mode,
+                                     struct dentry **out, bool exclusive)
 {
     struct dentry *dentry;
     struct qstr q;
@@ -578,6 +578,7 @@ int vfs_create_file(struct dentry *dir, const char *name, int mode,
     q.hash = 0U;
     dentry = vfs_lookup(dir, &q);
     if (dentry != NULL) {
+        if (exclusive) return -EEXIST;
         if (out != NULL) {
             *out = dentry;
         }
@@ -603,6 +604,12 @@ int vfs_create_file(struct dentry *dir, const char *name, int mode,
         *out = dentry;
     }
     return 0;
+}
+
+int vfs_create_file(struct dentry *dir, const char *name, int mode,
+                    struct dentry **out)
+{
+    return vfs_create_file_internal(dir, name, mode, out, false);
 }
 
 int vfs_make_dir(struct dentry *dir, const char *name, int mode,
@@ -879,22 +886,27 @@ int vfs_truncate_dentry(struct dentry *dentry, loff_t length)
     return -EROFS;
 }
 
-static struct dentry *vfs_resolve_path(const char *path, int create)
+static int vfs_resolve_open_path(const char *path, int flags,
+                                  struct dentry **out, bool *created)
 {
-    struct dentry *dentry;
+    struct dentry *parent = NULL;
+    char name[FS_NAME_LEN];
+    int rc;
 
-    if (path == NULL || path[0] != '/') {
-        return NULL;
+    *created = false;
+    if (path == NULL || path[0] != '/') return -EINVAL;
+    *out = vfs_lookup_path(vfs_get_root(), path);
+    if (*out != NULL) return (flags & O_CREAT) && (flags & O_EXCL) ? -EEXIST : 0;
+    if (!(flags & O_CREAT)) return -ENOENT;
+    rc = vfs_split_parent(vfs_get_root(), path, &parent, name, sizeof(name));
+    if (rc != 0) return rc;
+    rc = vfs_create_file_internal(parent, name, S_IFREG | 0644, out, true);
+    if (rc == -EEXIST && !(flags & O_EXCL)) {
+        *out = vfs_lookup_path(vfs_get_root(), path);
+        return *out != NULL ? 0 : -ENOENT;
     }
-    dentry = vfs_lookup_path(vfs_get_root(), path);
-    if (dentry == NULL && create) {
-        struct dentry *parent = NULL;
-        char name[FS_NAME_LEN];
-        if (vfs_split_parent(vfs_get_root(), path, &parent, name, sizeof(name)) == 0) {
-            (void)vfs_create_file(parent, name, S_IFREG | 0644, &dentry);
-        }
-    }
-    return dentry;
+    if (rc == 0) *created = true;
+    return rc;
 }
 
 #ifdef CONFIG_TTY
@@ -932,17 +944,15 @@ int nos_open(const char *path, int flags, ...)
   int fd;
   int ret;
   bool pinned = false;
+  bool created = false;
 
   if ((flags & O_TRUNC) && (flags & O_ACCMODE) == O_RDONLY)
     return -EINVAL;
   fd = vfs_fd_reserve();
   if (fd < 0)
     return fd;
-  dentry = vfs_resolve_path(path, flags & O_CREAT);
-  if (!dentry) {
-    ret = -ENOENT;
-    goto release_fd;
-  }
+  ret = vfs_resolve_open_path(path, flags, &dentry, &created);
+  if (ret != 0) goto release_fd;
   ret = vfs_dentry_get(dentry);
   if (ret != 0) goto release_fd;
   pinned = true;
@@ -976,7 +986,8 @@ int nos_open(const char *path, int flags, ...)
   file->f_path.mnt = NULL;
   file->f_inode = dentry->d_inode;
   file->f_op = dentry->d_inode->i_fop;
-  file->f_flags = flags;
+  /* The inode create operation has already performed exclusive creation. */
+  file->f_flags = created ? flags & ~(O_CREAT | O_EXCL) : flags;
   if (flags & O_APPEND) {
     file->f_pos = file->f_inode->i_size;
   }

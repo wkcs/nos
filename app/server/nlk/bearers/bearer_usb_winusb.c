@@ -9,6 +9,7 @@
 #include <kernel/device.h>
 #include <kernel/errno.h>
 #include <kernel/clk.h>
+#include <drivers/usb/usb_winusb.h>
 #include <string.h>
 #include "../include/nlk_bearers.h"
 
@@ -16,11 +17,21 @@
 
 static struct nlk_winusb_bearer *g_active_winusb;
 
+static void winusb_refresh_session(struct nlk_winusb_bearer *wb)
+{
+    if (wb->usb_dev->ops.control != NULL) {
+        uint32_t session = wb->bearer.session_generation;
+        (void)wb->usb_dev->ops.control(wb->usb_dev, USB_WINUSB_CTRL_GET_SESSION, &session);
+        wb->bearer.session_generation = session;
+    }
+}
+
 /* Optional EP0 vendor callback compatibility: feeds control payload into NLK router */
 static void nlk_winusb_ep0_callback(uint8_t *buf, size_t size)
 {
     if (g_active_winusb != NULL && buf != NULL &&
         size >= sizeof(struct nlk_pkt_hdr) && size <= NLK_MAX_PACKET_SIZE) {
+        winusb_refresh_session(g_active_winusb);
         (void)nlk_bearer_rx_packet(&g_active_winusb->bearer, buf, (uint16_t)size);
     }
 }
@@ -116,6 +127,8 @@ int nlk_winusb_bearer_poll_rx(struct nlk_winusb_bearer *wb,
         max_len < sizeof(struct nlk_pkt_hdr)) {
         return -EINVAL;
     }
+
+    winusb_refresh_session(wb);
 
     body_timeout_ms = (wb->timeout_ms >= NLK_WINUSB_TIMEOUT_MS) ?
                       wb->timeout_ms : NLK_WINUSB_TIMEOUT_MS;

@@ -10,7 +10,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <uapi/nos/nlk.h>
-#include <nos/nlk_caps.h>
+#include <nos/keyboard_engine.h>
 
 #define IS_FN(code)        ((code) == KC_FN)
 #define IS_PN(code)        ((code) == KC_PN)
@@ -413,6 +413,7 @@ struct keyboard_light_layer_default {
 struct keyboard_profile {
     const char                               *name;
     const char                               *hardware_id;       /* Stable model/revision/layout ID */
+    const char *storage_device;           /* Device expected at the configuration mount. */
     uint8_t                                   rows;
     uint8_t                                   cols;
     uint8_t                                   key_count;
@@ -475,9 +476,12 @@ enum ks_ctrl_cmd {
     KS_CTRL_GET_INDICATORS,
 };
 
+struct kb_effect_definition;
 struct keyboard_light_layer_state {
     struct nlk_kb_light_layer layer;
     nlk_kb_effect_render_fn_t render;
+    const struct kb_effect_definition *definition;
+    struct kb_effect_parameters parameters;
     void *priv;
     bool active;
 };
@@ -491,32 +495,6 @@ struct keyboard_light_state {
 
 void keyboard_server_get_light_state(struct keyboard_light_state *state);
 
-/* Persistent Storage Format for Flash Filesystem */
-#define KS_CONFIG_MAGIC             0x4E4B4346UL /* "NKCF" */
-#define KS_CONFIG_VERSION           2U
-#define KS_PROFILE_MAX_SLOTS        4U
-
-struct keyboard_stored_profile {
-    uint32_t magic;                    /* KS_CONFIG_MAGIC */
-    uint16_t version;                  /* KS_CONFIG_VERSION */
-    uint8_t  slot_id;                  /* 0..KS_PROFILE_MAX_SLOTS-1 */
-    uint8_t  key_count;                /* Total keys */
-    uint8_t  layer_count;              /* Total layers */
-    uint8_t  active_layout_id;         /* Layout ID */
-    uint8_t  reserved[2];
-    struct nlk_kb_params       params; /* Parameters */
-    struct nlk_kb_light_cfg    light;  /* Lighting */
-    struct nlk_kb_zone_light_cfg zone_cfgs[NLK_KB_MAX_LIGHT_ZONES];
-    uint8_t  keymap[NLK_KB_MAX_LAYERS][NLK_KB_MAX_KEYS];
-    struct nlk_kb_key_action_chain action_chains[NLK_KB_MAX_LAYERS][NLK_KB_MAX_KEYS];
-    uint32_t crc32;
-} __attribute__((packed));
-
 void keyboard_server_register_profile(const struct keyboard_profile *profile);
-int keyboard_config_save_profile(uint8_t slot_id);
-int keyboard_config_load_profile(uint8_t slot_id);
-int keyboard_config_switch_profile(uint8_t slot_id);
-uint8_t keyboard_config_get_active_slot(void);
-uint8_t keyboard_config_get_saved_mask(void);
 
 #endif /* __NOS_KEYBOARD_H__ */
