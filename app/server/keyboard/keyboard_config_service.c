@@ -9,7 +9,10 @@
 #include <uapi/nos/errno.h>
 #include <string.h>
 
-static void changed(struct keyboard_config_service *s, uint8_t kind)
+#define KB_CONFIG_SAVE_DELAY_MS 5000U
+#define KB_CONFIG_SAVE_MAX_DELAY_MS 30000U
+
+static void configuration_changed(struct keyboard_config_service *s, uint8_t kind)
 {
     s->generation++;
     if (kind == KB_STORE_BASE) {
@@ -18,6 +21,10 @@ static void changed(struct keyboard_config_service *s, uint8_t kind)
     if (kind == KB_STORE_LIGHT) {
         s->light_epoch++;
     }
+}
+
+static void schedule_selection_write(struct keyboard_config_service *s)
+{
     if (!s->pending) {
         s->first_dirty = s->now;
     }
@@ -98,7 +105,6 @@ int kb_config_begin_edit(struct keyboard_config_service *s, uint8_t kind, char *
     s->draft_length = s->draft_capacity = rc;
     s->kind = kind;
     s->draft_synced = true;
-    s->draft_enabled = s->selection.light_enabled;
     s->draft_applied = false;
     strcpy(s->source, id);
     s->source_revision = revision;
@@ -385,7 +391,8 @@ static int select_object(struct keyboard_config_service *s, uint8_t kind, const 
         ref->revision = entry->revision;
         memset(ref->id, 0, sizeof(ref->id));
         strcpy(ref->id, id);
-        changed(s, kind);
+        configuration_changed(s, kind);
+        schedule_selection_write(s);
     }
     kfree(data);
     return rc;
@@ -453,24 +460,17 @@ static int run(struct keyboard_config_service *s, uint8_t verb, const char *targ
         if (s->selection.light_enabled == enabled) {
             return 0;
         }
-        if (s->lease && s->kind == KB_STORE_LIGHT && s->draft_applied) {
-            rc = kb_config_end_edit(s);
-            if (rc) {
-                return rc;
-            }
-        }
         s->selection.light_enabled = enabled;
         mutex_lock(s->keyboard_lock);
-        s->keyboard->light_cfg.enable = s->selection.light_enabled;
+        s->keyboard->light_cfg.enable = enabled;
         if (s->keyboard->light_cb) {
             s->keyboard->light_cb(&s->keyboard->light_cfg, NULL, s->keyboard->indicator_leds,
                                   s->keyboard->light_priv);
         }
         mutex_unlock(s->keyboard_lock);
-        if (s->lease && s->kind == KB_STORE_LIGHT) {
-            s->draft_applied = false;
-        }
-        changed(s, KB_STORE_LIGHT);
+        /* The global switch changes neither the selected scene nor its edit epoch. */
+        s->generation++;
+        schedule_selection_write(s);
         return 0;
     }
     case NLK_KB_RUN_MACRO_PLAY:
@@ -615,6 +615,16 @@ struct kb_config_operation *kb_config_operation_alloc(struct keyboard_config_ser
     }
     return NULL;
 }
+static struct kb_store_selection object_transaction_selection(
+    const struct keyboard_config_service *s)
+{
+    struct kb_store_selection selection = s->selection;
+
+    /* Publish current object references while the global switch waits for its own flush. */
+    selection.light_enabled = s->store.selection.light_enabled;
+    return selection;
+}
+
 static int remove_object(struct keyboard_config_service *s, struct kb_config_operation *op)
 {
     size_t i;
@@ -643,11 +653,13 @@ static int remove_object(struct keyboard_config_service *s, struct kb_config_ope
         return -EBUSY;
     }
     if (s->pending) {
-        rc = kb_store_persist_selection(&s->store, &s->selection);
+        struct kb_store_selection selection = object_transaction_selection(s);
+
+        rc = kb_store_persist_selection(&s->store, &selection);
         if (rc) {
             return rc;
         }
-        s->pending = false;
+        s->pending = s->selection.light_enabled != s->store.selection.light_enabled;
         s->last_write = s->now;
     }
     rc = kb_store_delete(&s->store, op->kind, op->target, op->expected);
@@ -660,7 +672,8 @@ static int remove_object(struct keyboard_config_service *s, struct kb_config_ope
 static int save_draft(struct keyboard_config_service *s, struct kb_config_operation *op)
 {
     const struct kb_store_entry *entry;
-    struct kb_store_selection selection = s->selection;
+    struct kb_store_selection selection = object_transaction_selection(s);
+    bool enabled = s->selection.light_enabled;
     uint64_t epoch = kb_config_epoch(s, s->kind);
     int rc;
 
@@ -671,9 +684,6 @@ static int save_draft(struct keyboard_config_service *s, struct kb_config_operat
     if (rc) {
         return rc;
     }
-    if (s->kind == KB_STORE_LIGHT) {
-        selection.light_enabled = s->draft_enabled;
-    }
     rc = kb_store_save(&s->store, s->kind, op->target, op->expected, s->draft, s->draft_length,
                        &selection);
     if (rc) {
@@ -683,8 +693,9 @@ static int save_draft(struct keyboard_config_service *s, struct kb_config_operat
     op->ref.revision = entry->revision;
     strcpy(op->ref.id, entry->id);
     s->selection = s->store.selection;
-    changed(s, s->kind);
-    s->pending = false;
+    s->selection.light_enabled = enabled;
+    configuration_changed(s, s->kind);
+    s->pending = enabled != s->store.selection.light_enabled;
     s->last_write = s->now;
     s->write_error = false;
     s->draft_applied = false;
@@ -858,8 +869,9 @@ void keyboard_config_service_poll(struct keyboard_config_service *s, uint32_t no
         kb_config_end_edit(s);
     }
     if (s->pending && (int32_t)(now - s->retry_at) >= 0 &&
-        (uint32_t)(now - s->last_write) >= 5000 &&
-        ((uint32_t)(now - s->last_dirty) >= 5000 || (uint32_t)(now - s->first_dirty) >= 30000)) {
+        (uint32_t)(now - s->last_write) >= KB_CONFIG_SAVE_DELAY_MS &&
+        ((uint32_t)(now - s->last_dirty) >= KB_CONFIG_SAVE_DELAY_MS ||
+         (uint32_t)(now - s->first_dirty) >= KB_CONFIG_SAVE_MAX_DELAY_MS)) {
         static const uint32_t retries[] = {5000, 15000, 60000};
         rc = kb_store_persist_selection(&s->store, &s->selection);
         s->write_error = rc != 0;

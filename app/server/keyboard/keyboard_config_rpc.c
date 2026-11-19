@@ -379,30 +379,6 @@ static int handle_edit_patch(struct kb_rpc_call *call)
     return rc;
 }
 
-static int handle_edit_enable(struct kb_rpc_call *call)
-{
-    struct keyboard_config_service *s = call->service;
-    uint8_t enabled = GET_U8(&call->request);
-    bool previous = s->draft_enabled;
-    int rc;
-
-    if (!request_complete(&call->request) || s->kind != KB_STORE_LIGHT || enabled > 1 ||
-        kb_config_commit_pending(s)) {
-        return -EINVAL;
-    }
-    if (s->edit_epoch != s->light_epoch) {
-        return -ESTALE;
-    }
-    s->draft_enabled = enabled != 0;
-    rc = kb_config_apply_draft(s);
-    if (rc) {
-        s->draft_enabled = previous;
-        return rc;
-    }
-    PUT_U64(&call->response, ++s->draft_revision);
-    return 0;
-}
-
 struct kb_operation_request {
     uint64_t nonce;
     uint64_t expected;
@@ -576,8 +552,6 @@ static int dispatch_edit(struct kb_rpc_call *call)
     switch (call->opcode) {
     case NLK_KB_V2_EDIT_PATCH:
         return handle_edit_patch(call);
-    case NLK_KB_V2_EDIT_SET_ENABLED:
-        return handle_edit_enable(call);
     case NLK_KB_V2_EDIT_READ:
         return handle_edit_read(call);
     case NLK_KB_V2_EDIT_ABORT:
@@ -635,7 +609,6 @@ static int dispatch(struct kb_rpc_call *call)
     case NLK_KB_V2_RESULT:
         return handle_result(call);
     case NLK_KB_V2_EDIT_PATCH:
-    case NLK_KB_V2_EDIT_SET_ENABLED:
     case NLK_KB_V2_EDIT_ABORT:
     case NLK_KB_V2_EDIT_KEEPALIVE:
     case NLK_KB_V2_EDIT_READ:

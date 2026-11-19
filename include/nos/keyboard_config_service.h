@@ -37,8 +37,7 @@ struct keyboard_config_service {
     uint32_t lease_deadline, now, first_dirty, last_dirty, last_write, retry_at;
     uint8_t kind, retry_count, storage_state;
     int16_t storage_error;
-    bool initialized, ready, read_only, pending, write_error, draft_applied, draft_enabled,
-        draft_synced;
+    bool initialized, ready, read_only, pending, write_error, draft_applied, draft_synced;
     char source[33];
     uint16_t edit_owner;
     uint32_t edit_session;

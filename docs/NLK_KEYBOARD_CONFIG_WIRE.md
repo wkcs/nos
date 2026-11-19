@@ -20,7 +20,7 @@ at record boundaries. Negative i16 errno is carried by NLK error responses.
 | 04 READ | u8 resource, str ID (empty permitted for compiled layout), u64 revision, u8 section, u32 offset, u16 max_bytes | u64 revision, u32 total, u32 offset, bytes |
 | 05 EDIT_BEGIN | u8 kind, str source ID, u64 source_revision, u64 expected_epoch | u64 lease, u64 draft_revision, u32 ttl_ms |
 | 06 EDIT_PATCH | u64 lease, u64 expected_draft_revision, u16 offset, u16 remove_length, records | u64 draft_revision |
-| 07 EDIT_SET_ENABLED | u64 lease, u64 expected_draft_revision, u8 enabled | u64 draft_revision |
+| 07 Reserved | — | — |
 | 08 EDIT_COMMIT | u64 lease, u64 expected_draft_revision, u8 mode, str destination, u64 expected_dest_revision, u64 nonce | u64 operation |
 | 09 EDIT_ABORT | u64 lease | empty |
 | 0A EDIT_KEEPALIVE | u64 lease | u32 ttl_ms |
@@ -87,8 +87,8 @@ without playing or injecting keys; RUN starts playback explicitly.
 One lease is shared by all object kinds and belongs to source address, bearer,
 and connection epoch. TTL is60000ms; clients renew at15s. Empty BEGIN source
 uses the current saved base/light, or a new empty macro. Base/light epochs
-reject conflicting physical activation. Physical global switches revoke an
-applied light edit, restore saved layers, then apply their runtime action.
+reject conflicting physical profile selection. The global light switch leaves
+the light epoch and any active edit unchanged.
 
 A complete valid PATCH immediately updates runtime RAM and returns the next
 revision. It does not write Flash, change the selected saved reference, or mark
@@ -97,10 +97,8 @@ incomplete document: retain bytes in the draft, keep last valid runtime and set
 STATE bit5 until valid. Allocation failure rolls back draft bytes/revision and
 runtime. Clients show validation feedback separately from uncertain transport.
 
-EDIT_SET_ENABLED is available only under a light lease; it changes global RAM
-enable and draft revision without writing Flash. COMMIT includes that enable in
-the aggregate. ABORT, expiry and disconnect release the draft before reloading
-the selected saved runtime. No duplicate committed light snapshot is retained.
+ABORT, expiry and disconnect release the draft before reloading the selected
+saved runtime, keeping the current global light switch state.
 
 COMMIT validates the entire document and referenced objects. mode0 overwrites
 exactly expected_dest_revision; mode1 requires a new ID and expected revision0.
@@ -115,7 +113,10 @@ RUN verbs: 1 select_base(str ID), 2 select_light(str ID), 3 base_next,
 8 macro_play(str ID), 9 macro_stop. Next/previous visit saved configurations
 only. An empty macro target plays the current new macro draft; a matching source
 ID plays its edited RAM bytes. Physical/runtime RUN changes may mark aggregate
-state pending; editing controls use lease op7 instead.
+state pending. Verb 7 and the physical light switch update global status
+immediately and defer its aggregate write. A profile COMMIT does not flush that
+status early. The worker writes the final state after five seconds of inactivity,
+with a 30-second limit during continuous changes and retry delays on write failure.
 
 RESULT states: 0 queued, 1 runtime applied, 2 committed, 3 failed. RUN remains
 applied; observe STATE pending/error for durability. COMMIT/DELETE finish

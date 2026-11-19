@@ -467,56 +467,56 @@ int main(void)
     assert(keyboard.light_layer_count == 1);
     assert(keyboard.light_layers[0].zone_id == NLK_KB_LIGHT_LAYER_OWN_CFG);
     assert(keyboard.light_layers[0].opacity == 128 && service.store.sequence == sequence);
-    bool saved_enabled = service.selection.light_enabled;
+    uint64_t light_epoch = service.light_epoch;
+    assert(service.selection.light_enabled && service.store.selection.light_enabled);
     start();
-    kb_doc_put(&req, lease, 8);
-    kb_doc_put(&req, revision, 8);
-    kb_doc_put(&req, !saved_enabled, 1);
-    assert(call(7) == 0);
-    revision = read_u64();
-    assert(keyboard.light_cfg.enable != saved_enabled &&
-           service.selection.light_enabled == saved_enabled);
-    assert(!service.pending && service.store.sequence == sequence);
+    kb_doc_put(&req, NLK_KB_RUN_LIGHT_ENABLE, 1);
+    kb_doc_put(&req, 100, 8);
+    kb_doc_put(&req, 0, 1);
+    assert(call(NLK_KB_V2_RUN) == 0);
+    operation = read_u64();
+    keyboard_config_service_poll(&service, 3);
+    start();
+    kb_doc_put(&req, operation, 8);
+    assert(call(NLK_KB_V2_RESULT) == 0 && response[0] == NLK_KB_OPERATION_APPLIED);
+    assert(!keyboard.light_cfg.enable && !service.selection.light_enabled);
+    assert(service.store.selection.light_enabled && service.pending);
+    assert(service.lease == lease && service.draft_revision == revision &&
+           service.light_epoch == light_epoch);
+    assert(keyboard.light_layer_count == 1 && service.store.sequence == sequence);
     abort_edit(lease);
-    assert(keyboard.light_layer_count == 0 && keyboard.light_cfg.enable == saved_enabled);
+    assert(keyboard.light_layer_count == 0 && !keyboard.light_cfg.enable);
 
     lease = begin(KB_STORE_LIGHT);
     layer_length = light_layer(bytes, sizeof(bytes), "comet", 0, 255, "");
     revision = patch(lease, 1, service.draft_length, 0, bytes, layer_length);
-    start();
-    kb_doc_put(&req, lease, 8);
-    kb_doc_put(&req, revision, 8);
-    kb_doc_put(&req, 0, 1);
-    assert(call(7) == 0);
-    revision = read_u64();
     commit(lease, revision, "lights", 0, 43);
-    keyboard_config_service_poll(&service, 3);
-    assert(!service.selection.light_enabled && !service.store.selection.light_enabled);
+    keyboard_config_service_poll(&service, 4);
+    assert(!service.selection.light_enabled && service.store.selection.light_enabled);
     assert(!strcmp(service.selection.light.id, "lights") && keyboard.light_layer_count == 1);
     sequence = service.store.sequence;
 
-    /* Deleting the last layer immediately produces an empty scene; abort reloads it. */
+    /* Both switches leave live layers alone and coalesce their aggregate write. */
     lease = begin(KB_STORE_LIGHT);
     offset = find_record(0x11, &record_length);
     revision = patch(lease, 1, offset, record_length, NULL, 0);
-    assert(keyboard.light_layer_count == 0 && service.store.sequence == sequence);
-    abort_edit(lease);
-    assert(keyboard.light_layer_count == 1);
-
-    /* A physical global switch restores saved layers before revoking the RAM edit. */
-    lease = begin(KB_STORE_LIGHT);
-    offset = find_record(0x11, &record_length);
-    patch(lease, 1, offset, record_length, NULL, 0);
     assert(keyboard.light_layer_count == 0);
     assert(keyboard_config_service_queue(&service, 10, NULL) == 0);
-    keyboard_config_service_poll(&service, 4);
-    assert(!service.lease && keyboard.light_layer_count == 1);
-    assert(service.selection.light_enabled && keyboard.light_cfg.enable);
-    assert(keyboard_config_service_queue(&service, 10, NULL) == 0);
     keyboard_config_service_poll(&service, 5);
+    assert(service.lease == lease && service.draft_revision == revision);
+    assert(keyboard.light_layer_count == 0 && keyboard.light_cfg.enable);
+    assert(keyboard_config_service_queue(&service, 10, NULL) == 0);
+    keyboard_config_service_poll(&service, 6);
     assert(!service.selection.light_enabled && service.store.sequence == sequence);
-    keyboard_config_service_poll(&service, 6000);
-    assert(!service.pending);
+    keyboard_config_service_poll(&service, 5005);
+    assert(service.pending && service.store.selection.light_enabled);
+    assert(service.store.sequence == sequence);
+    keyboard_config_service_poll(&service, 5006);
+    assert(!service.pending && !service.store.selection.light_enabled);
+    sequence++;
+    assert(service.store.sequence == sequence);
+    abort_edit(lease);
+    assert(keyboard.light_layer_count == 1 && !keyboard.light_cfg.enable);
 
     /* Invalid intermediate multipart bytes never replace the last valid runtime. */
     lease = begin(KB_STORE_LIGHT);

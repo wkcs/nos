@@ -425,8 +425,7 @@ static int light_document(struct keyboard_config_service *s, const void *body, s
     }
     if (apply) {
         memcpy(keyboard->effect_parameters, parameters, sizeof(parameters));
-        keyboard->light_cfg.enable =
-            body == s->draft && s->lease ? s->draft_enabled : s->selection.light_enabled;
+        keyboard->light_cfg.enable = s->selection.light_enabled;
         nlk_cap_keyboard_set_light_layers(keyboard, layers, count);
         if (keyboard->light_cb != NULL) {
             keyboard->light_cb(&keyboard->light_cfg, NULL, keyboard->indicator_leds,
