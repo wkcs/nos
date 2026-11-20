@@ -261,24 +261,33 @@ char *strreplace(char *s, char old, char new)
 
 int strncmp(const char *cs, const char *ct, size_t count)
 {
-    register signed char __res = 0;
+    const unsigned char *su1 = (const unsigned char *)cs;
+    const unsigned char *su2 = (const unsigned char *)ct;
+    int res = 0;
 
-    while (count)
-    {
-        if ((__res = *cs - *ct++) != 0 || !*cs++)
+    while (count) {
+        if ((res = (int)*su1 - (int)*su2) != 0 || *su1 == '\0') {
             break;
-        count --;
+        }
+        su1++;
+        su2++;
+        count--;
     }
 
-    return __res;
+    return res;
 }
 
 int strcmp(const char *cs, const char *ct)
 {
-    while (*cs && *cs == *ct)
-        cs++, ct++;
+    const unsigned char *su1 = (const unsigned char *)cs;
+    const unsigned char *su2 = (const unsigned char *)ct;
 
-    return (*cs - *ct);
+    while (*su1 != '\0' && *su1 == *su2) {
+        su1++;
+        su2++;
+    }
+
+    return (int)*su1 - (int)*su2;
 }
 
 char *strchr(const char *s, int c)

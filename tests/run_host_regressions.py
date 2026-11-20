@@ -100,6 +100,7 @@ TESTS = [
     ("run_nuc472_bus_test.py",),
     ("run_nuc472_periph_test.py",),
     ("run_shell_ext_cmd_test.py",),
+    ("run_string_cmp_test.py",),
 ]
 
 
