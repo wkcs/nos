@@ -23,10 +23,22 @@ static int execute(const struct key_action_context *context, const void *argumen
     return KEY_ACTION_DROP;
 }
 
+/* 上报宏播放中状态与当前步序号 */
+static bool query_state(const struct nlk_keyboard_ctx *keyboard, struct kb_action_state *out)
+{
+    if (keyboard == NULL || out == NULL) {
+        return false;
+    }
+    out->active = keyboard->macro_playing != 0U;
+    out->value = keyboard->macro_play_index;
+    return true;
+}
+
 const struct kb_action_definition kb_action_macro_play = {
     .id = "macro_play",
     .description = "Play keyboard macro",
     .parameters = parameters,
     .parameter_count = 1,
     .execute = execute,
+    .query_state = query_state,
 };

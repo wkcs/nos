@@ -20,12 +20,11 @@ static void kb_render_comet(const struct nlk_kb_light_cfg *cfg, uint8_t x, uint8
 static const struct kb_parameter_definition parameters[] = {
     {.id = 10, .type = 1, .minimum = 1, .maximum = 30, .default_value = 12, .name = "trail_length"},
 };
-static void render_configured(const struct nlk_kb_light_cfg *cfg,
-                              const struct kb_effect_parameters *params, uint8_t x, uint8_t y,
-                              uint32_t phase, uint8_t rgb[3], void *state)
+static void render_configured(const struct kb_effect_render_context *ctx, uint8_t rgb[3],
+                              void *state)
 {
-    uint32_t distance = (phase - (uint32_t)x * NK60_EFFECT_COLUMN_PHASE) % NK60_EFFECT_PERIOD;
-    uint32_t trail = (uint32_t)kb_effect_parameter_u8(params, 10, 12) * 256;
+    uint32_t distance = (ctx->phase - (uint32_t)ctx->x * NK60_EFFECT_COLUMN_PHASE) % NK60_EFFECT_PERIOD;
+    uint32_t trail = (uint32_t)kb_effect_parameter_u8(ctx->parameters, 10, 12) * 256;
     uint32_t level = 0;
     (void)state;
     if (distance > NK60_EFFECT_PERIOD - 512U) {
@@ -33,7 +32,7 @@ static void render_configured(const struct nlk_kb_light_cfg *cfg,
     } else if (distance < trail) {
         level = (trail - distance) * 255U / trail;
     }
-    nk60_effect_color(cfg, x, y, phase, rgb, NULL);
+    nk60_effect_color(ctx->cfg, ctx->x, ctx->y, ctx->phase, rgb, NULL);
     nk60_effect_scale(rgb, (uint8_t)(level * level / 255U));
 }
 

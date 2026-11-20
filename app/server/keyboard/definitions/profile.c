@@ -84,3 +84,13 @@ uint8_t kb_effect_parameter_u8(const struct kb_effect_parameters *parameters, ui
     }
     return fallback;
 }
+
+/* 读取动作透传参数中的单字节数值，缺失或越界时返回 fallback */
+uint8_t kb_trigger_arg_u8(const struct kb_light_trigger_data *trigger, size_t offset,
+                          uint8_t fallback)
+{
+    if (trigger == NULL || offset >= trigger->arg_length) {
+        return fallback;
+    }
+    return trigger->arguments[offset];
+}

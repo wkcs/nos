@@ -181,8 +181,8 @@ static size_t find_record(uint16_t wanted, size_t *record_length)
     return 0;
 }
 
-static size_t light_layer(uint8_t *bytes, size_t capacity, const char *effect, int16_t z,
-                          uint8_t opacity, const char *trigger)
+static size_t light_layer_mode(uint8_t *bytes, size_t capacity, const char *effect, int16_t z,
+                               uint8_t opacity, uint8_t activation, const char *trigger)
 {
     struct kb_doc_writer writer;
     kb_doc_writer_init(&writer, bytes, capacity);
@@ -193,12 +193,18 @@ static size_t light_layer(uint8_t *bytes, size_t capacity, const char *effect, i
     kb_doc_put(&writer, 5, 1);
     kb_doc_put(&writer, (uint16_t)z, 2);
     kb_doc_put(&writer, opacity, 1);
-    kb_doc_put(&writer, 0, 1);
+    kb_doc_put(&writer, activation, 1);
     kb_doc_str(&writer, trigger);
     kb_doc_str(&writer, effect);
     kb_doc_end(&writer, mark);
     assert(writer.error == 0);
     return writer.used;
+}
+
+static size_t light_layer(uint8_t *bytes, size_t capacity, const char *effect, int16_t z,
+                          uint8_t opacity, const char *trigger)
+{
+    return light_layer_mode(bytes, capacity, effect, z, opacity, 0, trigger);
 }
 
 int main(void)
@@ -706,6 +712,151 @@ int main(void)
         assert(strcmp(synced_name, "\xe5\x8a\x9e\xe5\x85\xac\xe6\xa8\xa1\xe5\xbc\x8f") == 0);
         assert(strcmp(synced_desc, "note") == 0);
     }
+
+    /* 宏引用阻塞删除时不置位 write_error，持有宏草稿租约且无基础配置引用时可正常删除。 */
+    lease = begin(KB_STORE_MACRO);
+    {
+        struct kb_doc_writer writer;
+        kb_doc_writer_init(&writer, bytes, sizeof(bytes));
+        size_t mark = kb_doc_record(&writer, NLK_KB_TAG_MACRO_STEP);
+        kb_doc_put(&writer, NLK_KB_MACRO_ACT_DELAY_MS, 1);
+        kb_doc_put(&writer, 0, 1);
+        kb_doc_put(&writer, 10, 2);
+        kb_doc_end(&writer, mark);
+        revision = patch(lease, 1, service.draft_length, 0, bytes, writer.used);
+    }
+    operation = commit(lease, revision, "delmacro", 0, 300);
+    keyboard_config_service_poll(&service, service.now + 1);
+    start();
+    kb_doc_put(&req, operation, 8);
+    assert(call(NLK_KB_V2_RESULT) == 0 && response[0] == NLK_KB_OPERATION_COMMITTED);
+    const struct kb_store_entry *delmacro_entry =
+        kb_store_find(&service.store, KB_STORE_MACRO, "delmacro");
+    assert(delmacro_entry != NULL);
+
+    uint8_t saved_key0_rec[64];
+    size_t saved_key0_len = 0;
+    lease = begin(KB_STORE_BASE);
+    offset = find_record(6, &record_length);
+    assert(record_length <= sizeof(saved_key0_rec));
+    memcpy(saved_key0_rec, service.draft + offset, record_length);
+    saved_key0_len = record_length;
+    {
+        struct kb_doc_writer writer;
+        kb_doc_writer_init(&writer, bytes, sizeof(bytes));
+        size_t mark = kb_doc_record(&writer, NLK_KB_TAG_BASE_KEY);
+        kb_doc_put(&writer, 0, 1);
+        kb_doc_put(&writer, 0, 2);
+        kb_doc_put(&writer, 4, 4);
+        kb_doc_put(&writer, 1, 1);
+        kb_doc_str(&writer, "macro_play");
+        kb_doc_put(&writer, 1U + strlen("delmacro"), 2);
+        kb_doc_str(&writer, "delmacro");
+        kb_doc_end(&writer, mark);
+        revision = patch(lease, 1, offset, record_length, bytes, writer.used);
+    }
+    commit(lease, revision, "edited", kb_store_find(&service.store, KB_STORE_BASE, "edited")->revision,
+           301);
+    keyboard_config_service_poll(&service, service.now + 1);
+
+    start();
+    kb_doc_put(&req, KB_STORE_MACRO, 1);
+    kb_doc_str(&req, "delmacro");
+    kb_doc_put(&req, delmacro_entry->revision, 8);
+    kb_doc_put(&req, 302, 8);
+    assert(call(NLK_KB_V2_DELETE) == 0);
+    operation = read_u64();
+    keyboard_config_service_poll(&service, service.now + 1);
+    start();
+    kb_doc_put(&req, operation, 8);
+    assert(call(NLK_KB_V2_RESULT) == 0 && response[0] == NLK_KB_OPERATION_FAILED);
+    assert((int16_t)(response[1] | (response[2] << 8)) == -EBUSY);
+    assert(!service.write_error);
+
+    lease = begin(KB_STORE_BASE);
+    offset = find_record(6, &record_length);
+    revision = patch(lease, 1, offset, record_length, saved_key0_rec, saved_key0_len);
+    commit(lease, revision, "edited", kb_store_find(&service.store, KB_STORE_BASE, "edited")->revision,
+           303);
+    keyboard_config_service_poll(&service, service.now + 1);
+
+    /* 在持有宏草稿租约的情况下，删除未被引用的宏也应正常成功（不应因 s->draft 误判为 -EBUSY）。 */
+    start();
+    kb_doc_put(&req, KB_STORE_MACRO, 1);
+    kb_doc_str(&req, "delmacro");
+    kb_doc_put(&req, UINT64_MAX, 8);
+    kb_doc_put(&req, 0, 8);
+    assert(call(NLK_KB_V2_EDIT_BEGIN) == 0);
+    lease = read_u64();
+    start();
+    kb_doc_put(&req, KB_STORE_MACRO, 1);
+    kb_doc_str(&req, "delmacro");
+    kb_doc_put(&req, delmacro_entry->revision, 8);
+    kb_doc_put(&req, 304, 8);
+    assert(call(NLK_KB_V2_DELETE) == 0);
+    operation = read_u64();
+    keyboard_config_service_poll(&service, service.now + 1);
+    start();
+    kb_doc_put(&req, operation, 8);
+    assert(call(NLK_KB_V2_RESULT) == 0 && response[0] == NLK_KB_OPERATION_COMMITTED);
+    assert(!service.write_error && kb_store_find(&service.store, KB_STORE_MACRO, "delmacro") == NULL);
+    abort_edit(lease);
+
+    /* 绑定 key_chord 到 "edited" 的按键 0，测试 PULSE 触发参数透传。 */
+    lease = begin(KB_STORE_BASE);
+    offset = find_record(6, &record_length);
+    {
+        struct kb_doc_writer writer;
+        kb_doc_writer_init(&writer, bytes, sizeof(bytes));
+        size_t mark = kb_doc_record(&writer, NLK_KB_TAG_BASE_KEY);
+        kb_doc_put(&writer, 0, 1);
+        kb_doc_put(&writer, 0, 2);
+        kb_doc_put(&writer, 4, 4);
+        kb_doc_put(&writer, 1, 1);
+        kb_doc_str(&writer, "key_chord");
+        kb_doc_put(&writer, 1, 2);
+        kb_doc_put(&writer, 2, 1);
+        kb_doc_end(&writer, mark);
+        revision = patch(lease, 1, offset, record_length, bytes, writer.used);
+    }
+    commit(lease, revision, "edited", kb_store_find(&service.store, KB_STORE_BASE, "edited")->revision,
+           305);
+    keyboard_config_service_poll(&service, service.now + 1);
+
+    /* 验证 STATE/PULSE 激活方式、HID Caps Lock 指示灯同步以及动作参数向灯效透传。 */
+    lease = begin(KB_STORE_LIGHT);
+    layer_length =
+        light_layer_mode(bytes, sizeof(bytes), "static", -1, 255, NLK_KB_LIGHT_STATE, "caps_lock");
+    revision = patch(lease, 1, service.draft_length, 0, bytes, layer_length);
+    layer_length =
+        light_layer_mode(bytes, sizeof(bytes), "ripple", 0, 255, NLK_KB_LIGHT_PULSE, "key_chord");
+    revision = patch(lease, revision, service.draft_length, 0, bytes, layer_length);
+    assert(keyboard.light_layer_count == 3);
+    assert(!keyboard.light_layer_active[1] && !keyboard.light_layer_active[2]);
+    nlk_cap_keyboard_set_indicators(&keyboard, NLK_KB_LED_CAPS);
+    assert(keyboard.light_layer_active[1]);
+    assert(keyboard.light_runtime->triggers[1].value == NLK_KB_LED_CAPS);
+    nlk_cap_keyboard_set_indicators(&keyboard, 0U);
+    assert(!keyboard.light_layer_active[1]);
+
+    uint32_t chord_keys[2] = {1U, 0U};
+    assert(nlk_cap_keyboard_update_local_keys(&keyboard, chord_keys, 61) == 0);
+    assert(keyboard.light_layer_active[2]);
+    uint32_t first_pulse_seq = keyboard.light_runtime->triggers[2].seq;
+    assert(first_pulse_seq != 0U);
+    assert(keyboard.light_runtime->triggers[2].key_index == 0U);
+    assert(keyboard.light_runtime->triggers[2].key_x == kb_selected_layout.keys[0].col);
+    assert(keyboard.light_runtime->triggers[2].key_y == kb_selected_layout.keys[0].row);
+    assert(keyboard.light_runtime->triggers[2].arg_length == 1U);
+    assert(keyboard.light_runtime->triggers[2].arguments[0] == 2U);
+    chord_keys[0] = 0U;
+    assert(nlk_cap_keyboard_update_local_keys(&keyboard, chord_keys, 61) == 0);
+    chord_keys[0] = 1U;
+    assert(nlk_cap_keyboard_update_local_keys(&keyboard, chord_keys, 61) == 0);
+    assert(keyboard.light_runtime->triggers[2].seq > first_pulse_seq);
+    chord_keys[0] = 0U;
+    assert(nlk_cap_keyboard_update_local_keys(&keyboard, chord_keys, 61) == 0);
+    abort_edit(lease);
 
     /* Publication ambiguity is reported, recovered, and never replaced with defaults. */
     lease = begin(KB_STORE_LIGHT);

@@ -5,8 +5,9 @@
 #ifndef __NOS_USB_HID_H__
 #define __NOS_USB_HID_H__
 
-#define USB_HID_CTRL_GET_SESSION 1
-#define HID_REPORT_ID_KEYBOARD1  1U
-#define HID_REPORT_ID_MEDIA      4U
+#define USB_HID_CTRL_GET_SESSION    1
+#define USB_HID_CTRL_GET_INDICATORS 2
+#define HID_REPORT_ID_KEYBOARD1     1U
+#define HID_REPORT_ID_MEDIA         4U
 
 #endif

@@ -177,7 +177,7 @@ static void test_allocation_failures(void)
     struct nlk_keyboard_ctx keyboard;
     unsigned int before = allocated_blocks;
 
-    for (int i = 0; i < 4; i++) {
+    for (int i = 0; i < 5; i++) {
         allocations_until_failure = i;
         assert(nlk_cap_keyboard_init_sized(NULL, &keyboard, 1, 2, 2, 2, NULL, NULL) == -ENOMEM);
         assert(allocated_blocks == before);
@@ -394,11 +394,23 @@ static void capture_light_change(const struct nlk_kb_light_cfg *cfg,
     (*count)++;
 }
 
+static bool mock_action_state(const struct nlk_keyboard_ctx *ctx, uint32_t trigger,
+                              struct kb_action_state *out, void *priv)
+{
+    (void)priv;
+    if (trigger == nlk_fnv1a_24("caps_state")) {
+        out->active = (ctx->indicator_leds & NLK_KB_LED_CAPS) != 0U;
+        out->value = ctx->indicator_leds;
+        return true;
+    }
+    return false;
+}
+
 static void test_light_activation(void)
 {
     struct nlk_keyboard_ctx keyboard;
     struct action_probe pass = {.result = KEY_ACTION_PASS};
-    struct nlk_kb_light_layer layers[2] = {
+    struct nlk_kb_light_layer layers[4] = {
         {.zone_id = NLK_KB_LIGHT_LAYER_OWN_CFG,
          .width = 1,
          .height = 1,
@@ -408,6 +420,16 @@ static void test_light_activation(void)
          .width = 1,
          .height = 1,
          .activation = NLK_KB_LIGHT_TOGGLE,
+         .cfg = {.enable = 1}},
+        {.zone_id = NLK_KB_LIGHT_LAYER_OWN_CFG,
+         .width = 1,
+         .height = 1,
+         .activation = NLK_KB_LIGHT_STATE,
+         .cfg = {.enable = 1}},
+        {.zone_id = NLK_KB_LIGHT_LAYER_OWN_CFG,
+         .width = 1,
+         .height = 1,
+         .activation = NLK_KB_LIGHT_PULSE,
          .cfg = {.enable = 1}},
     };
     struct nlk_kb_light_zone_desc zone = {0};
@@ -422,25 +444,38 @@ static void test_light_activation(void)
     assert(nlk_cap_keyboard_register_action(&keyboard, "pulse", "", probe_action, &pass) == 0);
     assert(nlk_cap_keyboard_bind_key_action(&keyboard, 0, 0, "pulse", false) == 0);
     assert(nlk_cap_keyboard_set_light_cb(&keyboard, capture_light_change, NULL, &changes) == 0);
+    nlk_cap_keyboard_set_action_state_cb(&keyboard, mock_action_state, NULL);
     layers[0].trigger = nlk_fnv1a_24("pulse");
     layers[1].trigger = layers[0].trigger;
-    assert(nlk_cap_keyboard_set_light_layers(&keyboard, layers, 2) == 0);
-    assert(!keyboard.light_layer_active[0] && !keyboard.light_layer_active[1]);
+    layers[2].trigger = nlk_fnv1a_24("caps_state");
+    layers[3].trigger = layers[0].trigger;
+    assert(nlk_cap_keyboard_set_light_layers(&keyboard, layers, 4) == 0);
+    assert(!keyboard.light_layer_active[0] && !keyboard.light_layer_active[1] &&
+           !keyboard.light_layer_active[2] && !keyboard.light_layer_active[3]);
+    nlk_cap_keyboard_set_indicators(&keyboard, NLK_KB_LED_CAPS);
+    assert(keyboard.light_layer_active[2] && keyboard.light_runtime->triggers[2].value == NLK_KB_LED_CAPS);
+    nlk_cap_keyboard_set_indicators(&keyboard, 0);
+    assert(!keyboard.light_layer_active[2]);
     assert(nlk_cap_keyboard_update_local_keys(&keyboard, &bitmap, 1) == 0);
-    assert(keyboard.light_layer_active[0] && keyboard.light_layer_active[1]);
+    assert(keyboard.light_layer_active[0] && keyboard.light_layer_active[1] &&
+           keyboard.light_layer_active[3]);
+    uint32_t seq1 = keyboard.light_runtime->triggers[3].seq;
+    assert(seq1 != 0U);
     bitmap = 0;
     assert(nlk_cap_keyboard_update_local_keys(&keyboard, &bitmap, 1) == 0);
-    assert(!keyboard.light_layer_active[0] && keyboard.light_layer_active[1]);
+    assert(!keyboard.light_layer_active[0] && keyboard.light_layer_active[1] &&
+           keyboard.light_layer_active[3]);
     bitmap = 1;
     assert(nlk_cap_keyboard_update_local_keys(&keyboard, &bitmap, 1) == 0);
-    assert(keyboard.light_layer_active[0] && !keyboard.light_layer_active[1]);
+    assert(keyboard.light_layer_active[0] && !keyboard.light_layer_active[1] &&
+           keyboard.light_runtime->triggers[3].seq > seq1);
     nlk_cap_keyboard_release_held_keys(&keyboard);
     assert(!keyboard.light_layer_active[0]);
     assert(changes >= 5);
     previous_changes = changes;
     generation = keyboard.light_layer_generation;
     layers[0].width = 2;
-    assert(nlk_cap_keyboard_set_light_layers(&keyboard, layers, 2) == -EINVAL);
+    assert(nlk_cap_keyboard_set_light_layers(&keyboard, layers, 4) == -EINVAL);
     assert(keyboard.light_layer_generation == generation && keyboard.light_layers[0].width == 1);
     assert(changes == previous_changes);
     layers[0].width = 1;

@@ -34,9 +34,14 @@ struct hid_s {
     uint32_t session;
     bool tx_enabled;
     bool tx_busy;
+    uint8_t set_report_type;
+    uint8_t set_report_id;
+    volatile uint8_t indicator_leds;
     struct nos_msgq hid_mq;
     uint8_t mq_storage[8 * sizeof(struct hid_report)];
 };
+
+static struct hid_s *g_hid_dev;
 
 /* CustomHID_ConfigDescriptor */
 __aligned(4)
@@ -391,6 +396,30 @@ static void dump_report(struct hid_report * report)
     dump_data(report->report,report->size);
 }
 
+/* 从主机下发的 Output Report 中提取标准 5bit 键盘指示灯状态（Num/Caps/Scroll/Compose/Kana） */
+static void _hid_update_leds(struct hid_s *data, uint8_t report_id, const uint8_t *buf, size_t size)
+{
+    uint8_t leds;
+
+    if (data == NULL || buf == NULL || size == 0U) {
+        return;
+    }
+    if (report_id != HID_REPORT_ID_KEYBOARD1 && report_id != 0U) {
+        return;
+    }
+    if (size >= 2U && buf[0] == HID_REPORT_ID_KEYBOARD1) {
+        leds = buf[1] & 0x1FU;
+    } else if (size == 1U) {
+        leds = buf[0] & 0x1FU;
+    } else if (report_id == HID_REPORT_ID_KEYBOARD1) {
+        /* 某些主机在 wValue 指定了 Report ID 但 data stage 发送多字节未带前缀时取首字节 */
+        leds = buf[0] & 0x1FU;
+    } else {
+        return;
+    }
+    __atomic_store_n(&data->indicator_leds, leds, __ATOMIC_RELEASE);
+}
+
 static int _ep_out_handler(ufunction_t func, size_t size)
 {
     struct hid_s *data;
@@ -399,6 +428,12 @@ static int _ep_out_handler(ufunction_t func, size_t size)
     data = (struct hid_s *) func->user_data;
 
     if (size != 0) {
+        const uint8_t *raw = (const uint8_t *)data->ep_out->buffer;
+        if (size >= 2U && raw[0] == HID_REPORT_ID_KEYBOARD1) {
+            _hid_update_leds(data, HID_REPORT_ID_KEYBOARD1, raw, size);
+        } else if (size == 1U && data->protocol == 0U) {
+            _hid_update_leds(data, 0U, raw, size);
+        }
         memcpy((void *)&report,(void*)data->ep_out->buffer, size);
         report.size = size-1;
         nos_msgq_send(&data->hid_mq, &report, sizeof(report), NOS_NO_WAIT);
@@ -424,11 +459,9 @@ static int _ep_in_handler(ufunction_t func, size_t size)
 
 static int _hid_set_report_callback(udevice_t device, size_t size)
 {
-    pr_info("_hid_set_report_callback\n");
-
-    if(size != 0)
-    {
-        pr_info("get data\n");
+    if (g_hid_dev != NULL && g_hid_dev->func != NULL && g_hid_dev->func->device == device &&
+        size != 0U && g_hid_dev->set_report_type == HID_REPORT_OUTPUT) {
+        _hid_update_leds(g_hid_dev, g_hid_dev->set_report_id, g_hid_dev->report_buf, size);
     }
 
     dcd_ep0_send_status(device->dcd);
@@ -488,6 +521,8 @@ static int _interface_handler(ufunction_t func, ureq_t setup)
             usbd_ep0_set_stall(func->device);
             break;
         }
+        data->set_report_type = (uint8_t)(setup->wValue >> 8);
+        data->set_report_id = (uint8_t)(setup->wValue & 0xFFU);
 
         usbd_ep0_read(func->device, data->report_buf, setup->wLength, _hid_set_report_callback);
         break;
@@ -532,6 +567,7 @@ static int _function_enable(ufunction_t func)
 
     usbd_io_request(func->device, data->ep_out, &data->ep_out->request);
 
+    __atomic_store_n(&data->indicator_leds, 0U, __ATOMIC_RELEASE);
     mutex_lock(&data->tx_lock);
     data->session++;
     data->tx_busy = false;
@@ -555,6 +591,7 @@ static int _function_disable(ufunction_t func)
 
     pr_info("hid function disable\n");
 
+    __atomic_store_n(&data->indicator_leds, 0U, __ATOMIC_RELEASE);
     mutex_lock(&data->tx_lock);
     data->tx_enabled = false;
     data->tx_busy = false;
@@ -634,12 +671,16 @@ static int _hid_control(struct device *dev, int cmd, void *arg)
     struct hid_s *hid_dev = container_of(dev, struct hid_s, dev);
     int ret = -ENOTCONN;
 
-    if (cmd != USB_HID_CTRL_GET_SESSION || arg == NULL) {
+    if (arg == NULL || (cmd != USB_HID_CTRL_GET_SESSION && cmd != USB_HID_CTRL_GET_INDICATORS)) {
         return -EINVAL;
     }
     mutex_lock(&hid_dev->tx_lock);
     if (hid_dev->tx_enabled && hid_dev->func->device->state == USB_STATE_CONFIGURED) {
-        *(uint32_t *)arg = hid_dev->session;
+        if (cmd == USB_HID_CTRL_GET_SESSION) {
+            *(uint32_t *)arg = hid_dev->session;
+        } else {
+            *(uint8_t *)arg = __atomic_load_n(&hid_dev->indicator_leds, __ATOMIC_ACQUIRE);
+        }
         ret = 0;
     }
     mutex_unlock(&hid_dev->tx_lock);
@@ -670,6 +711,7 @@ static void usb_hid_init(struct ufunction *func)
     hiddev = (struct hid_s *)func->user_data;
 
     hiddev->func = func;
+    g_hid_dev = hiddev;
 
     device_init(&hiddev->dev);
     hiddev->dev.name = "hidd";

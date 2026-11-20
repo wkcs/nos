@@ -35,6 +35,9 @@ struct kb_action_runtime {
     void *context;
     /* Queue work; never perform filesystem I/O in the scanning task. */
     int (*request)(void *context, enum kb_action_request request, const char *target);
+    /* 动作可主动向绑定它的灯效图层推送带参数的触发事件 */
+    void (*emit_light_trigger)(void *context, const char *action_id,
+                               const struct kb_light_trigger_data *trigger);
 };
 struct kb_action_definition {
     const char *id, *description;
@@ -48,13 +51,24 @@ struct kb_action_definition {
      * task; each action owns its event policy and HID pass/drop/transform result. */
     int (*execute)(const struct key_action_context *context, const void *arguments, uint16_t length,
                    const struct kb_action_runtime *runtime);
+    /* 可选：查询该动作关联的当前权威逻辑状态（用于状态同步类灯效图层） */
+    bool (*query_state)(const struct nlk_keyboard_ctx *keyboard, struct kb_action_state *out);
+};
+/* 传给可配置灯效渲染回调的完整上下文 */
+struct kb_effect_render_context {
+    const struct nlk_kb_light_cfg *cfg;
+    const struct kb_effect_parameters *parameters;
+    const struct kb_light_trigger_data *trigger;
+    uint8_t x;
+    uint8_t y;
+    uint32_t phase;
+    uint8_t activation;
 };
 /* Render state belongs to one layer instance and is reset on configuration change.
  * Parameters are a frame-local immutable copy, so preview replacement cannot free
  * memory being consumed by the display thread. */
-typedef void (*kb_configured_render_fn)(const struct nlk_kb_light_cfg *cfg,
-                                        const struct kb_effect_parameters *parameters, uint8_t x,
-                                        uint8_t y, uint32_t phase, uint8_t rgb[3], void *state);
+typedef void (*kb_configured_render_fn)(const struct kb_effect_render_context *ctx,
+                                        uint8_t rgb[3], void *state);
 #define KB_EFFECT_STATE_MAX 32U
 struct kb_effect_definition {
     const char *id, *description;
@@ -70,6 +84,9 @@ struct kb_effect_definition {
 };
 uint8_t kb_effect_parameter_u8(const struct kb_effect_parameters *parameters, uint16_t id,
                                uint8_t fallback);
+/* 读取动作触发上下文中透传的原始参数字节 */
+uint8_t kb_trigger_arg_u8(const struct kb_light_trigger_data *trigger, size_t offset,
+                          uint8_t fallback);
 struct kb_key_geometry {
     uint16_t x, y, width, height;
     uint8_t row, col, led;

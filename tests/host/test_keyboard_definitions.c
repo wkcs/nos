@@ -175,20 +175,54 @@ int main(void)
     }
     {
         const struct kb_effect_definition *comet = NULL;
+        const struct kb_effect_definition *ripple = NULL;
         struct nlk_kb_light_cfg white = {.color_r = 255, .color_g = 255, .color_b = 255};
         struct kb_effect_parameters short_trail = {5, {10, 0, 1, 1, 1}},
-                                    long_trail = {5, {10, 0, 1, 1, 30}};
+                                    long_trail = {5, {10, 0, 1, 1, 30}},
+                                    empty_params = {0};
+        struct kb_effect_render_context rctx = {
+            .cfg = &white,
+            .parameters = &short_trail,
+            .x = 0,
+            .y = 0,
+            .phase = 1000,
+        };
         uint8_t a[3], b[3], again[3], state[KB_EFFECT_STATE_MAX] = {0};
         for (i = 0; i < kb_effect_definition_count; i++) {
             if (!strcmp(kb_effect_definitions[i]->id, "comet")) {
                 comet = kb_effect_definitions[i];
             }
+            if (!strcmp(kb_effect_definitions[i]->id, "ripple")) {
+                ripple = kb_effect_definitions[i];
+            }
         }
         assert(comet && comet->parameter_count == 1 && comet->parameters[0].id == 10);
-        comet->render_configured(&white, &short_trail, 0, 0, 1000, a, state);
-        comet->render_configured(&white, &long_trail, 0, 0, 1000, b, state);
-        comet->render_configured(&white, &short_trail, 0, 0, 1000, again, state);
+        comet->render_configured(&rctx, a, state);
+        rctx.parameters = &long_trail;
+        comet->render_configured(&rctx, b, state);
+        rctx.parameters = &short_trail;
+        comet->render_configured(&rctx, again, state);
         assert(a[0] == 0 && b[0] > 0 && !memcmp(a, again, 3));
+
+        assert(ripple && ripple->render_configured);
+        struct kb_light_trigger_data origin_trig = {
+            .key_x = 0,
+            .key_y = 0,
+        };
+        struct kb_effect_render_context ripple_ctx = {
+            .cfg = &white,
+            .parameters = &empty_params,
+            .trigger = NULL,
+            .x = 0,
+            .y = 0,
+            .phase = 0,
+        };
+        uint8_t center_px[3], origin_px[3];
+        ripple->render_configured(&ripple_ctx, center_px, state);
+        ripple_ctx.trigger = &origin_trig;
+        ripple->render_configured(&ripple_ctx, origin_px, state);
+        /* 中心点 (0,0) 在 phase=0 时距离为 0 (最暗), 而默认中心 (13,4) 此时距离较大 */
+        assert(origin_px[0] != center_px[0]);
     }
     test_action_callbacks();
     return 0;

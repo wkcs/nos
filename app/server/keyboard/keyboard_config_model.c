@@ -470,7 +470,8 @@ static int light_document(struct keyboard_config_service *s, const void *body, s
             kb_doc_string(&value, trigger, sizeof(trigger));
             if (layer->width == 0 || layer->height == 0 ||
                 layer->x + layer->width > kb_selected_layout.cols ||
-                layer->y + layer->height > kb_selected_layout.rows || layer->activation > 2 ||
+                layer->y + layer->height > kb_selected_layout.rows ||
+                layer->activation > NLK_KB_LIGHT_PULSE ||
                 (trigger[0] && find_action(trigger) == NULL) ||
                 ((layer->activation == 0) != (trigger[0] == 0)) ||
                 style_read(&value, &layer->cfg, &parameters[count])) {
@@ -493,7 +494,9 @@ static int light_document(struct keyboard_config_service *s, const void *body, s
         return -EINVAL;
     }
     if (apply) {
-        memcpy(keyboard->effect_parameters, parameters, sizeof(parameters));
+        if (keyboard->light_runtime != NULL) {
+            memcpy(keyboard->light_runtime->parameters, parameters, sizeof(parameters));
+        }
         keyboard->light_cfg.enable = s->selection.light_enabled;
         nlk_cap_keyboard_set_light_layers(keyboard, layers, count);
         if (keyboard->light_cb != NULL) {

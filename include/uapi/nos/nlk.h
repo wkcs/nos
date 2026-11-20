@@ -891,7 +891,18 @@ enum nlk_kb_light_activation {
     NLK_KB_LIGHT_ALWAYS = 0U,
     NLK_KB_LIGHT_TOGGLE = 1U,
     NLK_KB_LIGHT_HOLD = 2U,
+    /* 状态同步：图层激活状态严格跟随动作汇报的真实设备/主机状态 */
+    NLK_KB_LIGHT_STATE = 3U,
+    /* 触发脉冲：动作触发时激活并从相位 0 播放一个周期后自动熄灭 */
+    NLK_KB_LIGHT_PULSE = 4U,
 };
+
+/* 标准 USB HID 键盘指示灯位掩码（与 HID Output Report 位序一致） */
+#define NLK_KB_LED_NUM     (1U << 0)
+#define NLK_KB_LED_CAPS    (1U << 1)
+#define NLK_KB_LED_SCROLL  (1U << 2)
+#define NLK_KB_LED_COMPOSE (1U << 3)
+#define NLK_KB_LED_KANA    (1U << 4)
 
 #define NLK_KB_LIGHT_LAYER_OWN_CFG 0xFFU
 

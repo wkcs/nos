@@ -82,7 +82,7 @@ static const struct keyboard_light_layer_default g_nk60_factory_light_layers[] =
         .action = "caps_lock",
         .layer = {
             .z_order = -1, .y = 2U, .width = 1U, .height = 1U,
-            .opacity = 255U, .zone_id = 1U, .activation = NLK_KB_LIGHT_TOGGLE,
+            .opacity = 255U, .zone_id = 1U, .activation = NLK_KB_LIGHT_STATE,
         },
     },
 };

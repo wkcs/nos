@@ -546,6 +546,36 @@ static int request_action(void *context, enum kb_action_request request, const c
     return keyboard_config_service_queue(context, runtime_verbs[request], target);
 }
 
+static void emit_light_trigger(void *context, const char *action_id,
+                               const struct kb_light_trigger_data *trigger)
+{
+    struct keyboard_config_service *s = context;
+
+    if (s == NULL || s->keyboard == NULL || action_id == NULL || trigger == NULL) {
+        return;
+    }
+    nlk_cap_keyboard_notify_light_trigger(s->keyboard, action_id, trigger);
+    s->keyboard->action_trigger_published = true;
+}
+
+static bool query_action_state(const struct nlk_keyboard_ctx *kb, uint32_t trigger,
+                               struct kb_action_state *out, void *priv)
+{
+    size_t i;
+
+    (void)priv;
+    if (kb == NULL || out == NULL) {
+        return false;
+    }
+    for (i = 0U; i < kb_action_definition_count; i++) {
+        const struct kb_action_definition *def = kb_action_definitions[i];
+        if (nlk_fnv1a_24(def->id) == trigger) {
+            return def->query_state != NULL ? def->query_state(kb, out) : false;
+        }
+    }
+    return false;
+}
+
 static int action(const struct key_action_context *ctx, void *priv)
 {
     struct keyboard_config_service *s = priv;
@@ -563,8 +593,41 @@ static int action(const struct key_action_context *ctx, void *priv)
             return KEY_ACTION_DROP;
         }
         if (layer == ctx->layer && key == ctx->key_index && slot == ctx->action_slot) {
-            return kb_action_definitions[index]->execute(ctx, arguments, length,
-                                                         &s->action_runtime);
+            const struct kb_action_definition *def = kb_action_definitions[index];
+            int res = def->execute(ctx, arguments, length, &s->action_runtime);
+
+            /* 若动作自身未主动推送定制触发上下文，则自动携带按键坐标与动作参数通知灯效层 */
+            if (!s->keyboard->action_trigger_published) {
+                struct kb_light_trigger_data trig = {0};
+                struct kb_action_state state = {0};
+                uint8_t copy_len =
+                    length > KB_LIGHT_TRIGGER_ARGS_MAX ? KB_LIGHT_TRIGGER_ARGS_MAX : (uint8_t)length;
+
+                trig.event = ctx->event_type ? KB_LIGHT_TRIG_KEY_DOWN : KB_LIGHT_TRIG_KEY_UP;
+                trig.active = ctx->event_type ? 1U : 0U;
+                trig.layer = ctx->layer;
+                trig.key_index = ctx->key_index;
+                if (ctx->key_index < kb_selected_layout.key_count) {
+                    trig.key_x = kb_selected_layout.keys[ctx->key_index].col;
+                    trig.key_y = kb_selected_layout.keys[ctx->key_index].row;
+                } else {
+                    trig.key_x = KB_LIGHT_COORD_NONE;
+                    trig.key_y = KB_LIGHT_COORD_NONE;
+                }
+                trig.key_code = res > 0 ? (uint32_t)res : ctx->key_code;
+                trig.value = res > 0 ? (uint32_t)res : 0U;
+                trig.arg_length = copy_len;
+                if (copy_len != 0U) {
+                    memcpy(trig.arguments, arguments, copy_len);
+                }
+                if (def->query_state != NULL && def->query_state(s->keyboard, &state)) {
+                    trig.active = state.active ? 1U : 0U;
+                    trig.value = state.value;
+                }
+                nlk_cap_keyboard_notify_light_trigger(s->keyboard, def->id, &trig);
+                s->keyboard->action_trigger_published = true;
+            }
+            return res;
         }
     }
     return KEY_ACTION_PASS;
@@ -649,7 +712,8 @@ static int remove_object(struct keyboard_config_service *s, struct kb_config_ope
             }
         }
     }
-    if (s->lease && op->kind != KB_STORE_LIGHT &&
+    if (s->lease && s->kind == KB_STORE_BASE &&
+        (op->kind == KB_STORE_BASE || op->kind == KB_STORE_MACRO) &&
         kb_config_referenced(s->draft, s->draft_length, op->kind, op->target)) {
         return -EBUSY;
     }
@@ -890,7 +954,11 @@ void keyboard_config_service_poll(struct keyboard_config_service *s, uint32_t no
                     op->type == NLK_KB_V2_RUN ? NLK_KB_OPERATION_APPLIED :
                                                NLK_KB_OPERATION_COMMITTED;
         if ((op->type == NLK_KB_V2_EDIT_COMMIT || op->type == NLK_KB_V2_DELETE) && rc) {
-            s->write_error = true;
+            /* 仅实际介质/容量/只读等存储故障置位 write_error，业务拒绝码（如 EBUSY）不污染存储健康标志 */
+            if (rc != -EBUSY && rc != -ENOENT && rc != -ESTALE && rc != -EINVAL &&
+                rc != -EEXIST) {
+                s->write_error = true;
+            }
         }
         if (!s->store.ready) {
             kb_config_end_edit(s);
@@ -955,7 +1023,11 @@ int keyboard_config_service_init(struct keyboard_config_service *s, struct nlk_k
     s->generation = s->base_epoch = s->light_epoch = 1;
     s->boot_id = 0;
     s->counter = 0;
-    s->action_runtime = (struct kb_action_runtime){.context = s, .request = request_action};
+    s->action_runtime = (struct kb_action_runtime){
+        .context = s,
+        .request = request_action,
+        .emit_light_trigger = emit_light_trigger,
+    };
     for (i = 0; i < kb_action_definition_count; i++) {
         const struct kb_action_definition *definition = kb_action_definitions[i];
         size_t j, k;
@@ -1016,6 +1088,7 @@ int keyboard_config_service_init(struct keyboard_config_service *s, struct nlk_k
     kb->config_ops = &kb_config_ops;
     kb->config_priv = s;
     kb->cap.cap_ver = NLK_KB_CAP_VERSION;
+    nlk_cap_keyboard_set_action_state_cb(kb, query_action_state, s);
     s->initialized = true;
     return 0;
 }

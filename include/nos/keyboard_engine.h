@@ -68,6 +68,49 @@ struct kb_effect_parameters {
     uint8_t data[KB_EFFECT_PARAMETERS_MAX];
 };
 
+#define KB_LIGHT_TRIGGER_ARGS_MAX 32U
+#define KB_LIGHT_COORD_NONE       0xFFU
+
+/* 动作触发灯效的事件类型 */
+enum kb_light_trigger_event {
+    KB_LIGHT_TRIG_NONE = 0U,
+    KB_LIGHT_TRIG_KEY_UP = 1U,
+    KB_LIGHT_TRIG_KEY_DOWN = 2U,
+    KB_LIGHT_TRIG_STATE_SYNC = 3U,
+};
+
+/* 动作向引擎反馈的逻辑状态与附加数值 */
+struct kb_action_state {
+    bool active;
+    uint32_t value;
+};
+
+/* 动作传递给灯效图层的通用触发上下文与参数 */
+struct kb_light_trigger_data {
+    uint32_t seq;
+    uint32_t key_code;
+    uint32_t value;
+    uint8_t event;
+    uint8_t active;
+    uint8_t layer;
+    uint8_t key_index;
+    uint8_t key_x;
+    uint8_t key_y;
+    uint8_t arg_length;
+    uint8_t arguments[KB_LIGHT_TRIGGER_ARGS_MAX];
+};
+
+struct nlk_keyboard_ctx;
+
+typedef bool (*nlk_kb_action_state_fn_t)(const struct nlk_keyboard_ctx *ctx, uint32_t trigger,
+                                         struct kb_action_state *out, void *priv);
+
+/* 独立分配的每层运行时数据，避免撑大 nlk_keyboard_ctx 静态上下文体积 */
+struct kb_light_layer_runtime {
+    struct kb_effect_parameters parameters[CONFIG_KEYBOARD_LIGHT_MAX_LAYERS];
+    struct kb_light_trigger_data triggers[CONFIG_KEYBOARD_LIGHT_MAX_LAYERS];
+};
+
 struct nlk_keyboard_ctx {
     struct nlk_kb_desc desc;
     uint8_t active_layer;
@@ -85,10 +128,11 @@ struct nlk_keyboard_ctx {
     uint8_t consumer_report;
     struct nlk_kb_analog_cfg analog_cfg;
     struct nlk_kb_light_cfg light_cfg;
-    struct kb_effect_parameters effect_parameters[CONFIG_KEYBOARD_LIGHT_MAX_LAYERS];
+    struct kb_light_layer_runtime *light_runtime;
     uint8_t light_layer_count;
     struct nlk_kb_light_layer light_layers[CONFIG_KEYBOARD_LIGHT_MAX_LAYERS];
     bool light_layer_active[CONFIG_KEYBOARD_LIGHT_MAX_LAYERS];
+    uint32_t light_trigger_seq;
     uint32_t light_layer_generation;
     struct nlk_kb_light_sync_beacon last_light_beacon;
     uint32_t next_beacon_ms;
@@ -130,6 +174,9 @@ struct nlk_keyboard_ctx {
     uint8_t action_count;
     key_action_handler_fn_t action_handlers[NLK_KB_MAX_ACTIONS];
     void *action_handler_privs[NLK_KB_MAX_ACTIONS];
+    nlk_kb_action_state_fn_t action_state_cb;
+    void *action_state_priv;
+    bool action_trigger_published;
 
     /* Keyboard runtime parameters */
     struct nlk_kb_params params;
@@ -188,6 +235,12 @@ int nlk_cap_keyboard_validate_light_layer(const struct nlk_keyboard_ctx *ctx,
                                           const struct nlk_kb_light_layer *layer);
 int nlk_cap_keyboard_set_light_layers(struct nlk_keyboard_ctx *ctx,
                                       const struct nlk_kb_light_layer *layers, uint8_t count);
+void nlk_cap_keyboard_set_action_state_cb(struct nlk_keyboard_ctx *ctx, nlk_kb_action_state_fn_t cb,
+                                          void *priv);
+void nlk_cap_keyboard_notify_light_trigger(struct nlk_keyboard_ctx *ctx, const char *action,
+                                           const struct kb_light_trigger_data *trigger);
+void nlk_cap_keyboard_sync_action_states(struct nlk_keyboard_ctx *ctx);
+void nlk_cap_keyboard_set_indicators(struct nlk_keyboard_ctx *ctx, uint8_t indicator_leds);
 /* Production names must remain valid and immutable for the context lifetime. */
 int nlk_cap_keyboard_register_action(struct nlk_keyboard_ctx *ctx, const char *name,
                                      const char *desc, key_action_handler_fn_t handler, void *priv);

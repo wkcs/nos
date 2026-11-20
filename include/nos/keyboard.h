@@ -482,6 +482,8 @@ struct keyboard_light_layer_state {
     nlk_kb_effect_render_fn_t render;
     const struct kb_effect_definition *definition;
     struct kb_effect_parameters parameters;
+    /* 触发该灯效图层的动作上下文与参数 */
+    struct kb_light_trigger_data trigger;
     void *priv;
     bool active;
 };

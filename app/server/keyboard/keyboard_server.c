@@ -237,7 +237,10 @@ void keyboard_server_get_light_state(struct keyboard_light_state *state)
         struct keyboard_light_layer_state *output = &state->layers[i];
         output->layer = keyboard->light_layers[i];
         output->active = keyboard->light_layer_active[i];
-        output->parameters = keyboard->effect_parameters[i];
+        if (keyboard->light_runtime != NULL) {
+            output->parameters = keyboard->light_runtime->parameters[i];
+            output->trigger = keyboard->light_runtime->triggers[i];
+        }
         for (size_t j = 0; j < kb_effect_definition_count; j++) {
             const struct kb_effect_definition *definition = kb_effect_definitions[j];
             if (definition->engine_id == output->layer.cfg.effect_id) {
@@ -645,9 +648,24 @@ static void keyboard_server_task_entry(void *parameter)
                 }
             }
 
+            uint8_t host_leds = ks->kb_cap.indicator_leds;
+            bool usb_connected;
+
             mutex_lock(&ks->hid_lock);
             ks_flush_usb_reports(ks);
+            usb_connected = ks->usb_connected;
+            if (usb_connected && ks->hid_dev != NULL && ks->hid_dev->ops.control != NULL) {
+                (void)ks->hid_dev->ops.control(ks->hid_dev, USB_HID_CTRL_GET_INDICATORS, &host_leds);
+            }
             mutex_unlock(&ks->hid_lock);
+            if (!usb_connected) {
+                host_leds = 0U;
+            }
+            if (host_leds != ks->kb_cap.indicator_leds) {
+                mutex_lock(&ks->lock);
+                nlk_cap_keyboard_set_indicators(&ks->kb_cap, host_leds);
+                mutex_unlock(&ks->lock);
+            }
             if (ks->nlk_node != NULL) {
                 for (;;) {
                     struct nlk_kb_hid_report next_report;
