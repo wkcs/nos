@@ -87,7 +87,7 @@ static int valid_utf8(const uint8_t *p, size_t length)
 
 int kb_doc_string(struct kb_doc_reader *r, char *out, size_t capacity)
 {
-    if (capacity != 0) {
+    if (out != NULL && capacity != 0) {
         out[0] = 0;
     }
     size_t length = kb_doc_uint(r, 1);
@@ -96,8 +96,10 @@ int kb_doc_string(struct kb_doc_reader *r, char *out, size_t capacity)
         r->error = -EINVAL;
         return r->error;
     }
-    memcpy(out, p, length);
-    out[length] = 0;
+    if (out != NULL) {
+        memcpy(out, p, length);
+        out[length] = 0;
+    }
     return 0;
 }
 

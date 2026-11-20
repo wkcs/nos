@@ -65,7 +65,7 @@ static bool request_complete(const struct kb_doc_reader *r)
 static void put_ref(struct kb_doc_writer *w, uint8_t kind, const struct kb_store_ref *ref)
 {
     PUT_U8(w, kind);
-    kb_doc_str(w, ref->id);
+    kb_doc_str(w, ref->name);
     PUT_U64(w, ref->revision);
 }
 
@@ -138,7 +138,7 @@ static const char *resource_entry(const struct kb_store *store, uint8_t resource
     default:
         entry = &store->entries[index];
         *revision = entry->revision;
-        return entry->kind == resource_kind(resource) ? entry->id : NULL;
+        return entry->kind == resource_kind(resource) ? entry->name : NULL;
     }
 }
 
@@ -174,21 +174,21 @@ static int handle_list(struct kb_rpc_call *call)
     PUT_U32(w, UINT32_MAX);
     for (i = cursor; i < count; i++) {
         uint64_t revision;
-        const char *id = resource_entry(store, resource, i, &revision);
+        const char *name = resource_entry(store, resource, i, &revision);
 
-        if (id == NULL) {
+        if (name == NULL) {
             continue;
         }
-        if (w->used - KB_LIST_HEADER_SIZE + strlen(id) + KB_LIST_ENTRY_OVERHEAD > max) {
+        if (w->used - KB_LIST_HEADER_SIZE + strlen(name) + KB_LIST_ENTRY_OVERHEAD > max) {
             if (i == cursor) {
                 return -ENOSPC;
             }
             kb_doc_patch_uint(w, sizeof(uint64_t), i, sizeof(uint32_t));
             break;
         }
-        kb_doc_str(w, id);
+        kb_doc_str(w, name);
         PUT_U64(w, revision);
-        PUT_U8(w, 0); /* Reserved entry flags. */
+        PUT_U8(w, 0); /* 预留条目标志位 */
     }
     return 0;
 }
@@ -240,22 +240,26 @@ static int read_definition(struct kb_doc_writer *w, uint8_t resource, const char
     return 0;
 }
 
-static int read_object(struct kb_rpc_call *call, uint8_t kind, const char *id, uint64_t revision,
+static int read_object(struct kb_rpc_call *call, uint8_t kind, const char *name, uint64_t revision,
                        const struct kb_read_page *page)
 {
     const struct kb_store *store = &call->service->store;
-    const struct kb_store_entry *entry = kb_store_find(store, kind, id);
+    const struct kb_store_entry *entry;
     struct kb_doc_writer *w = &call->response;
     uint32_t total;
     int length;
 
+    if (!kb_store_valid_name(name)) {
+        return -EINVAL;
+    }
+    entry = kb_store_find(store, kind, name);
     if (entry == NULL) {
         return -ENOENT;
     }
     if (revision == KB_STORE_CURRENT_REVISION) {
         revision = entry->revision;
     }
-    length = kb_store_read_page(store, kind, id, revision, page->offset,
+    length = kb_store_read_page(store, kind, name, revision, page->offset,
                                 w->data + KB_READ_HEADER_SIZE, page->limit, &total);
     if (length < 0) {
         return length;
@@ -269,20 +273,20 @@ static int handle_read(struct kb_rpc_call *call)
 {
     struct kb_doc_reader *r = &call->request;
     uint8_t resource = GET_U8(r);
-    char id[KB_STORE_REF_ID_SIZE];
+    char name[32];
     uint64_t revision;
     struct kb_read_page page;
 
-    kb_doc_string(r, id, sizeof(id));
+    kb_doc_string(r, name, sizeof(name));
     revision = GET_U64(r);
     if (read_page_request(r, &page)) {
         return -EINVAL;
     }
     if (definition_resource(resource)) {
-        return read_definition(&call->response, resource, id, &page);
+        return read_definition(&call->response, resource, name, &page);
     }
     if (object_resource(resource)) {
-        return read_object(call, resource_kind(resource), id, revision, &page);
+        return read_object(call, resource_kind(resource), name, revision, &page);
     }
     return -EINVAL;
 }
@@ -310,20 +314,20 @@ static int handle_edit_begin(struct kb_rpc_call *call)
     struct kb_doc_reader *r = &call->request;
     struct keyboard_config_service *s = call->service;
     uint8_t kind = GET_U8(r);
-    char id[KB_STORE_REF_ID_SIZE];
+    char name[KB_STORE_NAME_SIZE];
     uint64_t revision, epoch;
     int rc;
 
     if (s->lease) {
         return -EBUSY;
     }
-    kb_doc_string(r, id, sizeof(id));
+    kb_doc_string(r, name, sizeof(name));
     revision = GET_U64(r);
     epoch = GET_U64(r);
-    if (!request_complete(r) || !object_kind(kind)) {
+    if (!request_complete(r) || !object_kind(kind) || (name[0] && !kb_store_valid_name(name))) {
         return -EINVAL;
     }
-    rc = kb_config_begin_edit(s, kind, id, revision, epoch);
+    rc = kb_config_begin_edit(s, kind, name, revision, epoch);
     if (rc) {
         return rc;
     }
@@ -383,7 +387,7 @@ struct kb_operation_request {
     uint64_t nonce;
     uint64_t expected;
     uint8_t value;
-    char target[KB_STORE_REF_ID_SIZE];
+    char target[KB_STORE_NAME_SIZE];
 };
 
 static int read_operation(struct kb_doc_reader *r, uint8_t opcode, struct kb_operation_request *op)
@@ -430,17 +434,30 @@ static int validate_operation(const struct kb_rpc_call *call, const struct kb_op
     struct keyboard_config_service *s = call->service;
 
     if (call->opcode == NLK_KB_V2_RUN) {
-        return op->value >= NLK_KB_RUN_BASE_SELECT && op->value <= NLK_KB_RUN_MACRO_CANCEL ?
-               0 : -EINVAL;
+        if (op->value < NLK_KB_RUN_BASE_SELECT || op->value > NLK_KB_RUN_MACRO_CANCEL) {
+            return -EINVAL;
+        }
+        if ((op->value == NLK_KB_RUN_BASE_SELECT || op->value == NLK_KB_RUN_LIGHT_SELECT) &&
+            !kb_store_valid_name(op->target)) {
+            return -EINVAL;
+        }
+        if (op->value == NLK_KB_RUN_MACRO_PLAY && op->target[0] != '\0' &&
+            !kb_store_valid_name(op->target)) {
+            return -EINVAL;
+        }
+        return 0;
     }
     if (call->opcode == NLK_KB_V2_DELETE) {
-        return object_kind(op->value) ? 0 : -EINVAL;
+        return object_kind(op->value) && kb_store_valid_name(op->target) ? 0 : -EINVAL;
     }
     if (kb_config_commit_pending(s)) {
         return -EBUSY;
     }
     if (kb_config_epoch(s, s->kind) != s->edit_epoch) {
         return -ESTALE;
+    }
+    if (!kb_store_valid_name(op->target)) {
+        return -EINVAL;
     }
     if ((op->value == NLK_KB_SAVE_OVERWRITE && !op->expected) ||
         (op->value == NLK_KB_SAVE_NEW && op->expected) || op->value > NLK_KB_SAVE_NEW) {
@@ -531,7 +548,7 @@ static int handle_result(struct kb_rpc_call *call)
     PUT_U8(&call->response, op->state);
     PUT_U16(&call->response, op->status);
     PUT_U64(&call->response, op->generation);
-    put_ref(&call->response, op->ref.id[0] ? op->kind : 0, &op->ref);
+    put_ref(&call->response, op->ref.name[0] ? op->kind : 0, &op->ref);
     return 0;
 }
 

@@ -202,10 +202,10 @@ int main(void)
 {
     static const char *const managed[] = {
         "/data/service", "/data/service/config.nkc", "/data/service/config.tmp",
-        "/data/service/_catalog", "/data/service/_catalog/revision.nki",
-        "/data/service/base", "/data/service/light/profile/revision.nkc",
-        "/data/service/macro/profile/revision.nkc",
-        "//data///service//base///default/1.nkc",
+        "/data/service/object.tmp",
+        "/data/service/base", "/data/service/light/profile.nkc",
+        "/data/service/macro/profile.nkc",
+        "//data///service//base///default.nkc",
         "/data/./service/config.nkc", "/data/tmp/../service/config.nkc",
         "/x/../data/service/config.nkc", "/data/service/./nested/../config.nkc",
         "data/service/config.nkc", "/../../data/service/config.nkc"
@@ -233,7 +233,7 @@ int main(void)
     static const struct nlk_vfs_protected_path rules[] = {
         {"/data/service/config.nkc", false},
         {"/data/service/config.tmp", false},
-        {"/data/service/_catalog", true},
+        {"/data/service/object.tmp", false},
         {"/data/service/base", true},
         {"/data/service/light", true},
         {"/data/service/macro", true},

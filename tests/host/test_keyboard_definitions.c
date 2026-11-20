@@ -2,11 +2,12 @@
 #include <assert.h>
 #include <string.h>
 #include <nos/keyboard_definitions.h>
+#include <nos/keyboard_object_store.h>
 
 struct request_probe {
     unsigned int count;
     enum kb_action_request request;
-    char target[24];
+    char target[KB_STORE_NAME_SIZE];
 };
 
 static int capture_request(void *context, enum kb_action_request request, const char *target)

@@ -2,8 +2,9 @@
  * Copyright (C) 2026 Nick Hu <huqihan@live.com>
  * Author: Nick Hu
  *
- * Only config.nkc publishes a transaction. Orphan immutable revisions are never
- * discovered by directory scanning and are skipped when allocating revisions.
+ * 键盘配置扁平对象存储：每个配置以 "<name>.nkc" 直接存放在 base/、light/、macro/ 目录下，
+ * 聚合根记录 "/data/keyboard/config.nkc" 维护当前选中名称、全局灯光开关与单调序号。
+ * 格式错误或 CRC 校验失败一律 fail closed，绝不自动格式化或静默覆盖。
  */
 #include <nos/keyboard_object_store.h>
 #include <fs/fs.h>
@@ -11,14 +12,11 @@
 #include <kernel/errno.h>
 #include <string.h>
 
-#define MAX_REVISION_COLLISIONS 128U
 #define HEADER_SIZE 24U
-#define ENTRY_SIZE 36U
-#define ROOT_SIZE 91U
-#define CATALOG_SIZE (1U + KB_STORE_MAX_OBJECTS * ENTRY_SIZE)
-#define OBJECT_MAGIC 0x324f424bU
-#define CATALOG_MAGIC 0x3243424bU
-#define ROOT_MAGIC 0x3252424bU
+#define ROOT_SIZE (2U * KB_STORE_NAME_SIZE + 1U)
+#define FORMAT_VERSION 2U
+#define OBJECT_MAGIC 0x334f424bU /* "KBO3" */
+#define ROOT_MAGIC 0x3352424bU   /* "KBR3" */
 
 static void put_le(uint8_t *p, uint64_t value, unsigned int size)
 {
@@ -32,6 +30,7 @@ static uint64_t get_le(const uint8_t *p, unsigned int size)
 {
     uint64_t value = 0U;
     unsigned int i;
+
     for (i = 0U; i < size; i++) {
         value |= (uint64_t)p[i] << (8U * i);
     }
@@ -42,6 +41,7 @@ static uint32_t crc_update(uint32_t crc, const void *data, size_t size)
 {
     const uint8_t *p = data;
     unsigned int bit;
+
     while (size-- != 0U) {
         crc ^= *p++;
         for (bit = 0U; bit < 8U; bit++) {
@@ -51,23 +51,94 @@ static uint32_t crc_update(uint32_t crc, const void *data, size_t size)
     return crc;
 }
 
-static int valid_id(const char *id, size_t limit)
+/* 自包含 UTF-8 合法性校验，避免独立主机存储测试链接额外文档模块 */
+static bool valid_utf8(const uint8_t *p, size_t length)
 {
+    size_t i = 0U;
+
+    while (i < length) {
+        uint32_t code, minimum;
+        unsigned int remaining;
+        uint8_t first = p[i++];
+
+        if (first < 0x80U) {
+            continue;
+        }
+        if (first >= 0xc2U && first <= 0xdfU) {
+            remaining = 1U;
+            minimum = 0x80U;
+            code = first & 0x1fU;
+        } else if (first >= 0xe0U && first <= 0xefU) {
+            remaining = 2U;
+            minimum = 0x800U;
+            code = first & 0x0fU;
+        } else if (first >= 0xf0U && first <= 0xf4U) {
+            remaining = 3U;
+            minimum = 0x10000U;
+            code = first & 0x07U;
+        } else {
+            return false;
+        }
+        if (remaining > length - i) {
+            return false;
+        }
+        while (remaining-- != 0U) {
+            if ((p[i] & 0xc0U) != 0x80U) {
+                return false;
+            }
+            code = (code << 6) | (p[i++] & 0x3fU);
+        }
+        if (code < minimum || code > 0x10ffffU || (code >= 0xd800U && code <= 0xdfffU)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static bool forbidden_ascii(unsigned char c)
+{
+    if (c < 0x20U || c == 0x7fU) {
+        return true;
+    }
+    switch (c) {
+    case '/':
+    case '\\':
+    case ':':
+    case '*':
+    case '?':
+    case '"':
+    case '<':
+    case '>':
+    case '|':
+        return true;
+    default:
+        return false;
+    }
+}
+
+bool kb_store_valid_name(const char *name)
+{
+    size_t len;
     size_t i;
-    if (id == NULL || id[0] == '\0') {
-        return 0;
+
+    if (name == NULL || name[0] == '\0') {
+        return false;
     }
-    for (i = 0U; i < limit; i++) {
-        unsigned char c = (unsigned char)id[i];
-        if (c == '\0') {
-            return i != 0U;
-        }
-        if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ||
-              c == '_' || c == '-')) {
-            return 0;
+    len = strlen(name);
+    if (len == 0U || len > KB_STORE_NAME_MAX) {
+        return false;
+    }
+    if (name[0] == '.' || name[0] == ' ' || name[len - 1U] == '.' || name[len - 1U] == ' ' ||
+        name[0] == '~') {
+        return false;
+    }
+    for (i = 0U; i < len; i++) {
+        unsigned char c = (unsigned char)name[i];
+        if (c < 0x80U && forbidden_ascii(c)) {
+            return false;
         }
     }
-    return 0;
+    return valid_utf8((const uint8_t *)name, len);
 }
 
 static const char *kind_dir(uint8_t kind)
@@ -84,24 +155,17 @@ static const char *kind_dir(uint8_t kind)
     return NULL;
 }
 
-static void revision_path(char path[96], const char *dir, const char *id, uint64_t revision,
-                          const char *ext)
+static void object_path(char path[96], uint8_t kind, const char *name)
 {
-    static const char hex[] = "0123456789abcdef";
-    size_t n = strlen(dir);
-    unsigned int i;
-    memcpy(path, dir, n);
-    path[n++] = '/';
-    if (id != NULL) {
-        size_t len = strlen(id);
-        memcpy(path + n, id, len);
-        n += len;
-        path[n++] = '/';
-    }
-    for (i = 0U; i < 16U; i++) {
-        path[n++] = hex[(revision >> (60U - 4U * i)) & 15U];
-    }
-    memcpy(path + n, ext, 5U);
+    const char *dir = kind_dir(kind);
+    size_t dir_len = strlen(dir);
+    size_t name_len = strlen(name);
+
+    memcpy(path, dir, dir_len);
+    path[dir_len++] = '/';
+    memcpy(path + dir_len, name, name_len);
+    dir_len += name_len;
+    memcpy(path + dir_len, ".nkc", 5U);
 }
 
 static int mkdir_ok(const char *path)
@@ -110,23 +174,13 @@ static int mkdir_ok(const char *path)
     return ret == -EEXIST ? 0 : ret;
 }
 
-static int prepare_dirs(uint8_t kind, const char *id)
+static int prepare_dirs(uint8_t kind)
 {
-    char path[96];
     const char *dir = kind_dir(kind);
     int ret = mkdir_ok(KB_STORE_DIR);
-    if (ret == 0) {
-        ret = mkdir_ok(KB_STORE_CATALOG_DIR);
-    }
+
     if (ret == 0 && dir != NULL) {
         ret = mkdir_ok(dir);
-    }
-    if (ret == 0 && id != NULL) {
-        size_t n = strlen(dir);
-        memcpy(path, dir, n);
-        path[n++] = '/';
-        strcpy(path + n, id);
-        ret = mkdir_ok(path);
     }
     return ret;
 }
@@ -134,6 +188,7 @@ static int prepare_dirs(uint8_t kind, const char *id)
 static int transfer(int fd, void *buffer, size_t size, int writing)
 {
     uint8_t *p = buffer;
+
     while (size != 0U) {
         ssize_t ret = writing ? nos_write(fd, p, size) : nos_read(fd, p, size);
         if (ret <= 0) {
@@ -151,13 +206,15 @@ static int write_record(const char *path, uint32_t magic, uint8_t kind, uint64_t
     uint8_t header[HEADER_SIZE] = {0};
     uint32_t crc;
     int fd, ret, close_ret;
+
     put_le(header, magic, 4);
-    put_le(header + 4, 1, 2);
+    put_le(header + 4, FORMAT_VERSION, 2);
     header[6] = kind;
     put_le(header + 8, revision, 8);
     put_le(header + 16, size, 4);
-    crc = crc_update(crc_update(UINT32_MAX, header, 20), body, size) ^ UINT32_MAX;
+    crc = crc_update(crc_update(UINT32_MAX, header, 20U), body, size) ^ UINT32_MAX;
     put_le(header + 20, crc, 4);
+
     fd = nos_open(path, O_WRONLY | O_CREAT | (exclusive ? O_EXCL : O_TRUNC), 0600);
     if (fd < 0) {
         return fd;
@@ -172,22 +229,27 @@ static int write_record(const char *path, uint32_t magic, uint8_t kind, uint64_t
     close_ret = nos_close(fd);
     return ret != 0 ? ret : close_ret;
 }
-/* Read and verify the entire record even for sliced reads, without a body-sized allocation. */
+
+/* 对整条记录进行边界与 CRC32 校验，防止分页读取读到损坏片段且无需整块堆缓冲 */
 static int read_record(const char *path, uint32_t magic, uint8_t kind, uint64_t revision,
-                       void *body, uint32_t capacity, uint32_t *size, int *out_fd)
+                       void *body, uint32_t capacity, uint32_t *size, uint64_t *out_revision,
+                       int *out_fd)
 {
     uint8_t header[HEADER_SIZE], scratch[128];
     uint32_t total, left, crc;
+    uint64_t file_rev;
     int fd = nos_open(path, O_RDONLY), ret, close_ret;
+
     if (fd < 0) {
         return fd;
     }
     ret = transfer(fd, header, sizeof(header), 0);
     total = ret == 0 ? (uint32_t)get_le(header + 16, 4) : 0U;
+    file_rev = ret == 0 ? get_le(header + 8, 8) : 0U;
     if (ret == 0 &&
-        (get_le(header, 4) != magic || get_le(header + 4, 2) != 1U || header[6] != kind ||
-         header[7] != 0U || get_le(header + 8, 8) == 0U || get_le(header + 8, 8) == UINT64_MAX ||
-         (revision != UINT64_MAX && get_le(header + 8, 8) != revision) || total > capacity)) {
+        (get_le(header, 4) != magic || get_le(header + 4, 2) != FORMAT_VERSION ||
+         header[6] != kind || header[7] != 0U || file_rev == 0U || file_rev == UINT64_MAX ||
+         (revision != UINT64_MAX && file_rev != revision) || total > capacity)) {
         ret = -EINVAL;
     }
     if (ret == 0 && nos_lseek(fd, 0, SEEK_END) != (loff_t)(HEADER_SIZE + total)) {
@@ -212,6 +274,9 @@ static int read_record(const char *path, uint32_t magic, uint8_t kind, uint64_t 
     }
     if (ret == 0) {
         *size = total;
+        if (out_revision != NULL) {
+            *out_revision = file_rev;
+        }
         if (out_fd != NULL) {
             *out_fd = fd;
             return 0;
@@ -222,14 +287,15 @@ static int read_record(const char *path, uint32_t magic, uint8_t kind, uint64_t 
 }
 
 const struct kb_store_entry *kb_store_find(const struct kb_store *store, uint8_t kind,
-                                           const char *id)
+                                           const char *name)
 {
     unsigned int i;
-    if (store == NULL || kind_dir(kind) == NULL || !valid_id(id, KB_STORE_ID_SIZE)) {
+
+    if (store == NULL || kind_dir(kind) == NULL || !kb_store_valid_name(name)) {
         return NULL;
     }
     for (i = 0U; i < store->count; i++) {
-        if (store->entries[i].kind == kind && strcmp(store->entries[i].id, id) == 0) {
+        if (store->entries[i].kind == kind && strcmp(store->entries[i].name, name) == 0) {
             return &store->entries[i];
         }
     }
@@ -239,29 +305,36 @@ const struct kb_store_entry *kb_store_find(const struct kb_store *store, uint8_t
 static int valid_ref(const struct kb_store *store, uint8_t kind, const struct kb_store_ref *ref)
 {
     const struct kb_store_entry *entry;
-    if (!valid_id(ref->id, sizeof(ref->id))) {
+
+    if (ref == NULL || !kb_store_valid_name(ref->name)) {
         return 0;
     }
-    entry = kb_store_find(store, kind, ref->id);
+    entry = kb_store_find(store, kind, ref->name);
     return entry != NULL && entry->revision == ref->revision;
 }
 
-static void encode_ref(uint8_t *p, const struct kb_store_ref *ref)
+static void encode_ref_name(uint8_t *p, const struct kb_store_ref *ref)
 {
-    put_le(p, ref->revision, 8);
-    memcpy(p + 8, ref->id, KB_STORE_REF_ID_SIZE);
+    memset(p, 0, KB_STORE_NAME_SIZE);
+    strcpy((char *)p, ref->name);
 }
 
-static void decode_ref(struct kb_store_ref *ref, const uint8_t *p)
+static int decode_ref_name(struct kb_store_ref *ref, const uint8_t *p)
 {
-    ref->revision = get_le(p, 8);
-    memcpy(ref->id, p + 8, KB_STORE_REF_ID_SIZE);
+    const void *nul = memchr(p, '\0', KB_STORE_NAME_SIZE);
+
+    if (nul == NULL) {
+        return -EINVAL;
+    }
+    memset(ref, 0, sizeof(*ref));
+    strcpy(ref->name, (const char *)p);
+    return kb_store_valid_name(ref->name) ? 0 : -EINVAL;
 }
 
 static int same_selection(const struct kb_store_selection *a, const struct kb_store_selection *b)
 {
-    return strcmp(a->base.id, b->base.id) == 0 && a->base.revision == b->base.revision &&
-           strcmp(a->light.id, b->light.id) == 0 && a->light.revision == b->light.revision &&
+    return strcmp(a->base.name, b->base.name) == 0 && a->base.revision == b->base.revision &&
+           strcmp(a->light.name, b->light.name) == 0 && a->light.revision == b->light.revision &&
            a->light_enabled == b->light_enabled;
 }
 
@@ -269,83 +342,82 @@ static int root_matches(const struct kb_store *candidate)
 {
     uint8_t body[ROOT_SIZE];
     uint32_t size;
-    int ret =
-        read_record(KB_STORE_ROOT_PATH, ROOT_MAGIC, 0, candidate->sequence, body, sizeof(body), &size, NULL);
+    struct kb_store_ref base_ref, light_ref;
+    int ret = read_record(KB_STORE_ROOT_PATH, ROOT_MAGIC, 0, candidate->sequence, body, sizeof(body),
+                          &size, NULL, NULL);
+
     if (ret != 0) {
         return ret;
     }
-    return size == ROOT_SIZE && get_le(body, 8) == candidate->catalog_revision &&
-           get_le(body + 8, 8) == candidate->selection.base.revision &&
-           memcmp(body + 16, candidate->selection.base.id, KB_STORE_REF_ID_SIZE) == 0 &&
-           get_le(body + 49, 8) == candidate->selection.light.revision &&
-           memcmp(body + 57, candidate->selection.light.id, KB_STORE_REF_ID_SIZE) == 0 &&
-           body[90] == candidate->selection.light_enabled;
-}
-
-static int publish_catalog(struct kb_store *next)
-{
-    uint8_t body[CATALOG_SIZE] = {0};
-    char path[96];
-    unsigned int i, collisions = 0U;
-    int ret;
-
-    body[0] = next->count;
-    for (i = 0U; i < next->count; i++) {
-        uint8_t *p = body + 1U + ENTRY_SIZE * i;
-        const struct kb_store_entry *e = &next->entries[i];
-
-        put_le(p, e->revision, 8);
-        put_le(p + 8, e->length, 2);
-        p[10] = e->kind;
-        memcpy(p + 11, e->id, KB_STORE_ID_SIZE);
+    if (size != ROOT_SIZE || decode_ref_name(&base_ref, body) != 0 ||
+        decode_ref_name(&light_ref, body + KB_STORE_NAME_SIZE) != 0) {
+        return 0;
     }
-    do {
-        if (collisions++ == MAX_REVISION_COLLISIONS) {
-            return -ENOSPC;
-        }
-        if (next->sequence >= UINT64_MAX - 1U) {
-            return -EOVERFLOW;
-        }
-        next->catalog_revision = ++next->sequence;
-        revision_path(path, KB_STORE_CATALOG_DIR, NULL, next->catalog_revision, ".nki");
-        ret = write_record(path, CATALOG_MAGIC, 0, next->catalog_revision, body,
-                           1U + ENTRY_SIZE * next->count, 1);
-    } while (ret == -EEXIST);
-    return ret;
+    return strcmp(base_ref.name, candidate->selection.base.name) == 0 &&
+           strcmp(light_ref.name, candidate->selection.light.name) == 0 &&
+           body[2U * KB_STORE_NAME_SIZE] == (candidate->selection.light_enabled ? 1U : 0U);
 }
 
-static int publish(struct kb_store *store, struct kb_store *next, int catalog)
+static int object_matches(const char *path, uint8_t kind, uint64_t revision, const void *body,
+                          uint16_t length)
+{
+    uint8_t scratch[128];
+    uint32_t total, offset = 0U;
+    int fd, ret, equal = 1;
+
+    ret = read_record(path, OBJECT_MAGIC, kind, revision, NULL, KB_STORE_MAX_BODY, &total, NULL,
+                      &fd);
+    if (ret != 0) {
+        return ret;
+    }
+    if (total != length || nos_lseek(fd, HEADER_SIZE, SEEK_SET) < 0) {
+        equal = 0;
+    }
+    while (equal && offset < length) {
+        size_t n = length - offset;
+        if (n > sizeof(scratch)) {
+            n = sizeof(scratch);
+        }
+        ret = transfer(fd, scratch, n, 0);
+        if (ret != 0) {
+            break;
+        }
+        if (memcmp(scratch, (const uint8_t *)body + offset, n) != 0) {
+            equal = 0;
+        }
+        offset += (uint32_t)n;
+    }
+    {
+        int close_ret = nos_close(fd);
+        if (ret == 0) {
+            ret = close_ret;
+        }
+    }
+    return ret != 0 ? ret : equal;
+}
+
+static int publish_root(struct kb_store *store, struct kb_store *next, bool update_catalog)
 {
     uint8_t body[ROOT_SIZE] = {0};
     int ret;
 
-    if (catalog) {
-        ret = publish_catalog(next);
-        if (ret != 0) {
-            return ret;
-        }
-    } else {
-        if (next->sequence >= UINT64_MAX - 1U) {
-            return -EOVERFLOW;
-        }
-        next->sequence++;
+    if (next->sequence >= UINT64_MAX - 1U) {
+        return -EOVERFLOW;
     }
-    put_le(body, next->catalog_revision, 8);
-    encode_ref(body + 8, &next->selection.base);
-    encode_ref(body + 49, &next->selection.light);
-    body[90] = next->selection.light_enabled;
+    next->sequence++;
+    if (update_catalog) {
+        next->catalog_revision = next->sequence;
+    }
+    encode_ref_name(body, &next->selection.base);
+    encode_ref_name(body + KB_STORE_NAME_SIZE, &next->selection.light);
+    body[2U * KB_STORE_NAME_SIZE] = next->selection.light_enabled ? 1U : 0U;
+
     ret = write_record(KB_STORE_ROOT_TEMP, ROOT_MAGIC, 0, next->sequence, body, ROOT_SIZE, 0);
     if (ret == 0) {
         ret = nos_rename(KB_STORE_ROOT_TEMP, KB_STORE_ROOT_PATH);
-        if (ret != 0) {
-            /* A backend may durably replace the root before reporting an I/O
-             * failure. Reconcile from its CRC-verified contents before GC can
-             * discard either transaction's referenced immutable files. */
-            if (root_matches(next) == 1) {
-                ret = 0;
-            } else if (!store->ready || root_matches(store) != 1) {
-                store->ready = false;
-            }
+        if (ret != 0 && root_matches(next) == 1) {
+            /* 底层已完成替换但返回了错误时，以磁盘 CRC 校验结果为准 */
+            ret = 0;
         }
     }
     if (ret == 0) {
@@ -355,26 +427,115 @@ static int publish(struct kb_store *store, struct kb_store *next, int catalog)
     return ret;
 }
 
-int kb_store_read_page(const struct kb_store *store, uint8_t kind, const char *id, uint64_t revision,
-                  uint32_t offset, void *buffer, size_t length, uint32_t *body_size)
+struct dir_cursor {
+    char after[32];
+    char name[32];
+    unsigned int type;
+};
+
+static int dir_fill(void *arg, const char *name, int length, loff_t offset, u64 ino,
+                    unsigned int type)
+{
+    struct dir_cursor *cursor = arg;
+    char bounded[32];
+
+    (void)offset;
+    (void)ino;
+    if (length <= 0 || length >= (int)sizeof(bounded) || name == NULL || name[0] == '.') {
+        return 0;
+    }
+    memcpy(bounded, name, (size_t)length);
+    bounded[length] = '\0';
+    if ((cursor->after[0] != '\0' && strcmp(bounded, cursor->after) <= 0) ||
+        (cursor->name[0] != '\0' && strcmp(bounded, cursor->name) >= 0)) {
+        return 0;
+    }
+    strcpy(cursor->name, bounded);
+    cursor->type = type;
+    return 0;
+}
+
+/* 每次读取一个字典序后继项后立即关闭目录，避免目录锁与重入风险 */
+static int dir_next(const char *path, struct dir_cursor *cursor)
+{
+    struct dentry *dentry = vfs_lookup_path(vfs_get_root(), path);
+    struct file file;
+    int ret, close_ret = 0;
+
+    if (dentry == NULL || dentry->d_inode == NULL) {
+        return 0;
+    }
+    if (!S_ISDIR(dentry->d_inode->i_mode)) {
+        return -ENOTDIR;
+    }
+    if (dentry->d_inode->i_fop == NULL || dentry->d_inode->i_fop->readdir == NULL) {
+        return -ENOTSUP;
+    }
+    memset(&file, 0, sizeof(file));
+    file.f_inode = dentry->d_inode;
+    file.f_op = file.f_inode->i_fop;
+    file.f_path.dentry = dentry;
+    cursor->name[0] = '\0';
+    ret = file.f_op->open != NULL ? file.f_op->open(file.f_inode, &file) : 0;
+    if (ret != 0) {
+        return ret;
+    }
+    ret = file.f_op->readdir(&file, cursor, dir_fill);
+    if (file.f_op->release != NULL) {
+        close_ret = file.f_op->release(file.f_inode, &file);
+    }
+    if (ret < 0) {
+        return ret;
+    }
+    if (close_ret != 0) {
+        return close_ret;
+    }
+    if (cursor->name[0] == '\0') {
+        return 0;
+    }
+    strcpy(cursor->after, cursor->name);
+    return 1;
+}
+
+static int strip_nkc_name(const char *filename, char out[KB_STORE_NAME_SIZE])
+{
+    size_t len = strlen(filename);
+    size_t stem_len;
+
+    if (len <= 4U || strcmp(filename + len - 4U, ".nkc") != 0) {
+        return 0;
+    }
+    stem_len = len - 4U;
+    if (stem_len > KB_STORE_NAME_MAX) {
+        return -EINVAL;
+    }
+    memcpy(out, filename, stem_len);
+    out[stem_len] = '\0';
+    return kb_store_valid_name(out) ? 1 : -EINVAL;
+}
+
+int kb_store_read_page(const struct kb_store *store, uint8_t kind, const char *name,
+                       uint64_t revision, uint32_t offset, void *buffer, size_t length,
+                       uint32_t *body_size)
 {
     char path[96];
     const struct kb_store_entry *entry;
     uint32_t total;
     int fd, ret, close_ret;
-    if (store == NULL || !store->ready || kind_dir(kind) == NULL ||
-        !valid_id(id, KB_STORE_ID_SIZE) || (buffer == NULL && length != 0U) || revision == 0U) {
+
+    if (store == NULL || !store->ready || kind_dir(kind) == NULL || !kb_store_valid_name(name) ||
+        (buffer == NULL && length != 0U) || revision == 0U) {
         return -EINVAL;
     }
-    if (revision == KB_STORE_CURRENT_REVISION) {
-        entry = kb_store_find(store, kind, id);
-        if (entry == NULL) {
-            return -ENOENT;
-        }
-        revision = entry->revision;
+    entry = kb_store_find(store, kind, name);
+    if (entry == NULL ||
+        (revision != KB_STORE_CURRENT_REVISION && revision != entry->revision)) {
+        return -ENOENT;
     }
-    revision_path(path, kind_dir(kind), id, revision, ".nkc");
-    ret = read_record(path, OBJECT_MAGIC, kind, revision, NULL, KB_STORE_MAX_BODY, &total, &fd);
+    revision = entry->revision;
+    object_path(path, kind, name);
+    ret = read_record(path, OBJECT_MAGIC, kind, revision, NULL, KB_STORE_MAX_BODY, &total, NULL,
+                      &fd);
     if (ret != 0) {
         return ret;
     }
@@ -402,82 +563,90 @@ int kb_store_read_page(const struct kb_store *store, uint8_t kind, const char *i
     return ret < 0 ? ret : (close_ret != 0 ? close_ret : ret);
 }
 
-int kb_store_read(const struct kb_store *store, uint8_t kind, const char *id, uint64_t revision,
+int kb_store_read(const struct kb_store *store, uint8_t kind, const char *name, uint64_t revision,
                   uint32_t offset, void *buffer, size_t length)
 {
-    return kb_store_read_page(store, kind, id, revision, offset, buffer, length, NULL);
+    return kb_store_read_page(store, kind, name, revision, offset, buffer, length, NULL);
 }
 
 static int load_store(struct kb_store *store)
 {
-    uint8_t body[CATALOG_SIZE];
+    uint8_t body[ROOT_SIZE];
     char path[96];
     uint32_t size, object_size;
-    unsigned int i, j;
-    int fd, ret;
-    ret = read_record(KB_STORE_ROOT_PATH, ROOT_MAGIC, 0, UINT64_MAX, body, ROOT_SIZE, &size, &fd);
+    uint64_t root_seq = 0U, object_rev = 0U;
+    uint8_t kind;
+    const struct kb_store_entry *base_entry, *light_entry;
+    int ret;
+
+    ret = read_record(KB_STORE_ROOT_PATH, ROOT_MAGIC, 0, UINT64_MAX, body, ROOT_SIZE, &size,
+                      &root_seq, NULL);
     if (ret != 0) {
         return ret;
     }
-    if (nos_lseek(fd, 8, SEEK_SET) < 0 || transfer(fd, path, 8, 0) != 0) {
-        nos_close(fd);
-        return -EIO;
-    }
-    store->sequence = get_le((uint8_t *)path, 8);
-    ret = nos_close(fd);
-    if (ret != 0) {
-        return ret;
-    }
-    if (size != ROOT_SIZE || body[90] > 1U) {
+    if (size != ROOT_SIZE || body[2U * KB_STORE_NAME_SIZE] > 1U) {
         return -EINVAL;
     }
-    store->catalog_revision = get_le(body, 8);
-    if (store->catalog_revision == 0U || store->catalog_revision > store->sequence) {
+    if (decode_ref_name(&store->selection.base, body) != 0 ||
+        decode_ref_name(&store->selection.light, body + KB_STORE_NAME_SIZE) != 0) {
         return -EINVAL;
     }
-    decode_ref(&store->selection.base, body + 8);
-    decode_ref(&store->selection.light, body + 49);
-    store->selection.light_enabled = body[90] != 0U;
-    revision_path(path, KB_STORE_CATALOG_DIR, NULL, store->catalog_revision, ".nki");
-    ret =
-        read_record(path, CATALOG_MAGIC, 0, store->catalog_revision, body, sizeof(body), &size, NULL);
-    if (ret != 0) {
-        return ret;
-    }
-    if (size < 1U || body[0] > KB_STORE_MAX_OBJECTS || size != 1U + ENTRY_SIZE * body[0]) {
-        return -EINVAL;
-    }
-    store->count = body[0];
-    for (i = 0U; i < store->count; i++) {
-        const uint8_t *p = body + 1U + ENTRY_SIZE * i;
-        struct kb_store_entry *e = &store->entries[i];
-        e->revision = get_le(p, 8);
-        e->length = (uint16_t)get_le(p + 8, 2);
-        e->kind = p[10];
-        memcpy(e->id, p + 11, KB_STORE_ID_SIZE);
-        if (kind_dir(e->kind) == NULL || !valid_id(e->id, sizeof(e->id)) || e->revision == 0U ||
-            e->revision >= store->catalog_revision || e->length > KB_STORE_MAX_BODY || p[35] != 0U) {
-            return -EINVAL;
-        }
-        for (j = 0U; j < i; j++) {
-            if (store->entries[j].kind == e->kind && strcmp(store->entries[j].id, e->id) == 0) {
+    store->selection.light_enabled = body[2U * KB_STORE_NAME_SIZE] != 0U;
+    store->sequence = root_seq;
+
+    for (kind = KB_STORE_BASE; kind <= KB_STORE_MACRO; kind++) {
+        struct dir_cursor cursor = {0};
+
+        while ((ret = dir_next(kind_dir(kind), &cursor)) > 0) {
+            char name[KB_STORE_NAME_SIZE];
+            struct kb_store_entry *e;
+            int stem_ret;
+
+            if (cursor.type == DT_DIR) {
+                continue;
+            }
+            stem_ret = strip_nkc_name(cursor.name, name);
+            if (stem_ret == 0) {
+                continue;
+            }
+            if (stem_ret < 0) {
+                return stem_ret;
+            }
+            if (store->count >= KB_STORE_MAX_OBJECTS) {
+                return -ENOSPC;
+            }
+            if (kb_store_find(store, kind, name) != NULL) {
                 return -EINVAL;
             }
+            object_path(path, kind, name);
+            ret = read_record(path, OBJECT_MAGIC, kind, UINT64_MAX, NULL, KB_STORE_MAX_BODY,
+                              &object_size, &object_rev, NULL);
+            if (ret != 0) {
+                return ret;
+            }
+            e = &store->entries[store->count++];
+            memset(e, 0, sizeof(*e));
+            e->kind = kind;
+            e->revision = object_rev;
+            e->length = (uint16_t)object_size;
+            strcpy(e->name, name);
+            if (object_rev > store->sequence) {
+                store->sequence = object_rev;
+            }
         }
-        revision_path(path, kind_dir(e->kind), e->id, e->revision, ".nkc");
-        ret = read_record(path, OBJECT_MAGIC, e->kind, e->revision, NULL, KB_STORE_MAX_BODY,
-                          &object_size, NULL);
-        if (ret != 0) {
+        if (ret < 0) {
             return ret;
         }
-        if (object_size != e->length) {
-            return -EINVAL;
-        }
     }
-    if (!valid_ref(store, KB_STORE_BASE, &store->selection.base) ||
-        !valid_ref(store, KB_STORE_LIGHT, &store->selection.light)) {
+
+    base_entry = kb_store_find(store, KB_STORE_BASE, store->selection.base.name);
+    light_entry = kb_store_find(store, KB_STORE_LIGHT, store->selection.light.name);
+    if (base_entry == NULL || light_entry == NULL) {
         return -EINVAL;
     }
+    store->selection.base.revision = base_entry->revision;
+    store->selection.light.revision = light_entry->revision;
+    store->catalog_revision = store->sequence;
     return 0;
 }
 
@@ -488,8 +657,7 @@ int kb_store_open(struct kb_store *store)
     if (store == NULL) {
         return -EINVAL;
     }
-    /* The store is private to the worker. Decode into its unpublished state
-     * and expose the catalog only after every referenced object is verified. */
+    /* 未完成全部对象校验前保持未就绪状态 */
     memset(store, 0, sizeof(*store));
     ret = load_store(store);
     if (ret != 0) {
@@ -500,26 +668,42 @@ int kb_store_open(struct kb_store *store)
     return 0;
 }
 
-static int stage_object(struct kb_store *next, uint8_t kind, const char *id, const void *body,
-                        uint16_t length, struct kb_store_entry *entry)
+static int write_object_atomic(const char *obj_path, uint8_t kind, uint64_t revision,
+                               const void *body, uint16_t length, bool *rename_attempted)
 {
-    char path[96];
-    unsigned int collisions = 0U;
-    int ret = prepare_dirs(kind, id);
+    int ret;
+
+    *rename_attempted = false;
+    ret = write_record(KB_STORE_OBJECT_TEMP, OBJECT_MAGIC, kind, revision, body, length, 0);
     if (ret != 0) {
         return ret;
     }
-    do {
-        if (collisions++ == MAX_REVISION_COLLISIONS) {
-            return -ENOSPC;
+    *rename_attempted = true;
+    ret = nos_rename(KB_STORE_OBJECT_TEMP, obj_path);
+    if (ret != 0) {
+        if (object_matches(obj_path, kind, revision, body, length) == 1) {
+            return 0;
         }
-        if (next->sequence >= UINT64_MAX - 1U) {
-            return -EOVERFLOW;
-        }
-        next->sequence++;
-        revision_path(path, kind_dir(kind), id, next->sequence, ".nkc");
-        ret = write_record(path, OBJECT_MAGIC, kind, next->sequence, body, length, 1);
-    } while (ret == -EEXIST);
+    }
+    return ret;
+}
+
+static int stage_object(struct kb_store *next, uint8_t kind, const char *name, const void *body,
+                        uint16_t length, struct kb_store_entry *entry, char obj_path[96],
+                        bool *rename_attempted)
+{
+    int ret = prepare_dirs(kind);
+
+    *rename_attempted = false;
+    if (ret != 0) {
+        return ret;
+    }
+    if (next->sequence >= UINT64_MAX - 1U) {
+        return -EOVERFLOW;
+    }
+    next->sequence++;
+    object_path(obj_path, kind, name);
+    ret = write_object_atomic(obj_path, kind, next->sequence, body, length, rename_attempted);
     if (ret != 0) {
         return ret;
     }
@@ -527,7 +711,7 @@ static int stage_object(struct kb_store *next, uint8_t kind, const char *id, con
     entry->kind = kind;
     entry->revision = next->sequence;
     entry->length = length;
-    strcpy(entry->id, id);
+    strcpy(entry->name, name);
     return 0;
 }
 
@@ -535,14 +719,17 @@ static void select_entry(struct kb_store_ref *ref, const struct kb_store_entry *
 {
     memset(ref, 0, sizeof(*ref));
     ref->revision = entry->revision;
-    strcpy(ref->id, entry->id);
+    strcpy(ref->name, entry->name);
 }
 
 int kb_store_seed(struct kb_store *store, const void *base, uint16_t base_length, const void *light,
                   uint16_t light_length)
 {
     struct kb_store next = {0};
+    char base_path[96] = {0}, light_path[96] = {0};
+    bool base_written = false, light_written = false, rename_attempted = false;
     int fd, ret;
+
     if (store == NULL || base == NULL || light == NULL || base_length > KB_STORE_MAX_BODY ||
         light_length > KB_STORE_MAX_BODY) {
         return -EINVAL;
@@ -550,7 +737,7 @@ int kb_store_seed(struct kb_store *store, const void *base, uint16_t base_length
     if (store->ready) {
         return -EEXIST;
     }
-    /* Never replace an existing, possibly corrupt root with defaults. */
+    /* 绝不覆盖已有（可能损坏）的根配置文件 */
     fd = nos_open(KB_STORE_ROOT_PATH, O_RDONLY);
     if (fd >= 0) {
         ret = nos_close(fd);
@@ -559,87 +746,86 @@ int kb_store_seed(struct kb_store *store, const void *base, uint16_t base_length
     if (fd != -ENOENT) {
         return fd;
     }
-    ret = stage_object(&next, KB_STORE_BASE, "default", base, base_length, &next.entries[0]);
+    ret = prepare_dirs(KB_STORE_MACRO);
     if (ret == 0) {
-        ret = stage_object(&next, KB_STORE_LIGHT, "default", light, light_length, &next.entries[1]);
+        ret = stage_object(&next, KB_STORE_BASE, "default", base, base_length, &next.entries[0],
+                           base_path, &rename_attempted);
+        base_written = (ret == 0);
+    }
+    if (ret == 0) {
+        ret = stage_object(&next, KB_STORE_LIGHT, "default", light, light_length, &next.entries[1],
+                           light_path, &rename_attempted);
+        light_written = (ret == 0);
     }
     if (ret != 0) {
+        if (base_written) {
+            (void)nos_unlink(base_path);
+        }
         return ret;
     }
     next.count = 2U;
     next.selection.light_enabled = true;
     select_entry(&next.selection.base, &next.entries[0]);
     select_entry(&next.selection.light, &next.entries[1]);
-    return publish(store, &next, 1);
+    ret = publish_root(store, &next, true);
+    if (ret != 0 && root_matches(&next) != 1) {
+        if (base_written) {
+            (void)nos_unlink(base_path);
+        }
+        if (light_written) {
+            (void)nos_unlink(light_path);
+        }
+    }
+    return ret;
 }
 
 static int object_equal(const struct kb_store_entry *entry, const void *body, uint16_t length)
 {
     char path[96];
-    uint8_t scratch[128];
-    uint32_t total, offset = 0U;
-    int fd, ret, equal = 1;
+
     if (entry->length != length) {
         return 0;
     }
-    revision_path(path, kind_dir(entry->kind), entry->id, entry->revision, ".nkc");
-    ret = read_record(path, OBJECT_MAGIC, entry->kind, entry->revision, NULL, KB_STORE_MAX_BODY,
-                      &total, &fd);
-    if (ret != 0) {
-        return ret;
-    }
-    if (total != length || nos_lseek(fd, HEADER_SIZE, SEEK_SET) < 0) {
-        equal = 0;
-    }
-    while (equal && offset < length) {
-        size_t n = length - offset;
-        if (n > sizeof(scratch)) {
-            n = sizeof(scratch);
-        }
-        ret = transfer(fd, scratch, n, 0);
-        if (ret != 0) {
-            break;
-        }
-        if (memcmp(scratch, (const uint8_t *)body + offset, n) != 0) {
-            equal = 0;
-        }
-        offset += n;
-    }
-    {
-        int close_ret = nos_close(fd);
-        if (ret == 0) {
-            ret = close_ret;
-        }
-    }
-    return ret != 0 ? ret : equal;
+    object_path(path, entry->kind, entry->name);
+    return object_matches(path, entry->kind, entry->revision, body, length);
 }
 
 int kb_store_begin_session(struct kb_store *store)
 {
     struct kb_store next;
+    int ret;
+
     if (store == NULL || !store->ready) {
         return -EINVAL;
     }
     next = *store;
-    return publish(store, &next, 0);
+    ret = publish_root(store, &next, false);
+    if (ret != 0 && (!store->ready || root_matches(store) != 1)) {
+        store->ready = false;
+    }
+    return ret;
 }
 
-int kb_store_save(struct kb_store *store, uint8_t kind, const char *id, uint64_t expected_revision,
-                  const void *body, uint16_t length, const struct kb_store_selection *selection)
+int kb_store_save(struct kb_store *store, uint8_t kind, const char *name,
+                  uint64_t expected_revision, const void *body, uint16_t length,
+                  const struct kb_store_selection *selection)
 {
     struct kb_store next;
     const struct kb_store_entry *old;
     struct kb_store_entry *entry;
+    char obj_path[96];
+    bool rename_attempted = false;
     int ret;
-    if (store == NULL || !store->ready || kind_dir(kind) == NULL ||
-        !valid_id(id, KB_STORE_ID_SIZE) || body == NULL || length > KB_STORE_MAX_BODY) {
+
+    if (store == NULL || !store->ready || kind_dir(kind) == NULL || !kb_store_valid_name(name) ||
+        body == NULL || length > KB_STORE_MAX_BODY) {
         return -EINVAL;
     }
     if (selection != NULL && (!valid_ref(store, KB_STORE_BASE, &selection->base) ||
                               !valid_ref(store, KB_STORE_LIGHT, &selection->light))) {
         return -EINVAL;
     }
-    old = kb_store_find(store, kind, id);
+    old = kb_store_find(store, kind, name);
     if (expected_revision == 0U && old != NULL) {
         return -EEXIST;
     }
@@ -665,13 +851,22 @@ int kb_store_save(struct kb_store *store, uint8_t kind, const char *id, uint64_t
             if (kind == KB_STORE_LIGHT) {
                 select_entry(&next.selection.light, old);
             }
-            return same_selection(&store->selection, &next.selection) ? 0
-                                                                      : publish(store, &next, 0);
+            if (same_selection(&store->selection, &next.selection)) {
+                return 0;
+            }
+            ret = publish_root(store, &next, false);
+            if (ret != 0 && root_matches(store) != 1) {
+                store->ready = false;
+            }
+            return ret;
         }
     }
     entry = old != NULL ? &next.entries[old - store->entries] : &next.entries[next.count++];
-    ret = stage_object(&next, kind, id, body, length, entry);
+    ret = stage_object(&next, kind, name, body, length, entry, obj_path, &rename_attempted);
     if (ret != 0) {
+        if (old != NULL && rename_attempted) {
+            store->ready = false;
+        }
         return ret;
     }
     if (kind == KB_STORE_BASE) {
@@ -680,28 +875,39 @@ int kb_store_save(struct kb_store *store, uint8_t kind, const char *id, uint64_t
     if (kind == KB_STORE_LIGHT) {
         select_entry(&next.selection.light, entry);
     }
-    return publish(store, &next, 1);
+    ret = publish_root(store, &next, true);
+    if (ret != 0) {
+        if (old == NULL && root_matches(store) == 1) {
+            (void)nos_unlink(obj_path);
+        } else {
+            /* 覆盖文件已替换或根发布结果不确定，标记未就绪以从磁盘同步 */
+            store->ready = false;
+        }
+    }
+    return ret;
 }
 
-int kb_store_delete(struct kb_store *store, uint8_t kind, const char *id,
+int kb_store_delete(struct kb_store *store, uint8_t kind, const char *name,
                     uint64_t expected_revision)
 {
     struct kb_store next;
     const struct kb_store_entry *entry;
+    char obj_path[96];
     size_t index;
-    if (store == NULL || !store->ready || kind_dir(kind) == NULL ||
-        !valid_id(id, KB_STORE_ID_SIZE)) {
+    int ret;
+
+    if (store == NULL || !store->ready || kind_dir(kind) == NULL || !kb_store_valid_name(name)) {
         return -EINVAL;
     }
-    entry = kb_store_find(store, kind, id);
+    entry = kb_store_find(store, kind, name);
     if (entry == NULL) {
         return -ENOENT;
     }
     if (entry->revision != expected_revision) {
         return -ESTALE;
     }
-    if ((kind == KB_STORE_BASE && strcmp(store->selection.base.id, id) == 0) ||
-        (kind == KB_STORE_LIGHT && strcmp(store->selection.light.id, id) == 0)) {
+    if ((kind == KB_STORE_BASE && strcmp(store->selection.base.name, name) == 0) ||
+        (kind == KB_STORE_LIGHT && strcmp(store->selection.light.name, name) == 0)) {
         return -EBUSY;
     }
     next = *store;
@@ -709,12 +915,24 @@ int kb_store_delete(struct kb_store *store, uint8_t kind, const char *id,
     memmove(&next.entries[index], &next.entries[index + 1U],
             (next.count - index - 1U) * sizeof(*entry));
     memset(&next.entries[--next.count], 0, sizeof(*entry));
-    return publish(store, &next, 1);
+
+    object_path(obj_path, kind, name);
+    ret = nos_unlink(obj_path);
+    if (ret != 0) {
+        return ret;
+    }
+    ret = publish_root(store, &next, true);
+    if (ret != 0) {
+        store->ready = false;
+    }
+    return ret;
 }
 
 int kb_store_persist_selection(struct kb_store *store, const struct kb_store_selection *selection)
 {
     struct kb_store next;
+    int ret;
+
     if (store == NULL || !store->ready || selection == NULL ||
         !valid_ref(store, KB_STORE_BASE, &selection->base) ||
         !valid_ref(store, KB_STORE_LIGHT, &selection->light)) {
@@ -725,172 +943,27 @@ int kb_store_persist_selection(struct kb_store *store, const struct kb_store_sel
     }
     next = *store;
     next.selection = *selection;
-    return publish(store, &next, 0);
-}
-
-struct gc_cursor {
-    char after[32];
-    char name[32];
-    unsigned int type;
-};
-static int gc_fill(void *arg, const char *name, int length, loff_t offset, u64 ino,
-                   unsigned int type)
-{
-    struct gc_cursor *cursor = arg;
-    char bounded[32];
-    (void)offset;
-    (void)ino;
-    if (length <= 0 || length >= (int)sizeof(bounded) || name == NULL || name[0] == '.') {
-        return 0;
-    }
-    memcpy(bounded, name, (size_t)length);
-    bounded[length] = '\0';
-    if (strcmp(bounded, cursor->after) <= 0 ||
-        (cursor->name[0] != '\0' && strcmp(bounded, cursor->name) >= 0)) {
-        return 0;
-    }
-    strcpy(cursor->name, bounded);
-    cursor->type = type;
-    return 0;
-}
-/* Rescan after releasing the directory handle: unlink can reorder readdir, and
- * filesystem callbacks must not be reentered while its directory lock is held. */
-static int gc_next(const char *path, struct gc_cursor *cursor)
-{
-    struct dentry *dentry;
-    dentry = vfs_lookup_path(vfs_get_root(), path);
-    struct file file;
-    int ret, close_ret = 0;
-    if (dentry == NULL || dentry->d_inode == NULL) {
-        return 0;
-    }
-    if (!S_ISDIR(dentry->d_inode->i_mode)) {
-        return -ENOTDIR;
-    }
-    if (dentry->d_inode->i_fop == NULL || dentry->d_inode->i_fop->readdir == NULL) {
-        return -ENOTSUP;
-    }
-    memset(&file, 0, sizeof(file));
-    file.f_inode = dentry->d_inode;
-    file.f_op = file.f_inode->i_fop;
-    file.f_path.dentry = dentry;
-    cursor->name[0] = '\0';
-    ret = file.f_op->open != NULL ? file.f_op->open(file.f_inode, &file) : 0;
-    if (ret != 0) {
-        return ret;
-    }
-    ret = file.f_op->readdir(&file, cursor, gc_fill);
-    if (file.f_op->release != NULL) {
-        close_ret = file.f_op->release(file.f_inode, &file);
-    }
-    if (ret < 0) {
-        return ret;
-    }
-    if (close_ret != 0) {
-        return close_ret;
-    }
-    if (cursor->name[0] == '\0') {
-        return 0;
-    }
-    strcpy(cursor->after, cursor->name);
-    return 1;
-}
-
-static int gc_revision(const char *name, const char *ext, uint64_t *revision)
-{
-    unsigned int i;
-    uint64_t value = 0;
-    if (strlen(name) != 20U || strcmp(name + 16, ext) != 0) {
-        return 0;
-    }
-    for (i = 0U; i < 16U; i++) {
-        unsigned char c = (unsigned char)name[i];
-        unsigned int digit;
-        if (c >= '0' && c <= '9') {
-            digit = c - '0';
-        } else if (c >= 'a' && c <= 'f') {
-            digit = c - 'a' + 10U;
-        } else {
-            return 0;
-        }
-        value = (value << 4) | digit;
-    }
-    *revision = value;
-    return 1;
-}
-
-static int gc_versions(struct kb_store *store, const char *dir, uint8_t kind, const char *id)
-{
-    struct gc_cursor cursor = {0};
-    const struct kb_store_entry *entry = id != NULL ? kb_store_find(store, kind, id) : NULL;
-    const struct kb_store_ref *active =
-        kind == KB_STORE_BASE ? &store->selection.base
-                              : (kind == KB_STORE_LIGHT ? &store->selection.light : NULL);
-    char path[96];
-    uint64_t revision;
-    int ret;
-    while ((ret = gc_next(dir, &cursor)) > 0) {
-        size_t n;
-        if (cursor.type == DT_DIR ||
-            !gc_revision(cursor.name, id != NULL ? ".nkc" : ".nki", &revision)) {
-            continue;
-        }
-        if ((id == NULL && revision == store->catalog_revision) ||
-            (entry != NULL && revision == entry->revision) ||
-            (id != NULL && active != NULL && strcmp(active->id, id) == 0 &&
-             revision == active->revision)) {
-            continue;
-        }
-        n = strlen(dir);
-        memcpy(path, dir, n);
-        path[n++] = '/';
-        strcpy(path + n, cursor.name);
-        ret = nos_unlink(path);
-        if (ret != 0 && ret != -ENOENT) {
-            return ret;
-        }
+    ret = publish_root(store, &next, false);
+    if (ret != 0 && root_matches(store) != 1) {
+        store->ready = false;
     }
     return ret;
 }
 
 int kb_store_gc(struct kb_store *store)
 {
-    struct gc_cursor cursor;
-    uint8_t kind;
-    char path[96];
-    int ret;
+    int ret, obj_ret;
+
     if (store == NULL || !store->ready) {
         return -EINVAL;
     }
-    ret = gc_versions(store, KB_STORE_CATALOG_DIR, 0, NULL);
-    if (ret != 0) {
-        return ret;
-    }
-    for (kind = KB_STORE_BASE; kind <= KB_STORE_MACRO; kind++) {
-        const char *dir = kind_dir(kind);
-        memset(&cursor, 0, sizeof(cursor));
-        while ((ret = gc_next(dir, &cursor)) > 0) {
-            size_t n;
-            if (cursor.type != DT_DIR || !valid_id(cursor.name, KB_STORE_ID_SIZE)) {
-                continue;
-            }
-            n = strlen(dir);
-            memcpy(path, dir, n);
-            path[n++] = '/';
-            strcpy(path + n, cursor.name);
-            ret = gc_versions(store, path, kind, cursor.name);
-            if (ret != 0) {
-                return ret;
-            }
-            ret = nos_rmdir(path);
-            if (ret != 0 && ret != -ENOTEMPTY && ret != -ENOENT) {
-                return ret;
-            }
-        }
-        if (ret < 0) {
-            return ret;
-        }
-    }
     ret = nos_unlink(KB_STORE_ROOT_TEMP);
-    return ret == -ENOENT ? 0 : ret;
+    if (ret == -ENOENT) {
+        ret = 0;
+    }
+    obj_ret = nos_unlink(KB_STORE_OBJECT_TEMP);
+    if (obj_ret == -ENOENT) {
+        obj_ret = 0;
+    }
+    return ret != 0 ? ret : obj_ret;
 }

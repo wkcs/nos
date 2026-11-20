@@ -21,7 +21,7 @@ struct kb_config_operation {
     int16_t status;
     uint64_t expected;
     struct kb_store_ref ref;
-    char target[33];
+    char target[KB_STORE_NAME_SIZE];
 };
 
 struct keyboard_config_service {
@@ -38,7 +38,7 @@ struct keyboard_config_service {
     uint8_t kind, retry_count, storage_state;
     int16_t storage_error;
     bool initialized, ready, read_only, pending, write_error, draft_applied, draft_synced;
-    char source[33];
+    char source[KB_STORE_NAME_SIZE];
     uint16_t edit_owner;
     uint32_t edit_session;
     struct nlk_bearer *edit_ingress;
@@ -50,7 +50,7 @@ struct keyboard_config_service {
     struct {
         uint32_t order;
         uint8_t verb;
-        char target[24];
+        char target[KB_STORE_NAME_SIZE];
     } action_queue[8];
     volatile uint8_t action_head, action_tail;
 };

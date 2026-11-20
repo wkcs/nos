@@ -170,19 +170,28 @@ int main(void)
     assert(kb_store_open(&reopened) == 0);
     expect_body(&reopened, KB_STORE_BASE, "default", "base");
     expect_body(&reopened, KB_STORE_LIGHT, "default", "light");
+    /* 验证扁平文件结构存在且无 _catalog 目录 */
+    fd = nos_open("/data/keyboard/base/default.nkc", O_RDONLY);
+    assert(fd >= 0 && nos_close(fd) == 0);
+    fd = nos_open("/data/keyboard/light/default.nkc", O_RDONLY);
+    assert(fd >= 0 && nos_close(fd) == 0);
+    assert(nos_open("/data/keyboard/_catalog", O_RDONLY) == -ENOENT);
 
     old_revision = store.selection.base.revision;
     assert(kb_store_save(&store, KB_STORE_BASE, "default", old_revision,
                          "updated", 7, NULL) == 0);
-    assert(kb_store_read(&store, KB_STORE_BASE, "default", old_revision, 0, &byte, 1) == 1);
-    assert(byte == 'b');
+    /* 覆盖写直接替换扁平对象文件，旧修订立即不可再读 */
+    assert(kb_store_read(&store, KB_STORE_BASE, "default", old_revision, 0, &byte, 1) == -ENOENT);
     assert(kb_store_save(&store, KB_STORE_MACRO, "macro", 0, "steps", 5, NULL) == 0);
+    assert(kb_store_save(&store, KB_STORE_MACRO, "\xe6\xb5\x8b\xe8\xaf\x95\xe5\xae\x8f", 0,
+                         "utf8", 4, NULL) == 0);
     selection = store.selection;
     selection.light_enabled = false;
     assert(kb_store_persist_selection(&store, &selection) == 0);
     assert(kb_store_open(&reopened) == 0);
     expect_body(&reopened, KB_STORE_BASE, "default", "updated");
     expect_body(&reopened, KB_STORE_MACRO, "macro", "steps");
+    expect_body(&reopened, KB_STORE_MACRO, "\xe6\xb5\x8b\xe8\xaf\x95\xe5\xae\x8f", "utf8");
     assert(kb_store_gc(&store) == 0);
     assert(kb_store_read(&store, KB_STORE_BASE, "default", old_revision, 0, &byte, 1) == -ENOENT);
     current_sequence = store.sequence;
@@ -194,6 +203,7 @@ int main(void)
     assert(!reopened.selection.light_enabled);
     expect_body(&reopened, KB_STORE_BASE, "default", "updated");
     expect_body(&reopened, KB_STORE_MACRO, "macro", "steps");
+    expect_body(&reopened, KB_STORE_MACRO, "\xe6\xb5\x8b\xe8\xaf\x95\xe5\xae\x8f", "utf8");
     assert(kb_store_gc(&reopened) == 0);
 
     /* Root-record corruption must preserve the volume and all user files. */

@@ -392,7 +392,18 @@ int main(void)
     size_t saved_request_length = req.used;
     memcpy(saved_request, request, req.used);
     keyboard_config_service_poll(&service, 2);
-    assert(!service.lease && !strcmp(service.selection.base.id, "edited"));
+    assert(!service.lease && !strcmp(service.selection.base.name, "edited"));
+    {
+        uint8_t meta_buf[64];
+        char meta_name[32];
+        int n = kb_store_read(&service.store, KB_STORE_BASE, "edited",
+                              KB_STORE_CURRENT_REVISION, 0, meta_buf, sizeof(meta_buf));
+        assert(n > 0);
+        kb_doc_reader_init(&reader, meta_buf, (size_t)n);
+        assert(kb_doc_next(&reader, &tag, &value) == 1 && tag == NLK_KB_TAG_METADATA);
+        assert(kb_doc_string(&value, meta_name, sizeof(meta_name)) == 0);
+        assert(strcmp(meta_name, "edited") == 0);
+    }
     assert(keyboard.keymap[0][0] == 4 && service.store.sequence > sequence);
     sequence = service.store.sequence;
     start();
@@ -493,7 +504,7 @@ int main(void)
     commit(lease, revision, "lights", 0, 43);
     keyboard_config_service_poll(&service, 4);
     assert(!service.selection.light_enabled && service.store.selection.light_enabled);
-    assert(!strcmp(service.selection.light.id, "lights") && keyboard.light_layer_count == 1);
+    assert(!strcmp(service.selection.light.name, "lights") && keyboard.light_layer_count == 1);
     sequence = service.store.sequence;
 
     /* Both switches leave live layers alone and coalesce their aggregate write. */
@@ -580,12 +591,121 @@ int main(void)
     /* Cycling visits saved LIGHT configurations only, and keeps global enable. */
     assert(keyboard_config_service_queue(&service, 5, NULL) == 0);
     keyboard_config_service_poll(&service, service.now + 1);
-    assert(!strcmp(service.selection.light.id, "default") && !service.selection.light_enabled);
+    assert(!strcmp(service.selection.light.name, "default") && !service.selection.light_enabled);
     assert(keyboard_config_service_queue(&service, 6, NULL) == 0);
     keyboard_config_service_poll(&service, service.now + 1);
-    assert(!strcmp(service.selection.light.id, "lights") && !service.selection.light_enabled);
+    assert(!strcmp(service.selection.light.name, "lights") && !service.selection.light_enabled);
     keyboard_config_service_poll(&service, service.now + 6000);
     assert(!service.pending);
+
+    /* 非法配置名拒绝、UTF-8 名称同步及失败回滚（同时保留 description）。 */
+    start();
+    kb_doc_put(&req, KB_STORE_MACRO, 1);
+    kb_doc_str(&req, "bad/name");
+    kb_doc_put(&req, UINT64_MAX, 8);
+    kb_doc_put(&req, 0, 8);
+    assert(call(5) == -EINVAL);
+    start();
+    kb_doc_put(&req, NLK_KB_RUN_BASE_SELECT, 1);
+    kb_doc_put(&req, 200, 8);
+    kb_doc_str(&req, "~bad");
+    assert(call(NLK_KB_V2_RUN) == -EINVAL);
+    start();
+    kb_doc_put(&req, KB_STORE_MACRO, 1);
+    kb_doc_str(&req, "abcdefghijklmnopqrstuvwxyz12");
+    kb_doc_put(&req, 1, 8);
+    kb_doc_put(&req, 201, 8);
+    assert(call(12) == -EINVAL);
+
+    lease = begin(KB_STORE_MACRO);
+    offset = find_record(NLK_KB_TAG_METADATA, &record_length);
+    {
+        struct kb_doc_writer writer;
+        kb_doc_writer_init(&writer, bytes, sizeof(bytes));
+        size_t mark = kb_doc_record(&writer, NLK_KB_TAG_METADATA);
+        kb_doc_str(&writer, "draft-tmp");
+        kb_doc_str(&writer, "note");
+        kb_doc_end(&writer, mark);
+        revision = patch(lease, 1, offset, record_length, bytes, writer.used);
+    }
+    {
+        struct kb_doc_writer writer;
+        kb_doc_writer_init(&writer, bytes, sizeof(bytes));
+        size_t mark = kb_doc_record(&writer, 0x21);
+        kb_doc_put(&writer, NLK_KB_MACRO_ACT_DELAY_MS, 1);
+        kb_doc_put(&writer, 0, 1);
+        kb_doc_put(&writer, 5, 2);
+        kb_doc_end(&writer, mark);
+        revision = patch(lease, revision, service.draft_length, 0, bytes, writer.used);
+    }
+    start();
+    kb_doc_put(&req, lease, 8);
+    kb_doc_put(&req, revision, 8);
+    kb_doc_put(&req, 1, 1);
+    kb_doc_str(&req, "bad:name");
+    kb_doc_put(&req, 0, 8);
+    kb_doc_put(&req, 202, 8);
+    assert(call(8) == -EINVAL);
+
+    fail_sync = 1;
+    operation = commit(lease, revision, "\xe5\x8a\x9e\xe5\x85\xac\xe6\xa8\xa1\xe5\xbc\x8f", 0, 203);
+    keyboard_config_service_poll(&service, service.now + 1);
+    fail_sync = 0;
+    start();
+    kb_doc_put(&req, operation, 8);
+    assert(call(NLK_KB_V2_RESULT) == 0 && response[0] == 3);
+    assert(kb_store_find(&service.store, KB_STORE_MACRO,
+                         "\xe5\x8a\x9e\xe5\x85\xac\xe6\xa8\xa1\xe5\xbc\x8f") == NULL);
+    if (service.lease != 0) {
+        char rolled_name[32], rolled_desc[32];
+        offset = find_record(NLK_KB_TAG_METADATA, &record_length);
+        kb_doc_reader_init(&reader, service.draft + offset + 4, record_length - 4);
+        assert(kb_doc_string(&reader, rolled_name, sizeof(rolled_name)) == 0);
+        assert(kb_doc_string(&reader, rolled_desc, sizeof(rolled_desc)) == 0);
+        assert(strcmp(rolled_name, "draft-tmp") == 0 && strcmp(rolled_desc, "note") == 0);
+        operation = commit(lease, revision, "\xe5\x8a\x9e\xe5\x85\xac\xe6\xa8\xa1\xe5\xbc\x8f", 0, 204);
+    } else {
+        lease = begin(KB_STORE_MACRO);
+        offset = find_record(NLK_KB_TAG_METADATA, &record_length);
+        {
+            struct kb_doc_writer writer;
+            kb_doc_writer_init(&writer, bytes, sizeof(bytes));
+            size_t mark = kb_doc_record(&writer, NLK_KB_TAG_METADATA);
+            kb_doc_str(&writer, "draft-tmp");
+            kb_doc_str(&writer, "note");
+            kb_doc_end(&writer, mark);
+            revision = patch(lease, 1, offset, record_length, bytes, writer.used);
+        }
+        {
+            struct kb_doc_writer writer;
+            kb_doc_writer_init(&writer, bytes, sizeof(bytes));
+            size_t mark = kb_doc_record(&writer, 0x21);
+            kb_doc_put(&writer, NLK_KB_MACRO_ACT_DELAY_MS, 1);
+            kb_doc_put(&writer, 0, 1);
+            kb_doc_put(&writer, 5, 2);
+            kb_doc_end(&writer, mark);
+            revision = patch(lease, revision, service.draft_length, 0, bytes, writer.used);
+        }
+        operation = commit(lease, revision, "\xe5\x8a\x9e\xe5\x85\xac\xe6\xa8\xa1\xe5\xbc\x8f", 0, 204);
+    }
+    keyboard_config_service_poll(&service, service.now + 1);
+    start();
+    kb_doc_put(&req, operation, 8);
+    assert(call(NLK_KB_V2_RESULT) == 0 && response[0] == 2);
+    {
+        uint8_t meta_buf[64];
+        char synced_name[32], synced_desc[32];
+        int n = kb_store_read(&service.store, KB_STORE_MACRO,
+                              "\xe5\x8a\x9e\xe5\x85\xac\xe6\xa8\xa1\xe5\xbc\x8f",
+                              KB_STORE_CURRENT_REVISION, 0, meta_buf, sizeof(meta_buf));
+        assert(n > 0);
+        kb_doc_reader_init(&reader, meta_buf, (size_t)n);
+        assert(kb_doc_next(&reader, &tag, &value) == 1 && tag == NLK_KB_TAG_METADATA);
+        assert(kb_doc_string(&value, synced_name, sizeof(synced_name)) == 0);
+        assert(kb_doc_string(&value, synced_desc, sizeof(synced_desc)) == 0);
+        assert(strcmp(synced_name, "\xe5\x8a\x9e\xe5\x85\xac\xe6\xa8\xa1\xe5\xbc\x8f") == 0);
+        assert(strcmp(synced_desc, "note") == 0);
+    }
 
     /* Publication ambiguity is reported, recovered, and never replaced with defaults. */
     lease = begin(KB_STORE_LIGHT);

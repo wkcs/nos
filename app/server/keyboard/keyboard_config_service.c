@@ -31,10 +31,10 @@ static void schedule_selection_write(struct keyboard_config_service *s)
     s->pending = true;
     s->last_dirty = s->now;
 }
-int kb_config_load_object(struct keyboard_config_service *s, uint8_t kind, const char *id,
-                       uint64_t revision, uint8_t **body)
+int kb_config_load_object(struct keyboard_config_service *s, uint8_t kind, const char *name,
+                          uint64_t revision, uint8_t **body)
 {
-    const struct kb_store_entry *entry = kb_store_find(&s->store, kind, id);
+    const struct kb_store_entry *entry = kb_store_find(&s->store, kind, name);
     int length;
     size_t capacity;
     uint8_t *data;
@@ -45,7 +45,7 @@ int kb_config_load_object(struct keyboard_config_service *s, uint8_t kind, const
     if (entry->revision == revision) {
         capacity = entry->length;
     } else {
-        length = kb_store_read(&s->store, kind, id, revision, 0, NULL, 0);
+        length = kb_store_read(&s->store, kind, name, revision, 0, NULL, 0);
         if (length < 0) {
             return length;
         }
@@ -55,7 +55,7 @@ int kb_config_load_object(struct keyboard_config_service *s, uint8_t kind, const
     if (data == NULL) {
         return -ENOMEM;
     }
-    length = kb_store_read(&s->store, kind, id, revision, 0, data, capacity);
+    length = kb_store_read(&s->store, kind, name, revision, 0, data, capacity);
     if (length < 0) {
         kfree(data);
         return length;
@@ -63,8 +63,8 @@ int kb_config_load_object(struct keyboard_config_service *s, uint8_t kind, const
     *body = data;
     return length;
 }
-int kb_config_begin_edit(struct keyboard_config_service *s, uint8_t kind, char *id,
-                          uint64_t revision, uint64_t epoch)
+int kb_config_begin_edit(struct keyboard_config_service *s, uint8_t kind, char *name,
+                         uint64_t revision, uint64_t epoch)
 {
     uint8_t *data;
     int rc;
@@ -72,19 +72,19 @@ int kb_config_begin_edit(struct keyboard_config_service *s, uint8_t kind, char *
     if (epoch != kb_config_epoch(s, kind)) {
         return -ESTALE;
     }
-    if (!id[0] && kind != KB_STORE_MACRO) {
+    if (!name[0] && kind != KB_STORE_MACRO) {
         const struct kb_store_ref *ref = kind == KB_STORE_BASE ? &s->selection.base : &s->selection.light;
-        strcpy(id, ref->id);
+        strcpy(name, ref->name);
         revision = ref->revision;
     }
-    if (id[0] && revision == KB_STORE_CURRENT_REVISION) {
-        const struct kb_store_entry *e = kb_store_find(&s->store, kind, id);
+    if (name[0] && revision == KB_STORE_CURRENT_REVISION) {
+        const struct kb_store_entry *e = kb_store_find(&s->store, kind, name);
         if (e == NULL) {
             return -ENOENT;
         }
         revision = e->revision;
     }
-    if (!id[0]) {
+    if (!name[0]) {
         struct kb_doc_writer m;
         kb_doc_writer_init(&m, NULL, KB_CONFIG_BODY_MAX);
         kb_config_metadata(&m, "New macro", "");
@@ -96,7 +96,7 @@ int kb_config_begin_edit(struct keyboard_config_service *s, uint8_t kind, char *
         kb_config_metadata(&m, "New macro", "");
         rc = m.used;
     } else {
-        rc = kb_config_load_object(s, kind, id, revision, &data);
+        rc = kb_config_load_object(s, kind, name, revision, &data);
     }
     if (rc < 0) {
         return rc;
@@ -106,7 +106,7 @@ int kb_config_begin_edit(struct keyboard_config_service *s, uint8_t kind, char *
     s->kind = kind;
     s->draft_synced = true;
     s->draft_applied = false;
-    strcpy(s->source, id);
+    strcpy(s->source, name);
     s->source_revision = revision;
     s->edit_epoch = epoch;
     s->lease = ++s->counter;
@@ -260,7 +260,7 @@ int kb_config_patch_draft(struct keyboard_config_service *s, size_t offset, size
         s->kind == KB_STORE_BASE ? &s->selection.base : &s->selection.light;
     bool runtime_matches =
         s->draft_applied || s->kind == KB_STORE_MACRO ||
-        (!strcmp(s->source, selected->id) && s->source_revision == selected->revision);
+        (!strcmp(s->source, selected->name) && s->source_revision == selected->revision);
     bool metadata_only = synced && runtime_matches && metadata_records_only(old + offset, remove) &&
                          metadata_records_only(bytes, length);
     int rc;
@@ -351,7 +351,7 @@ int kb_config_end_edit(struct keyboard_config_service *s)
     } else {
         const struct kb_store_ref *ref =
             kind == KB_STORE_BASE ? &s->selection.base : &s->selection.light;
-        rc = kb_config_load_object(s, kind, ref->id, ref->revision, &body);
+        rc = kb_config_load_object(s, kind, ref->name, ref->revision, &body);
         if (rc >= 0) {
             rc = apply_runtime(s, kind, body, rc);
         }
@@ -365,9 +365,9 @@ int kb_config_end_edit(struct keyboard_config_service *s)
     return rc;
 }
 
-static int select_object(struct keyboard_config_service *s, uint8_t kind, const char *id)
+static int select_object(struct keyboard_config_service *s, uint8_t kind, const char *name)
 {
-    const struct kb_store_entry *entry = kb_store_find(&s->store, kind, id);
+    const struct kb_store_entry *entry = kb_store_find(&s->store, kind, name);
     struct kb_store_ref *ref = kind == KB_STORE_BASE ? &s->selection.base : &s->selection.light;
     uint8_t *data;
     int length, rc;
@@ -375,11 +375,11 @@ static int select_object(struct keyboard_config_service *s, uint8_t kind, const 
     if (entry == NULL) {
         return -ENOENT;
     }
-    if (!strcmp(ref->id, id) && ref->revision == entry->revision &&
+    if (!strcmp(ref->name, name) && ref->revision == entry->revision &&
         !(s->draft_applied && s->kind == kind)) {
         return 0;
     }
-    length = kb_config_load_object(s, kind, id, entry->revision, &data);
+    length = kb_config_load_object(s, kind, name, entry->revision, &data);
     if (length < 0) {
         return length;
     }
@@ -389,8 +389,8 @@ static int select_object(struct keyboard_config_service *s, uint8_t kind, const 
             s->draft_applied = false;
         }
         ref->revision = entry->revision;
-        memset(ref->id, 0, sizeof(ref->id));
-        strcpy(ref->id, id);
+        memset(ref->name, 0, sizeof(ref->name));
+        strcpy(ref->name, name);
         configuration_changed(s, kind);
         schedule_selection_write(s);
     }
@@ -406,30 +406,31 @@ static bool base_before(const char *a, const char *b)
 }
 static int adjacent(struct keyboard_config_service *s, uint8_t kind, bool previous)
 {
-    const char *ids[KB_STORE_MAX_OBJECTS];
+    const char *names[KB_STORE_MAX_OBJECTS];
     size_t i, count = 0, index = 0;
     int rc = -ENOENT;
     for (i = 0; i < s->store.count; i++) {
         if (s->store.entries[i].kind == kind) {
-            const char *id = s->store.entries[i].id;
+            const char *name = s->store.entries[i].name;
             size_t pos = count;
-            while (pos && base_before(id, ids[pos - 1])) {
-                ids[pos] = ids[pos - 1];
+            while (pos && base_before(name, names[pos - 1])) {
+                names[pos] = names[pos - 1];
                 pos--;
             }
-            ids[pos] = id;
+            names[pos] = name;
             count++;
         }
     }
     for (i = 0; i < count; i++) {
-        if (!strcmp(ids[i], kind == KB_STORE_BASE ? s->selection.base.id : s->selection.light.id)) {
+        if (!strcmp(names[i],
+                    kind == KB_STORE_BASE ? s->selection.base.name : s->selection.light.name)) {
             index = i;
             break;
         }
     }
     for (i = 0; i < count; i++) {
         index = previous ? (index + count - 1) % count : (index + 1) % count;
-        rc = select_object(s, kind, ids[index]);
+        rc = select_object(s, kind, names[index]);
         if (!rc || rc == -ENOMEM) {
             return rc;
         }
@@ -510,7 +511,7 @@ int keyboard_config_service_queue(struct keyboard_config_service *s, uint8_t ver
 {
     addr_t flags = disable_irq_save();
     uint8_t next = (s->action_head + 1) % 8;
-    if (next == s->action_tail || (target != NULL && strlen(target) >= 24)) {
+    if (next == s->action_tail || (target != NULL && strlen(target) >= KB_STORE_NAME_SIZE)) {
         enable_irq_save(flags);
         return -EBUSY;
     }
@@ -634,10 +635,10 @@ static int remove_object(struct keyboard_config_service *s, struct kb_config_ope
             const struct kb_store_entry *e = &s->store.entries[i];
             uint8_t *body;
             bool used;
-            if (e->kind != KB_STORE_BASE || (op->kind == KB_STORE_BASE && !strcmp(e->id, op->target))) {
+            if (e->kind != KB_STORE_BASE || (op->kind == KB_STORE_BASE && !strcmp(e->name, op->target))) {
                 continue;
             }
-            rc = kb_config_load_object(s, KB_STORE_BASE, e->id, e->revision, &body);
+            rc = kb_config_load_object(s, KB_STORE_BASE, e->name, e->revision, &body);
             if (rc < 0) {
                 return rc;
             }
@@ -669,29 +670,63 @@ static int remove_object(struct keyboard_config_service *s, struct kb_config_ope
     }
     return rc;
 }
+
+static void read_draft_metadata_name(const void *draft, size_t length, char out[KB_STORE_NAME_SIZE])
+{
+    struct kb_doc_reader reader, value;
+    uint16_t tag;
+
+    out[0] = '\0';
+    kb_doc_reader_init(&reader, draft, length);
+    while (kb_doc_next(&reader, &tag, &value) > 0) {
+        if (tag == NLK_KB_TAG_METADATA) {
+            if (kb_doc_string(&value, out, KB_STORE_NAME_SIZE) != 0) {
+                out[0] = '\0';
+            }
+            return;
+        }
+    }
+}
+
 static int save_draft(struct keyboard_config_service *s, struct kb_config_operation *op)
 {
     const struct kb_store_entry *entry;
     struct kb_store_selection selection = object_transaction_selection(s);
     bool enabled = s->selection.light_enabled;
     uint64_t epoch = kb_config_epoch(s, s->kind);
+    char previous_name[KB_STORE_NAME_SIZE];
     int rc;
 
+    if (!kb_store_valid_name(op->target)) {
+        return -EINVAL;
+    }
     if (epoch != s->edit_epoch) {
         return -ESTALE;
     }
+    /* 提交时强制将文档内 metadata.name 与目标文件名保持一致 */
+    read_draft_metadata_name(s->draft, s->draft_length, previous_name);
+    rc = kb_config_sync_metadata_name(s, op->target);
+    if (rc) {
+        return rc;
+    }
     rc = kb_config_apply_draft(s);
     if (rc) {
+        if (previous_name[0] && strcmp(previous_name, op->target) != 0) {
+            (void)kb_config_sync_metadata_name(s, previous_name);
+        }
         return rc;
     }
     rc = kb_store_save(&s->store, s->kind, op->target, op->expected, s->draft, s->draft_length,
                        &selection);
     if (rc) {
+        if (previous_name[0] && strcmp(previous_name, op->target) != 0) {
+            (void)kb_config_sync_metadata_name(s, previous_name);
+        }
         return rc;
     }
     entry = kb_store_find(&s->store, s->kind, op->target);
     op->ref.revision = entry->revision;
-    strcpy(op->ref.id, entry->id);
+    strcpy(op->ref.name, entry->name);
     s->selection = s->store.selection;
     s->selection.light_enabled = enabled;
     configuration_changed(s, s->kind);
@@ -734,12 +769,12 @@ static int open_store(struct keyboard_config_service *s)
         return rc;
     }
     s->selection = s->store.selection;
-    base_length = kb_config_load_object(s, KB_STORE_BASE, s->selection.base.id,
+    base_length = kb_config_load_object(s, KB_STORE_BASE, s->selection.base.name,
                                         s->selection.base.revision, &base);
     if (base_length < 0) {
         return base_length;
     }
-    light_length = kb_config_load_object(s, KB_STORE_LIGHT, s->selection.light.id,
+    light_length = kb_config_load_object(s, KB_STORE_LIGHT, s->selection.light.name,
                                          s->selection.light.revision, &light);
     if (light_length < 0) {
         kfree(base);
@@ -830,7 +865,7 @@ void keyboard_config_service_poll(struct keyboard_config_service *s, uint32_t no
         if (local &&
             (op == NULL || (int32_t)(s->action_queue[s->action_tail].order - op->order) < 0)) {
             uint8_t verb;
-            char target[24];
+            char target[KB_STORE_NAME_SIZE];
             addr_t flags = disable_irq_save();
             verb = s->action_queue[s->action_tail].verb;
             strcpy(target, s->action_queue[s->action_tail].target);

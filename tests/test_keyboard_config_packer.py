@@ -1,4 +1,4 @@
-"""Copyright (C) 2026 Nick Hu. NLK configuration interchange regressions."""
+"""Copyright (C) 2026 Nick Hu. NLK 键盘配置打包器与名称规则回归测试。"""
 import importlib.util
 import json
 from pathlib import Path
@@ -37,18 +37,53 @@ class KeyboardConfigPackerTests(unittest.TestCase):
             self.assertTrue(header.startswith(b'\x06ansi61\x01\x00'))
 
     def test_full_targets_and_duplicate_action_arguments(self):
-        config = dict(name='Test', layout='ansi61', layers=[['04']], debounce_ms=5, poll_rate_hz=1000,
-                      actions=[dict(layer=0, key=0, name='config_select', arguments=dict(target='work_configuration')),
-                               dict(layer=0, key=0, name='macro_play', arguments=dict(target='paste_macro')),
-                               dict(layer=0, key=0, name='key_chord', arguments=dict(modifiers=8))])
+        config = dict(
+            name='测试 配置',
+            layout='ansi61',
+            layers=[['04']],
+            debounce_ms=5,
+            poll_rate_hz=1000,
+            actions=[
+                dict(layer=0, key=0, name='config_select', arguments=dict(target='办公模式')),
+                dict(layer=0, key=0, name='macro_play', arguments=dict(target='a' * 27)),
+                dict(layer=0, key=0, name='key_chord', arguments=dict(modifiers=8)),
+            ],
+        )
         key = next(value for tag, value in records(PACKER.pack(config)) if tag == 6)
         self.assertEqual(key[7], 3)
-        self.assertIn(b'\x12work_configuration', key)
-        self.assertIn(b'\x0bpaste_macro', key)
+        self.assertIn(bytes([len('办公模式'.encode('utf-8'))]) + '办公模式'.encode('utf-8'), key)
+        self.assertIn(b'\x1b' + b'a' * 27, key)
         self.assertTrue(key.endswith(b'key_chord\x01\x00\x08'))
         config['default_layer'] = 1
         with self.assertRaises(ValueError):
             PACKER.pack(config)
+
+    def test_name_validation_boundaries(self):
+        for valid in ('a', 'Work Space', '一二三四五六七八九', 'a' * 27):
+            self.assertEqual(PACKER.validate_name(valid), valid)
+        for invalid in (
+            '',
+            'a' * 28,
+            '一二三四五六七八九十',
+            'bad/name',
+            'bad\\name',
+            'bad:name',
+            'bad*name',
+            'bad?name',
+            'bad"name',
+            'bad<name',
+            'bad>name',
+            'bad|name',
+            '.hidden',
+            'dot.',
+            ' lead',
+            'trail ',
+            '~factory',
+            'line\nbreak',
+            'ctrl\x7f',
+        ):
+            with self.assertRaises(ValueError, msg=f'should reject {invalid!r}'):
+                PACKER.validate_name(invalid)
 
     def test_macro_and_invalid_input(self):
         config = dict(kind='macro', name='Paste', steps=[dict(op='tap', keycode=4), dict(op='delay', delay_ms=50)])

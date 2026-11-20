@@ -2,9 +2,9 @@
 
 One capability, type `0x0100`, version `0x20`; hardware description uses CORE
 GET_CAP_DESC. All integers are little endian. `str` is a u8 byte length followed
-by UTF-8 bytes. `ref` is u8 kind, str ID, u64 revision. User IDs contain 1–23
-ASCII letters, digits, `_` or `-`. Revisions are nonzero; UINT64_MAX requests
-current revision. There are no virtual/factory configuration IDs.
+by UTF-8 bytes. `ref` is u8 kind, str name, u64 revision. Configuration names contain 1–27
+UTF-8 bytes (valid UTF-8, no NUL/ASCII control chars, no `/\:*?"<>|`, cannot start/end with `.` or space, cannot start with `~`). Revisions are nonzero; UINT64_MAX requests
+current revision. There are no separate configuration IDs or virtual/factory configurations.
 
 Object kinds: 1 base, 2 light, 3 macro. Resources: 1 compiled layout, 2 compiled
 action, 3 compiled effect, 4 saved base, 5 saved light, 6 saved macro. Sections
@@ -16,16 +16,16 @@ at record boundaries. Negative i16 errno is carried by NLK error responses.
 | --- | --- | --- |
 | 01 INFO | empty | u64 boot, u16 rx_mtu, u16 features, u32 ttl_ms, u64 definition_generation, u16 object_limit, u16 catalog_capacity, u8 light_layer_capacity |
 | 02 STATE | empty | u64 generation, u64 persisted_sequence, u64 catalog_revision, u64 base_epoch, u64 light_epoch, u8 flags, base ref, light ref |
-| 03 LIST | u8 resource, u64 generation, u32 cursor, u16 max_bytes | u64 generation, u32 next_cursor, then entries: str ID, u64 revision, u8 flags (currently 0) |
-| 04 READ | u8 resource, str ID (empty permitted for compiled layout), u64 revision, u8 section, u32 offset, u16 max_bytes | u64 revision, u32 total, u32 offset, bytes |
-| 05 EDIT_BEGIN | u8 kind, str source ID, u64 source_revision, u64 expected_epoch | u64 lease, u64 draft_revision, u32 ttl_ms |
+| 03 LIST | u8 resource, u64 generation, u32 cursor, u16 max_bytes | u64 generation, u32 next_cursor, then entries: str name, u64 revision, u8 flags (currently 0) |
+| 04 READ | u8 resource, str name (compiled ID for resources 1–3; empty permitted for compiled layout), u64 revision, u8 section, u32 offset, u16 max_bytes | u64 revision, u32 total, u32 offset, bytes |
+| 05 EDIT_BEGIN | u8 kind, str source name, u64 source_revision, u64 expected_epoch | u64 lease, u64 draft_revision, u32 ttl_ms |
 | 06 EDIT_PATCH | u64 lease, u64 expected_draft_revision, u16 offset, u16 remove_length, records | u64 draft_revision |
 | 07 Reserved | — | — |
 | 08 EDIT_COMMIT | u64 lease, u64 expected_draft_revision, u8 mode, str destination, u64 expected_dest_revision, u64 nonce | u64 operation |
 | 09 EDIT_ABORT | u64 lease | empty |
 | 0A EDIT_KEEPALIVE | u64 lease | u32 ttl_ms |
 | 0B RUN | u8 verb, u64 nonce, optional verb arguments | u64 operation |
-| 0C DELETE | u8 kind, str ID, u64 expected_revision, u64 nonce | u64 operation |
+| 0C DELETE | u8 kind, str name, u64 expected_revision, u64 nonce | u64 operation |
 | 0D RESULT | u64 operation | u8 state, i16 status, u64 generation, ref |
 | 0E EDIT_READ | u64 lease, u64 expected_draft_revision, u8 section, u32 offset, u16 max_bytes | u64 draft_revision, u32 total, u32 offset, bytes |
 | 0F STORAGE_STATUS | empty | u8 state, i16 storage_errno |
@@ -100,19 +100,19 @@ runtime. Clients show validation feedback separately from uncertain transport.
 ABORT, expiry and disconnect release the draft before reloading the selected
 saved runtime, keeping the current global light switch state.
 
-COMMIT validates the entire document and referenced objects. mode0 overwrites
-exactly expected_dest_revision; mode1 requires a new ID and expected revision0.
-Success saves immutable object/catalog files then atomically publishes
+COMMIT validates the entire document and referenced objects, and synchronizes `metadata.name` to `destination`. mode0 overwrites
+exactly expected_dest_revision; mode1 requires a new name and expected revision0.
+Success writes `<kind>/<name>.nkc` atomically via `/data/keyboard/object.tmp`, then atomically publishes
 `/data/keyboard/config.nkc`, and activates the saved reference. DELETE refuses
 active or referenced objects. Managed records are mutated only through these
 transactions; obsolete `/data/keyboard/active.nkc` is not protected by this
 service and can be removed through normal VFS.
 
-RUN verbs: 1 select_base(str ID), 2 select_light(str ID), 3 base_next,
+RUN verbs: 1 select_base(str name), 2 select_light(str name), 3 base_next,
 4 base_prev, 5 light_next, 6 light_prev, 7 light_set_enabled(u8 enabled),
-8 macro_play(str ID), 9 macro_stop. Next/previous visit saved configurations
+8 macro_play(str name), 9 macro_stop. Next/previous visit saved configurations
 only. An empty macro target plays the current new macro draft; a matching source
-ID plays its edited RAM bytes. Physical/runtime RUN changes may mark aggregate
+name plays its edited RAM bytes. Physical/runtime RUN changes may mark aggregate
 state pending. Verb 7 and the physical light switch update global status
 immediately and defer its aggregate write. A profile COMMIT does not flush that
 status early. The worker writes the final state after five seconds of inactivity,
@@ -120,7 +120,7 @@ with a 30-second limit during continuous changes and retry delays on write failu
 
 RESULT states: 0 queued, 1 runtime applied, 2 committed, 3 failed. RUN remains
 applied; observe STATE pending/error for durability. COMMIT/DELETE finish
-committed. Empty result ref uses kind0, empty ID, revision0. RESULT requests
+committed. Empty result ref uses kind0, empty name, revision0. RESULT requests
 have a15s client timeout because this MCU executes synchronous Flash work and
 GC on the serial NLK worker. Mutation requests are not replayed automatically.
 
@@ -130,7 +130,7 @@ Nonce deduplication and four result slots belong to one connection context.
 Manual retries must use identical bytes and nonce. After reconnect/reboot,
 read STATE instead of assuming an old operation token is valid.
 
-Limits:8192-byte document,24 saved objects total, ID23 bytes; lighting capacity
+Limits:8192-byte document,24 saved objects total, configuration name 27 UTF-8 bytes; lighting capacity
 comes from Kconfig/INFO, encoded effect fields64 bytes per layer, renderer
 private state32 bytes. These are logical limits; allocation failure remains a
 reported error on resource-limited boards.

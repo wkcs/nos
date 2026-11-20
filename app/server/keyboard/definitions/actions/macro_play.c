@@ -1,9 +1,10 @@
 /** Copyright (C) 2026 Nick Hu <huqihan@live.com> */
 #include <nos/keyboard_definitions.h>
 #include <nos/keyboard_document.h>
+#include <nos/keyboard_object_store.h>
 
 static const struct kb_parameter_definition parameters[] = {
-    {.id = 1, .type = KB_PARAMETER_MACRO_REF, .maximum = 23, .name = "target"},
+    {.id = 1, .type = KB_PARAMETER_MACRO_REF, .maximum = KB_STORE_NAME_MAX, .name = "target"},
 };
 
 static int execute(const struct key_action_context *context, const void *arguments, uint16_t length,
@@ -11,7 +12,7 @@ static int execute(const struct key_action_context *context, const void *argumen
 {
     if (context->event_type == 1U) {
         struct kb_doc_reader reader;
-        char target[24];
+        char target[KB_STORE_NAME_SIZE];
 
         kb_doc_reader_init(&reader, arguments, length);
         kb_doc_string(&reader, target, sizeof(target));

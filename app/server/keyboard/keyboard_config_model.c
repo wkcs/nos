@@ -3,6 +3,7 @@
  * Keyboard configuration documents and compiled definitions.
  */
 #include "keyboard_config_internal.h"
+#include <kernel/mm.h>
 #include <uapi/nos/errno.h>
 #include <string.h>
 
@@ -26,11 +27,10 @@ static const struct kb_effect_definition *find_effect(const char *id)
     }
     return NULL;
 }
-/* Schema parsing is shared by publication and dependency checks. No action IDs
- * or execution policies belong here. A positive result means a matching ref. */
+/* 参数结构校验同时用于配置提交与删除引用检查，正返回值表示命中目标引用 */
 static int action_arguments(const struct kb_action_definition *definition, const void *bytes,
                             uint16_t length, const struct kb_store *store, uint8_t kind,
-                            const char *id)
+                            const char *name)
 {
     struct kb_doc_reader reader;
     uint8_t i;
@@ -48,18 +48,18 @@ static int action_arguments(const struct kb_action_definition *definition, const
         } else if (field->type == KB_PARAMETER_RGB) {
             (void)kb_doc_bytes(&reader, 3);
         } else {
-            char target[24];
+            char target[KB_STORE_NAME_SIZE];
             uint8_t target_kind =
                 field->type == KB_PARAMETER_BASE_REF ? KB_STORE_BASE : KB_STORE_MACRO;
 
             kb_doc_string(&reader, target, sizeof(target));
-            if (reader.error || !target[0]) {
+            if (reader.error || !kb_store_valid_name(target)) {
                 return -EINVAL;
             }
             if (store && !kb_store_find(store, target_kind, target)) {
                 return -ENOENT;
             }
-            if (id && kind == target_kind && !strcmp(target, id)) {
+            if (name && kind == target_kind && !strcmp(target, name)) {
                 found = true;
             }
         }
@@ -189,7 +189,7 @@ int kb_config_default_document(struct keyboard_config_service *s, uint8_t kind, 
     size_t rec;
     uint8_t l, k, a;
     kb_doc_writer_init(&w, buffer, capacity);
-    kb_config_metadata(&w, "Default", "Factory configuration");
+    kb_config_metadata(&w, "default", "");
     if (kind == KB_STORE_BASE) {
         rec = kb_doc_record(&w, NLK_KB_TAG_BASE_HEADER);
         kb_doc_str(&w, kb_selected_layout.id);
@@ -253,11 +253,80 @@ int kb_config_default_document(struct keyboard_config_service *s, uint8_t kind, 
 }
 static int metadata_read(struct kb_doc_reader *reader, uint8_t *seen)
 {
-    char text[128];
-    if (++*seen != 1 || kb_doc_string(reader, text, 64) ||
-        kb_doc_string(reader, text, sizeof(text))) {
+    char name[KB_STORE_NAME_SIZE];
+
+    if (++*seen != 1 || kb_doc_string(reader, name, sizeof(name)) ||
+        kb_doc_string(reader, NULL, 128) || !kb_store_valid_name(name)) {
         return -EINVAL;
     }
+    return 0;
+}
+
+int kb_config_sync_metadata_name(struct keyboard_config_service *s, const char *name)
+{
+    struct kb_doc_reader reader, value;
+    uint16_t tag;
+    size_t offset = 0, meta_offset = 0, old_prefix_len = 0, desc_wire_len = 0, next_length;
+    uint8_t meta_count = 0;
+    char current_name[KB_STORE_NAME_SIZE];
+    /* 原地仅移动后缀并替换 tag/len + 新名称，后面的 description 字节直接保留，避免在栈上分配 128B+ 缓冲 */
+    uint8_t header_and_name[4U + 1U + KB_STORE_NAME_MAX];
+    struct kb_doc_writer writer;
+    uint8_t *buffer;
+    int rc;
+
+    if (s == NULL || s->draft == NULL || !kb_store_valid_name(name)) {
+        return -EINVAL;
+    }
+    kb_doc_reader_init(&reader, s->draft, s->draft_length);
+    while ((rc = kb_doc_next(&reader, &tag, &value)) > 0) {
+        if (tag == NLK_KB_TAG_METADATA) {
+            if (meta_count++ == 0U) {
+                meta_offset = offset;
+                if (kb_doc_string(&value, current_name, sizeof(current_name))) {
+                    return -EINVAL;
+                }
+                desc_wire_len = value.left;
+                old_prefix_len = 4U + 1U + strlen(current_name);
+                if (kb_doc_string(&value, NULL, 128) || value.left) {
+                    return -EINVAL;
+                }
+            }
+        }
+        offset = s->draft_length - reader.left;
+    }
+    if (rc < 0 || meta_count != 1U) {
+        return -EINVAL;
+    }
+    if (!strcmp(current_name, name)) {
+        return 0;
+    }
+    kb_doc_writer_init(&writer, header_and_name, sizeof(header_and_name));
+    kb_doc_put(&writer, NLK_KB_TAG_METADATA, 2);
+    kb_doc_put(&writer, 1U + strlen(name) + desc_wire_len, 2);
+    kb_doc_str(&writer, name);
+    if (writer.error) {
+        return writer.error;
+    }
+    next_length = s->draft_length - old_prefix_len + writer.used;
+    if (next_length > KB_CONFIG_BODY_MAX) {
+        return -ENOSPC;
+    }
+    buffer = s->draft;
+    if (next_length > s->draft_capacity) {
+        buffer = kmalloc(next_length, GFP_KERNEL);
+        if (buffer == NULL) {
+            return -ENOMEM;
+        }
+        memcpy(buffer, s->draft, s->draft_length);
+        kfree(s->draft);
+        s->draft = buffer;
+        s->draft_capacity = next_length;
+    }
+    memmove(buffer + meta_offset + writer.used, buffer + meta_offset + old_prefix_len,
+            s->draft_length - (meta_offset + old_prefix_len));
+    memcpy(buffer + meta_offset, header_and_name, writer.used);
+    s->draft_length = next_length;
     return 0;
 }
 
@@ -563,7 +632,7 @@ int kb_config_definition(uint8_t resource, const char *id, struct kb_doc_writer 
     return w->error ? w->error : (int)w->used;
 }
 
-bool kb_config_referenced(const void *body, size_t length, uint8_t kind, const char *id)
+bool kb_config_referenced(const void *body, size_t length, uint8_t kind, const char *name)
 {
     struct kb_doc_reader r, v;
     uint16_t tag;
@@ -585,9 +654,9 @@ bool kb_config_referenced(const void *body, size_t length, uint8_t kind, const c
                 p = kb_doc_bytes(&v, len);
                 def = find_action(action_id);
                 if (p == NULL || def == NULL) {
-                    return true; /* Corrupt dependencies cannot authorize deletion. */
+                    return true; /* 引用损坏时拒绝删除 */
                 }
-                if (action_arguments(def, p, len, NULL, kind, id) != 0) {
+                if (action_arguments(def, p, len, NULL, kind, name) != 0) {
                     return true;
                 }
             }

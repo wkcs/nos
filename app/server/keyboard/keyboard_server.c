@@ -691,7 +691,7 @@ static void keyboard_server_task_entry(void *parameter)
 static const struct nlk_vfs_protected_path keyboard_store_paths[] = {
     {KB_STORE_ROOT_PATH, false},
     {KB_STORE_ROOT_TEMP, false},
-    {KB_STORE_CATALOG_DIR, true},
+    {KB_STORE_OBJECT_TEMP, false},
     {KB_STORE_BASE_DIR, true},
     {KB_STORE_LIGHT_DIR, true},
     {KB_STORE_MACRO_DIR, true},
