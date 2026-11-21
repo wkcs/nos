@@ -310,7 +310,7 @@ config KEYBOARD_LIGHT_MAX_LAYERS
 config KEYBOARD_STACK_SIZE
     int "Keyboard scan task stack size"
     depends on KEYBOARD
-    range 2048 16384
+    range 1024 16384
     default 3072
 
 # 显示驱动

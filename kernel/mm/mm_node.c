@@ -422,3 +422,19 @@ size_t mm_backend_tlsf_free_size(void)
     }
     return free_bytes;
 }
+
+size_t mm_backend_tlsf_max_free_block(void)
+{
+    struct mm_node *node;
+    size_t max_blk = 0U;
+
+    list_for_each_entry (node, &g_node_list, list) {
+        if (node->type == NODE_NORMAL && node->algo == MM_NODE_ALGO_TLSF) {
+            size_t blk = mm_tlsf_max_free_block(&node->tlsf);
+            if (blk > max_blk) {
+                max_blk = blk;
+            }
+        }
+    }
+    return max_blk;
+}

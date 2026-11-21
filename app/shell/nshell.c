@@ -142,6 +142,8 @@ struct shell_cwd_ref {
     struct file file;
 };
 
+struct shell_parse_workspace;
+
 struct nshell {
     struct task_struct *task;
     struct shell_session session;
@@ -162,8 +164,47 @@ struct nshell {
     struct shell_variable *variables;
     struct shell_variable *aliases;
     struct shell_cwd_ref *cwd_ref;
+    /* 会话级常驻工作区，避免低内存时连简单命令都无法解析 */
+    struct shell_parse_workspace *exec_ws;
+    bool exec_ws_busy;
     uint32_t generation;
 };
+
+/* 单条命令解析与展开所需的临时工作区 */
+struct shell_parse_workspace {
+    char check[SHELL_SESSION_INPUT_MAX + 1];
+    char expanded[SHELL_SESSION_INPUT_MAX + 1];
+    union {
+        struct shell_redirection redir;
+        char assignment_expanded[SHELL_SESSION_INPUT_MAX + 1];
+    } u;
+    struct shell_command commands[16];
+    struct shell_saved_variable saved[8];
+};
+
+/* 获取命令解析工作区，优先复用会话常驻缓存，嵌套调用时回退到动态分配 */
+static struct shell_parse_workspace *nshell_get_workspace(struct nshell *shell)
+{
+    if (shell->exec_ws != NULL && !shell->exec_ws_busy) {
+        shell->exec_ws_busy = true;
+        return shell->exec_ws;
+    }
+    return kmalloc(sizeof(struct shell_parse_workspace), GFP_KERNEL);
+}
+
+/* 归还命令解析工作区，常驻缓存仅清除占用标志 */
+static void nshell_put_workspace(struct nshell *shell,
+                                 struct shell_parse_workspace *ws)
+{
+    if (ws == NULL) {
+        return;
+    }
+    if (ws == shell->exec_ws) {
+        shell->exec_ws_busy = false;
+    } else {
+        kfree(ws);
+    }
+}
 
 static struct nshell *shell_sessions;
 static SPINLOCK(shell_sessions_lock);
@@ -1090,6 +1131,7 @@ static int cmd_free(int argc, char *argv[])
     unsigned int heap_total = (unsigned int)mm_block_total_size();
     unsigned int heap_used = (unsigned int)mm_block_used_size();
     unsigned int heap_free = (unsigned int)mm_block_free_size();
+    unsigned int heap_largest = (unsigned int)mm_backend_tlsf_max_free_block();
     bool bytes = false, human = false;
     int first = 1;
 
@@ -1111,20 +1153,22 @@ static int cmd_free(int argc, char *argv[])
         shell_error("free: extra operand '%s'\n", argv[first]);
         return 1;
     }
-    shell_printf("              total        used        free\n");
+    shell_printf("              total        used        free     largest\n");
     if (human) {
-        shell_printf("Mem:      %8uK   %8uK   %8uK\n",
+        shell_printf("Mem:      %8uK   %8uK   %8uK           -\n",
                      mem_total / 1024U, mem_used / 1024U, mem_free / 1024U);
-        shell_printf("Heap:     %8uB   %8uB   %8uB\n",
-                     heap_total, heap_used, heap_free);
+        shell_printf("Heap:     %8uB   %8uB   %8uB   %8uB\n",
+                     heap_total, heap_used, heap_free, heap_largest);
     } else if (bytes) {
-        shell_printf("Mem:      %9u   %9u   %9u\n", mem_total, mem_used, mem_free);
-        shell_printf("Heap:     %9u   %9u   %9u\n", heap_total, heap_used, heap_free);
+        shell_printf("Mem:      %9u   %9u   %9u           -\n", mem_total, mem_used, mem_free);
+        shell_printf("Heap:     %9u   %9u   %9u   %9u\n",
+                     heap_total, heap_used, heap_free, heap_largest);
     } else {
-        shell_printf("Mem:      %9u   %9u   %9u\n",
+        shell_printf("Mem:      %9u   %9u   %9u           -\n",
                      mem_total / 1024U, mem_used / 1024U, mem_free / 1024U);
-        shell_printf("Heap:     %9u   %9u   %9u\n",
-                     heap_total / 1024U, heap_used / 1024U, heap_free / 1024U);
+        shell_printf("Heap:     %9u   %9u   %9u   %9u\n",
+                     heap_total / 1024U, heap_used / 1024U, heap_free / 1024U,
+                     heap_largest / 1024U);
     }
     return 0;
 }
@@ -5957,6 +6001,9 @@ static noinline int shell_run_pipeline(struct nshell *parent, struct shell_comma
         stages[i].shell = child;
         created++;
         memcpy(child, parent, sizeof(*child));
+        /* 子级流水线阶段不得共享父会话的常驻解析工作区 */
+        child->exec_ws = NULL;
+        child->exec_ws_busy = false;
         if (child->cwd_ref != NULL) __atomic_add_fetch(&child->cwd_ref->refs, 1U, __ATOMIC_RELAXED);
         child->next = NULL;
         child->pipeline_worker = true;
@@ -6127,16 +6174,7 @@ static int nshell_expand_aliases(struct nshell *shell, const char *source,
 static void nshell_exec_cmd(struct nshell *shell)
 {
     char *argv[MAX_ARGS + 1];
-    struct shell_parse_workspace {
-        char check[SHELL_SESSION_INPUT_MAX + 1];
-        char expanded[SHELL_SESSION_INPUT_MAX + 1];
-        union {
-            struct shell_redirection redir;
-            char assignment_expanded[SHELL_SESSION_INPUT_MAX + 1];
-        } u;
-        struct shell_command commands[16];
-        struct shell_saved_variable saved[8];
-    } *workspace;
+    struct shell_parse_workspace *workspace;
     struct shell_redirection *redir;
     int count;
     int i;
@@ -6148,7 +6186,7 @@ static void nshell_exec_cmd(struct nshell *shell)
 
     nshell_init_standard_fds(shell);
 
-    workspace = kmalloc(sizeof(*workspace), GFP_KERNEL);
+    workspace = nshell_get_workspace(shell);
     if (workspace == NULL) {
         shell_printf("shell: out of memory\n");
         shell->last_status = 1;
@@ -6159,7 +6197,7 @@ static void nshell_exec_cmd(struct nshell *shell)
     if (count < 0) {
         shell_printf("shell: syntax error or too many arguments\n");
         shell->last_status = 2;
-        kfree(workspace);
+        nshell_put_workspace(shell, workspace);
         return;
     }
     for (i = 0; i < count; i++) {
@@ -6167,7 +6205,7 @@ static void nshell_exec_cmd(struct nshell *shell)
         if (shell_parse_redirect(workspace->check, argv, MAX_ARGS + 1, redir) < 0) {
             shell_printf("shell: syntax error or too many arguments\n");
             shell->last_status = 2;
-            kfree(workspace);
+            nshell_put_workspace(shell, workspace);
             return;
         }
     }
@@ -6382,7 +6420,7 @@ glob_overflow:
         shell->exit_requested = false;
         nos_tty_on_exit(shell->session.tty, shell->last_status);
     }
-    kfree(workspace);
+    nshell_put_workspace(shell, workspace);
 }
 
 static void nshell_execute_line(struct shell_session *session, void *context)
@@ -7024,7 +7062,10 @@ int nshell_spawn(struct nos_tty *tty, const char *name, bool show_banner)
     }
     shell = kzalloc(sizeof(*shell), GFP_KERNEL);
     if (shell == NULL) return -ENOMEM;
+    /* 预留会话级常驻解析工作区，分配失败时退回按需申请 */
+    shell->exec_ws = kmalloc(sizeof(*shell->exec_ws), GFP_KERNEL);
     if (variable_init(shell) != 0) {
+        kfree(shell->exec_ws);
         kfree(shell);
         return -ENOMEM;
     }
@@ -7037,6 +7078,7 @@ int nshell_spawn(struct nos_tty *tty, const char *name, bool show_banner)
                               CONFIG_SHELL_STACK_SIZE, 10, NULL);
     if (shell->task == NULL) {
         variable_clear(shell);
+        kfree(shell->exec_ws);
         kfree(shell);
         return -ENOMEM;
     }

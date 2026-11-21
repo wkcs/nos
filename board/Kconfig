@@ -88,6 +88,13 @@ config NLK_SERVER_STACK_SIZE
     default 4096
     range 4096 32768
 
+config NLK_LOG_TAP_BUF_SIZE
+    int "NLK log tap ring buffer size (bytes)"
+    default 1024
+    range 256 4096
+    help
+      NLK 日志能力内部环形缓冲字节数，小内存板卡可调小以节省静态内存。
+
 endif
 
 if NLK_CORE

@@ -22,7 +22,11 @@
 #define MM_TLSF_ALIGN           8U
 #define MM_TLSF_MIN_BLOCK_SIZE  16U
 #define MM_TLSF_FL_SHIFT        4U
+#ifdef CONFIG_MM_TLSF_FL_MAX
+#define MM_TLSF_FL_MAX          ((u32)CONFIG_MM_TLSF_FL_MAX)
+#else
 #define MM_TLSF_FL_MAX          24U
+#endif
 #define MM_TLSF_FL_COUNT        (MM_TLSF_FL_MAX - MM_TLSF_FL_SHIFT + 1U)
 #define MM_TLSF_SL_LOG2         3U
 #define MM_TLSF_SL_COUNT        (1U << MM_TLSF_SL_LOG2)
@@ -100,8 +104,11 @@ struct mm_node {
     u32 page_num;
     u32 free_num;
     u32 buddy_page_index; /* 可以使用的第一个页 */
-    struct mm_buddy buddy;
-    struct mm_tlsf_pool tlsf;
+    /* 同一内存节点仅启用一种分配算法，buddy 与 tlsf 共用存储空间以节省静态 RAM */
+    union {
+        struct mm_buddy buddy;
+        struct mm_tlsf_pool tlsf;
+    };
     struct list_head list;
 };
 
@@ -191,6 +198,10 @@ struct mem_base *find_base(struct memblock *block, void *addr);
 size_t mm_block_free_size(void);
 size_t mm_block_total_size(void);
 size_t mm_block_used_size(void);
+size_t mm_backend_tlsf_total_size(void);
+size_t mm_backend_tlsf_used_size(void);
+size_t mm_backend_tlsf_free_size(void);
+size_t mm_backend_tlsf_max_free_block(void);
 
 #define ALIGNED(addr, align) (((addr) + (align) - 1) & ~((align) - 1))
 #define ALIGNED_PAGE(addr) ALIGNED(addr, CONFIG_PAGE_SIZE)

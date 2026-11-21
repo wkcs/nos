@@ -221,6 +221,14 @@ config MM_TLSF
 	help
 	  启用 TLSF 二级位图紧凑边界标记分配器，消除页截断浪费与小内存碎片。
 
+config MM_TLSF_FL_MAX
+	int "TLSF maximum first-level index"
+	depends on MM_TLSF
+	default 24
+	range 12 28
+	help
+	  TLSF 第一级位图最大指数；小内存 MCU 可设为 16 以缩减桶表静态占用。
+
 config MM_SLUB
 	bool "Enable SLUB kmem_cache small-object allocator"
 	default y
@@ -241,6 +249,13 @@ config MAX_ORDER
 	help
 	  Buddy 分配器的最大阶数。
 	  最大可分配块大小为 PAGE_SIZE * (2^MAX_ORDER)。
+
+config NOS_CAP_MAX_SLOTS
+	int "Maximum capability table slots per task"
+	default 16
+	range 2 64
+	help
+	  每个任务内置能力表的槽位数；不使用用户态能力表的 MCU 可设为 2 以缩减 task_struct 体积。
 
 endmenu
 

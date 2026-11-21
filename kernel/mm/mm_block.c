@@ -30,6 +30,11 @@ __attribute__((weak)) size_t mm_backend_tlsf_free_size(void)
     return 0U;
 }
 
+__attribute__((weak)) size_t mm_backend_tlsf_max_free_block(void)
+{
+    return 0U;
+}
+
 static int memblock_init(struct memblock *block)
 {
     u32 size;
