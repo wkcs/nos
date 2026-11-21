@@ -3,6 +3,7 @@
  * NLK encoding and dispatch for the keyboard configuration capability.
  */
 #include "keyboard_config_internal.h"
+#include <nos/nlk_core.h>
 #include <uapi/nos/errno.h>
 #include <string.h>
 
@@ -546,7 +547,7 @@ static int handle_result(struct kb_rpc_call *call)
         return -ENOENT;
     }
     PUT_U8(&call->response, op->state);
-    PUT_U16(&call->response, op->status);
+    PUT_U16(&call->response, (uint16_t)nlk_errno_to_wire(op->status));
     PUT_U64(&call->response, op->generation);
     put_ref(&call->response, op->ref.name[0] ? op->kind : 0, &op->ref);
     return 0;
@@ -614,7 +615,7 @@ static int dispatch(struct kb_rpc_call *call)
         return handle_read(call);
     case NLK_KB_V2_STORAGE_STATUS:
         PUT_U8(&call->response, s->storage_state);
-        PUT_U16(&call->response, s->storage_error);
+        PUT_U16(&call->response, (uint16_t)nlk_errno_to_wire(s->storage_error));
         return 0;
     case NLK_KB_V2_EDIT_BEGIN:
         return s->read_only ? -EROFS : handle_edit_begin(call);

@@ -201,7 +201,7 @@ static int nlk_dispatch_local(struct nlk_node *node,
             if (node->rpc_waiter.is_err && payload_len >= sizeof(int16_t)) {
                 int16_t err_val;
                 memcpy(&err_val, payload, sizeof(int16_t));
-                node->rpc_waiter.err_code = err_val;
+                node->rpc_waiter.err_code = nlk_wire_to_errno(err_val);
                 node->rpc_waiter.resp_len = 0U;
             } else {
                 uint16_t copy_len = (payload_len > node->rpc_waiter.resp_max) ?
@@ -296,13 +296,13 @@ static int nlk_dispatch_local(struct nlk_node *node,
     if ((flags & NLK_FLAG_ACK_REQ) != 0U &&
         !(hdr->dst_cap == NLK_CAP_ID_CORE && hdr->cmd_op == NLK_CORE_OP_HELLO)) {
         uint8_t ack_flags = NLK_FLAG_IS_ACK;
-        int16_t err_payload;
+        int16_t err_payload = 0;
         const void *out_ptr = resp_buf;
         uint16_t out_len = resp_len;
 
         if (rc < 0) {
             ack_flags |= NLK_FLAG_IS_ERR;
-            err_payload = (int16_t)rc;
+            err_payload = nlk_errno_to_wire(rc);
             out_ptr = &err_payload;
             out_len = sizeof(err_payload);
         }
@@ -322,7 +322,8 @@ static int nlk_dispatch_local(struct nlk_node *node,
         __pr_log(false, level,
                  "RPC src=%04x cap=%u op=%02x seq=%u in=%u out=%u rc=%d tx=%d\n",
                  hdr->src_addr, hdr->dst_cap, hdr->cmd_op, hdr->seq_id,
-                 payload_len, out_len, rc, tx_rc < 0 ? tx_rc : 0);
+                 payload_len, out_len, (rc < 0) ? (int)err_payload : rc,
+                 tx_rc < 0 ? tx_rc : 0);
     }
 
     return rc;

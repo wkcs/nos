@@ -76,7 +76,7 @@ static int cap_flash_write_chunk_internal(struct nlk_flash_ctx *ctx,
     if (ctx == NULL || !ctx->session_active ||
         ctx->target_part >= ctx->part_count) {
         if (ack != NULL) {
-            ack->status = -EPERM;
+            ack->status = nlk_errno_to_wire(-EPERM);
         }
         return -EPERM;
     }
@@ -97,7 +97,7 @@ static int cap_flash_write_chunk_internal(struct nlk_flash_ctx *ctx,
         if (ack != NULL) {
             ack->acked_offset = ctx->acked_offset;
             ack->rx_window_bitmap = 0U;
-            ack->status = -EAGAIN;
+            ack->status = nlk_errno_to_wire(-EAGAIN);
         }
         return -EAGAIN;
     }
@@ -105,7 +105,7 @@ static int cap_flash_write_chunk_internal(struct nlk_flash_ctx *ctx,
     if (offset + (uint32_t)len > ctx->total_size) {
         if (ack != NULL) {
             ack->acked_offset = ctx->acked_offset;
-            ack->status = -EFBIG;
+            ack->status = nlk_errno_to_wire(-EFBIG);
         }
         return -EFBIG;
     }
@@ -115,7 +115,7 @@ static int cap_flash_write_chunk_internal(struct nlk_flash_ctx *ctx,
         if (rc < 0) {
             if (ack != NULL) {
                 ack->acked_offset = ctx->acked_offset;
-                ack->status = (int16_t)rc;
+                ack->status = nlk_errno_to_wire(rc);
             }
             return rc;
         }

@@ -794,6 +794,21 @@ static void test_nlk_node_uuid_population(void)
 
     /* 验证 desc.uuid 不再是全 0 */
     assert(memcmp(node.desc.uuid, zero_uuid, sizeof(zero_uuid)) != 0);
+
+    /* 验证 NLK 线上错误码 ABI 转换与本地还原对称性 */
+    assert(nlk_errno_to_wire(0) == 0);
+    assert(nlk_errno_to_wire(-EINVAL) == -22);
+    assert(nlk_errno_to_wire(-ENOMEM) == -12);
+    assert(nlk_errno_to_wire(-ESTALE) == -116);
+    assert(nlk_errno_to_wire(-ETIMEDOUT) == -110);
+    assert(nlk_errno_to_wire(-ENOTSUP) == -95);
+    assert(nlk_errno_to_wire(-EBADMSG) == -74);
+    assert(nlk_wire_to_errno(0) == 0);
+    assert(nlk_wire_to_errno(-116) == -ESTALE);
+    assert(nlk_wire_to_errno(-110) == -ETIMEDOUT);
+    assert(nlk_wire_to_errno(-95) == -ENOTSUP);
+    assert(nlk_wire_to_errno(-74) == -EBADMSG);
+
     printf("test_nlk_node_uuid_population passed\n");
 }
 

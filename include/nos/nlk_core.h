@@ -8,6 +8,7 @@
 #define __NOS_NLK_CORE_H__
 
 #include <nos/nlk_bearer.h>
+#include <uapi/nos/errno.h>
 
 #ifndef CONFIG_NLK_MAX_BEARERS
 #define CONFIG_NLK_MAX_BEARERS      6U
@@ -184,5 +185,222 @@ int nlk_discovery_handle_packet(struct nlk_node *node,
                                 uint8_t rx_port_id,
                                 void *resp_buf, uint16_t *resp_len);
 struct nlk_child_entry *nlk_node_find_child(struct nlk_node *node, nlk_addr_t addr);
+
+/**
+ * 将本机/工具链 <errno.h> 负错误码统一转换为 NLK 线上固定 Linux ABI 错误码，
+ * 避免 ARM Newlib 与主机端在 ESTALE/ETIMEDOUT/ENOTSUP 等编号上不一致。
+ */
+static inline int16_t nlk_errno_to_wire(int rc)
+{
+    unsigned int e;
+
+    if (rc >= 0) {
+        return (int16_t)rc;
+    }
+    e = (unsigned int)(-(rc + 1)) + 1U;
+#ifdef EAGAIN
+    if (e == (unsigned int)EAGAIN) return -11;
+#endif
+#ifdef EWOULDBLOCK
+    if (e == (unsigned int)EWOULDBLOCK) return -11;
+#endif
+#ifdef ENAMETOOLONG
+    if (e == (unsigned int)ENAMETOOLONG) return -36;
+#endif
+#ifdef ENOSYS
+    if (e == (unsigned int)ENOSYS) return -38;
+#endif
+#ifdef ENOTEMPTY
+    if (e == (unsigned int)ENOTEMPTY) return -39;
+#endif
+#ifdef ELOOP
+    if (e == (unsigned int)ELOOP) return -40;
+#endif
+#ifdef ENOMSG
+    if (e == (unsigned int)ENOMSG) return -42;
+#endif
+#ifdef EPROTO
+    if (e == (unsigned int)EPROTO) return -71;
+#endif
+#ifdef EBADMSG
+    if (e == (unsigned int)EBADMSG) return -74;
+#endif
+#ifdef EOVERFLOW
+    if (e == (unsigned int)EOVERFLOW) return -75;
+#endif
+#ifdef EILSEQ
+    if (e == (unsigned int)EILSEQ) return -84;
+#endif
+#ifdef EMSGSIZE
+    if (e == (unsigned int)EMSGSIZE) return -90;
+#endif
+#ifdef EPROTONOSUPPORT
+    if (e == (unsigned int)EPROTONOSUPPORT) return -93;
+#endif
+#ifdef ENOTSUP
+    if (e == (unsigned int)ENOTSUP) return -95;
+#endif
+#ifdef EOPNOTSUPP
+    if (e == (unsigned int)EOPNOTSUPP) return -95;
+#endif
+#ifdef EADDRINUSE
+    if (e == (unsigned int)EADDRINUSE) return -98;
+#endif
+#ifdef EADDRNOTAVAIL
+    if (e == (unsigned int)EADDRNOTAVAIL) return -99;
+#endif
+#ifdef ENETDOWN
+    if (e == (unsigned int)ENETDOWN) return -100;
+#endif
+#ifdef ENETUNREACH
+    if (e == (unsigned int)ENETUNREACH) return -101;
+#endif
+#ifdef ECONNRESET
+    if (e == (unsigned int)ECONNRESET) return -104;
+#endif
+#ifdef ENOBUFS
+    if (e == (unsigned int)ENOBUFS) return -105;
+#endif
+#ifdef EISCONN
+    if (e == (unsigned int)EISCONN) return -106;
+#endif
+#ifdef ENOTCONN
+    if (e == (unsigned int)ENOTCONN) return -107;
+#endif
+#ifdef ETIMEDOUT
+    if (e == (unsigned int)ETIMEDOUT) return -110;
+#endif
+#ifdef ECONNREFUSED
+    if (e == (unsigned int)ECONNREFUSED) return -111;
+#endif
+#ifdef EHOSTUNREACH
+    if (e == (unsigned int)EHOSTUNREACH) return -113;
+#endif
+#ifdef EALREADY
+    if (e == (unsigned int)EALREADY) return -114;
+#endif
+#ifdef EINPROGRESS
+    if (e == (unsigned int)EINPROGRESS) return -115;
+#endif
+#ifdef ESTALE
+    if (e == (unsigned int)ESTALE) return -116;
+#endif
+#ifdef ECANCELED
+    if (e == (unsigned int)ECANCELED) return -125;
+#endif
+#ifdef EOWNERDEAD
+    if (e == (unsigned int)EOWNERDEAD) return -130;
+#endif
+#ifdef ENOTRECOVERABLE
+    if (e == (unsigned int)ENOTRECOVERABLE) return -131;
+#endif
+    return (int16_t)rc;
+}
+
+/**
+ * 将 NLK 线上固定 Linux ABI 负错误码还原为本机 <errno.h> 错误码，
+ * 供节点间 RPC 接收端统一解析。
+ */
+static inline int nlk_wire_to_errno(int16_t wire_rc)
+{
+    if (wire_rc >= 0) {
+        return (int)wire_rc;
+    }
+    switch (wire_rc) {
+#ifdef EAGAIN
+    case -11: return -EAGAIN;
+#endif
+#ifdef ENAMETOOLONG
+    case -36: return -ENAMETOOLONG;
+#endif
+#ifdef ENOSYS
+    case -38: return -ENOSYS;
+#endif
+#ifdef ENOTEMPTY
+    case -39: return -ENOTEMPTY;
+#endif
+#ifdef ELOOP
+    case -40: return -ELOOP;
+#endif
+#ifdef ENOMSG
+    case -42: return -ENOMSG;
+#endif
+#ifdef EPROTO
+    case -71: return -EPROTO;
+#endif
+#ifdef EBADMSG
+    case -74: return -EBADMSG;
+#endif
+#ifdef EOVERFLOW
+    case -75: return -EOVERFLOW;
+#endif
+#ifdef EILSEQ
+    case -84: return -EILSEQ;
+#endif
+#ifdef EMSGSIZE
+    case -90: return -EMSGSIZE;
+#endif
+#ifdef EPROTONOSUPPORT
+    case -93: return -EPROTONOSUPPORT;
+#endif
+#ifdef ENOTSUP
+    case -95: return -ENOTSUP;
+#elif defined(EOPNOTSUPP)
+    case -95: return -EOPNOTSUPP;
+#endif
+#ifdef EADDRINUSE
+    case -98: return -EADDRINUSE;
+#endif
+#ifdef EADDRNOTAVAIL
+    case -99: return -EADDRNOTAVAIL;
+#endif
+#ifdef ENETDOWN
+    case -100: return -ENETDOWN;
+#endif
+#ifdef ENETUNREACH
+    case -101: return -ENETUNREACH;
+#endif
+#ifdef ECONNRESET
+    case -104: return -ECONNRESET;
+#endif
+#ifdef ENOBUFS
+    case -105: return -ENOBUFS;
+#endif
+#ifdef EISCONN
+    case -106: return -EISCONN;
+#endif
+#ifdef ENOTCONN
+    case -107: return -ENOTCONN;
+#endif
+#ifdef ETIMEDOUT
+    case -110: return -ETIMEDOUT;
+#endif
+#ifdef ECONNREFUSED
+    case -111: return -ECONNREFUSED;
+#endif
+#ifdef EHOSTUNREACH
+    case -113: return -EHOSTUNREACH;
+#endif
+#ifdef EALREADY
+    case -114: return -EALREADY;
+#endif
+#ifdef EINPROGRESS
+    case -115: return -EINPROGRESS;
+#endif
+#ifdef ESTALE
+    case -116: return -ESTALE;
+#endif
+#ifdef ECANCELED
+    case -125: return -ECANCELED;
+#endif
+#ifdef EOWNERDEAD
+    case -130: return -EOWNERDEAD;
+#endif
+#ifdef ENOTRECOVERABLE
+    case -131: return -ENOTRECOVERABLE;
+#endif
+    default: return (int)wire_rc;
+    }
+}
 
 #endif /* __NOS_NLK_CORE_H__ */
