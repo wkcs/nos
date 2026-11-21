@@ -1152,10 +1152,15 @@ static void test_hid_consumer_and_keyboard_share_endpoint(void)
     struct uendpoint ep_in = { .ep_desc = (struct uendpoint_descriptor *)&_hid_comm_desc.ep_in_desc };
     struct uendpoint ep_out = { .ep_desc = (struct uendpoint_descriptor *)&_hid_comm_desc.ep_out_desc };
     struct hid_s hid = { .func = &func, .ep_in = &ep_in, .ep_out = &ep_out };
-    const uint8_t consumer_collection[] = { 0x05U, 0x0CU, 0x09U, 1U, 0xA1U, 1U, 0x85U, 4U };
+    const uint8_t consumer_collection[] = {
+        0x05U, 0x0CU, 0x09U, 0x01U, 0xA1U, 0x01U, 0x85U, 0x04U,
+        0x05U, 0x0CU, 0x15U, 0x00U, 0x26U, 0xFFU, 0x03U,
+        0x19U, 0x00U, 0x2AU, 0xFFU, 0x03U, 0x75U, 0x10U, 0x95U, 0x01U, 0x81U, 0x00U
+    };
     uint8_t keys[8] = { 8U, 0U, 4U };
-    uint8_t volume = 32U;
-    uint8_t release = 0U;
+    uint8_t volume[2] = { 0xE9U, 0x00U };
+    uint8_t brightness[2] = { 0x6FU, 0x00U };
+    uint8_t release[2] = { 0U, 0U };
     uint32_t first_session;
     uint32_t second_session;
     bool has_consumer = false;
@@ -1176,27 +1181,32 @@ static void test_hid_consumer_and_keyboard_share_endpoint(void)
     reset_mock_dcd_stats();
     assert(_hid_write(&hid.dev, HID_REPORT_ID_KEYBOARD1, keys, sizeof(keys)) == sizeof(keys));
     assert(mock_dcd_stats.write_len == 9U);
-    assert(_hid_write(&hid.dev, HID_REPORT_ID_MEDIA, &volume, sizeof(volume)) == -EAGAIN);
+    assert(_hid_write(&hid.dev, HID_REPORT_ID_MEDIA, volume, sizeof(volume)) == -EAGAIN);
     assert(mock_dcd_stats.write_calls == 1);
     assert(((uint8_t *)mock_dcd_stats.write_buf)[0] == HID_REPORT_ID_KEYBOARD1);
     assert(hid_ep_in_handler(&func, 9U) == 0);
     mock_write_reject = true;
-    assert(_hid_write(&hid.dev, HID_REPORT_ID_MEDIA, &volume, sizeof(volume)) == -EAGAIN);
+    assert(_hid_write(&hid.dev, HID_REPORT_ID_MEDIA, volume, sizeof(volume)) == -EAGAIN);
     mock_write_reject = false;
-    assert(_hid_write(&hid.dev, HID_REPORT_ID_MEDIA, &volume, sizeof(volume)) == sizeof(volume));
-    assert(mock_dcd_stats.write_len == 2U);
+    assert(_hid_write(&hid.dev, HID_REPORT_ID_MEDIA, volume, sizeof(volume)) == sizeof(volume));
+    assert(mock_dcd_stats.write_len == 3U);
     assert(((uint8_t *)mock_dcd_stats.write_buf)[0] == HID_REPORT_ID_MEDIA);
-    assert(((uint8_t *)mock_dcd_stats.write_buf)[1] == volume);
-    assert(hid_ep_in_handler(&func, 2U) == 0);
-    assert(_hid_write(&hid.dev, HID_REPORT_ID_MEDIA, &release, sizeof(release)) == sizeof(release));
+    assert(((uint8_t *)mock_dcd_stats.write_buf)[1] == 0xE9U);
+    assert(((uint8_t *)mock_dcd_stats.write_buf)[2] == 0x00U);
+    assert(hid_ep_in_handler(&func, 3U) == 0);
+    assert(_hid_write(&hid.dev, HID_REPORT_ID_MEDIA, brightness, sizeof(brightness)) == sizeof(brightness));
+    assert(((uint8_t *)mock_dcd_stats.write_buf)[1] == 0x6FU);
+    assert(hid_ep_in_handler(&func, 3U) == 0);
+    assert(_hid_write(&hid.dev, HID_REPORT_ID_MEDIA, release, sizeof(release)) == sizeof(release));
     assert(((uint8_t *)mock_dcd_stats.write_buf)[1] == 0U);
+    assert(((uint8_t *)mock_dcd_stats.write_buf)[2] == 0U);
 
     assert(hid_function_disable(&func) == 0);
     assert(_hid_control(&hid.dev, USB_HID_CTRL_GET_SESSION, &second_session) == -ENOTCONN);
     assert(hid_function_enable(&func) == 0);
     assert(_hid_control(&hid.dev, USB_HID_CTRL_GET_SESSION, &second_session) == 0);
     assert(second_session != first_session);
-    assert(_hid_write(&hid.dev, HID_REPORT_ID_MEDIA, &release, sizeof(release)) == sizeof(release));
+    assert(_hid_write(&hid.dev, HID_REPORT_ID_MEDIA, release, sizeof(release)) == sizeof(release));
     assert(hid_function_disable(&func) == 0);
 }
 

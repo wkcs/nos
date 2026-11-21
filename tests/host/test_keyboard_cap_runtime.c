@@ -221,7 +221,8 @@ static void test_hid_reports(void)
     struct nlk_keyboard_ctx keyboard;
     struct report_probe probe = {0};
     const uint8_t base[] = {4, 5, 6, 7, 8, 9, 10, 0xe0, NLK_KC_MEDIA_VOL_UP, 0xe8};
-    const uint8_t fn[] = {20, 21, 22, 23, 24, 25, 26, 0xe0, NLK_KC_MEDIA_VOL_DOWN, 0xe8};
+    const uint8_t fn[] = {20, 21, 22, 23, 24, 25, 26,
+                          NLK_KC_MEDIA_BRIGHTNESS_UP, NLK_KC_MEDIA_BRIGHTNESS_DOWN, 0xe8};
     uint32_t bitmap = 1U << 5;
 
     assert(nlk_cap_keyboard_init_sized(NULL, &keyboard, 1, 10, 10, 2, capture_hid_report, &probe) ==
@@ -238,7 +239,7 @@ static void test_hid_reports(void)
     assert(nlk_cap_keyboard_update_local_keys(&keyboard, &bitmap, 10) == 0);
     assert(keyboard.last_report.report_id == 1 && keyboard.last_nkro.report_id == 2);
     assert(keyboard.last_report.modifiers == 1 && keyboard.last_nkro.modifiers == 1);
-    assert(keyboard.consumer_report == 32);
+    assert(keyboard.consumer_report == 0x00E9U);
     for (uint8_t key = 4; key <= 10; key++) {
         assert((keyboard.last_nkro.bitmap[key >> 3] & (1U << (key & 7U))) != 0);
     }
@@ -246,7 +247,16 @@ static void test_hid_reports(void)
     /* Fn preserves a held media key, then the next press uses the selected layer. */
     bitmap = (1U << 8) | (1U << 9);
     assert(nlk_cap_keyboard_update_local_keys(&keyboard, &bitmap, 10) == 0);
-    assert(keyboard.active_layer == 1 && keyboard.consumer_report == 32);
+    assert(keyboard.active_layer == 1 && keyboard.consumer_report == 0x00E9U);
+    bitmap = (1U << 7) | (1U << 9);
+    assert(nlk_cap_keyboard_update_local_keys(&keyboard, &bitmap, 10) == 0);
+    assert(keyboard.consumer_report == 0x006FU);
+    bitmap = 1U << 9;
+    assert(nlk_cap_keyboard_update_local_keys(&keyboard, &bitmap, 10) == 0);
+    assert(keyboard.consumer_report == 0U);
+    bitmap = (1U << 8) | (1U << 9);
+    assert(nlk_cap_keyboard_update_local_keys(&keyboard, &bitmap, 10) == 0);
+    assert(keyboard.consumer_report == 0x0070U);
     bitmap = 1U << 9;
     assert(nlk_cap_keyboard_update_local_keys(&keyboard, &bitmap, 10) == 0);
     bitmap |= 1U;

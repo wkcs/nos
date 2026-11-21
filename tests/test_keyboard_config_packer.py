@@ -35,6 +35,33 @@ class KeyboardConfigPackerTests(unittest.TestCase):
             self.assertEqual(sum(tag == 6 for tag, _ in doc), 61 * 3)
             header = next(value for tag, value in doc if tag == 5)
             self.assertTrue(header.startswith(b'\x06ansi61\x01\x00'))
+            key_records = {
+                (value[0], struct.unpack_from('<H', value, 1)[0]): value
+                for tag, value in doc if tag == 6
+            }
+            # Layer 1 (Fn): 1..= 为标准 F1..F12 (0x3a..0x45)
+            for idx, expected_kc in enumerate(range(0x3a, 0x46), start=1):
+                code = struct.unpack_from('<I', key_records[(1, idx)], 3)[0]
+                self.assertEqual(code, expected_kc)
+            # Layer 2 (PN): 亮度减/加 (0xac/0xab)、媒体与音量 (0xa6/0xa7/0xa5/0xa8/0xaa/0xa9)
+            self.assertEqual(struct.unpack_from('<I', key_records[(2, 1)], 3)[0], 0xac)
+            self.assertEqual(struct.unpack_from('<I', key_records[(2, 2)], 3)[0], 0xab)
+            self.assertEqual(struct.unpack_from('<I', key_records[(2, 7)], 3)[0], 0xa6)
+            self.assertEqual(struct.unpack_from('<I', key_records[(2, 8)], 3)[0], 0xa7)
+            self.assertEqual(struct.unpack_from('<I', key_records[(2, 9)], 3)[0], 0xa5)
+            self.assertEqual(struct.unpack_from('<I', key_records[(2, 10)], 3)[0], 0xa8)
+            self.assertEqual(struct.unpack_from('<I', key_records[(2, 11)], 3)[0], 0xaa)
+            self.assertEqual(struct.unpack_from('<I', key_records[(2, 12)], 3)[0], 0xa9)
+            # Layer 2 (PN): 调度中心(Key 3)、搜索(Key 4)、灯效切换(Key 5/6)、三种截图(Key 24/25/26)、锁屏(Key 37)、灯光开关(Key 47)
+            self.assertTrue(key_records[(2, 3)].endswith(b'key_chord\x01\x00\x01'))
+            self.assertTrue(key_records[(2, 4)].endswith(b'key_chord\x01\x00\x08'))
+            self.assertTrue(key_records[(2, 5)].endswith(b'light_prev\x00\x00'))
+            self.assertTrue(key_records[(2, 6)].endswith(b'light_next\x00\x00'))
+            self.assertTrue(key_records[(2, 24)].endswith(b'key_chord\x01\x00\x0a'))
+            self.assertTrue(key_records[(2, 25)].endswith(b'key_chord\x01\x00\x0a'))
+            self.assertTrue(key_records[(2, 26)].endswith(b'key_chord\x01\x00\x0a'))
+            self.assertTrue(key_records[(2, 37)].endswith(b'key_chord\x01\x00\x09'))
+            self.assertTrue(key_records[(2, 47)].endswith(b'light_toggle\x00\x00'))
 
     def test_full_targets_and_duplicate_action_arguments(self):
         config = dict(

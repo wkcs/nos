@@ -180,19 +180,12 @@ const uint8_t _report_desc[]=
     REPORT_ID(1),       HID_REPORT_ID_MEDIA,
     USAGE_PAGE(1),      0x0C,
     LOGICAL_MINIMUM(1), 0x00,
-    LOGICAL_MAXIMUM(1), 0x01,
-    REPORT_SIZE(1),     0x01,
-    REPORT_COUNT(1),    0x07,
-    USAGE(1),           0xB5,             // Next Track
-    USAGE(1),           0xB6,             // Previous Track
-    USAGE(1),           0xB7,             // Stop
-    USAGE(1),           0xCD,             // Play / Pause
-    USAGE(1),           0xE2,             // Mute
-    USAGE(1),           0xE9,             // Volume Up
-    USAGE(1),           0xEA,             // Volume Down
-    INPUT(1),           0x02,             // Input (Data, Variable, Absolute)
+    LOGICAL_MAXIMUM(2), 0xFF, 0x03,
+    USAGE_MINIMUM(1),   0x00,
+    USAGE_MAXIMUM(2),   0xFF, 0x03,
+    REPORT_SIZE(1),     0x10,
     REPORT_COUNT(1),    0x01,
-    INPUT(1),           0x01,
+    INPUT(1),           0x00,             // Input (Data, Array, Absolute)
     END_COLLECTION(0),
 #endif
 

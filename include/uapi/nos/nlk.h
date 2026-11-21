@@ -1250,6 +1250,8 @@ enum nlk_kb_function_keycode {
     NLK_KC_MEDIA_MUTE,
     NLK_KC_MEDIA_VOL_UP,
     NLK_KC_MEDIA_VOL_DOWN,
+    NLK_KC_MEDIA_BRIGHTNESS_UP,
+    NLK_KC_MEDIA_BRIGHTNESS_DOWN,
 };
 
 /* 绑定动作请求 */

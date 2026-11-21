@@ -125,7 +125,7 @@ struct nlk_keyboard_ctx {
     uint8_t layer_capacity;
     struct nlk_kb_hid_report last_report;
     struct nlk_kb_nkro_report last_nkro;
-    uint8_t consumer_report;
+    uint16_t consumer_report;
     struct nlk_kb_analog_cfg analog_cfg;
     struct nlk_kb_light_cfg light_cfg;
     struct kb_light_layer_runtime *light_runtime;

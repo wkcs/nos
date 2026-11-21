@@ -84,7 +84,8 @@ static uint8_t kb_resolve_active_layer(const struct nlk_keyboard_ctx *ctx)
 
 static bool kb_is_function_key(uint8_t code)
 {
-    return (code >= NLK_KC_MEDIA_NEXT && code <= NLK_KC_MEDIA_VOL_DOWN) || code == KB_KEY_CHORD;
+    return (code >= NLK_KC_MEDIA_NEXT && code <= NLK_KC_MEDIA_BRIGHTNESS_DOWN) ||
+           code == KB_KEY_CHORD;
 }
 
 int nlk_cap_keyboard_chord_action(const struct key_action_context *ctx, void *priv)
@@ -106,8 +107,17 @@ int nlk_cap_keyboard_chord_action(const struct key_action_context *ctx, void *pr
 
 static void kb_rebuild_hid_report(struct nlk_keyboard_ctx *ctx)
 {
-    /* Consumer report ID 4 uses bits 0, 1, and 3 through 6 for these codes. */
-    static const uint8_t consumer_bits[] = {1U, 2U, 8U, 16U, 32U, 64U};
+    /* 标准 USB HID Consumer Page (0x0C) 16 位用途码映射表 */
+    static const uint16_t consumer_usages[] = {
+        0x00B5U, /* NLK_KC_MEDIA_NEXT: Scan Next Track */
+        0x00B6U, /* NLK_KC_MEDIA_PREV: Scan Previous Track */
+        0x00CDU, /* NLK_KC_MEDIA_PLAY_PAUSE: Play/Pause */
+        0x00E2U, /* NLK_KC_MEDIA_MUTE: Mute */
+        0x00E9U, /* NLK_KC_MEDIA_VOL_UP: Volume Increment */
+        0x00EAU, /* NLK_KC_MEDIA_VOL_DOWN: Volume Decrement */
+        0x006FU, /* NLK_KC_MEDIA_BRIGHTNESS_UP: Display Brightness Increment */
+        0x0070U, /* NLK_KC_MEDIA_BRIGHTNESS_DOWN: Display Brightness Decrement */
+    };
     uint8_t prev_keys[6];
     uint8_t data_bck[6] = {0};
     uint8_t data_new[6] = {0};
@@ -154,8 +164,8 @@ static void kb_rebuild_hid_report(struct nlk_keyboard_ctx *ctx)
             ctx->active_code[i] = kc;
         }
 
-        if (kc >= NLK_KC_MEDIA_NEXT && kc <= NLK_KC_MEDIA_VOL_DOWN) {
-            ctx->consumer_report |= consumer_bits[kc - NLK_KC_MEDIA_NEXT];
+        if (kc >= NLK_KC_MEDIA_NEXT && kc <= NLK_KC_MEDIA_BRIGHTNESS_DOWN) {
+            ctx->consumer_report = consumer_usages[kc - NLK_KC_MEDIA_NEXT];
             continue;
         }
         if (kc == KB_KEY_CHORD) {

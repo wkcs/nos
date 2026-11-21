@@ -54,7 +54,7 @@
 
 struct ks_hid_state {
     uint8_t keys[8];
-    uint8_t media;
+    uint8_t media[2];
     uint8_t pending;
 };
 
@@ -149,7 +149,7 @@ static void ks_flush_usb_reports(struct keyboard_server *ks)
         struct ks_hid_state *state = &ks->usb_queue[ks->usb_tail];
         uint8_t pending = (state->pending & KS_HID_KEYS) ? KS_HID_KEYS : KS_HID_MEDIA;
         uint8_t id = pending == KS_HID_KEYS ? HID_REPORT_ID_KEYBOARD1 : HID_REPORT_ID_MEDIA;
-        const uint8_t *buf = pending == KS_HID_KEYS ? state->keys : &state->media;
+        const uint8_t *buf = pending == KS_HID_KEYS ? state->keys : state->media;
         size_t size = pending == KS_HID_KEYS ? sizeof(state->keys) : sizeof(state->media);
 
         if (ks->hid_dev->ops.write(ks->hid_dev, id, buf, size) != (ssize_t)size) {
@@ -182,9 +182,15 @@ static void ks_on_hid_report(const struct nlk_kb_hid_report *report, void *priv)
         pending |= KS_HID_KEYS;
     }
 #ifdef CONFIG_USB_DEVICE_HID_MEDIA
-    if (ks->hid_state.media != ks->kb_cap.consumer_report) {
-        ks->hid_state.media = ks->kb_cap.consumer_report;
-        pending |= KS_HID_MEDIA;
+    {
+        uint8_t media[2] = {
+            (uint8_t)(ks->kb_cap.consumer_report & 0xFFU),
+            (uint8_t)(ks->kb_cap.consumer_report >> 8U),
+        };
+        if (memcmp(ks->hid_state.media, media, sizeof(media)) != 0) {
+            memcpy(ks->hid_state.media, media, sizeof(media));
+            pending |= KS_HID_MEDIA;
+        }
     }
 #endif
     if (pending != 0U && ks->usb_connected) {
