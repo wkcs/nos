@@ -206,9 +206,11 @@ int main(void)
 
         assert(ripple && ripple->render_configured);
         struct kb_light_trigger_data origin_trig = {
+            .event = KB_LIGHT_TRIG_KEY_DOWN,
             .key_x = 0,
             .key_y = 0,
         };
+        struct kb_light_trigger_data empty_trig = {0};
         struct kb_effect_render_context ripple_ctx = {
             .cfg = &white,
             .parameters = &empty_params,
@@ -217,12 +219,16 @@ int main(void)
             .y = 0,
             .phase = 0,
         };
-        uint8_t center_px[3], origin_px[3];
+        uint8_t center_px[3], origin_px[3], empty_px[3];
         ripple->render_configured(&ripple_ctx, center_px, state);
         ripple_ctx.trigger = &origin_trig;
         ripple->render_configured(&ripple_ctx, origin_px, state);
-        /* 中心点 (0,0) 在 phase=0 时距离为 0 (最暗), 而默认中心 (13,4) 此时距离较大 */
+        ripple_ctx.trigger = &empty_trig;
+        ripple->render_configured(&ripple_ctx, empty_px, state);
+        /* 触发点 (0,0) 在 phase=0 时距离为 0 (最暗), 而默认中心 (13,4) 此时距离较大 */
         assert(origin_px[0] != center_px[0]);
+        /* 零初始化无触发上下文与 NULL trigger 等价，均以键盘几何中心 (13,4) 扩散 */
+        assert(memcmp(empty_px, center_px, sizeof(center_px)) == 0);
     }
     test_action_callbacks();
     return 0;

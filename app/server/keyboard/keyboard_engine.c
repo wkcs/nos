@@ -385,6 +385,23 @@ static bool kb_sync_action_states(struct nlk_keyboard_ctx *ctx, bool notify)
     return changed;
 }
 
+/* 将各灯效层的触发上下文复位为无事件、无坐标状态 */
+static void kb_reset_light_triggers(struct nlk_keyboard_ctx *ctx)
+{
+    uint8_t i;
+
+    if (ctx == NULL || ctx->light_runtime == NULL) {
+        return;
+    }
+    memset(ctx->light_runtime->triggers, 0, sizeof(ctx->light_runtime->triggers));
+    for (i = 0U; i < CONFIG_KEYBOARD_LIGHT_MAX_LAYERS; i++) {
+        ctx->light_runtime->triggers[i].layer = KB_LIGHT_COORD_NONE;
+        ctx->light_runtime->triggers[i].key_index = KB_LIGHT_COORD_NONE;
+        ctx->light_runtime->triggers[i].key_x = KB_LIGHT_COORD_NONE;
+        ctx->light_runtime->triggers[i].key_y = KB_LIGHT_COORD_NONE;
+    }
+}
+
 int nlk_cap_keyboard_set_light_layers(struct nlk_keyboard_ctx *ctx,
                                       const struct nlk_kb_light_layer *layers, uint8_t count)
 {
@@ -403,9 +420,7 @@ int nlk_cap_keyboard_set_light_layers(struct nlk_keyboard_ctx *ctx,
         memmove(ctx->light_layers, layers, (size_t)count * sizeof(*layers));
     }
     ctx->light_layer_count = count;
-    if (ctx->light_runtime != NULL) {
-        memset(ctx->light_runtime->triggers, 0, sizeof(ctx->light_runtime->triggers));
-    }
+    kb_reset_light_triggers(ctx);
     for (i = 0U; i < CONFIG_KEYBOARD_LIGHT_MAX_LAYERS; i++) {
         ctx->light_layer_active[i] = i < count && ctx->light_layers[i].trigger == 0U;
     }
@@ -978,6 +993,7 @@ int nlk_cap_keyboard_init_sized(struct nlk_node *node, struct nlk_keyboard_ctx *
     memset(ctx->key_state, 0, (size_t)key_count);
     memset(ctx->active_code, 0, (size_t)key_count * sizeof(uint32_t));
     memset(ctx->light_runtime, 0, sizeof(*ctx->light_runtime));
+    kb_reset_light_triggers(ctx);
     ctx->key_capacity = key_count;
     ctx->layer_capacity = layer_count;
     for (l = 1U; l < layer_count; l++) {

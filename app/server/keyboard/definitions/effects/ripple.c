@@ -35,7 +35,9 @@ static void render_configured(const struct kb_effect_render_context *ctx, uint8_
     int cx = 13;
     int cy = 4;
 
-    if (ctx->trigger != NULL && ctx->trigger->key_x != KB_LIGHT_COORD_NONE &&
+    /* 仅当动作提供了有效键坐标时以触发按键为圆心扩散，否则回退为键盘几何中心 */
+    if (ctx->trigger != NULL && ctx->trigger->event != KB_LIGHT_TRIG_NONE &&
+        ctx->trigger->key_x != KB_LIGHT_COORD_NONE &&
         ctx->trigger->key_y != KB_LIGHT_COORD_NONE) {
         cx = (int)ctx->trigger->key_x * 2;
         cy = (int)ctx->trigger->key_y * 2;

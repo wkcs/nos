@@ -42,7 +42,7 @@ static void keyboard_render_light_layer(struct ds_frame *frame, uint8_t opacity,
                 const struct kb_effect_render_context render_ctx = {
                     .cfg = &layer->cfg,
                     .parameters = &state->parameters,
-                    .trigger = &state->trigger,
+                    .trigger = state->trigger.event != KB_LIGHT_TRIG_NONE ? &state->trigger : NULL,
                     .x = (uint8_t)(layer->x + x),
                     .y = (uint8_t)(layer->y + y),
                     .phase = g_phase[index],
