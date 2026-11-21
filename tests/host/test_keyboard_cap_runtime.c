@@ -220,9 +220,9 @@ static void test_hid_reports(void)
 {
     struct nlk_keyboard_ctx keyboard;
     struct report_probe probe = {0};
-    const uint8_t base[] = {4, 5, 6, 7, 8, 9, 10, 0xe0, NLK_KC_MEDIA_VOL_UP, 0xe8};
+    const uint8_t base[] = {4, 5, 6, 7, 8, 9, 10, 0xe0, KC_MEDIA_VOL_UP, 0xe8};
     const uint8_t fn[] = {20, 21, 22, 23, 24, 25, 26,
-                          NLK_KC_MEDIA_BRIGHTNESS_UP, NLK_KC_MEDIA_BRIGHTNESS_DOWN, 0xe8};
+                          KC_MEDIA_BRIGHTNESS_UP, KC_MEDIA_BRIGHTNESS_DOWN, 0xe8};
     uint32_t bitmap = 1U << 5;
 
     assert(nlk_cap_keyboard_init_sized(NULL, &keyboard, 1, 10, 10, 2, capture_hid_report, &probe) ==
@@ -243,7 +243,7 @@ static void test_hid_reports(void)
     for (uint8_t key = 4; key <= 10; key++) {
         assert((keyboard.last_nkro.bitmap[key >> 3] & (1U << (key & 7U))) != 0);
     }
-    assert(!report_has_key(&keyboard, NLK_KC_MEDIA_VOL_UP));
+    assert(!report_has_key(&keyboard, KC_MEDIA_VOL_UP));
     /* Fn preserves a held media key, then the next press uses the selected layer. */
     bitmap = (1U << 8) | (1U << 9);
     assert(nlk_cap_keyboard_update_local_keys(&keyboard, &bitmap, 10) == 0);

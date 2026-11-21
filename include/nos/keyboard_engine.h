@@ -6,6 +6,7 @@
 #define NOS_KEYBOARD_ENGINE_H
 
 #include <nos/nlk_core.h>
+#include <uapi/nos/kb_keycodes.h>
 
 #define NLK_KB_MAX_LAYERS 8U
 #define NLK_KB_MAX_KEYS 128U

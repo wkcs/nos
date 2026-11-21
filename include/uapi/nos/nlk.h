@@ -1241,19 +1241,6 @@ struct nlk_kb_action_page_hdr {
     uint8_t reserved[2];
 } __attribute__((packed));
 
-/* Keymap codes in a reserved range of the HID Keyboard/Keypad page.
- * These are NOS functions and are never sent as USB keyboard usages. */
-enum nlk_kb_function_keycode {
-    NLK_KC_MEDIA_NEXT = 0xA5U,
-    NLK_KC_MEDIA_PREV,
-    NLK_KC_MEDIA_PLAY_PAUSE,
-    NLK_KC_MEDIA_MUTE,
-    NLK_KC_MEDIA_VOL_UP,
-    NLK_KC_MEDIA_VOL_DOWN,
-    NLK_KC_MEDIA_BRIGHTNESS_UP,
-    NLK_KC_MEDIA_BRIGHTNESS_DOWN,
-};
-
 /* 绑定动作请求 */
 struct nlk_kb_bind_action_req {
     uint8_t layer;        /* 目标层 (0..7, 0xFF = 所有层) */

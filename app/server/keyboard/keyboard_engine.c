@@ -15,12 +15,6 @@
 #include <uapi/nos/errno.h>
 #include <string.h>
 
-/* Standard HID modifier keycodes (0xE0..0xE7) & Layer shift codes (0xE8=FN, 0xE9=PN, 0xEA=MO3) */
-#define NLK_KC_LCTRL 0xE0U
-#define NLK_KC_RGUI 0xE7U
-#define NLK_KC_FN 0xE8U
-#define NLK_KC_PN 0xE9U
-#define NLK_KC_MO3 0xEAU
 #define KB_KEY_SUPPRESSED UINT32_MAX
 #define KB_KEY_DROPPED (UINT32_MAX - 1U)
 #define KB_KEY_CHORD 0xAFU /* Synthesized action output, never a USB usage */
@@ -63,15 +57,15 @@ static uint8_t kb_resolve_active_layer(const struct nlk_keyboard_ctx *ctx)
     for (i = 0U; i < ctx->desc.key_count; i++) {
         if (ctx->key_state[i] != 0U && ctx->active_code[i] != KB_KEY_SUPPRESSED) {
             uint8_t base_kc = ctx->keymap[0][i];
-            if (base_kc == NLK_KC_MO3) {
+            if (base_kc == KC_MO3) {
                 layer = 3U;
                 break;
             }
-            if (base_kc == NLK_KC_FN) {
+            if (base_kc == KC_FN) {
                 layer = 1U;
                 break;
             }
-            if (base_kc == NLK_KC_PN && layer == 0U) {
+            if (base_kc == KC_PN && layer == 0U) {
                 layer = 2U;
             }
         }
@@ -84,7 +78,7 @@ static uint8_t kb_resolve_active_layer(const struct nlk_keyboard_ctx *ctx)
 
 static bool kb_is_function_key(uint8_t code)
 {
-    return (code >= NLK_KC_MEDIA_NEXT && code <= NLK_KC_MEDIA_BRIGHTNESS_DOWN) ||
+    return (code >= KC_MEDIA_NEXT && code <= KC_MEDIA_BRIGHTNESS_DOWN) ||
            code == KB_KEY_CHORD;
 }
 
@@ -109,14 +103,14 @@ static void kb_rebuild_hid_report(struct nlk_keyboard_ctx *ctx)
 {
     /* 标准 USB HID Consumer Page (0x0C) 16 位用途码映射表 */
     static const uint16_t consumer_usages[] = {
-        0x00B5U, /* NLK_KC_MEDIA_NEXT: Scan Next Track */
-        0x00B6U, /* NLK_KC_MEDIA_PREV: Scan Previous Track */
-        0x00CDU, /* NLK_KC_MEDIA_PLAY_PAUSE: Play/Pause */
-        0x00E2U, /* NLK_KC_MEDIA_MUTE: Mute */
-        0x00E9U, /* NLK_KC_MEDIA_VOL_UP: Volume Increment */
-        0x00EAU, /* NLK_KC_MEDIA_VOL_DOWN: Volume Decrement */
-        0x006FU, /* NLK_KC_MEDIA_BRIGHTNESS_UP: Display Brightness Increment */
-        0x0070U, /* NLK_KC_MEDIA_BRIGHTNESS_DOWN: Display Brightness Decrement */
+        0x00B5U, /* KC_MEDIA_NEXT: Scan Next Track */
+        0x00B6U, /* KC_MEDIA_PREV: Scan Previous Track */
+        0x00CDU, /* KC_MEDIA_PLAY_PAUSE: Play/Pause */
+        0x00E2U, /* KC_MEDIA_MUTE: Mute */
+        0x00E9U, /* KC_MEDIA_VOL_UP: Volume Increment */
+        0x00EAU, /* KC_MEDIA_VOL_DOWN: Volume Decrement */
+        0x006FU, /* KC_MEDIA_BRIGHTNESS_UP: Display Brightness Increment */
+        0x0070U, /* KC_MEDIA_BRIGHTNESS_DOWN: Display Brightness Decrement */
     };
     uint8_t prev_keys[6];
     uint8_t data_bck[6] = {0};
@@ -164,21 +158,21 @@ static void kb_rebuild_hid_report(struct nlk_keyboard_ctx *ctx)
             ctx->active_code[i] = kc;
         }
 
-        if (kc >= NLK_KC_MEDIA_NEXT && kc <= NLK_KC_MEDIA_BRIGHTNESS_DOWN) {
-            ctx->consumer_report = consumer_usages[kc - NLK_KC_MEDIA_NEXT];
+        if (kc >= KC_MEDIA_NEXT && kc <= KC_MEDIA_BRIGHTNESS_DOWN) {
+            ctx->consumer_report = consumer_usages[kc - KC_MEDIA_NEXT];
             continue;
         }
         if (kc == KB_KEY_CHORD) {
             modifiers = (uint8_t)(ctx->active_code[i] >> 16);
             kc = (uint8_t)(ctx->active_code[i] >> 8);
         }
-        if (kc == 0U || kc == NLK_KC_FN || kc == NLK_KC_PN || kc == NLK_KC_MO3) {
+        if (kc == 0U || kc == KC_FN || kc == KC_PN || kc == KC_MO3) {
             continue;
         }
         ctx->last_report.modifiers |= modifiers;
         ctx->last_nkro.modifiers |= modifiers;
-        if (kc >= NLK_KC_LCTRL && kc <= NLK_KC_RGUI) {
-            uint8_t mod_bit = (uint8_t)(1U << (kc - NLK_KC_LCTRL));
+        if (kc >= KC_LCTRL && kc <= KC_RGUI) {
+            uint8_t mod_bit = (uint8_t)(1U << (kc - KC_LCTRL));
             ctx->last_report.modifiers |= mod_bit;
             ctx->last_nkro.modifiers |= mod_bit;
         } else {
@@ -297,7 +291,7 @@ static bool kb_macro_steps_valid(const struct nlk_kb_macro_step *steps, uint8_t 
         uint8_t kc = steps[i].key_code;
         if (type < NLK_KB_MACRO_ACT_KEY_DOWN || type > NLK_KB_MACRO_ACT_DELAY_MS ||
             (type != NLK_KB_MACRO_ACT_DELAY_MS &&
-             (kc == 0U || kc >= NLK_KC_FN || kb_is_function_key(kc)))) {
+             (kc == 0U || kc >= KC_FN || kb_is_function_key(kc)))) {
             return false;
         }
     }
@@ -700,8 +694,8 @@ static const struct nlk_cap_ops g_kb_ops = {
 static void kb_macro_key(struct nlk_keyboard_ctx *ctx, uint8_t kc, bool down)
 {
     uint8_t i;
-    if (kc >= NLK_KC_LCTRL && kc <= NLK_KC_RGUI) {
-        uint8_t bit = (uint8_t)(1U << (kc - NLK_KC_LCTRL));
+    if (kc >= KC_LCTRL && kc <= KC_RGUI) {
+        uint8_t bit = (uint8_t)(1U << (kc - KC_LCTRL));
         if (down) {
             ctx->macro_modifiers |= bit;
         } else {
@@ -1621,7 +1615,7 @@ int nlk_cap_keyboard_update_local_keys(struct nlk_keyboard_ctx *ctx, const uint3
         uint8_t pressed = (uint8_t)((raw_bitmap[i / 32U] >> (i % 32U)) & 0x01U);
         uint8_t base_kc = (uint8_t)(ctx->keymap[0][i] & 0xFFU);
         if (ctx->active_code[i] != KB_KEY_SUPPRESSED &&
-            (base_kc == NLK_KC_FN || base_kc == NLK_KC_PN || base_kc == NLK_KC_MO3)) {
+            (base_kc == KC_FN || base_kc == KC_PN || base_kc == KC_MO3)) {
             ctx->key_state[i] = pressed;
         }
     }
@@ -1632,7 +1626,7 @@ int nlk_cap_keyboard_update_local_keys(struct nlk_keyboard_ctx *ctx, const uint3
         uint8_t pressed = (uint8_t)((raw_bitmap[i / 32U] >> (i % 32U)) & 0x01U);
         uint32_t base_code = ctx->keymap[0][i];
         uint8_t base_kc = (uint8_t)(base_code & 0xFFU);
-        bool is_layer_key = (base_kc == NLK_KC_FN || base_kc == NLK_KC_PN || base_kc == NLK_KC_MO3);
+        bool is_layer_key = (base_kc == KC_FN || base_kc == KC_PN || base_kc == KC_MO3);
 
         if (ctx->active_code[i] == KB_KEY_SUPPRESSED) {
             if (pressed == 0U) {
