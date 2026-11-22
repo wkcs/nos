@@ -15,10 +15,10 @@
 #include <asm/psci.h>
 #include <asm/switch.h>
 #include <asm/sysreg.h>
+#include <kernel/irq.h>
 #include <kernel/mm.h>
 #include <string.h>
 
-extern volatile uint32_t interrupt_nest;
 extern uint64_t arm64_timer_monotonic_ns(void);
 extern void arm64_timer_init_hz(uint32_t hz);
 extern void arm64_timer_program_oneshot_ns(uint64_t delta_ns);
@@ -93,7 +93,7 @@ void hal_irq_ack(uint32_t irq)
 
 bool hal_in_irq(void)
 {
-    return (interrupt_nest > 0U);
+    return (irq_nest_count() > 0U);
 }
 
 int hal_vm_space_init(struct nos_vm_space *space)
@@ -135,6 +135,7 @@ void hal_vm_space_destroy(struct nos_vm_space *space)
         kfree(vma);
     }
     if (space->root_pt_phys != 0U) {
+        arm64_tlbi_asid(space->asid);
         arm64_pt_destroy(space->root_pt_phys, CONFIG_ARM64_VA_BITS, NULL);
         space->root_pt_phys = 0U;
     }
@@ -169,13 +170,16 @@ int hal_vm_unmap(struct nos_vm_space *space, uintptr_t vaddr, size_t size)
 
 void hal_vm_switch(struct nos_vm_space *next_space)
 {
+#if defined(__aarch64__)
     if (next_space == NULL || !next_space->initialized || next_space->root_pt_phys == 0U) {
+        __asm__ volatile("msr ttbr0_el1, xzr\n\tisb" ::: "memory");
         return;
     }
-#if defined(__aarch64__)
     uint64_t ttbr = ((uint64_t)next_space->asid << 48) |
                     (uint64_t)(next_space->root_pt_phys & ARM64_PTE_ADDR_MASK);
     __asm__ volatile("msr ttbr0_el1, %0\n\tisb" :: "r"(ttbr) : "memory");
+#else
+    (void)next_space;
 #endif
 }
 

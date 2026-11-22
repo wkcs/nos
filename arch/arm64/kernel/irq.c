@@ -85,6 +85,7 @@ extern void arm64_do_context_switch(addr_t from_sp_ptr, addr_t to_sp_ptr);
 static volatile uint8_t *g_gicd_base;
 static volatile uint8_t *g_gicc_base;
 static volatile uint8_t *g_gicr_base;
+static size_t g_gicr_size;
 static bool g_use_gicv3;
 static bool g_gic_ready;
 static uint32_t g_max_irqs = 256U;
@@ -113,10 +114,34 @@ static void gicd_wait_rwp(void)
     }
 }
 
+static uint32_t mpidr_to_gic_aff32(uint64_t mpidr)
+{
+    return (uint32_t)((mpidr & 0xFFFFFFULL) | ((mpidr >> 8) & 0xFF000000ULL));
+}
+
 static volatile uint8_t *gicr_cpu_base(uint32_t cpu_id)
 {
     if (g_gicr_base == NULL) {
         return NULL;
+    }
+    struct arm64_percpu *pcpu = arm64_percpu_of(cpu_id);
+    if (pcpu != NULL && (pcpu->online || pcpu->mpidr != 0ULL || cpu_id == 0U)) {
+        uint32_t target_aff = mpidr_to_gic_aff32(pcpu->mpidr);
+        size_t offset = 0U;
+        size_t limit = g_gicr_size ? g_gicr_size : ((size_t)CONFIG_NR_CPUS * GICR_STRIDE);
+
+        while (offset + GICR_STRIDE <= limit) {
+            volatile uint8_t *rbase = g_gicr_base + offset;
+            uint32_t typer_lo = mmio_read32(rbase, GICR_TYPER);
+            uint32_t typer_hi = mmio_read32(rbase, GICR_TYPER + 4U);
+            if (typer_hi == target_aff) {
+                return rbase;
+            }
+            if ((typer_lo & GICR_TYPER_LAST) != 0U) {
+                break;
+            }
+            offset += ((typer_lo & GICR_TYPER_VLPIS) != 0U) ? GICR_V4_STRIDE : GICR_STRIDE;
+        }
     }
     return g_gicr_base + ((uintptr_t)cpu_id * GICR_STRIDE);
 }
@@ -151,6 +176,9 @@ void arm64_gic_cpu_init(uint32_t cpu_id)
             for (uint32_t i = 0U; i < 8U; i++) {
                 mmio_write32(rbase, GICR_IPRIORITYR(i), 0xA0A0A0A0U);
             }
+            /* 默认开放重调度 SGI 1 并设置高优先级 */
+            mmio_write32(rbase, GICR_ISENABLER0, (1U << NOS_IPI_RESCHED));
+            *(volatile uint8_t *)(rbase + GICR_SGI_OFFSET + 0x0400U + NOS_IPI_RESCHED) = 0x60U;
         }
 
 #if defined(__aarch64__)
@@ -167,6 +195,8 @@ void arm64_gic_cpu_init(uint32_t cpu_id)
         for (uint32_t i = 0U; i < 8U; i++) {
             mmio_write32(g_gicd_base, GICD_IPRIORITYR(i), 0xA0A0A0A0U);
         }
+        mmio_write32(g_gicd_base, GICD_ISENABLER(0), (1U << NOS_IPI_RESCHED));
+        *(volatile uint8_t *)(g_gicd_base + 0x0400U + NOS_IPI_RESCHED) = 0x60U;
         mmio_write32(g_gicc_base, GICC_PMR, 0xFFU);
         mmio_write32(g_gicc_base, GICC_BPR, 0U);
         mmio_write32(g_gicc_base, GICC_CTLR, 1U);
@@ -189,8 +219,8 @@ int arm64_gic_init(const struct arm64_gic_config *cfg)
                   arm64_get_cpu_caps()->has_gicv3;
 
     if (g_use_gicv3) {
-        g_gicr_base = (volatile uint8_t *)arm64_ioremap(cfg->gicr_phys,
-                                                        cfg->gicr_size ? cfg->gicr_size : 0x200000UL);
+        g_gicr_size = cfg->gicr_size ? cfg->gicr_size : 0x200000UL;
+        g_gicr_base = (volatile uint8_t *)arm64_ioremap(cfg->gicr_phys, g_gicr_size);
         /* 探测 GICD_PIDR2 确认真实 GIC 架构版本；若主版本非 3 则回退 GICv2 */
         uint32_t pidr2 = mmio_read32(g_gicd_base, 0xFFE8U);
         uint32_t arch_rev = (pidr2 >> 4) & 0xFU;
@@ -322,18 +352,32 @@ void arm64_gic_eoi(uint32_t intid)
 
 void arm64_gic_send_sgi(uint32_t target_cpu, uint32_t sgi_id)
 {
-    if (!g_gic_ready || sgi_id >= GIC_SGI_NR || target_cpu >= 16U) {
+    if (!g_gic_ready || sgi_id >= GIC_SGI_NR || target_cpu >= (uint32_t)CONFIG_NR_CPUS) {
         return;
     }
 #if defined(__aarch64__)
     if (g_use_gicv3) {
-        uint64_t val = ((uint64_t)sgi_id << 24) | (1ULL << target_cpu);
+        struct arm64_percpu *target_pcpu = arm64_percpu_of(target_cpu);
+        uint64_t mpidr = (target_pcpu != NULL) ? target_pcpu->mpidr : (uint64_t)target_cpu;
+        if (mpidr == 0ULL && target_cpu != 0U) {
+            mpidr = (uint64_t)target_cpu;
+        }
+        uint64_t aff0 = mpidr & 0xFFULL;
+        uint64_t aff1 = (mpidr >> 8) & 0xFFULL;
+        uint64_t aff2 = (mpidr >> 16) & 0xFFULL;
+        uint64_t aff3 = (mpidr >> 32) & 0xFFULL;
+        uint64_t val = (aff3 << 48) |
+                       (((aff0 >> 4) & 0xFULL) << 44) |
+                       (aff2 << 32) |
+                       (((uint64_t)sgi_id & 0xFULL) << 24) |
+                       (aff1 << 16) |
+                       (1ULL << (aff0 & 0xFULL));
         write_sysreg_s(val, SYS_ICC_SGI1R_EL1);
         __asm__ volatile("isb" ::: "memory");
         return;
     }
 #endif
-    mmio_write32(g_gicd_base, 0x0F00U, ((1U << target_cpu) << 16) | sgi_id);
+    mmio_write32(g_gicd_base, 0x0F00U, ((1U << (target_cpu & 0x7U)) << 16) | sgi_id);
 }
 
 void arm64_irq_dispatch(void)
@@ -366,6 +410,7 @@ void arm64_irq_exit_resched(void)
             hal_vm_switch(&rq->curr->vm_space);
         }
         arm64_do_context_switch(from, to);
+        rq = this_rq();
         spin_unlock_irq(&rq->lock);
         return;
     }

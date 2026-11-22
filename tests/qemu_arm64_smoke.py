@@ -17,6 +17,7 @@ def main():
     parser.add_argument("elf", type=Path, help="Path to nos.elf")
     parser.add_argument("--gic-version", choices=["2", "3"], default="3")
     parser.add_argument("--cpu", default="cortex-a53")
+    parser.add_argument("--smp", default="4")
     parser.add_argument("--log", type=Path, help="Optional raw UART log output path")
     args = parser.parse_args()
 
@@ -31,6 +32,7 @@ def main():
         qemu_bin,
         "-M", machine,
         "-cpu", args.cpu,
+        "-smp", str(args.smp),
         "-m", "512M",
         "-nographic",
         "-kernel", str(elf),
@@ -70,6 +72,9 @@ def main():
         wait_for(b"ARM64 ISA:")
         wait_for(b"ARM64 GIC initialized")
         wait_for(b"vfs_smoke OK")
+        wait_for(b"ARM64 SMP:")
+        wait_for(b"[EL0] Hello via SVC #0!")
+        wait_for(b"ARM64 Stage2A selftest PASS")
         wait_for(b"nos# ")
 
         for cmd, expected in (

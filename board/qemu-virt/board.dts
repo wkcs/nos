@@ -26,6 +26,27 @@
             reg = <0x0>;
             capacity-dmips-mhz = <1024>;
         };
+
+        cpu1: cpu@1 {
+            device_type = "cpu";
+            compatible = "arm,cortex-a53";
+            reg = <0x1>;
+            capacity-dmips-mhz = <1024>;
+        };
+
+        cpu2: cpu@2 {
+            device_type = "cpu";
+            compatible = "arm,cortex-a53";
+            reg = <0x2>;
+            capacity-dmips-mhz = <1024>;
+        };
+
+        cpu3: cpu@3 {
+            device_type = "cpu";
+            compatible = "arm,cortex-a53";
+            reg = <0x3>;
+            capacity-dmips-mhz = <1024>;
+        };
     };
 
     memory@40000000 {

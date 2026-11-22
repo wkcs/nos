@@ -7,13 +7,141 @@
 #include <kernel/kernel.h>
 #include <kernel/printk.h>
 #include <kernel/task.h>
+#include <kernel/sched.h>
 #include <kernel/unwind.h>
 #include <nos/syscall.h>
+#include <uapi/nos/syscall.h>
+#include <uapi/nos/errno.h>
+#include <uapi/nos/ipc.h>
 #include <asm/pt_regs.h>
 #include <asm/sysreg.h>
 #include <asm/irq.h>
+#include <asm/mmu.h>
+#include <asm/switch.h>
 
 extern void arm64_fpu_trap_handler(void);
+static arm64_el0_fault_observer_t g_el0_fault_observer;
+
+void arm64_set_el0_fault_observer(arm64_el0_fault_observer_t cb)
+{
+    __atomic_store_n(&g_el0_fault_observer, cb, __ATOMIC_RELEASE);
+}
+
+bool arm64_user_ptr_valid(uintptr_t ptr, size_t len)
+{
+    uintptr_t end;
+
+    if (ptr < PAGE_SIZE || ptr >= (uintptr_t)ARM64_USER_VA_LIMIT) {
+        return false;
+    }
+    end = ptr + len;
+    if (end < ptr || end > (uintptr_t)ARM64_USER_VA_LIMIT) {
+        return false;
+    }
+    return true;
+}
+
+static bool arm64_user_buf_mapped(struct task_struct *task,
+                                  uintptr_t ptr,
+                                  size_t len,
+                                  bool require_write)
+{
+    uintptr_t cur;
+    uintptr_t end;
+
+    if (!arm64_user_ptr_valid(ptr, len)) {
+        return false;
+    }
+    if (len == 0U) {
+        return true;
+    }
+    if (task == NULL || !task->vm_space.initialized || task->vm_space.root_pt_phys == 0U) {
+        return false;
+    }
+
+    cur = ptr & PAGE_MASK;
+    end = ptr + len;
+    while (cur < end) {
+        uint64_t pte = 0ULL;
+        if (arm64_pt_translate(task->vm_space.root_pt_phys, CONFIG_ARM64_VA_BITS,
+                               cur, NULL, &pte, NULL) != 0) {
+            return false;
+        }
+        if ((pte & ARM64_PTE_AP_EL0) == 0ULL) {
+            return false;
+        }
+        if (require_write && (pte & ARM64_PTE_AP_RO) != 0ULL) {
+            return false;
+        }
+        cur += PAGE_SIZE;
+    }
+    return true;
+}
+
+static bool arm64_validate_el0_syscall(unsigned long sysno, const struct arm64_pt_regs *regs)
+{
+    struct task_struct *task = current;
+    uintptr_t a0 = (uintptr_t)regs->regs[0];
+    uintptr_t a1 = (uintptr_t)regs->regs[1];
+    uintptr_t a2 = (uintptr_t)regs->regs[2];
+    uintptr_t a3 = (uintptr_t)regs->regs[3];
+    uintptr_t a4 = (uintptr_t)regs->regs[4];
+    uintptr_t a5 = (uintptr_t)regs->regs[5];
+
+    switch (sysno) {
+    case SYS_NOS_DEBUG_CONSOLE:
+        if (a1 > 0U && !arm64_user_buf_mapped(task, a0, (size_t)a1, a2 != 0U)) {
+            return false;
+        }
+        return true;
+    case SYS_NOS_CLOCK_GET:
+        if (a0 != 0U && !arm64_user_buf_mapped(task, a0, sizeof(uint64_t), true)) {
+            return false;
+        }
+        return true;
+    case SYS_NOS_THREAD_CREATE:
+        if ((a0 != 0U && !arm64_user_buf_mapped(task, a0, 1U, false)) ||
+            (a5 != 0U && !arm64_user_buf_mapped(task, a5, sizeof(nos_handle_t), true))) {
+            return false;
+        }
+        return true;
+    case SYS_NOS_IPC_CALL:
+        if ((a1 != 0U && !arm64_user_buf_mapped(task, a1, sizeof(struct nos_ipc_msg), false)) ||
+            (a2 != 0U && !arm64_user_buf_mapped(task, a2, sizeof(struct nos_ipc_msg), true))) {
+            return false;
+        }
+        return true;
+    case SYS_NOS_IPC_RECV:
+        return arm64_user_buf_mapped(task, a1, sizeof(struct nos_ipc_msg), true);
+    case SYS_NOS_IPC_REPLY_WAIT:
+        if ((a1 != 0U && !arm64_user_buf_mapped(task, a1, sizeof(struct nos_ipc_msg), false)) ||
+            (a2 != 0U && !arm64_user_buf_mapped(task, a2, sizeof(struct nos_ipc_msg), true))) {
+            return false;
+        }
+        return true;
+    case SYS_NOS_NOTIFY_WAIT:
+        if (a1 != 0U && !arm64_user_buf_mapped(task, a1, sizeof(uint64_t), true)) {
+            return false;
+        }
+        return true;
+    case SYS_NOS_CAP_CONTROL:
+        if (a0 == NOS_CAP_OP_INSPECT &&
+            ((a2 != 0U && !arm64_user_buf_mapped(task, a2, sizeof(uint32_t), true)) ||
+             (a3 != 0U && !arm64_user_buf_mapped(task, a3, sizeof(nos_cap_rights_t), true)))) {
+            return false;
+        }
+        if (a4 != 0U && !arm64_user_buf_mapped(task, a4, sizeof(nos_handle_t), true)) {
+            return false;
+        }
+        return true;
+    case SYS_NOS_VM_MAP:
+    case SYS_NOS_VM_UNMAP:
+        /* 阶段 2A 禁止 EL0 直接绑定物理页，需经 VMO 能力接口受控映射 */
+        return false;
+    default:
+        return true;
+    }
+}
 
 static const char *arm64_ec_name(uint32_t ec)
 {
@@ -71,14 +199,23 @@ void arm64_sync_handler(struct arm64_pt_regs *regs, bool from_el0)
     uint32_t ec = ESR_ELx_EC(regs->esr);
 
     if (ec == ESR_ELx_EC_SVC64) {
-        /* SVC #0 系统调用：允许抢占前恢复用户态传参并写入 x0 返回值 */
-        long ret = nos_syscall_dispatch((unsigned long)regs->regs[8],
-                                        (uintptr_t)regs->regs[0],
-                                        (uintptr_t)regs->regs[1],
-                                        (uintptr_t)regs->regs[2],
-                                        (uintptr_t)regs->regs[3],
-                                        (uintptr_t)regs->regs[4],
-                                        (uintptr_t)regs->regs[5]);
+        long ret;
+        unsigned long sysno = (unsigned long)regs->regs[8];
+
+        /* 允许在系统调用期间响应时钟与外设中断 */
+        arch_irq_enable_global();
+        if (from_el0 && !arm64_validate_el0_syscall(sysno, regs)) {
+            regs->regs[0] = (uint64_t)(long)-EFAULT;
+            return;
+        }
+
+        ret = nos_syscall_dispatch(sysno,
+                                   (uintptr_t)regs->regs[0],
+                                   (uintptr_t)regs->regs[1],
+                                   (uintptr_t)regs->regs[2],
+                                   (uintptr_t)regs->regs[3],
+                                   (uintptr_t)regs->regs[4],
+                                   (uintptr_t)regs->regs[5]);
         regs->regs[0] = (uint64_t)ret;
         return;
     }
@@ -88,7 +225,27 @@ void arm64_sync_handler(struct arm64_pt_regs *regs, bool from_el0)
         return;
     }
 
-    arm64_dump_pt_regs(regs, from_el0 ? "EL0 Sync Fault" : "EL1 Sync Panic");
+    if (from_el0) {
+        arm64_el0_fault_observer_t obs = __atomic_load_n(&g_el0_fault_observer, __ATOMIC_ACQUIRE);
+        struct task_struct *fault_task = current;
+
+        pr_err("[EL0-FAULT] task=%s ec=%s(0x%02x) iss=0x%06x far=0x%016lx elr=0x%016lx\n",
+               (fault_task && fault_task->name) ? fault_task->name : "unknown",
+               arm64_ec_name(ec), ec, ESR_ELx_ISS(regs->esr),
+               (unsigned long)regs->far, (unsigned long)regs->pc);
+        if (obs != NULL) {
+            obs(ec, regs->far, regs->pc);
+        }
+        arch_irq_enable_global();
+        if (fault_task != NULL) {
+            task_del(fault_task);
+        }
+        while (1) {
+            switch_task();
+        }
+    }
+
+    arm64_dump_pt_regs(regs, "EL1 Sync Panic");
     panic("Unhandled ARM64 synchronous exception");
 }
 

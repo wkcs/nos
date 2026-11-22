@@ -84,4 +84,10 @@ config ARM64_KERNEL_NO_FP
 	help
 	  禁止内核 EL1 代码隐式使用 FP/SIMD/SVE 寄存器，以支持低开销惰性向量上下文切换。
 
+config ARM64_STAGE2_SELFTEST
+	bool "Run ARM64 Stage 2 SMP and EL0 isolation selftest on boot"
+	default n
+	help
+	  开机自检多核 PSCI SMP、真实 EL0 用户态降级、SVC #0 边界与硬件异常隔离。
+
 endif # ARCH_ARM64

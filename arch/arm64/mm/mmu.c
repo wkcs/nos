@@ -859,4 +859,58 @@ void arch_mmu_enable(void)
 void arch_mmu_disable(void)
 {
 }
+
+uintptr_t arm64_mmu_get_kernel_ttbr1(void)
+{
+    return g_kernel_ttbr1_root;
+}
+
+void arm64_clean_dcache_poc(uintptr_t va, size_t size)
+{
+#if defined(__aarch64__)
+    const uintptr_t line = 64UL;
+    uintptr_t addr = va & ~(line - 1UL);
+    uintptr_t end = va + size;
+    while (addr < end) {
+        __asm__ volatile("dc cvac, %0" :: "r"(addr) : "memory");
+        addr += line;
+    }
+    __asm__ volatile("dsb sy" ::: "memory");
+#else
+    (void)va;
+    (void)size;
+#endif
+}
+
+void arm64_sync_icache_dcache(uintptr_t va, size_t size)
+{
+#if defined(__aarch64__)
+    const uintptr_t line = 64UL;
+    uintptr_t addr = va & ~(line - 1UL);
+    uintptr_t end = va + size;
+    while (addr < end) {
+        __asm__ volatile("dc cvau, %0" :: "r"(addr) : "memory");
+        addr += line;
+    }
+    /* 使用核间广域无效 I-Cache，避免写高半核 VA 与 EL0 取指 VA 之间 VIPT 别名 */
+    __asm__ volatile("dsb ish\n\tic ialluis\n\tdsb ish\n\tisb" ::: "memory");
+#else
+    (void)va;
+    (void)size;
+#endif
+}
+
+void arm64_tlbi_asid(uint16_t asid)
+{
+#if defined(__aarch64__)
+    uint64_t operand = ((uint64_t)asid & 0xFFFFULL) << 48;
+    __asm__ volatile("dsb ishst\n\t"
+                     "tlbi aside1is, %0\n\t"
+                     "dsb ish\n\t"
+                     "isb"
+                     :: "r"(operand) : "memory");
+#else
+    (void)asid;
+#endif
+}
 #endif /* !__HOST_TEST__ */

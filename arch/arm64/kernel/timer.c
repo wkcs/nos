@@ -13,8 +13,11 @@
 #ifndef __HOST_TEST__
 #include <kernel/kernel.h>
 #include <kernel/cpu.h>
+#include <kernel/sched.h>
+#include <kernel/timer.h>
 #include <asm/sysreg.h>
 #include <asm/gic.h>
+#include <asm/percpu.h>
 #endif
 
 #define ARM64_TIMER_PHYS_PPI    30U
@@ -41,8 +44,14 @@ uint64_t arm64_timer_ns_to_ticks(uint64_t ns, uint64_t freq)
 #ifndef __HOST_TEST__
 static uint64_t g_timer_freq;
 static uint64_t g_tick_interval;
-static uint64_t g_next_cval;
+static uint64_t g_next_cval[CONFIG_NR_CPUS];
 static bool g_timer_registered;
+
+static inline uint32_t timer_cpu_idx(void)
+{
+    uint32_t cpu = arm64_this_percpu()->cpu_id;
+    return (cpu < (uint32_t)CONFIG_NR_CPUS) ? cpu : 0U;
+}
 
 static inline uint64_t read_cntpct(void)
 {
@@ -64,26 +73,34 @@ static inline uint64_t read_cntfrq(void)
 
 static void arm64_timer_irq_handler(uint32_t intid, void *ctx)
 {
+    uint32_t cpu = timer_cpu_idx();
     uint64_t now;
     (void)intid;
     (void)ctx;
 
     if (g_tick_interval > 0ULL) {
-        g_next_cval += g_tick_interval;
+        g_next_cval[cpu] += g_tick_interval;
         now = read_cntpct();
-        if (g_next_cval <= now) {
-            g_next_cval = now + g_tick_interval;
+        if (g_next_cval[cpu] <= now) {
+            g_next_cval[cpu] = now + g_tick_interval;
         }
 #if defined(__aarch64__)
-        write_sysreg(g_next_cval, cntp_cval_el0);
+        write_sysreg(g_next_cval[cpu], cntp_cval_el0);
         __asm__ volatile("isb" ::: "memory");
 #endif
     }
-    system_heartbeat_process();
+    if (cpu == 0U) {
+        system_heartbeat_process();
+    } else if (kernel_running) {
+        /* 从核不重复递增全局 run_ticks，仅驱动本核调度节拍与 Per-CPU 定时器 */
+        sch_heartbeat();
+        timer_check_handle();
+    }
 }
 
 void arm64_timer_init_hz(uint32_t hz)
 {
+    uint32_t cpu = timer_cpu_idx();
     uint64_t now;
 
     g_timer_freq = read_cntfrq();
@@ -105,9 +122,9 @@ void arm64_timer_init_hz(uint32_t hz)
     }
 
     now = read_cntpct();
-    g_next_cval = now + g_tick_interval;
+    g_next_cval[cpu] = now + g_tick_interval;
 #if defined(__aarch64__)
-    write_sysreg(g_next_cval, cntp_cval_el0);
+    write_sysreg(g_next_cval[cpu], cntp_cval_el0);
     write_sysreg(1ULL, cntp_ctl_el0);
     __asm__ volatile("isb" ::: "memory");
 #endif
@@ -116,20 +133,26 @@ void arm64_timer_init_hz(uint32_t hz)
 
 void arm64_timer_enable_irq(void)
 {
+    uint32_t cpu = timer_cpu_idx();
     uint64_t now;
 
     if (g_tick_interval == 0ULL) {
         return;
     }
     now = read_cntpct();
-    g_next_cval = now + g_tick_interval;
+    g_next_cval[cpu] = now + g_tick_interval;
 #if defined(__aarch64__)
-    write_sysreg(g_next_cval, cntp_cval_el0);
+    write_sysreg(g_next_cval[cpu], cntp_cval_el0);
     write_sysreg(1ULL, cntp_ctl_el0);
     __asm__ volatile("isb" ::: "memory");
 #endif
     arm64_gic_set_priority(ARM64_TIMER_PHYS_PPI, 0x80U);
     arm64_gic_enable_irq(ARM64_TIMER_PHYS_PPI);
+}
+
+void arm64_timer_init_secondary(void)
+{
+    arm64_timer_enable_irq();
 }
 
 uint64_t arm64_timer_monotonic_ns(void)
@@ -145,14 +168,15 @@ u64 arm64_timer_monotonic_us(void)
 
 void arm64_timer_program_oneshot_ns(uint64_t delta_ns)
 {
+    uint32_t cpu = timer_cpu_idx();
     uint64_t freq = g_timer_freq ? g_timer_freq : read_cntfrq();
     uint64_t ticks = arm64_timer_ns_to_ticks(delta_ns, freq);
     if (ticks == 0ULL) {
         ticks = 1ULL;
     }
-    g_next_cval = read_cntpct() + ticks;
+    g_next_cval[cpu] = read_cntpct() + ticks;
 #if defined(__aarch64__)
-    write_sysreg(g_next_cval, cntp_cval_el0);
+    write_sysreg(g_next_cval[cpu], cntp_cval_el0);
     write_sysreg(1ULL, cntp_ctl_el0);
     __asm__ volatile("isb" ::: "memory");
 #endif

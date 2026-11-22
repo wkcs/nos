@@ -45,6 +45,7 @@
 /* Higher-Half 内核虚拟地址空间切分 */
 #if (CONFIG_ARM64_VA_BITS == 48)
 #define ARM64_HW_PGTABLE_LEVELS 4
+#define ARM64_USER_VA_LIMIT     _AC(0x0001000000000000, ULL)
 #define ARM64_PHYSMAP_BASE      _AC(0xFFFF800000000000, ULL)
 #define ARM64_MMIO_BASE         _AC(0xFFFFC00000000000, ULL)
 #define ARM64_KVMALLOC_BASE     _AC(0xFFFFD00000000000, ULL)
@@ -53,6 +54,7 @@
 #define ARM64_TCR_T1SZ          (_AC(64, ULL) - _AC(48, ULL))
 #else
 #define ARM64_HW_PGTABLE_LEVELS 3
+#define ARM64_USER_VA_LIMIT     _AC(0x0000008000000000, ULL)
 #define ARM64_PHYSMAP_BASE      _AC(0xFFFFFF8000000000, ULL)
 #define ARM64_MMIO_BASE         _AC(0xFFFFFFC000000000, ULL)
 #define ARM64_KVMALLOC_BASE     _AC(0xFFFFFFD000000000, ULL)
@@ -188,6 +190,10 @@ uintptr_t arm64_phys_to_virt(uintptr_t paddr);
 uintptr_t arm64_virt_to_phys(uintptr_t vaddr);
 void *arm64_ioremap(uintptr_t paddr, size_t size);
 void arm64_mmu_init_kernel_wx(void);
+uintptr_t arm64_mmu_get_kernel_ttbr1(void);
+void arm64_clean_dcache_poc(uintptr_t va, size_t size);
+void arm64_sync_icache_dcache(uintptr_t va, size_t size);
+void arm64_tlbi_asid(uint16_t asid);
 
 /* 兼容旧 HAL 声明的架构 MMU 接口 */
 void arch_mmu_init(void);

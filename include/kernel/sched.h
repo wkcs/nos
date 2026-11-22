@@ -53,7 +53,13 @@ void dump_sched_rq(int (*print_fn)(const char *fmt, ...));
 
 extern u32 g_sys_cycle;
 extern u64 sys_heartbeat_time;
+#if defined(CONFIG_SMP) && defined(CONFIG_NR_CPUS) && (CONFIG_NR_CPUS > 1)
+extern uint32_t g_scheduler_lock_nest[CONFIG_NR_CPUS];
+uint32_t *nos_sched_lock_nest_ptr(void);
+#define scheduler_lock_nest (*nos_sched_lock_nest_ptr())
+#else
 extern uint32_t scheduler_lock_nest;
+#endif
 
 static inline void sch_lock(void)
 {

@@ -968,7 +968,7 @@ void clean_close_task(void)
 
     spin_lock_irq(&g_close_list_lock);
     list_for_each_entry_safe(task, tmp, &g_close_task_list, list) {
-        if (task == current) {
+        if (task == current || READ_ONCE(task->on_cpu) != 0U) {
             continue;
         }
         if (task->status != TASK_CLOSE) {
@@ -982,6 +982,12 @@ void clean_close_task(void)
     spin_unlock_irq(&g_close_list_lock);
 
     list_for_each_entry_safe (task, tmp, &tmp_list, list) {
+#if defined(CONFIG_NR_CPUS) && (CONFIG_NR_CPUS > 1)
+        /* 确保原运行核已完全退出 switch_task 临界区并离开该任务栈后再释放内存 */
+        struct sched_rq *owner_rq = sched_rq_of(task->cpu);
+        spin_lock_irq(&owner_rq->lock);
+        spin_unlock_irq(&owner_rq->lock);
+#endif
         pr_info("free %s task\n", task->name);
         task_free(task);
     }

@@ -13,6 +13,9 @@
 #include <kernel/sleep.h>
 #include <kernel/task.h>
 #include <kernel/timer.h>
+#include <nos/sched.h>
+
+__attribute__((weak)) void arch_smp_boot_secondary_cpus(void) {}
 
 extern addr_t __task_data_start;
 extern addr_t __task_data_end;
@@ -61,6 +64,7 @@ void task_init_call(void) {
 
 static void core_task_entry(void *parameter) {
   pr_info("init\n");
+  arch_smp_boot_secondary_cpus();
   task_init_call();
 }
 
@@ -105,6 +109,12 @@ int idel_task_init(void) {
     BUG_ON(true);
     return -EINVAL;
   }
+#if defined(CONFIG_NR_CPUS) && (CONFIG_NR_CPUS > 1)
+  /* 从核尚未由固件唤醒前暂时保持离线，防止主核或早期唤醒向未上线从核派发任务 */
+  for (uint32_t cpu = 1U; cpu < (uint32_t)CONFIG_NR_CPUS; cpu++) {
+    g_sched_rqs[cpu].online = false;
+  }
+#endif
   task_ready(idel);
 
   return 0;

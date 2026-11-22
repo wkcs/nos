@@ -8,6 +8,8 @@
 #define __ASM_ARM64_SWITCH_H__
 
 #include <stdint.h>
+#include <stdbool.h>
+#include <stddef.h>
 #include <kernel/types.h>
 
 struct task_struct;
@@ -40,5 +42,12 @@ void __arm64_cpu_switch_to(addr_t from_sp_ptr, addr_t to_sp_ptr);
 void __arm64_cpu_switch_first(addr_t to_sp_ptr);
 void arm64_task_trampoline(void);
 void arm64_finish_first_switch(void);
+
+/* EL0 用户态进入与异常观察接口 */
+void arm64_enter_user_mode(uintptr_t user_pc, uintptr_t user_sp, uintptr_t arg0)
+    __attribute__((noreturn));
+bool arm64_user_ptr_valid(uintptr_t ptr, size_t len);
+typedef void (*arm64_el0_fault_observer_t)(uint32_t ec, uint64_t far, uint64_t pc);
+void arm64_set_el0_fault_observer(arm64_el0_fault_observer_t cb);
 
 #endif /* __ASM_ARM64_SWITCH_H__ */

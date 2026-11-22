@@ -36,7 +36,11 @@
 
 /* GICR Redistributor 偏移 (每核 128KB 跨步：RD_base 64KB + SGI_base 64KB) */
 #define GICR_STRIDE             0x20000U
+#define GICR_V4_STRIDE          0x40000U
 #define GICR_SGI_OFFSET         0x10000U
+#define GICR_TYPER              0x0008U
+#define GICR_TYPER_VLPIS        (1U << 1)
+#define GICR_TYPER_LAST         (1U << 4)
 #define GICR_WAKER              0x0014U
 #define GICR_WAKER_PROC_SLEEP   (1U << 1)
 #define GICR_WAKER_CHILD_ASLEEP (1U << 2)

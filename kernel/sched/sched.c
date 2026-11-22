@@ -23,7 +23,21 @@
 
 struct sched_rq g_sched_rqs[CONFIG_NR_CPUS];
 SPINLOCK(ready_list_lock);
+#if defined(CONFIG_SMP) && defined(CONFIG_NR_CPUS) && (CONFIG_NR_CPUS > 1)
+uint32_t g_scheduler_lock_nest[CONFIG_NR_CPUS];
+
+/* 多核模式下按当前核 ID 索引独立的调度锁嵌套深度 */
+uint32_t *nos_sched_lock_nest_ptr(void)
+{
+    uint32_t cpu = hal_cpu_id();
+    if (cpu >= (uint32_t)CONFIG_NR_CPUS) {
+        cpu = 0U;
+    }
+    return &g_scheduler_lock_nest[cpu];
+}
+#else
 uint32_t scheduler_lock_nest;
+#endif
 
 u32 g_sys_cycle;
 u64 sys_heartbeat_time;
@@ -308,7 +322,11 @@ void sch_init(void)
 {
     uint32_t i;
 
+#if defined(CONFIG_SMP) && defined(CONFIG_NR_CPUS) && (CONFIG_NR_CPUS > 1)
+    memset(g_scheduler_lock_nest, 0, sizeof(g_scheduler_lock_nest));
+#else
     scheduler_lock_nest = 0U;
+#endif
     g_sys_cycle = 0U;
     sys_heartbeat_time = 0ULL;
     spin_lock_init(&ready_list_lock);
@@ -366,6 +384,11 @@ void sch_start(void)
 static void calculate_sys_cycle(void)
 {
     static int count = 0;
+#if defined(CONFIG_NR_CPUS) && (CONFIG_NR_CPUS > 1)
+    if (hal_cpu_id() != 0U) {
+        return;
+    }
+#endif
 #ifdef CONFIG_SYS_TICK_MS
     const int ticks_per_sec = (CONFIG_SYS_TICK_MS > 0) ? (1000 / CONFIG_SYS_TICK_MS) : 1000;
 #else
@@ -396,6 +419,14 @@ void switch_task(void)
         locked_rq->need_resched = true;
         return;
     }
+
+#ifdef CONFIG_ARCH_ARM64
+    /* ARM64 在 ISR 内部仅置重调度标记，统一交由异常出口完成原子切换 */
+    if (unlikely(hal_in_irq())) {
+        this_rq()->need_resched = true;
+        return;
+    }
+#endif
 
     rq = this_rq();
     rq->preempt_count = 0U;
@@ -461,6 +492,8 @@ void switch_task(void)
         } else {
             context_switch_to((addr_t)&to_task->sp);
         }
+        /* 任务唤醒后可能已跨核迁移，必须重取当前所在核的 runqueue 再解锁 */
+        rq = this_rq();
         spin_unlock_irq(&rq->lock);
         return;
     }

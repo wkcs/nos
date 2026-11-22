@@ -262,7 +262,110 @@ el1_entry:
 
     /* 不应到达此处 */
     b       secondary_park
+
+/* ---------------- ARM64 PSCI SMP 从核物理入口 ---------------- */
+    .global arm64_secondary_entry
+    .type arm64_secondary_entry, %function
+arm64_secondary_entry:
+    /* x0 = PSCI context_id (逻辑 cpu_id) */
+    msr     daifset, #0xf
+    mov     x20, x0
+
+    /* 若从核由固件在 EL2 启动，先完成直通配置后降级进入 EL1h */
+    mrs     x21, CurrentEL
+    lsr     x21, x21, #2
+    and     x21, x21, #3
+    cmp     x21, #2
+    b.ne    secondary_el1_entry
+
+    mov     x0, #HCR_EL2_RW
+    msr     hcr_el2, x0
+    mov     x0, #(CNTHCTL_EL2_EL1PCTEN | CNTHCTL_EL2_EL1PCEN)
+    msr     cnthctl_el2, x0
+    msr     cntvoff_el2, xzr
+    msr     cptr_el2, xzr
+
+    mrs     x0, id_aa64pfr0_el1
+    ubfx    x0, x0, #24, #4
+    cbz     x0, 10f
+    mov     x0, #0xF
+    msr     SYS_ICC_SRE_EL2, x0
+    isb
+10:
+    ldr     x0, =0x30D00800
+    msr     sctlr_el1, x0
+    mov     x0, #(PSR_DAIF_MASK | PSR_MODE_EL1h)
+    msr     spsr_el2, x0
+    adr     x0, secondary_el1_entry
+    msr     elr_el2, x0
+    eret
+
+secondary_el1_entry:
+    msr     spsel, #1
+
+    /* 配置 MAIR_EL1 与 TCR_EL1（动态填入 IPS） */
+    ldr     x0, =ARM64_MAIR_VALUE
+    msr     mair_el1, x0
+
+    mrs     x1, id_aa64mmfr0_el1
+    and     x1, x1, #0xF
+    ldr     x0, =ARM64_TCR_BASE
+    orr     x0, x0, x1, lsl #32
+    msr     tcr_el1, x0
+
+    /* 装入早期低半核恒等页表与主核广播的 W^X TTBR1_EL1 页表 */
+#if (CONFIG_ARM64_VA_BITS == 48)
+    adrp    x0, boot_ttbr0_l0
+    add     x0, x0, :lo12:boot_ttbr0_l0
+#else
+    adrp    x0, boot_ttbr0_l1
+    add     x0, x0, :lo12:boot_ttbr0_l1
+#endif
+    adrp    x1, arm64_smp_boot_ttbr1
+    add     x1, x1, :lo12:arm64_smp_boot_ttbr1
+    ldr     x1, [x1]
+
+    /* 在开 MMU 前预先取出为本核分配的高半核内核栈顶至 x21 */
+    adrp    x2, arm64_smp_boot_stacks
+    add     x2, x2, :lo12:arm64_smp_boot_stacks
+    ldr     x21, [x2, x20, lsl #3]
+
+    msr     ttbr0_el1, x0
+    msr     ttbr1_el1, x1
+    isb
+    tlbi    vmalle1
+    dsb     sy
+    isb
+
+    mrs     x0, sctlr_el1
+    ldr     x1, =(SCTLR_EL1_M | SCTLR_EL1_C | SCTLR_EL1_I | SCTLR_EL1_SA | SCTLR_EL1_SA0)
+    orr     x0, x0, x1
+    msr     sctlr_el1, x0
+    dsb     sy
+    isb
+
+    mov     sp, x21
+    mov     x29, #0
+    mov     x30, #0
+    mov     x0, x20
+    ldr     x8, =arm64_secondary_main
+    br      x8
+
+    b       secondary_park
     .ltorg
+
+/* 高半核只读导出低半核物理地址表（避免跨 4GB PC 相对重定位截断） */
+    .section .rodata, "a"
+    .align 3
+    .global arm64_secondary_entry_phys
+arm64_secondary_entry_phys:
+    .quad   arm64_secondary_entry
+    .global arm64_smp_boot_ttbr1_phys
+arm64_smp_boot_ttbr1_phys:
+    .quad   arm64_smp_boot_ttbr1
+    .global arm64_smp_boot_stacks_phys
+arm64_smp_boot_stacks_phys:
+    .quad   arm64_smp_boot_stacks
 
 /* ---------------- 早期引导专用低半核 BSS（页面对齐） ---------------- */
     .section .bss.boot, "aw", %nobits
@@ -293,3 +396,8 @@ boot_ttbr1_l2_kern:
 boot_stack_bottom:
     .space 16384
 boot_stack_top:
+    .align 3
+arm64_smp_boot_ttbr1:
+    .quad 0
+arm64_smp_boot_stacks:
+    .space (8 * 8)
