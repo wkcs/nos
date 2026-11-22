@@ -16,9 +16,42 @@
 #include <nos/mm.h>
 
 #define NOS_CELL_AUDIT_RING_CAPACITY    64U
+#define NOS_CELL_MAX_TRACKED_VMOS       16U
 
 struct task_struct;
 struct nos_notification;
+struct nos_vmo;
+
+struct nos_cell_vmo_binding {
+    bool            active;
+    struct nos_vmo *vmo;
+    uintptr_t       vaddr;
+    size_t          offset;
+    size_t          len;
+    uint32_t        prot_flags;
+};
+
+struct nos_cell_snapshot_item {
+    struct nos_vmo *live_vmo;
+    struct nos_vmo *frozen_vmo;
+    uintptr_t       vaddr;
+    size_t          offset;
+    size_t          len;
+    uint32_t        prot_flags;
+};
+
+struct nos_cell_snapshot {
+    struct nos_object            header; /* 必须置于首字段，供 Capability Pinned Lookup */
+    struct nos_cell             *owner_cell;
+    uint32_t                     item_count;
+    uint16_t                     saved_state;
+    uint16_t                     reserved;
+    uint64_t                     saved_cpu_ns_used;
+    uint64_t                     saved_mem_bytes_used;
+    uint64_t                     saved_tool_calls_used;
+    uint64_t                     saved_accel_ops_used;
+    struct nos_cell_snapshot_item items[NOS_CELL_MAX_TRACKED_VMOS];
+};
 
 struct nos_cell {
     struct nos_object        header;          /* 必须置于首字段，用于 Capability Pinned Lookup */
@@ -43,6 +76,7 @@ struct nos_cell {
     uint32_t                 audit_head;      /* 环形写入游标（0..63） */
     uint32_t                 audit_count;     /* 当前已缓存审计记录条数（<= 64） */
     uint64_t                 audit_seq;       /* 累计写入审计记录单调序号 */
+    struct nos_cell_vmo_binding vmo_bindings[NOS_CELL_MAX_TRACKED_VMOS];
 };
 
 void nos_cell_subsystem_init(void);
@@ -80,5 +114,18 @@ struct nos_cap_table *nos_cell_cap_table(struct nos_cell *cell);
 
 int nos_cell_attach_task(struct task_struct *task, struct nos_cell *cell);
 void nos_cell_detach_task(struct task_struct *task);
+
+int nos_cell_track_vmo_map(struct nos_cell *cell,
+                           struct nos_vmo *vmo,
+                           uintptr_t vaddr,
+                           size_t offset,
+                           size_t len,
+                           uint32_t prot_flags);
+void nos_cell_untrack_vmo_map(struct nos_cell *cell, uintptr_t vaddr, size_t len);
+
+struct nos_cell_snapshot *nos_cell_snapshot(struct nos_cell *cell);
+int nos_cell_rollback(struct nos_cell *cell, struct nos_cell_snapshot *snap);
+int nos_cell_handle_cow_fault(struct nos_cell *cell, uintptr_t fault_va);
+int nos_cell_snapshot_destroy(struct nos_cell_snapshot *snap);
 
 #endif /* __NOS_CELL_H__ */

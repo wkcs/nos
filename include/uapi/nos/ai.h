@@ -36,6 +36,8 @@
 #define NOS_AUDIT_ACCEL_JOB     4U
 #define NOS_AUDIT_BUDGET_HIT    5U
 #define NOS_AUDIT_FAULT         6U
+#define NOS_AUDIT_CELL_SNAPSHOT 7U
+#define NOS_AUDIT_CELL_ROLLBACK 8U
 
 struct nos_cell_budget {
     uint64_t cpu_ns_limit;      /* 最大可用 CPU 时间配额（纳秒，0 表示无限制） */
@@ -121,6 +123,48 @@ struct nos_vmo_create_args {
 #define NOS_RING_FLAG_NEEDS_AUDIT   (1U << 2)
 #define NOS_RING_FLAG_DEADLINE      (1U << 3)
 
+#define NOS_RING_MAGIC              0x4E524E47U /* "NRNG" */
+#define NOS_RING_DEFAULT_ENTRIES    32U
+#define NOS_RING_MAX_SCHEMAS        16U
+
+#define NOS_RING_CREATE_SCHEMA_FILTER (1U << 0)
+
+#define NOS_RING_ENTER_SUBMIT       (1U << 0)
+#define NOS_RING_ENTER_WAIT_CQ      (1U << 1)
+#define NOS_RING_ENTER_COMPLETE     (1U << 2)
+
+/* RingIPC 共享页头部：严格 128 字节（两条 Cache Line 消除 SQ/CQ 伪共享） */
+struct nos_ring_header {
+    uint32_t magic;             /* NOS_RING_MAGIC */
+    uint16_t version;           /* 结构体版本（当前为 1） */
+    uint16_t flags;             /* NOS_RING_CREATE_* */
+    uint32_t sq_entries;        /* SQ 槽位数（2 的幂，默认 32） */
+    uint32_t cq_entries;        /* CQ 槽位数（2 的幂，默认 32） */
+    uint32_t sq_head;           /* 内核消费者头指针 */
+    uint32_t sq_tail;           /* EL0 生产者尾指针（release） */
+    uint32_t sq_dropped;        /* 格式错误丢弃计数 */
+    uint32_t sq_offset;         /* SQ 数组相对页首字节偏移（128） */
+    uint64_t reserved0[4];
+
+    uint32_t cq_head;           /* EL0 消费者头指针 */
+    uint32_t cq_tail;           /* 内核/服务端生产者尾指针（release） */
+    uint32_t cq_overflow;       /* CQ 溢出计数 */
+    uint32_t cq_offset;         /* CQ 数组相对页首字节偏移 */
+    uint64_t total_submitted;   /* 累计提交 SQE 总数 */
+    uint64_t total_completed;   /* 累计完成 CQE 总数 */
+    uint64_t reserved1[4];
+};
+
+/* 创建 RingIPC 实例的系统调用参数（严格 32 字节） */
+struct nos_ring_create_args {
+    uint32_t sq_entries;        /* 请求 SQ 容量（0 取默认 32） */
+    uint32_t cq_entries;        /* 请求 CQ 容量（0 取默认 32） */
+    uint32_t flags;             /* NOS_RING_CREATE_* */
+    uint32_t schema_count;      /* 白名单 Schema 数量（<= NOS_RING_MAX_SCHEMAS） */
+    uint64_t schema_list_ptr;   /* 用户态 uint64_t schema_ids[] 数组指针 */
+    uint64_t map_user_vaddr;    /* 可选立即将共享环页映射至此用户虚拟地址 */
+};
+
 /* 提交队列条目：严格 64 字节（单条 ARM64 Cache Line） */
 struct nos_ring_sqe {
     uint16_t opcode;            /* NOS_RING_OP_* */
@@ -168,14 +212,36 @@ struct nos_infer_sched_param {
     uint64_t period_ns;         /* 周期时长 */
 };
 
+/* 异构 AI 算力指令集标志（用于 NOS_SCHED_OP_QUERY_TOPO） */
+#define NOS_AI_ISA_DOTPROD          (1U << 0)
+#define NOS_AI_ISA_FP16             (1U << 1)
+#define NOS_AI_ISA_BF16             (1U << 2)
+#define NOS_AI_ISA_I8MM             (1U << 3)
+#define NOS_AI_ISA_SVE              (1U << 4)
+#define NOS_AI_ISA_SME              (1U << 5)
+
+/* 异构核拓扑与 AI 加速指令查询信息（严格 32 字节） */
+struct nos_cpu_topo_info {
+    uint32_t nr_cpus;           /* 已注册核数 */
+    uint32_t online_mask;       /* 在线核位图 */
+    uint32_t big_cpu_mask;      /* 高算力大核位图 */
+    uint32_t little_cpu_mask;   /* 高能效小核位图 */
+    uint32_t ai_isa_flags;      /* NOS_AI_ISA_* */
+    uint32_t active_gangs;      /* 当前活跃 Gang 协作组数 */
+    uint64_t reserved;
+};
+
 #if defined(__STDC_VERSION__) && (__STDC_VERSION__ >= 201112L)
 _Static_assert(sizeof(struct nos_cell_budget) == 40, "nos_cell_budget ABI 尺寸必须为 40 字节");
 _Static_assert(sizeof(struct nos_cell_telemetry) == 96, "nos_cell_telemetry ABI 尺寸必须为 96 字节");
 _Static_assert(sizeof(struct nos_audit_record) == 64, "nos_audit_record ABI 尺寸必须为 64 字节");
 _Static_assert(sizeof(struct nos_vmo_create_args) == 32, "nos_vmo_create_args ABI 尺寸必须为 32 字节");
+_Static_assert(sizeof(struct nos_ring_header) == 128, "nos_ring_header ABI 尺寸必须为 128 字节");
+_Static_assert(sizeof(struct nos_ring_create_args) == 32, "nos_ring_create_args ABI 尺寸必须为 32 字节");
 _Static_assert(sizeof(struct nos_ring_sqe) == 64, "nos_ring_sqe ABI 尺寸必须为 64 字节");
 _Static_assert(sizeof(struct nos_ring_cqe) == 32, "nos_ring_cqe ABI 尺寸必须为 32 字节");
 _Static_assert(sizeof(struct nos_infer_sched_param) == 32, "nos_infer_sched_param ABI 尺寸必须为 32 字节");
+_Static_assert(sizeof(struct nos_cpu_topo_info) == 32, "nos_cpu_topo_info ABI 尺寸必须为 32 字节");
 #endif
 
 #endif /* __NOS_UAPI_AI_H__ */

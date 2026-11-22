@@ -16,6 +16,7 @@
 #include <kernel/task.h>
 #include <nos/cap.h>
 #include <nos/cell.h>
+#include <nos/vmo.h>
 #include <nos/notification.h>
 
 _Static_assert(sizeof(struct nos_cell_telemetry) == 96,
@@ -51,6 +52,29 @@ static uint64_t g_notif_signals = 0ULL;
 static uint32_t g_vm_switch_count = 0U;
 static struct nos_vm_space *g_last_switched_space = NULL;
 
+struct mock_va_slot {
+    bool      active;
+    uintptr_t vaddr;
+    uintptr_t paddr;
+    uint32_t  prot;
+};
+static struct mock_va_slot g_mock_ptes[32];
+
+static void mock_pte_clear(void)
+{
+    memset(g_mock_ptes, 0, sizeof(g_mock_ptes));
+}
+
+static struct mock_va_slot *mock_pte_find(uintptr_t vaddr)
+{
+    for (uint32_t i = 0U; i < 32U; i++) {
+        if (g_mock_ptes[i].active && g_mock_ptes[i].vaddr == vaddr) {
+            return &g_mock_ptes[i];
+        }
+    }
+    return NULL;
+}
+
 uint64_t hal_timer_monotonic_ns(void)
 {
     g_mock_mono_ns += 1000ULL;
@@ -81,11 +105,40 @@ int hal_vm_map(struct nos_vm_space *space,
                size_t size,
                uint32_t prot_flags)
 {
+    struct mock_va_slot *s;
     (void)space;
     g_last_map_va = vaddr;
     g_last_map_pa = paddr;
     g_last_map_size = size;
     g_last_map_prot = prot_flags;
+    s = mock_pte_find(vaddr);
+    if (s == NULL) {
+        for (uint32_t i = 0U; i < 32U; i++) {
+            if (!g_mock_ptes[i].active) {
+                s = &g_mock_ptes[i];
+                break;
+            }
+        }
+    }
+    if (s != NULL) {
+        s->active = true;
+        s->vaddr = vaddr;
+        s->paddr = paddr;
+        s->prot = prot_flags;
+    }
+    return 0;
+}
+
+int hal_vm_unmap(struct nos_vm_space *space, uintptr_t vaddr, size_t size)
+{
+    (void)space;
+    for (uint32_t i = 0U; i < 32U; i++) {
+        if (g_mock_ptes[i].active &&
+            g_mock_ptes[i].vaddr >= vaddr &&
+            g_mock_ptes[i].vaddr < (vaddr + size)) {
+            g_mock_ptes[i].active = false;
+        }
+    }
     return 0;
 }
 
@@ -295,10 +348,118 @@ static void test_cell_5d_hard_budgets_and_audit_ring(void)
     assert(mock_task.cell == NULL);
 }
 
+static void test_cell_hardware_cow_snapshot_and_rollback(void)
+{
+    struct nos_cell_budget budget = {
+        .cpu_ns_limit = 1000000ULL,
+        .mem_bytes_limit = 65536ULL,
+        .tool_calls_limit = 10ULL,
+        .accel_ops_limit = 10ULL,
+        .max_child_cells = 0U,
+    };
+    struct nos_vmo_create_args work_args = {
+        .size_bytes = 4096U,
+        .kind = NOS_VMO_ANON,
+        .flags = 0U,
+    };
+    struct nos_vmo_create_args dma_args = {
+        .size_bytes = 4096U,
+        .kind = NOS_VMO_DMA_TENSOR,
+        .flags = NOS_VMO_FLAG_IO_COHERENT,
+    };
+    struct nos_cell *cell;
+    struct nos_vmo *work_vmo;
+    struct nos_vmo *dma_vmo;
+    struct nos_cell_snapshot *snap;
+    const struct nos_cell_telemetry *tm;
+    struct mock_va_slot *pte_work;
+    struct mock_va_slot *pte_dma;
+    struct nos_audit_record recs[16];
+    uintptr_t base_pa;
+    char rb[32];
+    int count;
+    bool seen_snap = false;
+    bool seen_rb = false;
+
+    mock_pte_clear();
+    cell = nos_cell_create(NULL, &budget);
+    assert(cell != NULL);
+    tm = nos_cell_telemetry_view(cell);
+
+    work_vmo = nos_vmo_create(&work_args);
+    dma_vmo = nos_vmo_create(&dma_args);
+    assert(work_vmo != NULL && dma_vmo != NULL);
+    base_pa = work_vmo->pages[0]->paddr;
+    assert(nos_vmo_write(work_vmo, 0U, "BASE_STATE_V1", 14U) == 0);
+
+    assert(nos_vmo_map(work_vmo, nos_cell_vm_space(cell), 0x450000UL, 0U, 4096U,
+                       HAL_VM_PROT_USER | HAL_VM_PROT_READ | HAL_VM_PROT_WRITE, cell) == 0);
+    assert(nos_vmo_map(dma_vmo, nos_cell_vm_space(cell), 0x440000UL, 0U, 4096U,
+                       HAL_VM_PROT_USER | HAL_VM_PROT_READ | HAL_VM_PROT_WRITE, cell) == 0);
+    assert(tm->mem_bytes_used == 8192ULL);
+
+    /* 1. 执行零拷贝硬件 CoW Snapshot：work_vmo PTE 降为只读，DMA/Ring 页保持可写 */
+    snap = nos_cell_snapshot(cell);
+    assert(snap != NULL);
+    assert(snap->item_count == 1U);
+    pte_work = mock_pte_find(0x450000UL);
+    pte_dma = mock_pte_find(0x440000UL);
+    assert(pte_work != NULL && (pte_work->prot & HAL_VM_PROT_WRITE) == 0U);
+    assert(pte_dma != NULL && (pte_dma->prot & HAL_VM_PROT_WRITE) != 0U);
+
+    /* 2. 对只读 Telemetry 区域调用 CoW Fault 处理必须被严格拒绝 */
+    assert(nos_cell_handle_cow_fault(cell, 0x420000UL) == -EACCES);
+
+    /* 3. 对工作区页模拟硬件 EL0 Data Abort CoW 页断裂 + 分支篡改 + 消耗工具配额 */
+    assert(nos_cell_handle_cow_fault(cell, 0x450008UL) == 0);
+    assert(pte_work->paddr != base_pa && (pte_work->prot & HAL_VM_PROT_WRITE) != 0U);
+    assert(nos_vmo_write(work_vmo, 0U, "DIRTY_BRANCH_1", 15U) == 0);
+    assert(nos_cell_charge_tool_call(cell, 0x1010ULL, 1U) == 0);
+    assert(tm->tool_calls_used == 1ULL);
+
+    /* 4. Rollback 到检查点：数据、状态、配额计数同时还原且 CoW 仍维持武装 */
+    assert(nos_cell_rollback(cell, snap) == 0);
+    assert(work_vmo->pages[0]->paddr == base_pa);
+    memset(rb, 0, sizeof(rb));
+    assert(nos_vmo_read(work_vmo, 0U, rb, 14U) == 0);
+    assert(strcmp(rb, "BASE_STATE_V1") == 0);
+    assert(tm->tool_calls_used == 0ULL);
+    assert((pte_work->prot & HAL_VM_PROT_WRITE) == 0U);
+
+    /* 5. 第 2 轮投机 CoW 分支写 + 回滚验证同一快照可重复使用 */
+    assert(nos_cell_handle_cow_fault(cell, 0x450000UL) == 0);
+    assert(nos_vmo_write(work_vmo, 0U, "DIRTY_BRANCH_2", 15U) == 0);
+    assert(nos_cell_rollback(cell, snap) == 0);
+    memset(rb, 0, sizeof(rb));
+    assert(nos_vmo_read(work_vmo, 0U, rb, 14U) == 0);
+    assert(strcmp(rb, "BASE_STATE_V1") == 0);
+
+    count = nos_cell_read_audit(cell, recs, 16U);
+    assert(count >= 2);
+    for (int i = 0; i < count; i++) {
+        if (recs[i].event_type == NOS_AUDIT_CELL_SNAPSHOT) {
+            seen_snap = true;
+        } else if (recs[i].event_type == NOS_AUDIT_CELL_ROLLBACK) {
+            seen_rb = true;
+        }
+    }
+    assert(seen_snap && seen_rb);
+
+    assert(nos_cell_snapshot_destroy(snap) == 0);
+    assert(nos_vmo_unmap(nos_cell_vm_space(cell), 0x440000UL, 4096U, cell) == 0);
+    assert(nos_vmo_unmap(nos_cell_vm_space(cell), 0x450000UL, 4096U, cell) == 0);
+    assert(nos_object_close(&work_vmo->header) == 0);
+    assert(nos_object_retire(&work_vmo->header) == 0);
+    assert(nos_object_close(&dma_vmo->header) == 0);
+    assert(nos_object_retire(&dma_vmo->header) == 0);
+    assert(nos_cell_destroy(cell) == 0);
+}
+
 int main(void)
 {
     test_cell_hierarchy_and_telemetry();
     test_cell_5d_hard_budgets_and_audit_ring();
-    printf("PASS: test_agent_cell (5D hard budgets, RO telemetry, 64B wrap audit, CDT hook)\n");
+    test_cell_hardware_cow_snapshot_and_rollback();
+    printf("PASS: test_agent_cell (5D budgets, RO telemetry, 64B audit, CDT, CoW Snapshot/Rollback)\n");
     return 0;
 }

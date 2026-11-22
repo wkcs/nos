@@ -8,6 +8,11 @@
 #include <kernel/printk.h>
 #include <asm/cpufeature.h>
 #include <asm/sysreg.h>
+#ifdef CONFIG_NOS_AI_CORE
+#include <nos/sched.h>
+#include <nos/sched_infer.h>
+#include <string.h>
+#endif
 
 static struct arm64_cpu_caps g_cpu_caps;
 
@@ -102,3 +107,52 @@ void arm64_cpufeature_dump(void)
             c->has_pac ? "PAC " : "",
             c->has_bti ? "BTI " : "");
 }
+
+#ifdef CONFIG_NOS_AI_CORE
+int arch_sched_query_topo(struct nos_cpu_topo_info *out_info)
+{
+    uint32_t online_mask = 0U;
+    uint32_t isa = 0U;
+    uint32_t cpu;
+
+    if (out_info == NULL) {
+        return -22; /* -EINVAL */
+    }
+
+    memset(out_info, 0, sizeof(*out_info));
+    out_info->nr_cpus = CONFIG_NR_CPUS;
+    for (cpu = 0U; cpu < CONFIG_NR_CPUS && cpu < 32U; cpu++) {
+        if (g_sched_rqs[cpu].online) {
+            online_mask |= (1U << cpu);
+        }
+    }
+    if (online_mask == 0U) {
+        online_mask = 1U;
+    }
+
+    if (g_cpu_caps.has_dotprod) {
+        isa |= NOS_AI_ISA_DOTPROD;
+    }
+    if (g_cpu_caps.has_fp16) {
+        isa |= NOS_AI_ISA_FP16;
+    }
+    if (g_cpu_caps.has_bf16) {
+        isa |= NOS_AI_ISA_BF16;
+    }
+    if (g_cpu_caps.has_i8mm) {
+        isa |= NOS_AI_ISA_I8MM;
+    }
+    if (g_cpu_caps.has_sve) {
+        isa |= NOS_AI_ISA_SVE;
+    }
+    if (g_cpu_caps.has_sme) {
+        isa |= NOS_AI_ISA_SME;
+    }
+
+    out_info->online_mask = online_mask;
+    out_info->big_cpu_mask = online_mask;
+    out_info->little_cpu_mask = online_mask;
+    out_info->ai_isa_flags = isa;
+    return 0;
+}
+#endif

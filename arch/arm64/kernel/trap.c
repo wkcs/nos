@@ -165,8 +165,45 @@ static bool arm64_validate_el0_syscall(unsigned long sysno, const struct arm64_p
                 return false;
             }
         }
-        if ((a0 == NOS_CELL_OP_CREATE || a0 == NOS_CELL_OP_FORK) &&
+        if ((a0 == NOS_CELL_OP_CREATE || a0 == NOS_CELL_OP_FORK || a0 == NOS_CELL_OP_SNAPSHOT) &&
             a4 != 0U && !arm64_user_buf_mapped(task, a4, sizeof(nos_handle_t), true)) {
+            return false;
+        }
+        return true;
+    case SYS_NOS_RING_CREATE: {
+        const struct nos_ring_create_args *rargs;
+        if (a0 == 0U || !arm64_user_buf_mapped(task, a0, sizeof(struct nos_ring_create_args), false)) {
+            return false;
+        }
+        rargs = (const struct nos_ring_create_args *)a0;
+        if (rargs->schema_count > NOS_RING_MAX_SCHEMAS) {
+            return false;
+        }
+        if (rargs->schema_count > 0U &&
+            !arm64_user_buf_mapped(task,
+                                   (uintptr_t)rargs->schema_list_ptr,
+                                   (size_t)rargs->schema_count * sizeof(uint64_t),
+                                   false)) {
+            return false;
+        }
+        if (rargs->map_user_vaddr != 0ULL &&
+            !arm64_user_ptr_valid((uintptr_t)rargs->map_user_vaddr, PAGE_SIZE)) {
+            return false;
+        }
+        if (a1 != 0U && !arm64_user_buf_mapped(task, a1, sizeof(nos_handle_t), true)) {
+            return false;
+        }
+        return true;
+    }
+    case SYS_NOS_RING_ENTER:
+        return true;
+    case SYS_NOS_SCHED_INFER:
+        if (a0 == NOS_SCHED_OP_SET_INFER &&
+            (a2 == 0U || !arm64_user_buf_mapped(task, a2, sizeof(struct nos_infer_sched_param), false))) {
+            return false;
+        }
+        if (a0 == NOS_SCHED_OP_QUERY_TOPO &&
+            (a2 == 0U || !arm64_user_buf_mapped(task, a2, sizeof(struct nos_cpu_topo_info), true))) {
             return false;
         }
         return true;
@@ -289,10 +326,24 @@ void arm64_sync_handler(struct arm64_pt_regs *regs, bool from_el0)
         arm64_el0_fault_observer_t obs = __atomic_load_n(&g_el0_fault_observer, __ATOMIC_ACQUIRE);
         struct task_struct *fault_task = current;
 
+#ifdef CONFIG_NOS_AI_CORE
+        /* 硬件 CoW 写时复制快路：仅当 WnR=1 且命中 Cell 可写 ANON/KV 绑定页时才透明分裂恢复 RW- */
+        if (ec == ESR_ELx_EC_DABT_LOW &&
+            (ESR_ELx_ISS(regs->esr) & (1U << 6)) != 0U &&
+            fault_task != NULL &&
+            fault_task->cell != NULL &&
+            nos_cell_handle_cow_fault(fault_task->cell, (uintptr_t)regs->far) == 0) {
+            return;
+        }
+#endif
+
         pr_err("[EL0-FAULT] task=%s ec=%s(0x%02x) iss=0x%06x far=0x%016lx elr=0x%016lx\n",
                (fault_task && fault_task->name) ? fault_task->name : "unknown",
                arm64_ec_name(ec), ec, ESR_ELx_ISS(regs->esr),
                (unsigned long)regs->far, (unsigned long)regs->pc);
+        if (ec == ESR_ELx_EC_BRK64) {
+            arm64_dump_pt_regs(regs, "EL0 BRK64");
+        }
 #ifdef CONFIG_NOS_AI_CORE
         if (fault_task != NULL && fault_task->cell != NULL) {
             nos_cell_record_audit(fault_task->cell,

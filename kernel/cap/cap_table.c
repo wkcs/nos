@@ -37,7 +37,9 @@ static bool cap_type_has_object_header(uint16_t type)
     return (type == NOS_CAP_ENDPOINT ||
             type == NOS_CAP_NOTIFICATION ||
             type == NOS_CAP_VMO ||
-            type == NOS_CAP_CELL);
+            type == NOS_CAP_CELL ||
+            type == NOS_CAP_RING ||
+            type == NOS_CAP_SNAPSHOT);
 }
 
 static uint16_t cap_table_capacity_locked(const struct nos_cap_table *table)

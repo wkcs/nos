@@ -106,6 +106,8 @@ TESTS = [
     ("run_cdt_cap_test.py",),
     ("run_vmo_test.py",),
     ("run_agent_cell_test.py",),
+    ("run_sched_infer_test.py",),
+    ("run_ring_ipc_test.py",),
 ]
 
 

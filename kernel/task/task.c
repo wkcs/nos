@@ -237,6 +237,10 @@ static int __task_create(struct task_struct *task,
     memset(&task->ipc_msg, 0, sizeof(task->ipc_msg));
 #ifdef CONFIG_NOS_AI_CORE
     task->cell = NULL;
+    memset(&task->se.infer, 0, sizeof(task->se.infer));
+#endif
+#ifdef CONFIG_ARCH_ARM64
+    memset(&task->fp_state, 0, sizeof(task->fp_state));
 #endif
     nos_cap_table_init(&task->cap_table);
     (void)nos_cap_alloc_at(&task->cap_table,
@@ -944,6 +948,9 @@ const char *task_policy_short_str(uint8_t policy)
     case SCHED_POLICY_FIFO:   return "FF";
     case SCHED_POLICY_NORMAL: return "TS";
     case SCHED_POLICY_IDLE:   return "IDL";
+#ifdef CONFIG_NOS_AI_CORE
+    case SCHED_POLICY_INFER:  return "INF";
+#endif
     default:                  return "?";
     }
 }
@@ -951,7 +958,9 @@ const char *task_policy_short_str(uint8_t policy)
 static void task_free(struct task_struct *task)
 {
 #ifdef CONFIG_NOS_AI_CORE
+    extern void sched_infer_gang_leave(struct task_struct *task);
     extern void nos_cell_detach_task(struct task_struct *task);
+    sched_infer_gang_leave(task);
     nos_cell_detach_task(task);
 #endif
     vfs_task_files_cleanup(task);

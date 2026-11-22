@@ -184,3 +184,202 @@ arm64_el0_cell_tamper_code_start:
     brk     #4
     b       arm64_el0_cell_tamper_code_start
 arm64_el0_cell_tamper_code_end:
+
+    .align 2
+    .global arm64_el0_neon_worker_start
+    .global arm64_el0_neon_worker_end
+arm64_el0_neon_worker_start:
+    /* x0 = 32-bit 向量种子模式（与竞态并发任务区分校验惰性 NEON 上下文完整性） */
+    mov     w19, w0
+    dup     v0.4s, w19
+    add     w1, w19, #1
+    dup     v1.4s, w1
+    add     w2, w19, #2
+    dup     v2.4s, w2
+    add     w3, w19, #3
+    dup     v3.4s, w3
+
+    mov     w20, #8
+2:
+    mov     x8, #SYS_NOS_YIELD
+    svc     #0
+
+    umov    w4, v0.s[0]
+    cmp     w4, w19
+    b.ne    1f
+    umov    w4, v0.s[3]
+    cmp     w4, w19
+    b.ne    1f
+
+    add     w1, w19, #1
+    umov    w4, v1.s[1]
+    cmp     w4, w1
+    b.ne    1f
+
+    add     w2, w19, #2
+    umov    w4, v2.s[2]
+    cmp     w4, w2
+    b.ne    1f
+
+    add     w3, w19, #3
+    umov    w4, v3.s[3]
+    cmp     w4, w3
+    b.ne    1f
+
+    subs    w20, w20, #1
+    b.ne    2b
+
+    mov     x0, #0
+    mov     x8, #SYS_NOS_EXIT
+    svc     #0
+1:
+    brk     #5
+    b       1b
+arm64_el0_neon_worker_end:
+
+    .align 2
+    .global arm64_el0_stage3_code_start
+    .global arm64_el0_stage3_code_end
+arm64_el0_stage3_code_start:
+    /*
+     * x0 = RingIPC 共享环页 EL0 虚址 (0x440000)
+     * x0 + 0x10000 (0x450000) 为 Snapshot 保护的可写 ANON 工作区 VMO：
+     *   [+0]: "BASE_STATE_V1", [+256]: ring_cap, [+264]: msg_len, [+272]: 成功日志字符串
+     */
+    mov     x19, x0
+    add     x20, x19, #0x10, lsl #12
+
+    /* 1. 直接向 Snapshot 降权只读的工作区页写入，验证硬件 EL0 Data Abort 触发透明 CoW 页断裂恢复可写 */
+    movz    x1, #0x4944
+    movk    x1, #0x5452, lsl #16
+    movk    x1, #0x0059, lsl #32
+    str     x1, [x20, #0]
+    ldr     x2, [x20, #0]
+    cmp     x1, x2
+    b.ne    1f
+
+    /* 2. 读取 RingIPC 头布局并写入 2 条 SQE（#0 白名单+截止期继承，#1 未授权 Schema 拦截） */
+    ldr     x21, [x20, #256]            /* ring_cap */
+    ldr     w22, [x19, #28]             /* sq_offset */
+    add     x23, x19, x22               /* SQ[0] */
+    ldr     w24, [x19, #76]             /* cq_offset */
+    add     x25, x19, x24               /* CQ[0] */
+    add     x9, x23, #64                /* SQ[1] */
+
+    /* 清零 SQ[0] 与 SQ[1] */
+    mov     w3, #0
+3:
+    str     xzr, [x23, x3]
+    str     xzr, [x9, x3]
+    add     w3, w3, #8
+    cmp     w3, #64
+    b.lo    3b
+
+    /* SQ[0]: opcode=1(TOOL_CALL), flags=8(DEADLINE), req_id=0x100, schema=0x544F4F4C0001, dl=2ms */
+    mov     w1, #1
+    strh    w1, [x23, #0]
+    mov     w1, #8
+    strh    w1, [x23, #2]
+    mov     x1, #0x100
+    str     x1, [x23, #8]
+    movz    x1, #0x0001
+    movk    x1, #0x4F4C, lsl #16
+    movk    x1, #0x544F, lsl #32
+    str     x1, [x23, #16]
+    movz    x1, #0x8480
+    movk    x1, #0x001E, lsl #16        /* 2,000,000 ns (2ms) */
+    str     x1, [x23, #40]
+
+    /* SQ[1]: opcode=1(TOOL_CALL), req_id=0x101, schema=0xBAD000000001（未授权） */
+    mov     w1, #1
+    strh    w1, [x9, #0]
+    mov     x1, #0x101
+    str     x1, [x9, #8]
+    movz    x1, #1
+    movk    x1, #0xBAD0, lsl #32
+    str     x1, [x9, #16]
+
+    /* stlr 释放屏障发布 sq_tail = 2 */
+    ldr     w26, [x19, #20]
+    add     w26, w26, #2
+    add     x27, x19, #20
+    stlr    w26, [x27]
+
+    /* 调用 SYS_NOS_RING_ENTER(ring_cap, to_submit=2, min_complete=2, SUBMIT|WAIT_CQ, INFINITE=0) */
+    mov     x0, x21
+    mov     x1, #2
+    mov     x2, #2
+    mov     x3, #3
+    mov     w4, #0                      /* NOS_IPC_TIMEOUT_INFINITE = 0U */
+    mov     x8, #SYS_NOS_RING_ENTER
+    svc     #0
+    cmp     x0, #2
+    b.ne    1f
+
+    /* ldar 获取屏障等待 CQ 中至少有 2 条记录，随后按 req_id 乱序匹配 CQE[0..1] */
+    add     x27, x19, #68
+    ldar    w1, [x27]
+    cmp     w1, #2
+    b.lo    1f
+
+    mov     w4, #0
+    mov     x5, x25
+    mov     w6, #2
+4:
+    ldr     x7, [x5, #0]
+    cmp     x7, #0x100
+    b.ne    5f
+    ldr     w1, [x5, #8]
+    cbnz    w1, 1f
+    ldr     w1, [x5, #16]
+    movz    w2, #0x5A5A
+    cmp     w1, w2
+    b.ne    1f
+    orr     w4, w4, #1
+    b       6f
+5:
+    cmp     x7, #0x101
+    b.ne    1f
+    ldr     w1, [x5, #8]
+    cmn     w1, #13
+    b.ne    1f
+    orr     w4, w4, #2
+6:
+    add     x5, x5, #32
+    subs    w6, w6, #1
+    b.ne    4b
+
+    cmp     w4, #3
+    b.ne    1f
+
+    /* 3. 调用 SYS_NOS_SCHED_INFER(NOS_SCHED_OP_QUERY_TOPO) 校验硬件算力拓扑 */
+    sub     sp, sp, #32
+    mov     x0, #4                      /* NOS_SCHED_OP_QUERY_TOPO */
+    mov     x1, #0
+    mov     x2, sp
+    mov     x8, #SYS_NOS_SCHED_INFER
+    svc     #0
+    cbnz    x0, 1f
+    ldr     w1, [sp, #0]                /* nr_cpus >= 1 */
+    cmp     w1, #1
+    b.lo    1f
+    ldr     w1, [sp, #4]                /* online_mask != 0 */
+    cbz     w1, 1f
+    add     sp, sp, #32
+
+    /* 4. 打印 Stage 3 端到端通过日志并退出 */
+    add     x0, x20, #272
+    ldr     x1, [x20, #264]
+    mov     x2, #0
+    mov     x8, #SYS_NOS_DEBUG_CONSOLE
+    svc     #0
+    cmp     x0, #0
+    b.le    1f
+
+    mov     x0, #0
+    mov     x8, #SYS_NOS_EXIT
+    svc     #0
+1:
+    brk     #6
+    b       1b
+arm64_el0_stage3_code_end:

@@ -47,6 +47,24 @@ enum task_status {
 
 struct mutex;
 
+#ifdef CONFIG_NOS_AI_CORE
+struct nos_infer_entity {
+    uint32_t role;                  /* enum nos_infer_role */
+    uint32_t gang_id;               /* 协同 Gang 组编号（0 = 未加入） */
+    uint64_t runtime_ns;            /* CBS 单周期最大运行配额 */
+    uint64_t deadline_ns;           /* 相对 SLO 截止期 */
+    uint64_t period_ns;             /* CBS 调度周期 */
+    uint64_t abs_deadline_ns;       /* 当前激活窗口绝对截止期 */
+    uint64_t remaining_runtime_ns;  /* 当前周期剩余可用运行时间 */
+    uint64_t saved_deadline_ns;     /* 截止期继承前的原相对截止期 */
+    uint64_t saved_abs_deadline_ns; /* 截止期继承前的原绝对截止期 */
+    uint8_t  saved_policy;          /* 截止期继承前的原调度策略 */
+    bool     deadline_inherited;    /* 当前是否处于截止期继承提升状态 */
+    bool     throttled;             /* CBS 带宽耗尽限流标志 */
+    uint64_t throttle_until_ns;     /* 本周期限流解禁单调时间戳 */
+};
+#endif
+
 struct sched_entity {
     struct list_head run_node;      /* Dedicated scheduler runqueue node */
     uint64_t         vruntime;      /* Virtual runtime in us (Fair class) */
@@ -59,6 +77,9 @@ struct sched_entity {
     uint32_t         nvcsw;         /* Voluntary context switches */
     uint32_t         nivcsw;        /* Involuntary (preempted) context switches */
     bool             on_rq;         /* Whether queued on a scheduler runqueue */
+#ifdef CONFIG_NOS_AI_CORE
+    struct nos_infer_entity infer;  /* AI 推理 EDF/CBS/Gang 调度实体 */
+#endif
 };
 
 struct task_struct {
@@ -131,6 +152,11 @@ struct task_struct {
 #ifdef CONFIG_NOS_AI_CORE
     /* 所属 Agent Cell 安全边界指针（NULL 表示宿主机/根特权上下文） */
     struct nos_cell *cell;
+#endif
+
+#ifdef CONFIG_ARCH_ARM64
+    /* ARM64 惰性 NEON/FP 上下文状态区（仅当该任务实际使用向量指令时按需保存） */
+    struct arm64_fp_state fp_state;
 #endif
 
     /* 通用等待底座记录与原子引用计数 */

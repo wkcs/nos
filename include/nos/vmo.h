@@ -54,6 +54,19 @@ int nos_vmo_map(struct nos_vmo *vmo,
                 uint32_t prot_flags,
                 struct nos_cell *charge_cell);
 
+int nos_vmo_remap_range(struct nos_vmo *vmo,
+                        struct nos_vm_space *space,
+                        uintptr_t vaddr,
+                        size_t offset,
+                        size_t len,
+                        uint32_t prot_flags);
+
+int nos_vmo_cow_break_page(struct nos_vmo *vmo,
+                           uint32_t page_idx,
+                           uintptr_t *out_paddr);
+
+int nos_vmo_restore_from_snapshot(struct nos_vmo *dst, struct nos_vmo *snap);
+
 int nos_vmo_unmap(struct nos_vm_space *space,
                   uintptr_t vaddr,
                   size_t len,

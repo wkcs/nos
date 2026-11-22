@@ -20,6 +20,8 @@
 #ifdef CONFIG_NOS_AI_CORE
 #include <nos/vmo.h>
 #include <nos/cell.h>
+#include <nos/ring.h>
+#include <nos/sched_infer.h>
 #include <uapi/nos/ai.h>
 #endif
 
@@ -582,6 +584,83 @@ static long sys_nos_cell_control(uintptr_t op,
         (void)nos_object_put(&target->header);
         return (long)rc;
 
+    case NOS_CELL_OP_SNAPSHOT: {
+        struct nos_cell_snapshot *snap;
+        nos_handle_t out_h = NOS_HANDLE_INVALID;
+
+        if ((nos_handle_t)cell_cap == NOS_HANDLE_INVALID) {
+            if (current->cell == NULL || !nos_object_get(&current->cell->header)) {
+                return -EBADF;
+            }
+            target = current->cell;
+        } else {
+            rc = nos_cap_lookup(cap_tbl,
+                                (nos_handle_t)cell_cap,
+                                NOS_CAP_CELL,
+                                NOS_CAP_RIGHT_MANAGE,
+                                (void **)&target,
+                                NULL);
+            if (rc < 0) {
+                return (long)rc;
+            }
+        }
+
+        snap = nos_cell_snapshot(target);
+        (void)nos_object_put(&target->header);
+        if (snap == NULL) {
+            return -ENOMEM;
+        }
+
+        rc = nos_cap_alloc(cap_tbl,
+                           NOS_CAP_SNAPSHOT,
+                           snap,
+                           NOS_CAP_RIGHT_ALL,
+                           0U,
+                           &out_h);
+        if (rc < 0) {
+            (void)nos_cell_snapshot_destroy(snap);
+            return (long)rc;
+        }
+        if (out_ptr != 0U) {
+            *(nos_handle_t *)out_ptr = out_h;
+        }
+        return (long)out_h;
+    }
+
+    case NOS_CELL_OP_ROLLBACK: {
+        struct nos_cell_snapshot *snap = NULL;
+
+        if ((nos_handle_t)cell_cap == NOS_HANDLE_INVALID) {
+            if (current->cell == NULL || !nos_object_get(&current->cell->header)) {
+                return -EBADF;
+            }
+            target = current->cell;
+        } else {
+            rc = nos_cap_lookup(cap_tbl,
+                                (nos_handle_t)cell_cap,
+                                NOS_CAP_CELL,
+                                NOS_CAP_RIGHT_MANAGE,
+                                (void **)&target,
+                                NULL);
+            if (rc < 0) {
+                return (long)rc;
+            }
+        }
+
+        rc = nos_cap_lookup(cap_tbl,
+                            (nos_handle_t)arg0,
+                            NOS_CAP_SNAPSHOT,
+                            NOS_CAP_RIGHT_READ,
+                            (void **)&snap,
+                            NULL);
+        if (rc == 0) {
+            rc = nos_cell_rollback(target, snap);
+            (void)nos_object_put(&snap->header);
+        }
+        (void)nos_object_put(&target->header);
+        return (long)rc;
+    }
+
     default:
         return -EINVAL;
     }
@@ -829,6 +908,180 @@ static long sys_nos_vmo_control(uintptr_t op,
         return -EINVAL;
     }
 }
+
+static long sys_nos_ring_create(uintptr_t args_ptr,
+                                uintptr_t out_ptr,
+                                uintptr_t a2,
+                                uintptr_t a3,
+                                uintptr_t a4,
+                                uintptr_t a5)
+{
+    struct nos_ring_create_args kargs;
+    uint64_t schemas[NOS_RING_MAX_SCHEMAS];
+    struct nos_ring *ring;
+    nos_handle_t out_h = NOS_HANDLE_INVALID;
+    int rc;
+
+    (void)a2;
+    (void)a3;
+    (void)a4;
+    (void)a5;
+
+    if (current == NULL || args_ptr == 0U) {
+        return -EINVAL;
+    }
+
+    kargs = *(const struct nos_ring_create_args *)args_ptr;
+    if (kargs.schema_count > NOS_RING_MAX_SCHEMAS) {
+        return -EINVAL;
+    }
+    if (kargs.schema_count > 0U) {
+        const uint64_t *user_schemas;
+        uint32_t i;
+        if (kargs.schema_list_ptr == 0ULL) {
+            return -EINVAL;
+        }
+        user_schemas = (const uint64_t *)(uintptr_t)kargs.schema_list_ptr;
+        for (i = 0U; i < kargs.schema_count; i++) {
+            schemas[i] = user_schemas[i];
+        }
+    }
+
+    ring = nos_ring_create(&kargs,
+                           (kargs.schema_count > 0U) ? schemas : NULL,
+                           nos_task_active_vm_space(current),
+                           current->cell);
+    if (ring == NULL) {
+        return -ENOMEM;
+    }
+
+    rc = nos_cap_alloc(nos_task_active_cap_table(current),
+                       NOS_CAP_RING,
+                       ring,
+                       NOS_CAP_RIGHT_ALL,
+                       0U,
+                       &out_h);
+    if (rc < 0) {
+        (void)nos_ring_destroy(ring);
+        return (long)rc;
+    }
+
+    if (out_ptr != 0U) {
+        *(nos_handle_t *)out_ptr = out_h;
+    }
+    return (long)out_h;
+}
+
+static long sys_nos_ring_enter(uintptr_t ring_cap,
+                               uintptr_t to_submit,
+                               uintptr_t min_complete,
+                               uintptr_t flags,
+                               uintptr_t timeout_ticks,
+                               uintptr_t a5)
+{
+    struct nos_ring *ring = NULL;
+    int rc;
+
+    (void)a5;
+    if (current == NULL) {
+        return -EINVAL;
+    }
+
+    rc = nos_cap_lookup(nos_task_active_cap_table(current),
+                        (nos_handle_t)ring_cap,
+                        NOS_CAP_RING,
+                        NOS_CAP_RIGHT_SEND,
+                        (void **)&ring,
+                        NULL);
+    if (rc < 0) {
+        return (long)rc;
+    }
+
+    rc = nos_ring_enter(ring,
+                        current,
+                        (uint32_t)to_submit,
+                        (uint32_t)min_complete,
+                        (uint32_t)flags,
+                        (uint32_t)timeout_ticks);
+    (void)nos_object_put(&ring->header);
+    return (long)rc;
+}
+
+static long sys_nos_sched_infer(uintptr_t op,
+                                uintptr_t target_cap,
+                                uintptr_t arg,
+                                uintptr_t a3,
+                                uintptr_t a4,
+                                uintptr_t a5)
+{
+    struct task_struct *target = NULL;
+    int rc;
+
+    (void)a3;
+    (void)a4;
+    (void)a5;
+    if (current == NULL) {
+        return -EINVAL;
+    }
+
+    if (op == NOS_SCHED_OP_QUERY_TOPO) {
+        struct nos_cpu_topo_info topo;
+        if (arg == 0U) {
+            return -EINVAL;
+        }
+        rc = sched_infer_query_topo(&topo);
+        if (rc == 0) {
+            *(struct nos_cpu_topo_info *)arg = topo;
+        }
+        return (long)rc;
+    }
+
+    if ((nos_handle_t)target_cap == NOS_HANDLE_INVALID) {
+        if (!task_get(current)) {
+            return -EINVAL;
+        }
+        target = current;
+    } else {
+        rc = nos_cap_lookup(nos_task_active_cap_table(current),
+                            (nos_handle_t)target_cap,
+                            NOS_CAP_TASK,
+                            NOS_CAP_RIGHT_MANAGE,
+                            (void **)&target,
+                            NULL);
+        if (rc < 0) {
+            return (long)rc;
+        }
+        if (!task_get(target)) {
+            return -ESTALE;
+        }
+    }
+
+    switch (op) {
+    case NOS_SCHED_OP_SET_INFER: {
+        struct nos_infer_sched_param kparam;
+        if (arg == 0U) {
+            rc = -EINVAL;
+            break;
+        }
+        kparam = *(const struct nos_infer_sched_param *)arg;
+        rc = sched_infer_set_param(target, &kparam);
+        break;
+    }
+    case NOS_SCHED_OP_GANG_JOIN:
+        rc = sched_infer_gang_join(target, (uint32_t)arg);
+        break;
+    case NOS_SCHED_OP_GANG_LEAVE:
+        sched_infer_gang_leave(target);
+        rc = 0;
+        break;
+    default:
+        rc = -EINVAL;
+        break;
+    }
+
+    (void)task_put(target);
+    return (long)rc;
+}
 #else
 static long sys_nos_cell_control(uintptr_t a0, uintptr_t a1, uintptr_t a2,
                                  uintptr_t a3, uintptr_t a4, uintptr_t a5)
@@ -845,6 +1098,27 @@ static long sys_nos_vmo_create(uintptr_t a0, uintptr_t a1, uintptr_t a2,
 }
 
 static long sys_nos_vmo_control(uintptr_t a0, uintptr_t a1, uintptr_t a2,
+                                uintptr_t a3, uintptr_t a4, uintptr_t a5)
+{
+    (void)a0; (void)a1; (void)a2; (void)a3; (void)a4; (void)a5;
+    return -ENOSYS;
+}
+
+static long sys_nos_ring_create(uintptr_t a0, uintptr_t a1, uintptr_t a2,
+                                uintptr_t a3, uintptr_t a4, uintptr_t a5)
+{
+    (void)a0; (void)a1; (void)a2; (void)a3; (void)a4; (void)a5;
+    return -ENOSYS;
+}
+
+static long sys_nos_ring_enter(uintptr_t a0, uintptr_t a1, uintptr_t a2,
+                               uintptr_t a3, uintptr_t a4, uintptr_t a5)
+{
+    (void)a0; (void)a1; (void)a2; (void)a3; (void)a4; (void)a5;
+    return -ENOSYS;
+}
+
+static long sys_nos_sched_infer(uintptr_t a0, uintptr_t a1, uintptr_t a2,
                                 uintptr_t a3, uintptr_t a4, uintptr_t a5)
 {
     (void)a0; (void)a1; (void)a2; (void)a3; (void)a4; (void)a5;
@@ -900,6 +1174,9 @@ static const nos_syscall_fn_t g_syscall_table[SYS_NOS_MAX] = {
     [SYS_NOS_CELL_CONTROL]    = sys_nos_cell_control,
     [SYS_NOS_VMO_CREATE]      = sys_nos_vmo_create,
     [SYS_NOS_VMO_CONTROL]     = sys_nos_vmo_control,
+    [SYS_NOS_RING_CREATE]     = sys_nos_ring_create,
+    [SYS_NOS_RING_ENTER]      = sys_nos_ring_enter,
+    [SYS_NOS_SCHED_INFER]     = sys_nos_sched_infer,
     [SYS_NOS_CAP_REVOKE_TREE] = sys_nos_cap_revoke_tree,
 };
 

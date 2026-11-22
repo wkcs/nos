@@ -22,6 +22,7 @@ def main():
              str(TEST_DIR / "test_agent_cell.c"),
              str(ROOT / "kernel" / "ipc" / "object.c"),
              str(ROOT / "kernel" / "cap" / "cap_table.c"),
+             str(ROOT / "kernel" / "mm" / "vmo.c"),
              str(ROOT / "kernel" / "ai" / "cell.c"),
              "-o", str(exe)], check=True,
         )

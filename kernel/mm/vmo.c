@@ -400,6 +400,136 @@ int nos_vmo_read(struct nos_vmo *vmo, size_t offset, void *buf, size_t len)
     return 0;
 }
 
+int nos_vmo_cow_break_page(struct nos_vmo *vmo, uint32_t page_idx, uintptr_t *out_paddr)
+{
+    struct nos_vmo_page *pin_old;
+    struct nos_vmo_page *new_vp;
+    struct nos_vmo_page *replaced_vp = NULL;
+    uintptr_t res_pa;
+
+    if (vmo == NULL || page_idx >= vmo->page_count) {
+        return -EINVAL;
+    }
+
+    spin_lock_irq(&vmo->lock);
+    if (vmo->sealed) {
+        spin_unlock_irq(&vmo->lock);
+        return -EACCES;
+    }
+    pin_old = vmo->pages[page_idx];
+    if (pin_old != NULL && nos_refcount_read(&pin_old->refcount) == 1U) {
+        res_pa = pin_old->paddr;
+        spin_unlock_irq(&vmo->lock);
+        if (out_paddr != NULL) {
+            *out_paddr = res_pa;
+        }
+        return 0;
+    }
+    if (pin_old != NULL) {
+        vmo_page_get(pin_old);
+    }
+    spin_unlock_irq(&vmo->lock);
+
+    new_vp = vmo_page_alloc();
+    if (new_vp == NULL) {
+        vmo_page_put(pin_old);
+        return -ENOMEM;
+    }
+    if (pin_old != NULL) {
+        memcpy((void *)new_vp->kvaddr, (const void *)pin_old->kvaddr, PAGE_SIZE);
+        vmo_page_put(pin_old);
+    }
+
+    spin_lock_irq(&vmo->lock);
+    if (vmo->sealed) {
+        spin_unlock_irq(&vmo->lock);
+        vmo_page_put(new_vp);
+        return -EACCES;
+    }
+    if (vmo->pages[page_idx] == NULL || nos_refcount_read(&vmo->pages[page_idx]->refcount) > 1U) {
+        replaced_vp = vmo->pages[page_idx];
+        vmo->pages[page_idx] = new_vp;
+        new_vp = NULL;
+    }
+    res_pa = vmo->pages[page_idx]->paddr;
+    smp_wmb();
+    spin_unlock_irq(&vmo->lock);
+
+    vmo_page_put(new_vp);
+    vmo_page_put(replaced_vp);
+
+    if (out_paddr != NULL) {
+        *out_paddr = res_pa;
+    }
+    return 0;
+}
+
+int nos_vmo_restore_from_snapshot(struct nos_vmo *dst, struct nos_vmo *snap)
+{
+    struct nos_vmo_page *stack_old[16];
+    struct nos_vmo_page **old_pages;
+    uint32_t page_count;
+    uint32_t i;
+
+    if (dst == NULL || snap == NULL || dst == snap || dst->page_count != snap->page_count) {
+        return -EINVAL;
+    }
+
+    page_count = dst->page_count;
+    if (page_count <= (uint32_t)(sizeof(stack_old) / sizeof(stack_old[0]))) {
+        old_pages = stack_old;
+        memset(old_pages, 0, sizeof(struct nos_vmo_page *) * page_count);
+    } else {
+        old_pages = kzalloc((uint32_t)(sizeof(struct nos_vmo_page *) * page_count), GFP_KERNEL);
+        if (old_pages == NULL) {
+            return -ENOMEM;
+        }
+    }
+
+    /* 固定地址顺序锁双 VMO，彻底避免 AB-BA 死锁 */
+    if ((uintptr_t)dst < (uintptr_t)snap) {
+        spin_lock_irq(&dst->lock);
+        spin_lock_irq(&snap->lock);
+    } else {
+        spin_lock_irq(&snap->lock);
+        spin_lock_irq(&dst->lock);
+    }
+
+    if (dst->sealed) {
+        spin_unlock_irq((uintptr_t)dst < (uintptr_t)snap ? &snap->lock : &dst->lock);
+        spin_unlock_irq((uintptr_t)dst < (uintptr_t)snap ? &dst->lock : &snap->lock);
+        if (old_pages != stack_old) {
+            kfree(old_pages);
+        }
+        return -EACCES;
+    }
+
+    for (i = 0U; i < page_count; i++) {
+        old_pages[i] = dst->pages[i];
+        if (snap->pages[i] != NULL) {
+            vmo_page_get(snap->pages[i]);
+        }
+        dst->pages[i] = snap->pages[i];
+    }
+    smp_wmb();
+
+    if ((uintptr_t)dst < (uintptr_t)snap) {
+        spin_unlock_irq(&snap->lock);
+        spin_unlock_irq(&dst->lock);
+    } else {
+        spin_unlock_irq(&dst->lock);
+        spin_unlock_irq(&snap->lock);
+    }
+
+    for (i = 0U; i < page_count; i++) {
+        vmo_page_put(old_pages[i]);
+    }
+    if (old_pages != stack_old) {
+        kfree(old_pages);
+    }
+    return 0;
+}
+
 int nos_vmo_write(struct nos_vmo *vmo, size_t offset, const void *buf, size_t len)
 {
     const uint8_t *src = (const uint8_t *)buf;
@@ -429,49 +559,17 @@ int nos_vmo_write(struct nos_vmo *vmo, size_t offset, const void *buf, size_t le
         }
         vp = vmo->pages[pidx];
         if (vp == NULL || nos_refcount_read(&vp->refcount) > 1U) {
-            struct nos_vmo_page *pin_old = vp;
-            struct nos_vmo_page *new_vp;
-            struct nos_vmo_page *replaced_vp = NULL;
-
-            if (pin_old != NULL) {
-                vmo_page_get(pin_old);
-            }
+            int rc;
             spin_unlock_irq(&vmo->lock);
-
-            /* 锁外分配新私有物理页执行 CoW 拷贝断裂 */
-            new_vp = vmo_page_alloc();
-            if (new_vp == NULL) {
-                vmo_page_put(pin_old);
-                return -ENOMEM;
+            rc = nos_vmo_cow_break_page(vmo, pidx, NULL);
+            if (rc != 0) {
+                return rc;
             }
-            if (pin_old != NULL) {
-                memcpy((void *)new_vp->kvaddr, (const void *)pin_old->kvaddr, PAGE_SIZE);
-                vmo_page_put(pin_old);
-            }
-
-            spin_lock_irq(&vmo->lock);
-            if (vmo->sealed) {
-                spin_unlock_irq(&vmo->lock);
-                vmo_page_put(new_vp);
-                return -EACCES;
-            }
-            if (vmo->pages[pidx] == NULL || nos_refcount_read(&vmo->pages[pidx]->refcount) > 1U) {
-                replaced_vp = vmo->pages[pidx];
-                vmo->pages[pidx] = new_vp;
-                new_vp = NULL;
-            }
-            vp = vmo->pages[pidx];
-            memcpy((uint8_t *)vp->kvaddr + page_off, src + done, chunk);
-            smp_wmb();
-            spin_unlock_irq(&vmo->lock);
-
-            vmo_page_put(new_vp);
-            vmo_page_put(replaced_vp);
-        } else {
-            memcpy((uint8_t *)vp->kvaddr + page_off, src + done, chunk);
-            smp_wmb();
-            spin_unlock_irq(&vmo->lock);
+            continue;
         }
+        memcpy((uint8_t *)vp->kvaddr + page_off, src + done, chunk);
+        smp_wmb();
+        spin_unlock_irq(&vmo->lock);
 
         done += chunk;
     }
@@ -479,14 +577,14 @@ int nos_vmo_write(struct nos_vmo *vmo, size_t offset, const void *buf, size_t le
     return 0;
 }
 
-int nos_vmo_map(struct nos_vmo *vmo,
-                struct nos_vm_space *space,
-                uintptr_t vaddr,
-                size_t offset,
-                size_t len,
-                uint32_t prot_flags,
-                struct nos_cell *charge_cell)
+static int vmo_map_pages_to_space(struct nos_vmo *vmo,
+                                  struct nos_vm_space *space,
+                                  uintptr_t vaddr,
+                                  size_t offset,
+                                  size_t len,
+                                  uint32_t prot_flags)
 {
+    uintptr_t stack_paddrs[16];
     uint32_t first_page;
     uint32_t num_pages;
     uintptr_t *paddrs;
@@ -513,39 +611,36 @@ int nos_vmo_map(struct nos_vmo *vmo,
     first_page = (uint32_t)(offset / PAGE_SIZE);
     num_pages = (uint32_t)(len / PAGE_SIZE);
 
-    /* 先在锁外分配临时物理页快照数组，不在自旋锁内映射页表或做分配 */
-    paddrs = kmalloc((uint32_t)(sizeof(uintptr_t) * num_pages), GFP_KERNEL);
-    if (paddrs == NULL) {
-        return -ENOMEM;
+    if (num_pages <= (uint32_t)(sizeof(stack_paddrs) / sizeof(stack_paddrs[0]))) {
+        paddrs = stack_paddrs;
+    } else {
+        paddrs = kmalloc((uint32_t)(sizeof(uintptr_t) * num_pages), GFP_KERNEL);
+        if (paddrs == NULL) {
+            return -ENOMEM;
+        }
     }
 
     spin_lock_irq(&vmo->lock);
     if (vmo->sealed && (prot_flags & HAL_VM_PROT_WRITE) != 0U) {
         spin_unlock_irq(&vmo->lock);
-        kfree(paddrs);
+        if (paddrs != stack_paddrs) {
+            kfree(paddrs);
+        }
         return -EACCES;
     }
     for (i = 0U; i < num_pages; i++) {
         struct nos_vmo_page *vp = vmo->pages[first_page + i];
         if (vp == NULL) {
             spin_unlock_irq(&vmo->lock);
-            kfree(paddrs);
+            if (paddrs != stack_paddrs) {
+                kfree(paddrs);
+            }
             return -ENOENT;
         }
         paddrs[i] = vp->paddr;
     }
     spin_unlock_irq(&vmo->lock);
 
-    /* 映射前先通过绑定的 Agent Cell 原子扣除 mem_bytes 硬配额 */
-    if (charge_cell != NULL) {
-        rc = nos_cell_charge_mem(charge_cell, (uint64_t)len);
-        if (rc != 0) {
-            kfree(paddrs);
-            return rc;
-        }
-    }
-
-    /* 合并物理连续页区间以批处理形式写入底层页表 */
     i = 0U;
     while (i < num_pages) {
         uintptr_t batch_va = vaddr + (uintptr_t)i * PAGE_SIZE;
@@ -562,10 +657,9 @@ int nos_vmo_map(struct nos_vmo *vmo,
             if (mapped_bytes > 0U) {
                 (void)hal_vm_unmap(space, vaddr, mapped_bytes);
             }
-            if (charge_cell != NULL) {
-                nos_cell_uncharge_mem(charge_cell, (uint64_t)len);
+            if (paddrs != stack_paddrs) {
+                kfree(paddrs);
             }
-            kfree(paddrs);
             return rc;
         }
 
@@ -573,7 +667,78 @@ int nos_vmo_map(struct nos_vmo *vmo,
         i += run;
     }
 
-    kfree(paddrs);
+    if (paddrs != stack_paddrs) {
+        kfree(paddrs);
+    }
+    return 0;
+}
+
+int nos_vmo_remap_range(struct nos_vmo *vmo,
+                        struct nos_vm_space *space,
+                        uintptr_t vaddr,
+                        size_t offset,
+                        size_t len,
+                        uint32_t prot_flags)
+{
+    return vmo_map_pages_to_space(vmo, space, vaddr, offset, len, prot_flags);
+}
+
+int nos_vmo_map(struct nos_vmo *vmo,
+                struct nos_vm_space *space,
+                uintptr_t vaddr,
+                size_t offset,
+                size_t len,
+                uint32_t prot_flags,
+                struct nos_cell *charge_cell)
+{
+    int rc;
+
+    if (vmo == NULL || space == NULL) {
+        return -EINVAL;
+    }
+    if (!vmo_addr_range_valid(vaddr, len) || (offset % PAGE_SIZE) != 0U) {
+        return -EINVAL;
+    }
+    if (!vmo_range_valid(vmo, offset, len)) {
+        return -EINVAL;
+    }
+    if ((prot_flags & (HAL_VM_PROT_WRITE | HAL_VM_PROT_EXEC)) ==
+        (HAL_VM_PROT_WRITE | HAL_VM_PROT_EXEC)) {
+        return -EPERM;
+    }
+
+    /* 快速校验只读封存与页面存在，先扣配额再建页表，最后挂载 Cell VMO 跟踪表 */
+    spin_lock_irq(&vmo->lock);
+    if (vmo->sealed && (prot_flags & HAL_VM_PROT_WRITE) != 0U) {
+        spin_unlock_irq(&vmo->lock);
+        return -EACCES;
+    }
+    spin_unlock_irq(&vmo->lock);
+
+    if (charge_cell != NULL) {
+        rc = nos_cell_charge_mem(charge_cell, (uint64_t)len);
+        if (rc != 0) {
+            return rc;
+        }
+    }
+
+    rc = vmo_map_pages_to_space(vmo, space, vaddr, offset, len, prot_flags);
+    if (rc != 0) {
+        if (charge_cell != NULL) {
+            nos_cell_uncharge_mem(charge_cell, (uint64_t)len);
+        }
+        return rc;
+    }
+
+    if (charge_cell != NULL && space == nos_cell_vm_space(charge_cell)) {
+        rc = nos_cell_track_vmo_map(charge_cell, vmo, vaddr, offset, len, prot_flags);
+        if (rc != 0) {
+            (void)hal_vm_unmap(space, vaddr, len);
+            nos_cell_uncharge_mem(charge_cell, (uint64_t)len);
+            return rc;
+        }
+    }
+
     return 0;
 }
 
@@ -590,6 +755,9 @@ int nos_vmo_unmap(struct nos_vm_space *space,
 
     rc = hal_vm_unmap(space, vaddr, len);
     if (rc == 0 && charge_cell != NULL) {
+        if (space == nos_cell_vm_space(charge_cell)) {
+            nos_cell_untrack_vmo_map(charge_cell, vaddr, len);
+        }
         nos_cell_uncharge_mem(charge_cell, (uint64_t)len);
     }
     return rc;

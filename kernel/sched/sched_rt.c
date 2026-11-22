@@ -158,6 +158,7 @@ static void rt_check_preempt_curr(struct sched_rq *rq, struct task_struct *p, in
     if (rq->curr == NULL ||
         rq->curr == rq->idle ||
         rq->curr->policy == SCHED_POLICY_NORMAL ||
+        rq->curr->policy == SCHED_POLICY_INFER ||
         rq->curr->policy == SCHED_POLICY_IDLE ||
         p->current_priority < rq->curr->current_priority) {
         rq->need_resched = true;
@@ -218,7 +219,9 @@ static void rt_task_tick(struct sched_rq *rq, struct task_struct *curr)
 
 const struct sched_class rt_sched_class = {
     .name               = "rt",
-#ifdef CONFIG_SCHED_FAIR
+#ifdef CONFIG_NOS_AI_CORE
+    .next               = &infer_sched_class,
+#elif defined(CONFIG_SCHED_FAIR)
     .next               = &fair_sched_class,
 #else
     .next               = &idle_sched_class,

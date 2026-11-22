@@ -11,6 +11,7 @@
 #define pr_fmt(fmt) "[CELL]:%s[%d]:"fmt, __func__, __LINE__
 
 #include <nos/cell.h>
+#include <nos/vmo.h>
 #include <nos/notification.h>
 #include <nos/hal_arch.h>
 #include <uapi/nos/errno.h>
@@ -193,6 +194,14 @@ static void cell_release(struct nos_object *obj)
     notif = cell->budget_notif;
     cell->parent = NULL;
     cell->budget_notif = NULL;
+
+    for (uint32_t i = 0U; i < NOS_CELL_MAX_TRACKED_VMOS; i++) {
+        if (cell->vmo_bindings[i].active && cell->vmo_bindings[i].vmo != NULL) {
+            (void)nos_object_put(&cell->vmo_bindings[i].vmo->header);
+            cell->vmo_bindings[i].active = false;
+            cell->vmo_bindings[i].vmo = NULL;
+        }
+    }
 
     if (cell->telemetry_kvaddr != 0U) {
         cell_free_telemetry_page(cell->telemetry_kvaddr);
@@ -718,4 +727,336 @@ void nos_cell_detach_task(struct task_struct *task)
     if (old_cell != NULL) {
         (void)nos_object_put(&old_cell->header);
     }
+}
+
+static bool cell_vmo_should_snapshot(const struct nos_cell_vmo_binding *b)
+{
+    if (!b->active || b->vmo == NULL) {
+        return false;
+    }
+    if ((b->prot_flags & HAL_VM_PROT_WRITE) == 0U) {
+        return false;
+    }
+    if ((b->vmo->flags & NOS_VMO_FLAG_IO_COHERENT) != 0U) {
+        return false;
+    }
+    return (b->vmo->kind == NOS_VMO_ANON || b->vmo->kind == NOS_VMO_KVCACHE);
+}
+
+int nos_cell_track_vmo_map(struct nos_cell *cell,
+                           struct nos_vmo *vmo,
+                           uintptr_t vaddr,
+                           size_t offset,
+                           size_t len,
+                           uint32_t prot_flags)
+{
+    uint32_t i;
+    int empty_slot = -1;
+
+    if (cell == NULL || vmo == NULL || len == 0U) {
+        return -EINVAL;
+    }
+    if (!nos_object_get(&vmo->header)) {
+        return -ESTALE;
+    }
+
+    spin_lock_irq(&cell->lock);
+    for (i = 0U; i < NOS_CELL_MAX_TRACKED_VMOS; i++) {
+        if (cell->vmo_bindings[i].active) {
+            if (cell->vmo_bindings[i].vaddr == vaddr && cell->vmo_bindings[i].len == len) {
+                struct nos_vmo *old_vmo = cell->vmo_bindings[i].vmo;
+                cell->vmo_bindings[i].vmo = vmo;
+                cell->vmo_bindings[i].offset = offset;
+                cell->vmo_bindings[i].prot_flags = prot_flags;
+                spin_unlock_irq(&cell->lock);
+                if (old_vmo != NULL) {
+                    (void)nos_object_put(&old_vmo->header);
+                }
+                return 0;
+            }
+        } else if (empty_slot < 0) {
+            empty_slot = (int)i;
+        }
+    }
+
+    if (empty_slot < 0) {
+        spin_unlock_irq(&cell->lock);
+        (void)nos_object_put(&vmo->header);
+        return -ENOSPC;
+    }
+
+    cell->vmo_bindings[empty_slot].active = true;
+    cell->vmo_bindings[empty_slot].vmo = vmo;
+    cell->vmo_bindings[empty_slot].vaddr = vaddr;
+    cell->vmo_bindings[empty_slot].offset = offset;
+    cell->vmo_bindings[empty_slot].len = len;
+    cell->vmo_bindings[empty_slot].prot_flags = prot_flags;
+    spin_unlock_irq(&cell->lock);
+    return 0;
+}
+
+void nos_cell_untrack_vmo_map(struct nos_cell *cell, uintptr_t vaddr, size_t len)
+{
+    struct nos_vmo *released[NOS_CELL_MAX_TRACKED_VMOS];
+    uint32_t rel_cnt = 0U;
+    uint32_t i;
+
+    if (cell == NULL || len == 0U) {
+        return;
+    }
+
+    spin_lock_irq(&cell->lock);
+    for (i = 0U; i < NOS_CELL_MAX_TRACKED_VMOS; i++) {
+        struct nos_cell_vmo_binding *b = &cell->vmo_bindings[i];
+        if (b->active && b->vaddr >= vaddr && (b->vaddr + b->len) <= (vaddr + len)) {
+            released[rel_cnt++] = b->vmo;
+            b->active = false;
+            b->vmo = NULL;
+        }
+    }
+    spin_unlock_irq(&cell->lock);
+
+    for (i = 0U; i < rel_cnt; i++) {
+        if (released[i] != NULL) {
+            (void)nos_object_put(&released[i]->header);
+        }
+    }
+}
+
+static void cell_snapshot_release(struct nos_object *obj)
+{
+    struct nos_cell_snapshot *snap = (struct nos_cell_snapshot *)obj;
+    uint32_t i;
+
+    if (snap == NULL) {
+        return;
+    }
+
+    for (i = 0U; i < snap->item_count; i++) {
+        if (snap->items[i].frozen_vmo != NULL) {
+            (void)nos_object_close(&snap->items[i].frozen_vmo->header);
+            (void)nos_object_retire(&snap->items[i].frozen_vmo->header);
+            snap->items[i].frozen_vmo = NULL;
+        }
+        if (snap->items[i].live_vmo != NULL) {
+            (void)nos_object_put(&snap->items[i].live_vmo->header);
+            snap->items[i].live_vmo = NULL;
+        }
+    }
+
+    if (snap->owner_cell != NULL) {
+        (void)nos_object_put(&snap->owner_cell->header);
+        snap->owner_cell = NULL;
+    }
+
+    kfree(snap);
+}
+
+struct nos_cell_snapshot *nos_cell_snapshot(struct nos_cell *cell)
+{
+    struct nos_cell_snapshot *snap;
+    struct nos_cell_vmo_binding local[NOS_CELL_MAX_TRACKED_VMOS];
+    uint32_t count = 0U;
+    uint32_t i;
+
+    if (cell == NULL || !nos_object_get(&cell->header)) {
+        return NULL;
+    }
+
+    snap = kzalloc(sizeof(*snap), GFP_KERNEL);
+    if (snap == NULL) {
+        (void)nos_object_put(&cell->header);
+        return NULL;
+    }
+
+    memset(local, 0, sizeof(local));
+    spin_lock_irq(&cell->lock);
+    if (cell_is_stopped_state(cell->state)) {
+        spin_unlock_irq(&cell->lock);
+        kfree(snap);
+        (void)nos_object_put(&cell->header);
+        return NULL;
+    }
+
+    snap->saved_state = cell->state;
+    snap->saved_cpu_ns_used = cell->cpu_ns_used;
+    snap->saved_mem_bytes_used = cell->mem_bytes_used;
+    snap->saved_tool_calls_used = cell->tool_calls_used;
+    snap->saved_accel_ops_used = cell->accel_ops_used;
+
+    for (i = 0U; i < NOS_CELL_MAX_TRACKED_VMOS; i++) {
+        if (cell_vmo_should_snapshot(&cell->vmo_bindings[i]) &&
+            nos_object_get(&cell->vmo_bindings[i].vmo->header)) {
+            local[count++] = cell->vmo_bindings[i];
+        }
+    }
+    spin_unlock_irq(&cell->lock);
+
+    (void)nos_object_init(&snap->header, false);
+    nos_object_set_release(&snap->header, cell_snapshot_release);
+    snap->owner_cell = cell;
+
+    for (i = 0U; i < count; i++) {
+        struct nos_vmo *frozen = nos_vmo_clone_cow(local[i].vmo);
+        int rc;
+
+        if (frozen == NULL || nos_vmo_seal(frozen) != 0) {
+            if (frozen != NULL) {
+                (void)nos_object_close(&frozen->header);
+                (void)nos_object_retire(&frozen->header);
+            }
+            goto err_cleanup;
+        }
+
+        /* 将现网可写 PTE 降权为只读，下一次分支写入将触发硬件 CoW 页断裂 */
+        rc = nos_vmo_remap_range(local[i].vmo,
+                                 &cell->vm_space,
+                                 local[i].vaddr,
+                                 local[i].offset,
+                                 local[i].len,
+                                 local[i].prot_flags & ~HAL_VM_PROT_WRITE);
+        if (rc != 0) {
+            (void)nos_object_close(&frozen->header);
+            (void)nos_object_retire(&frozen->header);
+            goto err_cleanup;
+        }
+
+        snap->items[snap->item_count].live_vmo = local[i].vmo;
+        snap->items[snap->item_count].frozen_vmo = frozen;
+        snap->items[snap->item_count].vaddr = local[i].vaddr;
+        snap->items[snap->item_count].offset = local[i].offset;
+        snap->items[snap->item_count].len = local[i].len;
+        snap->items[snap->item_count].prot_flags = local[i].prot_flags;
+        snap->item_count++;
+        local[i].vmo = NULL;
+    }
+
+    nos_cell_record_audit(cell,
+                          NOS_AUDIT_CELL_SNAPSHOT,
+                          (uint64_t)(uintptr_t)snap,
+                          0U,
+                          0,
+                          (uint64_t)snap->item_count,
+                          snap->saved_mem_bytes_used);
+    return snap;
+
+err_cleanup:
+    for (; i < count; i++) {
+        if (local[i].vmo != NULL) {
+            (void)nos_object_put(&local[i].vmo->header);
+        }
+    }
+    (void)nos_object_close(&snap->header);
+    (void)nos_object_retire(&snap->header);
+    return NULL;
+}
+
+int nos_cell_handle_cow_fault(struct nos_cell *cell, uintptr_t fault_va)
+{
+    struct nos_vmo *vmo = NULL;
+    uintptr_t page_va = 0U;
+    uint32_t page_idx = 0U;
+    uint32_t orig_prot = 0U;
+    uintptr_t new_pa = 0U;
+    uint32_t i;
+    int rc;
+
+    if (cell == NULL) {
+        return -EINVAL;
+    }
+
+    spin_lock_irq(&cell->lock);
+    for (i = 0U; i < NOS_CELL_MAX_TRACKED_VMOS; i++) {
+        struct nos_cell_vmo_binding *b = &cell->vmo_bindings[i];
+
+        if (!cell_vmo_should_snapshot(b)) {
+            continue;
+        }
+        if (fault_va >= b->vaddr && fault_va < (b->vaddr + b->len)) {
+            if (nos_object_get(&b->vmo->header)) {
+                vmo = b->vmo;
+                page_va = fault_va & ~(uintptr_t)(PAGE_SIZE - 1U);
+                page_idx = (uint32_t)((b->offset + (page_va - b->vaddr)) / PAGE_SIZE);
+                orig_prot = b->prot_flags;
+            }
+            break;
+        }
+    }
+    spin_unlock_irq(&cell->lock);
+
+    if (vmo == NULL) {
+        return -EACCES;
+    }
+
+    rc = nos_vmo_cow_break_page(vmo, page_idx, &new_pa);
+    if (rc == 0) {
+        rc = hal_vm_map(&cell->vm_space, page_va, new_pa, PAGE_SIZE, orig_prot);
+    }
+
+    (void)nos_object_put(&vmo->header);
+    return rc;
+}
+
+int nos_cell_rollback(struct nos_cell *cell, struct nos_cell_snapshot *snap)
+{
+    uint32_t i;
+
+    if (cell == NULL || snap == NULL || snap->owner_cell != cell) {
+        return -EINVAL;
+    }
+
+    for (i = 0U; i < snap->item_count; i++) {
+        struct nos_cell_snapshot_item *it = &snap->items[i];
+        int rc;
+
+        rc = nos_vmo_restore_from_snapshot(it->live_vmo, it->frozen_vmo);
+        if (rc != 0) {
+            return rc;
+        }
+
+        /* 恢复时继续以只读降权武装 CoW，确保同一快照可支持多次投机重试回滚而不污染 frozen 页 */
+        rc = nos_vmo_remap_range(it->live_vmo,
+                                 &cell->vm_space,
+                                 it->vaddr,
+                                 it->offset,
+                                 it->len,
+                                 it->prot_flags & ~HAL_VM_PROT_WRITE);
+        if (rc != 0) {
+            return rc;
+        }
+    }
+
+    spin_lock_irq(&cell->lock);
+    if (cell->state == NOS_CELL_STATE_DESTROYED) {
+        spin_unlock_irq(&cell->lock);
+        return -ESTALE;
+    }
+    cell->state = snap->saved_state;
+    cell->cpu_ns_used = snap->saved_cpu_ns_used;
+    cell->mem_bytes_used = snap->saved_mem_bytes_used;
+    cell->tool_calls_used = snap->saved_tool_calls_used;
+    cell->accel_ops_used = snap->saved_accel_ops_used;
+    cell_append_audit_locked(cell,
+                             NOS_AUDIT_CELL_ROLLBACK,
+                             (uint64_t)(uintptr_t)snap,
+                             0U,
+                             0,
+                             (uint64_t)snap->item_count,
+                             cell->mem_bytes_used);
+    spin_unlock_irq(&cell->lock);
+
+    return 0;
+}
+
+int nos_cell_snapshot_destroy(struct nos_cell_snapshot *snap)
+{
+    int rc;
+
+    if (snap == NULL) {
+        return -EINVAL;
+    }
+
+    (void)nos_object_close(&snap->header);
+    rc = nos_object_retire(&snap->header);
+    return (rc == -EINVAL) ? 0 : rc;
 }

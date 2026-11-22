@@ -116,6 +116,28 @@ void nos_cell_uncharge_mem(struct nos_cell *cell, uint64_t bytes)
     }
 }
 
+struct nos_vm_space *nos_cell_vm_space(struct nos_cell *cell)
+{
+    (void)cell;
+    return NULL;
+}
+
+int nos_cell_track_vmo_map(struct nos_cell *cell,
+                           struct nos_vmo *vmo,
+                           uintptr_t vaddr,
+                           size_t offset,
+                           size_t len,
+                           uint32_t prot_flags)
+{
+    (void)cell; (void)vmo; (void)vaddr; (void)offset; (void)len; (void)prot_flags;
+    return 0;
+}
+
+void nos_cell_untrack_vmo_map(struct nos_cell *cell, uintptr_t vaddr, size_t len)
+{
+    (void)cell; (void)vaddr; (void)len;
+}
+
 int nos_notify_signal_obj(struct nos_notification *notif, uint64_t bits)
 {
     (void)notif;
@@ -326,6 +348,29 @@ static void test_vmo_quota_and_rollback(void)
 
     /* 不可重计算 ANON VMO 拒绝驱逐 */
     assert(nos_vmo_evict_pages(vmo, 0U, 4096U) == -EPERM);
+
+    /* 验证 nos_vmo_cow_break_page 与 nos_vmo_restore_from_snapshot */
+    {
+        struct nos_vmo *snap;
+        uintptr_t orig_pa = vmo->pages[0]->paddr;
+        uintptr_t split_pa = 0U;
+        char orig_msg[] = "CHKPT_V1";
+        char dirt_msg[] = "DIRTY_V2";
+        char rb[16] = { 0 };
+
+        assert(nos_vmo_write(vmo, 0U, orig_msg, sizeof(orig_msg)) == 0);
+        snap = nos_vmo_clone_cow(vmo);
+        assert(snap != NULL);
+        assert(nos_vmo_seal(snap) == 0);
+        assert(nos_vmo_cow_break_page(vmo, 0U, &split_pa) == 0);
+        assert(split_pa != orig_pa && vmo->pages[0]->paddr == split_pa);
+        assert(nos_vmo_write(vmo, 0U, dirt_msg, sizeof(dirt_msg)) == 0);
+        assert(nos_vmo_restore_from_snapshot(vmo, snap) == 0);
+        assert(vmo->pages[0]->paddr == orig_pa);
+        assert(nos_vmo_read(vmo, 0U, rb, sizeof(orig_msg)) == 0);
+        assert(strcmp(rb, orig_msg) == 0);
+        release_vmo(snap);
+    }
 
     release_vmo(vmo);
 }

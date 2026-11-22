@@ -68,6 +68,14 @@ struct fair_rq {
     uint32_t         load_weight;
 };
 
+#ifdef CONFIG_NOS_AI_CORE
+struct infer_rq {
+    struct list_head tasks_edf;
+    uint32_t         nr_running;
+    uint64_t         earliest_deadline_ns;
+};
+#endif
+
 struct sched_rq {
     spinlock_t          lock;
     uint32_t            cpu_id;
@@ -82,6 +90,9 @@ struct sched_rq {
     struct task_struct *idle;
 
     struct rt_rq        rt;
+#ifdef CONFIG_NOS_AI_CORE
+    struct infer_rq     infer;
+#endif
     struct fair_rq      fair;
 
     /* Per-CPU PELT & time accounting */
@@ -95,6 +106,9 @@ struct sched_rq {
 
 extern struct sched_rq g_sched_rqs[CONFIG_NR_CPUS];
 extern const struct sched_class rt_sched_class;
+#ifdef CONFIG_NOS_AI_CORE
+extern const struct sched_class infer_sched_class;
+#endif
 extern const struct sched_class fair_sched_class;
 extern const struct sched_class idle_sched_class;
 
@@ -102,6 +116,9 @@ struct sched_rq *sched_rq_of(uint32_t cpu_id);
 struct sched_rq *this_rq(void);
 
 void sched_rt_rq_init(struct rt_rq *rt);
+#ifdef CONFIG_NOS_AI_CORE
+void sched_infer_rq_init(struct infer_rq *infer);
+#endif
 void sched_fair_rq_init(struct fair_rq *fair);
 uint16_t sched_nice_to_weight(int8_t nice);
 const struct sched_class *sched_policy_to_class(uint8_t policy);

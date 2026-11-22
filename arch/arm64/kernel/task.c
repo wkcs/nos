@@ -43,13 +43,15 @@ void arm64_finish_first_switch(void)
 {
     struct sched_rq *rq = this_rq();
 
+    /* 必须在持锁关中断状态下完成 FPU 拥有者切换，防止开启中断后发生同核竞态 */
+    arm64_fpu_on_context_switch(rq->curr);
+
     if (spin_is_locked(&rq->lock)) {
         spin_unlock_irq(&rq->lock);
     } else {
         kernel_running = 1U;
     }
 
-    arm64_fpu_on_context_switch(rq->curr);
     arch_irq_enable_global();
 }
 

@@ -20,6 +20,7 @@ enum sched_policy {
     SCHED_POLICY_FIFO   = 1,
     SCHED_POLICY_NORMAL = 2,
     SCHED_POLICY_IDLE   = 3,
+    SCHED_POLICY_INFER  = 4,
 };
 
 #define SCHED_CAPACITY_SHIFT 10U

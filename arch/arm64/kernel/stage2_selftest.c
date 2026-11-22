@@ -19,7 +19,10 @@
 #include <nos/cap.h>
 #include <nos/vmo.h>
 #include <nos/cell.h>
+#include <nos/ring.h>
+#include <nos/sched_infer.h>
 #include <uapi/nos/ai.h>
+#include <uapi/nos/ipc.h>
 #endif
 #include <asm/mmu.h>
 #include <asm/switch.h>
@@ -41,12 +44,19 @@ extern const uint8_t arm64_el0_cell_code_start[];
 extern const uint8_t arm64_el0_cell_code_end[];
 extern const uint8_t arm64_el0_cell_tamper_code_start[];
 extern const uint8_t arm64_el0_cell_tamper_code_end[];
+extern const uint8_t arm64_el0_neon_worker_start[];
+extern const uint8_t arm64_el0_neon_worker_end[];
+extern const uint8_t arm64_el0_stage3_code_start[];
+extern const uint8_t arm64_el0_stage3_code_end[];
 
 #define SELFTEST_CELL_CODE_VA   0x0000000000400000UL
 #define SELFTEST_CELL_TELEM_VA  0x0000000000420000UL
 #define SELFTEST_CELL_VMO_VA    0x0000000000430000UL
+#define SELFTEST_STAGE3_RING_VA 0x0000000000440000UL
+#define SELFTEST_STAGE3_WORK_VA 0x0000000000450000UL
 #define SELFTEST_CELL_STACK_VA  0x0000000000800000UL
 #define SELFTEST_CELL_VMO_MAGIC 0x4E4F534149303032ULL
+#define SELFTEST_STAGE3_SCHEMA  0x0000544F4F4C0001ULL
 #endif
 
 struct smp_worker_ctx {
@@ -550,6 +560,499 @@ cleanup:
     }
     return rc;
 }
+
+struct stage3_worker_ctx {
+    struct nos_ring       *ring;
+    struct nos_completion  done;
+    uint32_t               handled;
+    bool                   saw_inherited_deadline;
+};
+
+static void stage3_tool_worker_entry(void *param)
+{
+    struct stage3_worker_ctx *ctx = (struct stage3_worker_ctx *)param;
+    struct nos_ring_sqe sqe;
+
+    for (;;) {
+        struct nos_ring_cqe cqe;
+        int rc = nos_ring_server_pop(ctx->ring, &sqe, NOS_IPC_TIMEOUT_INFINITE);
+        if (rc == -EPIPE || rc < 0) {
+            break;
+        }
+        if (current != NULL && current->se.infer.deadline_inherited) {
+            __atomic_store_n(&ctx->saw_inherited_deadline, true, __ATOMIC_RELEASE);
+        }
+        __atomic_fetch_add(&ctx->handled, 1U, __ATOMIC_ACQ_REL);
+        memset(&cqe, 0, sizeof(cqe));
+        cqe.req_id = sqe.req_id;
+        cqe.status = 0;
+        cqe.result_len = 0x5A5AU;
+        (void)nos_ring_server_complete(ctx->ring, &cqe);
+    }
+    (void)nos_complete(&ctx->done);
+}
+
+struct stage3_neon_ctx {
+    uintptr_t              pattern;
+    struct nos_completion  done;
+};
+
+static void el0_neon_launcher_entry(void *param)
+{
+    struct stage3_neon_ctx *ctx = (struct stage3_neon_ctx *)param;
+    uintptr_t pattern = (ctx != NULL) ? ctx->pattern : 0U;
+
+    arm64_enter_user_mode(SELFTEST_CELL_CODE_VA,
+                          SELFTEST_CELL_STACK_VA + PAGE_SIZE,
+                          pattern);
+}
+
+static void el0_neon_task_cleanup(struct task_struct *task)
+{
+    struct stage3_neon_ctx *ctx;
+
+    if (task == NULL || task->parameter == NULL) {
+        return;
+    }
+    ctx = (struct stage3_neon_ctx *)task->parameter;
+    (void)nos_complete(&ctx->done);
+}
+
+static void el0_stage3_launcher_entry(void *param)
+{
+    (void)param;
+    arm64_enter_user_mode(SELFTEST_CELL_CODE_VA,
+                          SELFTEST_CELL_STACK_VA + PAGE_SIZE,
+                          SELFTEST_STAGE3_RING_VA);
+}
+
+static int run_stage3_neon_concurrency_test(void)
+{
+    static struct stage3_neon_ctx ctx_a;
+    static struct stage3_neon_ctx ctx_b;
+    struct nos_infer_sched_param inf_p = {
+        .role = NOS_INFER_ROLE_DECODE,
+        .gang_id = 0U,
+        .runtime_ns = 5000000ULL,
+        .deadline_ns = 20000000ULL,
+        .period_ns = 20000000ULL,
+    };
+    addr_t code_va = 0U;
+    addr_t stack_a = 0U;
+    addr_t stack_b = 0U;
+    struct task_struct *ta = NULL;
+    struct task_struct *tb = NULL;
+    size_t code_len = (size_t)(arm64_el0_neon_worker_end - arm64_el0_neon_worker_start);
+    bool started_a = false;
+    bool started_b = false;
+    int rc = 0;
+
+    if (code_len > PAGE_SIZE) {
+        return -E2BIG;
+    }
+
+    code_va = alloc_page(GFP_KERNEL | GFP_ZERO);
+    stack_a = alloc_page(GFP_KERNEL | GFP_ZERO);
+    stack_b = alloc_page(GFP_KERNEL | GFP_ZERO);
+    if (code_va == 0U || stack_a == 0U || stack_b == 0U) {
+        rc = -ENOMEM;
+        goto out_free;
+    }
+
+    memcpy((void *)code_va, arm64_el0_neon_worker_start, code_len);
+    arm64_sync_icache_dcache((uintptr_t)code_va, PAGE_SIZE);
+
+    memset(&ctx_a, 0, sizeof(ctx_a));
+    memset(&ctx_b, 0, sizeof(ctx_b));
+    ctx_a.pattern = 0x11223344UL;
+    ctx_b.pattern = 0x55667788UL;
+    (void)nos_completion_init(&ctx_a.done);
+    (void)nos_completion_init(&ctx_b.done);
+
+    ta = task_create_ex("neon_a", el0_neon_launcher_entry, &ctx_a,
+                        SCHED_POLICY_NORMAL, 8U, 0, 0x01U,
+                        CONFIG_CORE_TASK_STACK_SIZE, 10U, el0_neon_task_cleanup);
+    tb = task_create_ex("neon_b", el0_neon_launcher_entry, &ctx_b,
+                        SCHED_POLICY_NORMAL, 8U, 0, 0x01U,
+                        CONFIG_CORE_TASK_STACK_SIZE, 10U, el0_neon_task_cleanup);
+    if (ta == NULL || tb == NULL) {
+        rc = -ENOMEM;
+        goto out_comp;
+    }
+
+    rc = hal_vm_map(&ta->vm_space, SELFTEST_CELL_CODE_VA,
+                    arm64_virt_to_phys((uintptr_t)code_va), PAGE_SIZE,
+                    HAL_VM_PROT_USER | HAL_VM_PROT_READ | HAL_VM_PROT_EXEC);
+    if (rc == 0) {
+        rc = hal_vm_map(&ta->vm_space, SELFTEST_CELL_STACK_VA,
+                        arm64_virt_to_phys((uintptr_t)stack_a), PAGE_SIZE,
+                        HAL_VM_PROT_USER | HAL_VM_PROT_READ | HAL_VM_PROT_WRITE);
+    }
+    if (rc == 0) {
+        rc = hal_vm_map(&tb->vm_space, SELFTEST_CELL_CODE_VA,
+                        arm64_virt_to_phys((uintptr_t)code_va), PAGE_SIZE,
+                        HAL_VM_PROT_USER | HAL_VM_PROT_READ | HAL_VM_PROT_EXEC);
+    }
+    if (rc == 0) {
+        rc = hal_vm_map(&tb->vm_space, SELFTEST_CELL_STACK_VA,
+                        arm64_virt_to_phys((uintptr_t)stack_b), PAGE_SIZE,
+                        HAL_VM_PROT_USER | HAL_VM_PROT_READ | HAL_VM_PROT_WRITE);
+    }
+    if (rc == 0) {
+        rc = sched_infer_set_param(ta, &inf_p);
+    }
+    if (rc == 0) {
+        rc = sched_infer_set_param(tb, &inf_p);
+    }
+    if (rc != 0) {
+        goto out_comp;
+    }
+
+    __atomic_store_n(&g_el0_fault_hits, 0U, __ATOMIC_RELEASE);
+    arm64_set_el0_fault_observer(selftest_fault_observer);
+
+    (void)task_ready(ta);
+    started_a = true;
+    (void)task_ready(tb);
+    started_b = true;
+
+    rc = nos_completion_wait(&ctx_a.done, 5000U);
+    if (rc == 0) {
+        rc = nos_completion_wait(&ctx_b.done, 5000U);
+    } else {
+        (void)nos_completion_wait(&ctx_b.done, 5000U);
+    }
+    arm64_set_el0_fault_observer(NULL);
+
+    if (rc == 0 && __atomic_load_n(&g_el0_fault_hits, __ATOMIC_ACQUIRE) != 0U) {
+        pr_err("Stage3 NEON concurrency fault detected (hits=%u)\n",
+               (unsigned int)g_el0_fault_hits);
+        rc = -EFAULT;
+    }
+
+out_comp:
+    if (!started_a && ta != NULL) {
+        task_del(ta);
+        (void)nos_completion_wait(&ctx_a.done, 3000U);
+    }
+    if (!started_b && tb != NULL) {
+        task_del(tb);
+        (void)nos_completion_wait(&ctx_b.done, 3000U);
+    }
+    (void)nos_object_close(&ctx_a.done.object);
+    (void)nos_object_retire(&ctx_a.done.object);
+    (void)nos_object_close(&ctx_b.done.object);
+    (void)nos_object_retire(&ctx_b.done.object);
+out_free:
+    if (code_va != 0U) {
+        free_page(code_va);
+    }
+    if (stack_a != 0U) {
+        free_page(stack_a);
+    }
+    if (stack_b != 0U) {
+        free_page(stack_b);
+    }
+    return rc;
+}
+
+static int run_stage3_selftest(void)
+{
+    static const char s3_msg[] = "[EL0-STAGE3] RingIPC, NEON Lazy-Ctx & SchedInfer OK!\n";
+    static const char base_state[] = "BASE_STATE_V1";
+    static struct stage3_worker_ctx wctx;
+    static struct nos_completion agent_done;
+    static struct nos_audit_record audit_recs[16];
+    struct nos_cell_budget b = {
+        .cpu_ns_limit = 2000000000ULL,
+        .mem_bytes_limit = 65536ULL,
+        .tool_calls_limit = 8ULL,
+        .accel_ops_limit = 8ULL,
+        .max_child_cells = 0U,
+        .flags = 0U,
+    };
+    struct nos_vmo_create_args wargs = {
+        .size_bytes = PAGE_SIZE,
+        .kind = NOS_VMO_ANON,
+        .flags = 0U,
+        .block_bytes = 0U,
+    };
+    uint64_t schemas[1] = { SELFTEST_STAGE3_SCHEMA };
+    struct nos_ring_create_args rargs = {
+        .sq_entries = 16U,
+        .cq_entries = 16U,
+        .flags = NOS_RING_CREATE_SCHEMA_FILTER,
+        .schema_count = 1U,
+        .schema_list_ptr = (uint64_t)(uintptr_t)schemas,
+        .map_user_vaddr = SELFTEST_STAGE3_RING_VA,
+    };
+    struct nos_infer_sched_param ctrl_p = {
+        .role = NOS_INFER_ROLE_AGENT_CTRL,
+        .gang_id = 0U,
+        .runtime_ns = 5000000ULL,
+        .deadline_ns = 20000000ULL,
+        .period_ns = 20000000ULL,
+    };
+    uint64_t work_meta[2];
+    char read_buf[16];
+    const struct nos_cell_telemetry *tm;
+    struct nos_cell *agent_cell = NULL;
+    struct nos_vmo *work_vmo = NULL;
+    struct nos_ring *ring = NULL;
+    struct nos_cell_snapshot *snap = NULL;
+    nos_handle_t ring_h = NOS_HANDLE_INVALID;
+    addr_t code_va = 0U;
+    addr_t stack_va = 0U;
+    struct task_struct *tool_srv = NULL;
+    struct task_struct *s3_agent = NULL;
+    bool srv_started = false;
+    bool agent_started = false;
+    uint64_t t0;
+    uint64_t dt_us = 0ULL;
+    size_t code_len = (size_t)(arm64_el0_stage3_code_end - arm64_el0_stage3_code_start);
+    bool seen_snap = false;
+    bool seen_rollback = false;
+    int audit_n;
+    int rc;
+
+    rc = run_stage3_neon_concurrency_test();
+    if (rc != 0) {
+        pr_err("Stage3 NEON concurrency test FAILED (%d)\n", rc);
+        return rc;
+    }
+
+    if (code_len > PAGE_SIZE) {
+        return -E2BIG;
+    }
+
+    code_va = alloc_page(GFP_KERNEL | GFP_ZERO);
+    stack_va = alloc_page(GFP_KERNEL | GFP_ZERO);
+    if (code_va == 0U || stack_va == 0U) {
+        rc = -ENOMEM;
+        goto cleanup;
+    }
+
+    memcpy((void *)code_va, arm64_el0_stage3_code_start, code_len);
+    arm64_sync_icache_dcache((uintptr_t)code_va, PAGE_SIZE);
+
+    agent_cell = nos_cell_create(NULL, &b);
+    work_vmo = nos_vmo_create(&wargs);
+    if (agent_cell == NULL || work_vmo == NULL) {
+        rc = -ENOMEM;
+        goto cleanup;
+    }
+
+    ring = nos_ring_create(&rargs, schemas, nos_cell_vm_space(agent_cell), agent_cell);
+    if (ring == NULL) {
+        rc = -ENOMEM;
+        goto cleanup;
+    }
+
+    rc = nos_cap_alloc(nos_cell_cap_table(agent_cell), NOS_CAP_RING, ring,
+                       NOS_CAP_RIGHT_ALL, 0U, &ring_h);
+    if (rc != 0) {
+        goto cleanup;
+    }
+
+    work_meta[0] = (uint64_t)ring_h;
+    work_meta[1] = (uint64_t)(sizeof(s3_msg) - 1U);
+    rc = nos_vmo_write(work_vmo, 0U, base_state, sizeof(base_state));
+    if (rc == 0) {
+        rc = nos_vmo_write(work_vmo, 256U, work_meta, sizeof(work_meta));
+    }
+    if (rc == 0) {
+        rc = nos_vmo_write(work_vmo, 272U, s3_msg, sizeof(s3_msg));
+    }
+    if (rc == 0) {
+        rc = nos_vmo_map(work_vmo, nos_cell_vm_space(agent_cell),
+                         SELFTEST_STAGE3_WORK_VA, 0U, PAGE_SIZE,
+                         HAL_VM_PROT_USER | HAL_VM_PROT_READ | HAL_VM_PROT_WRITE,
+                         agent_cell);
+    }
+    if (rc == 0) {
+        rc = hal_vm_map(nos_cell_vm_space(agent_cell), SELFTEST_CELL_CODE_VA,
+                        arm64_virt_to_phys((uintptr_t)code_va), PAGE_SIZE,
+                        HAL_VM_PROT_USER | HAL_VM_PROT_READ | HAL_VM_PROT_EXEC);
+    }
+    if (rc == 0) {
+        rc = hal_vm_map(nos_cell_vm_space(agent_cell), SELFTEST_CELL_STACK_VA,
+                        arm64_virt_to_phys((uintptr_t)stack_va), PAGE_SIZE,
+                        HAL_VM_PROT_USER | HAL_VM_PROT_READ | HAL_VM_PROT_WRITE);
+    }
+    if (rc != 0) {
+        goto cleanup;
+    }
+
+    memset(&wctx, 0, sizeof(wctx));
+    wctx.ring = ring;
+    (void)nos_completion_init(&wctx.done);
+
+    /* 必须使用 SCHED_POLICY_NORMAL，避免因 FIFO/RR 保护规则跳过 Deadline Inheritance 提升 */
+    tool_srv = task_create_ex("s3_toolsrv", stage3_tool_worker_entry, &wctx,
+                              SCHED_POLICY_NORMAL, 8U, 0, NOS_CPU_MASK_ALL,
+                              CONFIG_CORE_TASK_STACK_SIZE, 10U, NULL);
+    if (tool_srv == NULL) {
+        rc = -ENOMEM;
+        goto cleanup;
+    }
+    rc = nos_ring_bind_server(ring, tool_srv, NULL, NULL);
+    if (rc != 0) {
+        goto cleanup;
+    }
+    (void)task_ready(tool_srv);
+    srv_started = true;
+
+    snap = nos_cell_snapshot(agent_cell);
+    if (snap == NULL) {
+        rc = -ENOMEM;
+        goto cleanup;
+    }
+
+    (void)nos_completion_init(&agent_done);
+    s3_agent = task_create_ex("s3_agent", el0_stage3_launcher_entry, &agent_done,
+                              SCHED_POLICY_NORMAL, 8U, 0, NOS_CPU_MASK_ALL,
+                              CONFIG_CORE_TASK_STACK_SIZE, 10U, el0_cell_task_cleanup);
+    if (s3_agent == NULL) {
+        rc = -ENOMEM;
+        goto cleanup;
+    }
+    rc = nos_cell_attach_task(s3_agent, agent_cell);
+    if (rc == 0) {
+        rc = sched_infer_set_param(s3_agent, &ctrl_p);
+    }
+    if (rc != 0) {
+        goto cleanup;
+    }
+
+    __atomic_store_n(&g_el0_fault_hits, 0U, __ATOMIC_RELEASE);
+    arm64_set_el0_fault_observer(selftest_fault_observer);
+    (void)task_ready(s3_agent);
+    agent_started = true;
+
+    rc = nos_completion_wait(&agent_done, 5000U);
+    arm64_set_el0_fault_observer(NULL);
+    if (rc != 0) {
+        pr_err("Stage3 EL0 agent timeout (%d)\n", rc);
+        goto cleanup;
+    }
+
+    if (__atomic_load_n(&g_el0_fault_hits, __ATOMIC_ACQUIRE) != 0U) {
+        pr_err("Stage3 EL0 unexpected fault hits=%u\n", (unsigned int)g_el0_fault_hits);
+        rc = -EFAULT;
+        goto cleanup;
+    }
+
+    if (__atomic_load_n(&wctx.handled, __ATOMIC_ACQUIRE) != 1U ||
+        !__atomic_load_n(&wctx.saw_inherited_deadline, __ATOMIC_ACQUIRE)) {
+        pr_err("Stage3 tool worker check failed (handled=%u dl_inherited=%d)\n",
+               (unsigned int)wctx.handled, wctx.saw_inherited_deadline ? 1 : 0);
+        rc = -EFAULT;
+        goto cleanup;
+    }
+
+    memset(read_buf, 0, sizeof(read_buf));
+    rc = nos_vmo_read(work_vmo, 0U, read_buf, sizeof(read_buf));
+    if (rc != 0 || memcmp(read_buf, "DIRTY", 5U) != 0) {
+        pr_err("Stage3 CoW mutation check failed (rc=%d buf=%.8s)\n", rc, read_buf);
+        rc = -EFAULT;
+        goto cleanup;
+    }
+
+    tm = nos_cell_telemetry_view(agent_cell);
+    if (tm == NULL || tm->tool_calls_used != 1ULL) {
+        pr_err("Stage3 tool budget check failed (used=%lu)\n",
+               tm ? (unsigned long)tm->tool_calls_used : 0UL);
+        rc = -EFAULT;
+        goto cleanup;
+    }
+
+    t0 = hal_timer_monotonic_ns();
+    rc = nos_cell_rollback(agent_cell, snap);
+    dt_us = (hal_timer_monotonic_ns() - t0) / 1000ULL;
+    if (rc != 0 || dt_us >= 10000ULL) {
+        pr_err("Stage3 rollback timing/status failed (rc=%d dt_us=%lu)\n",
+               rc, (unsigned long)dt_us);
+        rc = (rc != 0) ? rc : -ETIMEDOUT;
+        goto cleanup;
+    }
+    if (dt_us >= 1000ULL) {
+        pr_info("Stage3 rollback exceeded 1ms under host load (dt_us=%lu)\n",
+                (unsigned long)dt_us);
+    }
+
+    memset(read_buf, 0, sizeof(read_buf));
+    rc = nos_vmo_read(work_vmo, 0U, read_buf, sizeof(read_buf));
+    if (rc != 0 || memcmp(read_buf, base_state, sizeof(base_state) - 1U) != 0) {
+        pr_err("Stage3 rollback state restore failed (rc=%d buf=%.16s)\n", rc, read_buf);
+        rc = -EFAULT;
+        goto cleanup;
+    }
+
+    if (tm->tool_calls_used != 0ULL) {
+        pr_err("Stage3 rollback telemetry restore failed (used=%lu)\n",
+               (unsigned long)tm->tool_calls_used);
+        rc = -EFAULT;
+        goto cleanup;
+    }
+
+    audit_n = nos_cell_read_audit(agent_cell, audit_recs, 16U);
+    for (int i = 0; i < audit_n; i++) {
+        if (audit_recs[i].event_type == NOS_AUDIT_CELL_SNAPSHOT) {
+            seen_snap = true;
+        } else if (audit_recs[i].event_type == NOS_AUDIT_CELL_ROLLBACK) {
+            seen_rollback = true;
+        }
+    }
+    if (!seen_snap || !seen_rollback) {
+        pr_err("Stage3 snapshot/rollback audit missing (snap=%d rb=%d)\n",
+               seen_snap ? 1 : 0, seen_rollback ? 1 : 0);
+        rc = -ENOENT;
+        goto cleanup;
+    }
+
+    pr_info("ARM64 Stage3 selftest PASS (ring_ipc=ok, snapshot_rollback_us=%lu, sched_infer=ok, neon_lazy_ctx=ok)\n",
+            (unsigned long)dt_us);
+    rc = 0;
+
+cleanup:
+    if (ring != NULL) {
+        (void)nos_ring_destroy(ring);
+    }
+    if (srv_started) {
+        (void)nos_completion_wait(&wctx.done, 3000U);
+    } else if (tool_srv != NULL) {
+        task_del(tool_srv);
+    }
+    if (tool_srv != NULL || srv_started) {
+        (void)nos_object_close(&wctx.done.object);
+        (void)nos_object_retire(&wctx.done.object);
+    }
+    if (s3_agent != NULL && !agent_started) {
+        task_del(s3_agent);
+        (void)nos_completion_wait(&agent_done, 3000U);
+    }
+    if (s3_agent != NULL) {
+        (void)nos_object_close(&agent_done.object);
+        (void)nos_object_retire(&agent_done.object);
+    }
+    if (snap != NULL) {
+        (void)nos_cell_snapshot_destroy(snap);
+    }
+    if (agent_cell != NULL) {
+        (void)nos_cell_destroy(agent_cell);
+    }
+    if (work_vmo != NULL) {
+        (void)nos_object_close(&work_vmo->header);
+        (void)nos_object_retire(&work_vmo->header);
+    }
+    if (code_va != 0U) {
+        free_page(code_va);
+    }
+    if (stack_va != 0U) {
+        free_page(stack_va);
+    }
+    return rc;
+}
 #endif
 
 static int stage2_selftest_init(void)
@@ -598,6 +1101,12 @@ static int stage2_selftest_init(void)
     rc = run_stage2b_selftest();
     if (rc != 0) {
         pr_err("ARM64 Stage2B selftest FAILED (%d)\n", rc);
+        return rc;
+    }
+
+    rc = run_stage3_selftest();
+    if (rc != 0) {
+        pr_err("ARM64 Stage3 selftest FAILED (%d)\n", rc);
         return rc;
     }
 #endif

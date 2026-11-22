@@ -140,19 +140,21 @@ static void uart_pl011_irq_handler(uint32_t intid, void *ctx)
     }
     data = dev->data;
 
-    while ((*pl011_reg(dev, PL011_FR) & PL011_FR_RXFE) == 0U) {
-        unsigned char ch = (unsigned char)*pl011_reg(dev, PL011_DR);
-        spin_lock_irq(&data->lock);
-        unsigned int accepted = kfifo_in(&data->rx_fifo, &ch, 1U);
-        if (accepted == 0U) {
-            data->rx_dropped++;
-        } else {
-            got_data = true;
+    spin_lock_irq(&data->lock);
+    do {
+        /* 先清中断标志再排空硬件 FIFO，防止尾随字节的中断在退出时被误清 */
+        *pl011_reg(dev, PL011_ICR) = PL011_INT_RX | PL011_INT_RT;
+        while ((*pl011_reg(dev, PL011_FR) & PL011_FR_RXFE) == 0U) {
+            unsigned char ch = (unsigned char)*pl011_reg(dev, PL011_DR);
+            if (kfifo_in(&data->rx_fifo, &ch, 1U) == 0U) {
+                data->rx_dropped++;
+            } else {
+                got_data = true;
+            }
         }
-        spin_unlock_irq(&data->lock);
-    }
+    } while ((*pl011_reg(dev, PL011_FR) & PL011_FR_RXFE) == 0U);
+    spin_unlock_irq(&data->lock);
 
-    *pl011_reg(dev, PL011_ICR) = PL011_INT_RX | PL011_INT_RT;
     if (got_data && kernel_running) {
         (void)nos_notify_signal_obj(&data->rx_ready, 1ULL);
     }
@@ -196,7 +198,7 @@ static ssize_t uart_pl011_read(const struct device *dev, unsigned char *buf,
                 continue;
             }
             int rc = nos_notify_wait_obj(&data->rx_ready, &bits,
-                                         NOS_IPC_TIMEOUT_INFINITE);
+                                         NOS_WAIT_FOREVER);
             if (rc < 0) {
                 return rc;
             }

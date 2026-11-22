@@ -78,6 +78,10 @@ const struct sched_class *sched_policy_to_class(uint8_t policy)
     switch (policy) {
     case SCHED_POLICY_IDLE:
         return &idle_sched_class;
+#ifdef CONFIG_NOS_AI_CORE
+    case SCHED_POLICY_INFER:
+        return &infer_sched_class;
+#endif
 #ifdef CONFIG_SCHED_FAIR
     case SCHED_POLICY_NORMAL:
         return &fair_sched_class;
@@ -194,6 +198,10 @@ uint32_t sched_select_task_rq(struct task_struct *p, int wake_flags)
     prev_cpu = (p->cpu < CONFIG_NR_CPUS) ? p->cpu : 0U;
     if (p->on_cpu != 0U) {
         return prev_cpu;
+    }
+
+    if (p->sched_class != NULL && p->sched_class->select_task_rq != NULL) {
+        return p->sched_class->select_task_rq(p, prev_cpu, wake_flags);
     }
 
     mask = (p->cpus_allowed != 0U) ? p->cpus_allowed : NOS_CPU_MASK_ALL;
@@ -344,6 +352,9 @@ void sch_init(void)
         rq->cpu_id = i;
         rq->online = true;
         sched_rt_rq_init(&rq->rt);
+#ifdef CONFIG_NOS_AI_CORE
+        sched_infer_rq_init(&rq->infer);
+#endif
         sched_fair_rq_init(&rq->fair);
     }
 
