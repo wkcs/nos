@@ -235,6 +235,9 @@ static int __task_create(struct task_struct *task,
     nos_refcount_init(&task->refcount, 1U);
     nos_wait_entry_init(&task->wait_entry, task);
     memset(&task->ipc_msg, 0, sizeof(task->ipc_msg));
+#ifdef CONFIG_NOS_AI_CORE
+    task->cell = NULL;
+#endif
     nos_cap_table_init(&task->cap_table);
     (void)nos_cap_alloc_at(&task->cap_table,
                            NOS_CAP_SLOT_SELF_TASK,
@@ -947,6 +950,10 @@ const char *task_policy_short_str(uint8_t policy)
 
 static void task_free(struct task_struct *task)
 {
+#ifdef CONFIG_NOS_AI_CORE
+    extern void nos_cell_detach_task(struct task_struct *task);
+    nos_cell_detach_task(task);
+#endif
     vfs_task_files_cleanup(task);
     hal_vm_space_destroy(&task->vm_space);
     nos_cap_table_destroy(&task->cap_table);

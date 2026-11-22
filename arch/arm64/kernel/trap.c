@@ -13,6 +13,10 @@
 #include <uapi/nos/syscall.h>
 #include <uapi/nos/errno.h>
 #include <uapi/nos/ipc.h>
+#ifdef CONFIG_NOS_AI_CORE
+#include <nos/cell.h>
+#include <uapi/nos/ai.h>
+#endif
 #include <asm/pt_regs.h>
 #include <asm/sysreg.h>
 #include <asm/irq.h>
@@ -46,6 +50,7 @@ static bool arm64_user_buf_mapped(struct task_struct *task,
                                   size_t len,
                                   bool require_write)
 {
+    struct nos_vm_space *vms;
     uintptr_t cur;
     uintptr_t end;
 
@@ -55,7 +60,8 @@ static bool arm64_user_buf_mapped(struct task_struct *task,
     if (len == 0U) {
         return true;
     }
-    if (task == NULL || !task->vm_space.initialized || task->vm_space.root_pt_phys == 0U) {
+    vms = nos_task_active_vm_space(task);
+    if (vms == NULL || !vms->initialized || vms->root_pt_phys == 0U) {
         return false;
     }
 
@@ -63,7 +69,7 @@ static bool arm64_user_buf_mapped(struct task_struct *task,
     end = ptr + len;
     while (cur < end) {
         uint64_t pte = 0ULL;
-        if (arm64_pt_translate(task->vm_space.root_pt_phys, CONFIG_ARM64_VA_BITS,
+        if (arm64_pt_translate(vms->root_pt_phys, CONFIG_ARM64_VA_BITS,
                                cur, NULL, &pte, NULL) != 0) {
             return false;
         }
@@ -136,8 +142,62 @@ static bool arm64_validate_el0_syscall(unsigned long sysno, const struct arm64_p
         return true;
     case SYS_NOS_VM_MAP:
     case SYS_NOS_VM_UNMAP:
-        /* 阶段 2A 禁止 EL0 直接绑定物理页，需经 VMO 能力接口受控映射 */
+        /* 阶段 2 禁止 EL0 直接绑定裸物理页，需经 VMO 能力接口受控映射 */
         return false;
+#ifdef CONFIG_NOS_AI_CORE
+    case SYS_NOS_CELL_CONTROL:
+        if ((a0 == NOS_CELL_OP_CREATE || a0 == NOS_CELL_OP_FORK || a0 == NOS_CELL_OP_SET_BUDGET) &&
+            a2 != 0U && !arm64_user_buf_mapped(task, a2, sizeof(struct nos_cell_budget), false)) {
+            return false;
+        }
+        if ((a0 == NOS_CELL_OP_CREATE || a0 == NOS_CELL_OP_FORK) &&
+            a3 != 0U && !arm64_user_ptr_valid(a3, PAGE_SIZE)) {
+            return false;
+        }
+        if (a0 == NOS_CELL_OP_GET_BUDGET &&
+            !arm64_user_buf_mapped(task, a2, sizeof(struct nos_cell_budget), true)) {
+            return false;
+        }
+        if (a0 == NOS_CELL_OP_READ_AUDIT) {
+            if (a3 == 0U || a3 > NOS_CELL_AUDIT_RING_CAPACITY ||
+                !arm64_user_buf_mapped(task, a2,
+                                       (size_t)a3 * sizeof(struct nos_audit_record), true)) {
+                return false;
+            }
+        }
+        if ((a0 == NOS_CELL_OP_CREATE || a0 == NOS_CELL_OP_FORK) &&
+            a4 != 0U && !arm64_user_buf_mapped(task, a4, sizeof(nos_handle_t), true)) {
+            return false;
+        }
+        return true;
+    case SYS_NOS_VMO_CREATE:
+        if (a0 == 0U || !arm64_user_buf_mapped(task, a0, sizeof(struct nos_vmo_create_args), false)) {
+            return false;
+        }
+        if (a1 != 0U && !arm64_user_buf_mapped(task, a1, sizeof(nos_handle_t), true)) {
+            return false;
+        }
+        return true;
+    case SYS_NOS_VMO_CONTROL:
+        if (a0 == NOS_VMO_OP_CLONE_COW &&
+            a2 != 0U && !arm64_user_buf_mapped(task, a2, sizeof(nos_handle_t), true)) {
+            return false;
+        }
+        if (a0 == NOS_VMO_OP_CLONE_KV_PREFIX &&
+            a3 != 0U && !arm64_user_buf_mapped(task, a3, sizeof(nos_handle_t), true)) {
+            return false;
+        }
+        if ((a0 == NOS_VMO_OP_MAP || a0 == NOS_VMO_OP_UNMAP) &&
+            a4 > 0U && !arm64_user_ptr_valid(a3, (size_t)a4)) {
+            return false;
+        }
+        return true;
+    case SYS_NOS_CAP_REVOKE_TREE:
+        if (a1 != 0U && !arm64_user_buf_mapped(task, a1, sizeof(uint32_t), true)) {
+            return false;
+        }
+        return true;
+#endif
     default:
         return true;
     }
@@ -233,6 +293,17 @@ void arm64_sync_handler(struct arm64_pt_regs *regs, bool from_el0)
                (fault_task && fault_task->name) ? fault_task->name : "unknown",
                arm64_ec_name(ec), ec, ESR_ELx_ISS(regs->esr),
                (unsigned long)regs->far, (unsigned long)regs->pc);
+#ifdef CONFIG_NOS_AI_CORE
+        if (fault_task != NULL && fault_task->cell != NULL) {
+            nos_cell_record_audit(fault_task->cell,
+                                  NOS_AUDIT_FAULT,
+                                  0ULL,
+                                  0U,
+                                  -EFAULT,
+                                  (uint64_t)regs->far,
+                                  (((uint64_t)ec << 32) | (uint64_t)ESR_ELx_ISS(regs->esr)));
+        }
+#endif
         if (obs != NULL) {
             obs(ec, regs->far, regs->pc);
         }

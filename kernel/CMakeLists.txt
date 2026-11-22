@@ -48,6 +48,13 @@ if(CONFIG_TTY)
     list(APPEND KERNEL_SRCS tty/tty.c)
 endif()
 
+if(CONFIG_NOS_AI_CORE)
+    list(APPEND KERNEL_SRCS
+        mm/vmo.c
+        ai/cell.c
+    )
+endif()
+
 add_library(nos_kernel OBJECT ${KERNEL_SRCS})
 nos_configure_kernel_target(nos_kernel)
 

@@ -21,6 +21,14 @@
 #define NOS_CELL_OP_ROLLBACK    7U
 #define NOS_CELL_OP_READ_AUDIT  8U
 
+/* Agent Cell 只读 Telemetry 共享页契约 */
+#define NOS_CELL_TELEMETRY_MAGIC    0x4E43454CU /* "NCEL" */
+
+#define NOS_CELL_STATE_ACTIVE       1U
+#define NOS_CELL_STATE_BUDGET_HIT   2U
+#define NOS_CELL_STATE_SUSPENDED    3U
+#define NOS_CELL_STATE_DESTROYED    4U
+
 /* Cell 审计事件类型 */
 #define NOS_AUDIT_CAP_DERIVE    1U
 #define NOS_AUDIT_CAP_REVOKE    2U
@@ -36,6 +44,21 @@ struct nos_cell_budget {
     uint64_t accel_ops_limit;   /* NPU/GPU 加速器提交次数配额 */
     uint32_t max_child_cells;   /* 最大允许派生的子 Cell 数量 */
     uint32_t flags;             /* 控制标志位 */
+};
+
+/* 映射至 EL0 只读 Telemetry 页首部的实时观测结构体（严格 96 字节） */
+struct nos_cell_telemetry {
+    uint32_t magic;                 /* NOS_CELL_TELEMETRY_MAGIC */
+    uint16_t version;               /* 结构体版本（当前为 1） */
+    uint16_t state;                 /* NOS_CELL_STATE_* */
+    uint32_t cell_id;               /* Cell 全局唯一标识 */
+    uint32_t child_cells_used;      /* 当前存活子 Cell 数量 */
+    uint64_t cpu_ns_used;           /* 已消耗 CPU 时间（纳秒） */
+    uint64_t mem_bytes_used;        /* 当前记账内存占用（字节） */
+    uint64_t tool_calls_used;       /* 已消耗工具调用次数 */
+    uint64_t accel_ops_used;        /* 已消耗加速器操作次数 */
+    uint64_t audit_seq;             /* 已记录的审计事件累计序列号 */
+    struct nos_cell_budget limit;   /* 当前五维预算配额上限 */
 };
 
 /* 内核态强制写入的 64 字节定长审计记录（1 条 Cache Line） */
@@ -71,6 +94,8 @@ enum nos_vmo_kind {
 #define NOS_VMO_OP_CLONE_KV_PREFIX  3U          /* 跨 Cell 共享公共 KV 前缀块 */
 #define NOS_VMO_OP_BIND_EVICT_NOTIF 4U          /* 绑定 KV 块驱逐通知通道 */
 #define NOS_VMO_OP_SYNC_DMA         5U          /* 显式维护 DMA Cache 一致性 */
+#define NOS_VMO_OP_MAP              6U          /* 将 VMO 映射至目标地址空间 */
+#define NOS_VMO_OP_UNMAP            7U          /* 从目标地址空间解除映射 */
 
 struct nos_vmo_create_args {
     uint64_t size_bytes;        /* VMO 虚拟大小（页对齐） */
@@ -145,6 +170,7 @@ struct nos_infer_sched_param {
 
 #if defined(__STDC_VERSION__) && (__STDC_VERSION__ >= 201112L)
 _Static_assert(sizeof(struct nos_cell_budget) == 40, "nos_cell_budget ABI 尺寸必须为 40 字节");
+_Static_assert(sizeof(struct nos_cell_telemetry) == 96, "nos_cell_telemetry ABI 尺寸必须为 96 字节");
 _Static_assert(sizeof(struct nos_audit_record) == 64, "nos_audit_record ABI 尺寸必须为 64 字节");
 _Static_assert(sizeof(struct nos_vmo_create_args) == 32, "nos_vmo_create_args ABI 尺寸必须为 32 字节");
 _Static_assert(sizeof(struct nos_ring_sqe) == 64, "nos_ring_sqe ABI 尺寸必须为 64 字节");

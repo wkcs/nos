@@ -17,6 +17,11 @@
 #include <kernel/sched.h>
 #include <kernel/cpu.h>
 #include <kernel/console.h>
+#ifdef CONFIG_NOS_AI_CORE
+#include <nos/vmo.h>
+#include <nos/cell.h>
+#include <uapi/nos/ai.h>
+#endif
 
 /* Thread control operations */
 #define NOS_THREAD_OP_SET_PRIO  1U
@@ -140,7 +145,7 @@ static long sys_nos_thread_create(uintptr_t name_ptr,
     }
 
     if (current != NULL) {
-        rc = nos_cap_alloc(&current->cap_table,
+        rc = nos_cap_alloc(nos_task_active_cap_table(current),
                            NOS_CAP_TASK,
                            child,
                            NOS_CAP_RIGHT_ALL,
@@ -177,7 +182,7 @@ static long sys_nos_thread_control(uintptr_t task_cap,
         return -EINVAL;
     }
 
-    rc = nos_cap_lookup(&current->cap_table,
+    rc = nos_cap_lookup(nos_task_active_cap_table(current),
                         (nos_handle_t)task_cap,
                         NOS_CAP_TASK,
                         NOS_CAP_RIGHT_MANAGE,
@@ -218,7 +223,7 @@ static long sys_nos_vm_map(uintptr_t vm_cap,
         return -EINVAL;
     }
     if (vm_cap != NOS_HANDLE_INVALID) {
-        rc = nos_cap_lookup(&current->cap_table,
+        rc = nos_cap_lookup(nos_task_active_cap_table(current),
                             (nos_handle_t)vm_cap,
                             NOS_CAP_VM_SPACE,
                             NOS_CAP_RIGHT_WRITE,
@@ -249,7 +254,7 @@ static long sys_nos_vm_unmap(uintptr_t vm_cap,
         return -EINVAL;
     }
     if (vm_cap != NOS_HANDLE_INVALID) {
-        rc = nos_cap_lookup(&current->cap_table,
+        rc = nos_cap_lookup(nos_task_active_cap_table(current),
                             (nos_handle_t)vm_cap,
                             NOS_CAP_VM_SPACE,
                             NOS_CAP_RIGHT_WRITE,
@@ -352,11 +357,13 @@ static long sys_nos_cap_control(uintptr_t op,
         return -EINVAL;
     }
 
+    struct nos_cap_table *cap_tbl = nos_task_active_cap_table(current);
+
     switch (op) {
     case NOS_CAP_OP_DERIVE:
-        rc = nos_cap_derive(&current->cap_table,
+        rc = nos_cap_derive(cap_tbl,
                             (nos_handle_t)handle,
-                            &current->cap_table,
+                            cap_tbl,
                             (nos_cap_rights_t)arg0,
                             (uint32_t)arg1,
                             &out_h);
@@ -366,10 +373,10 @@ static long sys_nos_cap_control(uintptr_t op,
         return (rc < 0) ? (long)rc : (long)out_h;
 
     case NOS_CAP_OP_REVOKE:
-        return (long)nos_cap_revoke(&current->cap_table, (nos_handle_t)handle);
+        return (long)nos_cap_revoke(cap_tbl, (nos_handle_t)handle);
 
     case NOS_CAP_OP_INSPECT:
-        return (long)nos_cap_inspect(&current->cap_table,
+        return (long)nos_cap_inspect(cap_tbl,
                                      (nos_handle_t)handle,
                                      (uint32_t *)arg0,
                                      (nos_cap_rights_t *)arg1);
@@ -425,23 +432,475 @@ static long sys_nos_irq_control(uintptr_t op,
     }
 }
 
+#ifdef CONFIG_NOS_AI_CORE
+static long sys_nos_cell_control(uintptr_t op,
+                                 uintptr_t cell_cap,
+                                 uintptr_t arg0,
+                                 uintptr_t arg1,
+                                 uintptr_t out_ptr,
+                                 uintptr_t a5)
+{
+    struct nos_cap_table *cap_tbl;
+    struct nos_cell *target = NULL;
+    int rc = 0;
+
+    (void)a5;
+    if (current == NULL) {
+        return -EINVAL;
+    }
+    cap_tbl = nos_task_active_cap_table(current);
+
+    switch (op) {
+    case NOS_CELL_OP_CREATE:
+    case NOS_CELL_OP_FORK: {
+        struct nos_cell *parent = NULL;
+        struct nos_cell *child;
+        struct nos_cell_budget kbudget;
+        nos_handle_t out_h = NOS_HANDLE_INVALID;
+        bool parent_quota_full = false;
+
+        if (op == NOS_CELL_OP_CREATE && cell_cap == NOS_HANDLE_INVALID && current->cell != NULL) {
+            return -EACCES;
+        }
+        if (cell_cap != NOS_HANDLE_INVALID) {
+            rc = nos_cap_lookup(cap_tbl,
+                                (nos_handle_t)cell_cap,
+                                NOS_CAP_CELL,
+                                NOS_CAP_RIGHT_MANAGE | NOS_CAP_RIGHT_GRANT,
+                                (void **)&parent,
+                                NULL);
+            if (rc < 0) {
+                return (long)rc;
+            }
+        } else if (op == NOS_CELL_OP_FORK) {
+            if (current->cell == NULL || !nos_object_get(&current->cell->header)) {
+                return -EBADF;
+            }
+            parent = current->cell;
+        }
+
+        if (arg0 != 0U) {
+            kbudget = *(const struct nos_cell_budget *)arg0;
+        }
+        child = nos_cell_create(parent, (arg0 != 0U) ? &kbudget : NULL);
+        if (parent != NULL) {
+            parent_quota_full = (parent->state != NOS_CELL_STATE_ACTIVE ||
+                                 parent->child_cells_used >= parent->budget.max_child_cells);
+            (void)nos_object_put(&parent->header);
+        }
+        if (child == NULL) {
+            return parent_quota_full ? -EDQUOT : -ENOMEM;
+        }
+
+        if (arg1 != 0U) {
+            rc = nos_cell_map_telemetry(child, arg1);
+            if (rc < 0) {
+                (void)nos_cell_destroy(child);
+                return (long)rc;
+            }
+        }
+
+        rc = nos_cap_alloc(cap_tbl,
+                           NOS_CAP_CELL,
+                           child,
+                           NOS_CAP_RIGHT_ALL,
+                           child->cell_id,
+                           &out_h);
+        if (rc < 0) {
+            (void)nos_cell_destroy(child);
+            return (long)rc;
+        }
+        if (out_ptr != 0U) {
+            *(nos_handle_t *)out_ptr = out_h;
+        }
+        return (long)out_h;
+    }
+
+    case NOS_CELL_OP_DESTROY:
+        rc = nos_cap_lookup(cap_tbl,
+                            (nos_handle_t)cell_cap,
+                            NOS_CAP_CELL,
+                            NOS_CAP_RIGHT_MANAGE,
+                            (void **)&target,
+                            NULL);
+        if (rc < 0) {
+            return (long)rc;
+        }
+        (void)nos_cap_revoke_tree(cap_tbl, (nos_handle_t)cell_cap, NULL);
+        rc = nos_cell_destroy(target);
+        (void)nos_object_put(&target->header);
+        return (long)rc;
+
+    case NOS_CELL_OP_SET_BUDGET:
+        if (arg0 == 0U) {
+            return -EINVAL;
+        }
+        rc = nos_cap_lookup(cap_tbl,
+                            (nos_handle_t)cell_cap,
+                            NOS_CAP_CELL,
+                            NOS_CAP_RIGHT_MANAGE,
+                            (void **)&target,
+                            NULL);
+        if (rc < 0) {
+            return (long)rc;
+        }
+        rc = nos_cell_set_budget(target, (const struct nos_cell_budget *)arg0);
+        (void)nos_object_put(&target->header);
+        return (long)rc;
+
+    case NOS_CELL_OP_GET_BUDGET:
+        if (arg0 == 0U) {
+            return -EINVAL;
+        }
+        rc = nos_cap_lookup(cap_tbl,
+                            (nos_handle_t)cell_cap,
+                            NOS_CAP_CELL,
+                            NOS_CAP_RIGHT_READ,
+                            (void **)&target,
+                            NULL);
+        if (rc < 0) {
+            return (long)rc;
+        }
+        rc = nos_cell_get_budget(target, (struct nos_cell_budget *)arg0);
+        (void)nos_object_put(&target->header);
+        return (long)rc;
+
+    case NOS_CELL_OP_READ_AUDIT:
+        if (arg0 == 0U || arg1 == 0U) {
+            return -EINVAL;
+        }
+        rc = nos_cap_lookup(cap_tbl,
+                            (nos_handle_t)cell_cap,
+                            NOS_CAP_CELL,
+                            NOS_CAP_RIGHT_AUDIT,
+                            (void **)&target,
+                            NULL);
+        if (rc < 0) {
+            return (long)rc;
+        }
+        rc = nos_cell_read_audit(target, (struct nos_audit_record *)arg0, (uint32_t)arg1);
+        (void)nos_object_put(&target->header);
+        return (long)rc;
+
+    default:
+        return -EINVAL;
+    }
+}
+
+static long sys_nos_vmo_create(uintptr_t args_ptr,
+                               uintptr_t out_ptr,
+                               uintptr_t a2,
+                               uintptr_t a3,
+                               uintptr_t a4,
+                               uintptr_t a5)
+{
+    struct nos_vmo_create_args kargs;
+    struct nos_vmo *vmo;
+    nos_handle_t out_h = NOS_HANDLE_INVALID;
+    int rc;
+
+    (void)a2;
+    (void)a3;
+    (void)a4;
+    (void)a5;
+
+    if (current == NULL || args_ptr == 0U) {
+        return -EINVAL;
+    }
+
+    kargs = *(const struct nos_vmo_create_args *)args_ptr;
+    vmo = nos_vmo_create(&kargs);
+    if (vmo == NULL) {
+        return (kargs.size_bytes == 0U || (kargs.size_bytes % 4096U) != 0U)
+                   ? -EINVAL
+                   : -ENOMEM;
+    }
+
+    rc = nos_cap_alloc(nos_task_active_cap_table(current),
+                       NOS_CAP_VMO,
+                       vmo,
+                       NOS_CAP_RIGHT_ALL,
+                       0U,
+                       &out_h);
+    if (rc < 0) {
+        (void)nos_object_close(&vmo->header);
+        (void)nos_object_retire(&vmo->header);
+        return (long)rc;
+    }
+
+    if (out_ptr != 0U) {
+        *(nos_handle_t *)out_ptr = out_h;
+    }
+    return (long)out_h;
+}
+
+static int syscall_resolve_vmo_target(struct nos_cap_table *cap_tbl,
+                                      nos_handle_t target_cap,
+                                      struct nos_vm_space **out_space,
+                                      struct nos_cell **out_charge_cell,
+                                      struct nos_cell **out_pinned_cell)
+{
+    struct nos_cell *cell = NULL;
+    struct nos_vm_space *space = NULL;
+    int rc;
+
+    *out_pinned_cell = NULL;
+
+    if (target_cap == NOS_HANDLE_INVALID) {
+        *out_space = nos_task_active_vm_space(current);
+        *out_charge_cell = current->cell;
+        return 0;
+    }
+
+    rc = nos_cap_lookup(cap_tbl,
+                        target_cap,
+                        NOS_CAP_CELL,
+                        NOS_CAP_RIGHT_MAP | NOS_CAP_RIGHT_WRITE,
+                        (void **)&cell,
+                        NULL);
+    if (rc == 0) {
+        *out_space = nos_cell_vm_space(cell);
+        *out_charge_cell = cell;
+        *out_pinned_cell = cell;
+        return 0;
+    }
+
+    rc = nos_cap_lookup(cap_tbl,
+                        target_cap,
+                        NOS_CAP_VM_SPACE,
+                        NOS_CAP_RIGHT_WRITE,
+                        (void **)&space,
+                        NULL);
+    if (rc < 0) {
+        return rc;
+    }
+    *out_space = space;
+    *out_charge_cell = current->cell;
+    return 0;
+}
+
+static long sys_nos_vmo_control(uintptr_t op,
+                                uintptr_t vmo_cap,
+                                uintptr_t arg0,
+                                uintptr_t arg1,
+                                uintptr_t arg2,
+                                uintptr_t arg3)
+{
+    struct nos_cap_table *cap_tbl;
+    struct nos_vmo *vmo = NULL;
+    struct nos_vmo *clone = NULL;
+    struct nos_notification *notif = NULL;
+    nos_cap_rights_t req_rights = 0U;
+    nos_handle_t out_h = NOS_HANDLE_INVALID;
+    int rc;
+
+    if (current == NULL) {
+        return -EINVAL;
+    }
+    cap_tbl = nos_task_active_cap_table(current);
+
+    switch (op) {
+    case NOS_VMO_OP_SEAL:
+        req_rights = NOS_CAP_RIGHT_WRITE;
+        break;
+    case NOS_VMO_OP_CLONE_COW:
+    case NOS_VMO_OP_CLONE_KV_PREFIX:
+        req_rights = NOS_CAP_RIGHT_READ;
+        break;
+    case NOS_VMO_OP_BIND_EVICT_NOTIF:
+        req_rights = NOS_CAP_RIGHT_MANAGE;
+        break;
+    case NOS_VMO_OP_MAP:
+        req_rights = NOS_CAP_RIGHT_MAP;
+        if (((uint32_t)arg3 & HAL_VM_PROT_READ) != 0U) {
+            req_rights |= NOS_CAP_RIGHT_READ;
+        }
+        if (((uint32_t)arg3 & HAL_VM_PROT_WRITE) != 0U) {
+            req_rights |= NOS_CAP_RIGHT_WRITE;
+        }
+        if (((uint32_t)arg3 & HAL_VM_PROT_EXEC) != 0U) {
+            req_rights |= NOS_CAP_RIGHT_EXEC;
+        }
+        break;
+    case NOS_VMO_OP_UNMAP:
+        req_rights = NOS_CAP_RIGHT_MAP;
+        break;
+    default:
+        return -EINVAL;
+    }
+
+    rc = nos_cap_lookup(cap_tbl,
+                        (nos_handle_t)vmo_cap,
+                        NOS_CAP_VMO,
+                        req_rights,
+                        (void **)&vmo,
+                        NULL);
+    if (rc < 0) {
+        return (long)rc;
+    }
+
+    switch (op) {
+    case NOS_VMO_OP_SEAL:
+        rc = nos_vmo_seal(vmo);
+        (void)nos_object_put(&vmo->header);
+        return (long)rc;
+
+    case NOS_VMO_OP_CLONE_COW:
+        clone = nos_vmo_clone_cow(vmo);
+        (void)nos_object_put(&vmo->header);
+        if (clone == NULL) {
+            return -ENOMEM;
+        }
+        rc = nos_cap_alloc(cap_tbl, NOS_CAP_VMO, clone, NOS_CAP_RIGHT_ALL, 0U, &out_h);
+        if (rc < 0) {
+            (void)nos_object_close(&clone->header);
+            (void)nos_object_retire(&clone->header);
+            return (long)rc;
+        }
+        if (arg0 != 0U) {
+            *(nos_handle_t *)arg0 = out_h;
+        }
+        return (long)out_h;
+
+    case NOS_VMO_OP_CLONE_KV_PREFIX:
+        clone = nos_vmo_clone_kv_prefix(vmo, (size_t)arg0);
+        (void)nos_object_put(&vmo->header);
+        if (clone == NULL) {
+            return -EINVAL;
+        }
+        rc = nos_cap_alloc(cap_tbl, NOS_CAP_VMO, clone, NOS_CAP_RIGHT_ALL, 0U, &out_h);
+        if (rc < 0) {
+            (void)nos_object_close(&clone->header);
+            (void)nos_object_retire(&clone->header);
+            return (long)rc;
+        }
+        if (arg1 != 0U) {
+            *(nos_handle_t *)arg1 = out_h;
+        }
+        return (long)out_h;
+
+    case NOS_VMO_OP_BIND_EVICT_NOTIF:
+        rc = nos_cap_lookup(cap_tbl,
+                            (nos_handle_t)arg0,
+                            NOS_CAP_NOTIFICATION,
+                            NOS_CAP_RIGHT_SEND,
+                            (void **)&notif,
+                            NULL);
+        if (rc == 0) {
+            rc = nos_vmo_bind_evict_notif(vmo, notif);
+            (void)nos_object_put(&notif->object);
+        }
+        (void)nos_object_put(&vmo->header);
+        return (long)rc;
+
+    case NOS_VMO_OP_MAP:
+    case NOS_VMO_OP_UNMAP: {
+        struct nos_vm_space *space = NULL;
+        struct nos_cell *charge_cell = NULL;
+        struct nos_cell *pinned_cell = NULL;
+
+        rc = syscall_resolve_vmo_target(cap_tbl,
+                                        (nos_handle_t)arg0,
+                                        &space,
+                                        &charge_cell,
+                                        &pinned_cell);
+        if (rc == 0) {
+            if (op == NOS_VMO_OP_MAP) {
+                rc = nos_vmo_map(vmo,
+                                 space,
+                                 arg1,
+                                 0U,
+                                 (size_t)arg2,
+                                 (uint32_t)arg3 | HAL_VM_PROT_USER,
+                                 charge_cell);
+            } else {
+                rc = nos_vmo_unmap(space, arg1, (size_t)arg2, charge_cell);
+            }
+        }
+        if (pinned_cell != NULL) {
+            (void)nos_object_put(&pinned_cell->header);
+        }
+        (void)nos_object_put(&vmo->header);
+        return (long)rc;
+    }
+
+    default:
+        (void)nos_object_put(&vmo->header);
+        return -EINVAL;
+    }
+}
+#else
+static long sys_nos_cell_control(uintptr_t a0, uintptr_t a1, uintptr_t a2,
+                                 uintptr_t a3, uintptr_t a4, uintptr_t a5)
+{
+    (void)a0; (void)a1; (void)a2; (void)a3; (void)a4; (void)a5;
+    return -ENOSYS;
+}
+
+static long sys_nos_vmo_create(uintptr_t a0, uintptr_t a1, uintptr_t a2,
+                               uintptr_t a3, uintptr_t a4, uintptr_t a5)
+{
+    (void)a0; (void)a1; (void)a2; (void)a3; (void)a4; (void)a5;
+    return -ENOSYS;
+}
+
+static long sys_nos_vmo_control(uintptr_t a0, uintptr_t a1, uintptr_t a2,
+                                uintptr_t a3, uintptr_t a4, uintptr_t a5)
+{
+    (void)a0; (void)a1; (void)a2; (void)a3; (void)a4; (void)a5;
+    return -ENOSYS;
+}
+#endif
+
+static long sys_nos_cap_revoke_tree(uintptr_t handle,
+                                    uintptr_t out_revoked_ptr,
+                                    uintptr_t a2,
+                                    uintptr_t a3,
+                                    uintptr_t a4,
+                                    uintptr_t a5)
+{
+    uint32_t revoked = 0U;
+    int rc;
+
+    (void)a2;
+    (void)a3;
+    (void)a4;
+    (void)a5;
+
+    if (current == NULL) {
+        return -EINVAL;
+    }
+
+    rc = nos_cap_revoke_tree(nos_task_active_cap_table(current),
+                             (nos_handle_t)handle,
+                             &revoked);
+    if (rc == 0 && out_revoked_ptr != 0U) {
+        *(uint32_t *)out_revoked_ptr = revoked;
+    }
+    return (rc < 0) ? (long)rc : (long)revoked;
+}
+
 static const nos_syscall_fn_t g_syscall_table[SYS_NOS_MAX] = {
-    [SYS_NOS_YIELD]          = sys_nos_yield,
-    [SYS_NOS_EXIT]           = sys_nos_exit,
-    [SYS_NOS_DEBUG_CONSOLE]  = sys_nos_debug_console,
-    [SYS_NOS_CLOCK_GET]      = sys_nos_clock_get,
-    [SYS_NOS_SLEEP_UNTIL]    = sys_nos_sleep_until,
-    [SYS_NOS_THREAD_CREATE]  = sys_nos_thread_create,
-    [SYS_NOS_THREAD_CONTROL] = sys_nos_thread_control,
-    [SYS_NOS_VM_MAP]         = sys_nos_vm_map,
-    [SYS_NOS_VM_UNMAP]       = sys_nos_vm_unmap,
-    [SYS_NOS_IPC_CALL]       = sys_nos_ipc_call,
-    [SYS_NOS_IPC_RECV]       = sys_nos_ipc_recv,
-    [SYS_NOS_IPC_REPLY_WAIT] = sys_nos_ipc_reply_wait,
-    [SYS_NOS_NOTIFY_SIGNAL]  = sys_nos_notify_signal,
-    [SYS_NOS_NOTIFY_WAIT]    = sys_nos_notify_wait,
-    [SYS_NOS_CAP_CONTROL]    = sys_nos_cap_control,
-    [SYS_NOS_IRQ_CONTROL]    = sys_nos_irq_control,
+    [SYS_NOS_YIELD]           = sys_nos_yield,
+    [SYS_NOS_EXIT]            = sys_nos_exit,
+    [SYS_NOS_DEBUG_CONSOLE]   = sys_nos_debug_console,
+    [SYS_NOS_CLOCK_GET]       = sys_nos_clock_get,
+    [SYS_NOS_SLEEP_UNTIL]     = sys_nos_sleep_until,
+    [SYS_NOS_THREAD_CREATE]   = sys_nos_thread_create,
+    [SYS_NOS_THREAD_CONTROL]  = sys_nos_thread_control,
+    [SYS_NOS_VM_MAP]          = sys_nos_vm_map,
+    [SYS_NOS_VM_UNMAP]        = sys_nos_vm_unmap,
+    [SYS_NOS_IPC_CALL]        = sys_nos_ipc_call,
+    [SYS_NOS_IPC_RECV]        = sys_nos_ipc_recv,
+    [SYS_NOS_IPC_REPLY_WAIT]  = sys_nos_ipc_reply_wait,
+    [SYS_NOS_NOTIFY_SIGNAL]   = sys_nos_notify_signal,
+    [SYS_NOS_NOTIFY_WAIT]     = sys_nos_notify_wait,
+    [SYS_NOS_CAP_CONTROL]     = sys_nos_cap_control,
+    [SYS_NOS_IRQ_CONTROL]     = sys_nos_irq_control,
+    [SYS_NOS_CELL_CONTROL]    = sys_nos_cell_control,
+    [SYS_NOS_VMO_CREATE]      = sys_nos_vmo_create,
+    [SYS_NOS_VMO_CONTROL]     = sys_nos_vmo_control,
+    [SYS_NOS_CAP_REVOKE_TREE] = sys_nos_cap_revoke_tree,
 };
 
 long nos_syscall_dispatch(unsigned long sysno,

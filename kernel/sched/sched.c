@@ -19,6 +19,10 @@
 #include <kernel/printk.h>
 #include <nos/hal_arch.h>
 #include <nos/mm.h>
+#ifdef CONFIG_NOS_AI_CORE
+#include <nos/cell.h>
+#include <uapi/nos/errno.h>
+#endif
 #include <string.h>
 
 struct sched_rq g_sched_rqs[CONFIG_NR_CPUS];
@@ -375,7 +379,7 @@ void sch_start(void)
 #ifdef CONFIG_MPU
     arch_mpu_init();
 #endif
-    hal_vm_switch(&to_task->vm_space);
+    hal_vm_switch(nos_task_active_vm_space(to_task));
     context_switch_to((addr_t)&to_task->sp);
 
     /* never come back */
@@ -486,7 +490,7 @@ void switch_task(void)
         to_task->se.exec_start_us = now_us;
         rq->curr = to_task;
 
-        hal_vm_switch(&to_task->vm_space);
+        hal_vm_switch(nos_task_active_vm_space(to_task));
         if (from_task != NULL) {
             context_switch((addr_t)&from_task->sp, (addr_t)&to_task->sp);
         } else {
@@ -618,6 +622,10 @@ void sch_heartbeat(void)
     struct sched_rq *rq;
     struct task_struct *curr;
     uint64_t now_us;
+#ifdef CONFIG_NOS_AI_CORE
+    uint64_t charge_ns = 0ULL;
+    struct task_struct *charge_task = NULL;
+#endif
 
     calculate_sys_cycle();
     rq = this_rq();
@@ -647,9 +655,26 @@ void sch_heartbeat(void)
         if (curr->sched_class->task_tick != NULL) {
             curr->sched_class->task_tick(rq, curr);
         }
+#ifdef CONFIG_NOS_AI_CORE
+        if (!is_idle && delta_us > 0ULL && curr->cell != NULL && task_get(curr)) {
+            charge_ns = delta_us * 1000ULL;
+            charge_task = curr;
+        }
+#endif
     }
     sched_load_tick(rq, now_us);
     spin_unlock_irq(&rq->lock);
+
+#ifdef CONFIG_NOS_AI_CORE
+    if (charge_task != NULL) {
+        if (charge_task->cell != NULL &&
+            nos_cell_charge_cpu(charge_task->cell, charge_ns) == -EDQUOT) {
+            del_task_to_ready_list(charge_task);
+            rq->need_resched = true;
+        }
+        task_put(charge_task);
+    }
+#endif
 
     if (rq->need_resched && scheduler_lock_nest == 0U) {
         switch_task();

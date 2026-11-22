@@ -257,6 +257,23 @@ config NOS_CAP_MAX_SLOTS
 	help
 	  每个任务内置能力表的槽位数；不使用用户态能力表的 MCU 可设为 2 以缩减 task_struct 体积。
 
+config NOS_CAP_CDT
+	bool "Capability Derivation Tree (CDT) & Expandable 4096-slot CNode"
+	depends on KERNEL_MICROKERNEL
+	default y if ARCH_ARM64
+	help
+	  启用可撤销能力派生树 (CDT) 与二层按需扩展页式 CNode（最多 4096 槽位），
+	  支持 SYS_NOS_CAP_REVOKE_TREE 原子级联吊销能力子树；MCU 档可关闭以节省静态内存。
+
+config NOS_AI_CORE
+	bool "AI-Native Kernel Core (VMO/TensorObj & Agent Cell)"
+	depends on KERNEL_MICROKERNEL && MMU
+	select NOS_CAP_CDT
+	default y if ARCH_ARM64
+	help
+	  启用面向 AI 原生操作系统的零拷贝 VMO/TensorObj、Agent Cell 五维硬预算隔离、
+	  EL0 只读 Telemetry 页以及 64 字节内核强制环形审计区。
+
 endmenu
 
 # 标准库与 POSIX 兼容层配置

@@ -85,11 +85,11 @@
 - [x] **Step 1:** 编写位置无关原生汇编测试载荷 `arch/arm64/kernel/el0_smoke.S`：验证 EL0 用户栈读写、`SVC #0` 调用 `SYS_NOS_CLOCK_GET`、故意以高半核内核指针调用 `SYS_NOS_DEBUG_CONSOLE` 校验返回 `-EFAULT`、打印 `[EL0] Hello via SVC #0!\n`、`SYS_NOS_EXIT` 退出；以及故意写入 `R--` 只读页触发 EL0 Data Abort 的 `arm64_el0_fault_code`。
 - [x] **Step 2:** 编写 `arch/arm64/kernel/stage2_selftest.c`（由 `CONFIG_ARM64_STAGE2_SELFTEST` 控制并通过 `task_init_register` 自动运行）：依次完成 4 核 SMP 亲和性调度验证、独立 `TTBR0` + ASID + `R-X`/`R--`/`RW-` 真实 EL0 `SVC #0` 闭环验证（在 `task->cleanup` 中安全释放 3 个物理页），以及 EL0 只读页写入触发 Data Abort 隔离清理验证。
 - [x] **Step 3:** 更新 `tests/qemu_arm64_smoke.py` 增加 `--smp` 参数（默认 `4`）与 `ARM64 SMP:`、`[EL0] Hello via SVC #0!`、`ARM64 Stage2A selftest PASS` 断言。
-- [x] **Step 4:** 执行 Stage 2A 全矩阵验证：4 核 GICv3/A53、4 核 GICv2/A53、4 核 GICv3/A76、1 核 SMP 回退、4 个 Cortex-M 构建、STM32 QEMU 冒烟、`check_layer_deps.py` 与核心主机回归全部 PASS。
+- [x] **Step 4:** 执行 Stage 2A 全矩阵验证：4 核 GICv3/A53、4 核 GICv2/A53、4 核 GICv3/A76、1 核 SMP 回退、4 个 Cortex-M 构建、STM32 QEMU 冒烟、`check_layer_deps.py` 与核心主机回归全部 PASS（已提交至本地 commit `ac3cd87`）。
 
 ---
 
-## Stage 2B：CDT 可撤销能力树 + VMO + Agent Cell（Stage 2A 实测通过后接续执行）
+## Stage 2B：CDT 可撤销能力树 + VMO + Agent Cell（已完成并实测通过）
 
 ### Task 4: 双层基数 CNode 与 CDT 可撤销能力树（`SYS_NOS_CAP_REVOKE_TREE`）
 
@@ -97,11 +97,11 @@
 - Modify: `include/nos/cap.h`, `kernel/cap/cap_table.c`, `kernel/syscall/syscall.c`
 - Create: `tests/host/test_cdt_cap.c`, `tests/host/run_cdt_cap_test.py`
 
-**Targets:**
-- 保持 MCU 档（`CONFIG_NOS_CAP_MAX_SLOTS <= 16`）紧凑静态布局零回退；在 ARM64（或启用大 CNode 配置）上支持最多 4096 槽位按需页式扩展。
-- 为每个 `nos_cap_slot` 增加侵入式 CDT 派生树指针（`parent / first_child / next_sibling / prev_sibling`），`nos_cap_derive` 严格单调衰减权限并挂载子节点。
-- 实现 `nos_cap_revoke_tree()` 与 `SYS_NOS_CAP_REVOKE_TREE`（系统调用号 23）：原子 DFS 级联吊销子能力子树、递增 `gen` 失效全部旧句柄，并关联触发绑定 `Agent Cell` 的 `NOS_AUDIT_CAP_REVOKE` 审计项。
-- 编写并跑通主机 TDD 单元测试 `run_cdt_cap_test.py`（验证多层派生、跨表授权、子树原子级联撤销及父指针断链）。
+**Targets & Status:**
+- [x] **Step 1:** 保持 MCU 档（`CONFIG_NOS_CAP_MAX_SLOTS <= 16`）紧凑静态布局零回退；在 `CONFIG_NOS_CAP_CDT=y` 下支持最多 4096 槽位二层按需页式扩展（锁外预分配，单槽 64B 对齐单条 Cache Line）。
+- [x] **Step 2:** 为 `nos_cap_slot` 增加侵入式 CDT 派生树指针与 `owner_table`，`nos_cap_derive` 严格单调衰减权限与保护 Badge 不可篡改并挂载子节点，`nos_cap_revoke` / `nos_cap_table_destroy` 安全提升子节点（reparent）。
+- [x] **Step 3:** 实现 O(1) 栈深非递归 `nos_cap_revoke_tree()` 与 `SYS_NOS_CAP_REVOKE_TREE`（系统调用号 23），触发关联 `Agent Cell` 的 `NOS_AUDIT_CAP_DERIVE` / `NOS_AUDIT_CAP_REVOKE` 审计项，将 `NOS_CAP_VMO`/`NOS_CAP_CELL` 接入 Pinned Lookup。
+- [x] **Step 4:** 通过宿主单元测试 `run_cdt_cap_test.py` 与既有 `run_ipc_endpoint_test.py`。
 
 ---
 
@@ -109,26 +109,26 @@
 
 **Files:**
 - Create: `include/nos/vmo.h`, `kernel/mm/vmo.c`
-- Modify: `kernel/CMakeLists.txt`, `kernel/syscall/syscall.c`, `arch/arm64/mm/mmu.c`
+- Modify: `kernel/CMakeLists.txt`, `kernel/syscall/syscall.c`
 - Create: `tests/host/test_vmo.c`, `tests/host/run_vmo_test.py`
 
-**Targets:**
-- 实现 `struct nos_vmo`（嵌入 `struct nos_object` 引用计数 + `enum nos_vmo_kind`: `ANON / WEIGHT / KVCACHE / DMA_TENSOR` + 物理页数组/CoW 共享页句柄 + 不可变封印标记 `sealed`）。
-- 接入 `SYS_NOS_VMO_CREATE`（17）与 `SYS_NOS_VMO_CONTROL`（18）：支持创建、`NOS_VMO_OP_SEAL` 永久不可变封印（拒绝后续任何可写映射）、`NOS_VMO_OP_CLONE_COW` 写时复制克隆，以及将 VMO 映射到目标 `nos_vm_space`（支持 `NOS_CAP_RIGHT_MAP` 与 `arch/arm64/mm/mmu.c` 真实硬件大页/CONT 页表）。
-- 编写并跑通主机单元测试 `run_vmo_test.py` 与 QEMU EL0 共享 VMO 零拷贝映射实测。
+**Targets & Status:**
+- [x] **Step 1:** 实现 `struct nos_vmo` 与 `struct nos_vmo_page` 引用计数共享物理页管理，接入 `nos_object` 生命周期管理。
+- [x] **Step 2:** 接入 `SYS_NOS_VMO_CREATE`（17）与 `SYS_NOS_VMO_CONTROL`（18）：支持创建、`NOS_VMO_OP_SEAL` 不可变封印、CoW 写时复制克隆、KV 前缀零拷贝共享克隆、可重计算页驱逐及 `NOS_VMO_OP_MAP`/`UNMAP`（严格 W^X `-EPERM` 与 Cell 内存配额原子扣费/回滚）。
+- [x] **Step 3:** 通过宿主单元测试 `run_vmo_test.py` 与真实 QEMU EL0 共享封印 VMO 实测。
 
 ---
 
 ### Task 6: `Agent Cell` 五维硬预算、Telemetry 只读页与 64B 强制审计（`SYS_NOS_CELL_CONTROL`）
 
 **Files:**
-- Create: `include/nos/cell.h`, `kernel/cap/cell.c`
-- Modify: `include/kernel/task.h`, `kernel/task/task.c`, `kernel/sched/sched.c`, `arch/arm64/kernel/trap.c`, `kernel/syscall/syscall.c`
-- Modify: `kernel/CMakeLists.txt`, `arch/arm64/kernel/stage2_selftest.c`
+- Create: `include/nos/cell.h`, `kernel/ai/cell.c`
+- Modify: `include/kernel/task.h`, `kernel/task/task.c`, `kernel/sched/sched.c`, `arch/arm64/kernel/irq.c`, `arch/arm64/kernel/trap.c`, `kernel/syscall/syscall.c`
+- Modify: `kernel/CMakeLists.txt`, `arch/arm64/kernel/el0_smoke.S`, `arch/arm64/kernel/stage2_selftest.c`, `tests/qemu_arm64_smoke.py`
 - Create: `tests/host/test_agent_cell.c`, `tests/host/run_agent_cell_test.py`
 
-**Targets:**
-- 实现 `struct nos_cell`（独立 `CNode` 根、独立 `nos_vm_space`、五维 `nos_cell_budget` 配额原子计数、4KB 只读用户态 `telemetry_page` 映射与 64B `struct nos_audit_record` 内核强制环形审计区）。
-- 在 `sch_heartbeat()`（扣除 CPU `cpu_ns_limit`）、VMO 映射（扣除 `mem_bytes_limit`）与 EL0 异常/权限更改门禁中强制原子校验预算并写入不可伪造审计记录；归零时挂起 Cell 并通过 `Notification` 上报 `NOS_AUDIT_BUDGET_HIT`。
-- 接入 `SYS_NOS_CELL_CONTROL`（16：`CREATE / DESTROY / SET_BUDGET / GET_BUDGET / FORK / READ_AUDIT`）。
-- 编写主机单测 `run_agent_cell_test.py` 并在真实 4 核 `qemu-system-aarch64` 运行完整 Stage 2 端到端闭环实测（Supervisor Cell → 派生受限 Child Agent Cell → 共享 SEAL 权重 VMO → EL0 Telemetry 零 syscall 读预算 → 触发硬预算/Data Abort 强制拦截 + CDT 级联回收全部子句柄）。
+**Targets & Status:**
+- [x] **Step 1:** 实现 `struct nos_cell`（独立 `CNode` 根、独立 `nos_vm_space`、五维 `nos_cell_budget` 单调收紧与原子记账、4KB `R--` 用户态只读 `nos_cell_telemetry` 页投影与 64×64B 环形 `nos_audit_record` 强制审计区）。
+- [x] **Step 2:** 在 `switch_task()`/`arm64_irq_exit_resched()`、`sch_heartbeat()`（锁外扣费 `cpu_ns` 并在超限时挂起任务）、VMO 映射及 EL0 异常/系统调用验证路径完成统一门禁接入；注册 `SYS_NOS_CELL_CONTROL`（16）。
+- [x] **Step 3:** 通过宿主单测 `run_agent_cell_test.py`、`run_timer_test.py`、`run_sched_multi_policy_test.py`。
+- [x] **Step 4:** 完成 4 核 `qemu-system-aarch64`（GICv3/A53、GICv2/A53、GICv3/A76 及 SMP=1）端到端闭环实测与全量 MCU/QEMU-STM32 回归验证（`[EL0-CELL] Telemetry & Sealed VMO OK!` 与 `ARM64 Stage2B selftest PASS`）。

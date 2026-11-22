@@ -128,10 +128,46 @@ struct task_struct {
     /* 进程级打开文件描述符表 (Per-Task FDs) */
     struct file *files[CONFIG_TASK_MAX_FDS];
 
+#ifdef CONFIG_NOS_AI_CORE
+    /* 所属 Agent Cell 安全边界指针（NULL 表示宿主机/根特权上下文） */
+    struct nos_cell *cell;
+#endif
+
     /* 通用等待底座记录与原子引用计数 */
     nos_refcount_t       refcount;
     struct nos_wait_entry wait_entry;
 };
+
+#ifdef CONFIG_NOS_AI_CORE
+extern struct nos_vm_space *nos_cell_vm_space(struct nos_cell *cell);
+extern struct nos_cap_table *nos_cell_cap_table(struct nos_cell *cell);
+#endif
+
+static inline struct nos_vm_space *nos_task_active_vm_space(struct task_struct *task)
+{
+    if (task == NULL) {
+        return NULL;
+    }
+#ifdef CONFIG_NOS_AI_CORE
+    if (task->cell != NULL) {
+        return nos_cell_vm_space(task->cell);
+    }
+#endif
+    return &task->vm_space;
+}
+
+static inline struct nos_cap_table *nos_task_active_cap_table(struct task_struct *task)
+{
+    if (task == NULL) {
+        return NULL;
+    }
+#ifdef CONFIG_NOS_AI_CORE
+    if (task->cell != NULL) {
+        return nos_cell_cap_table(task->cell);
+    }
+#endif
+    return &task->cap_table;
+}
 
 enum task_ps_mode {
     TASK_PS_NORMAL = 0,

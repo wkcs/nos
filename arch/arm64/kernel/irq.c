@@ -407,7 +407,7 @@ void arm64_irq_exit_resched(void)
 
         spin_lock_irq(&rq->lock);
         if (rq->curr != NULL) {
-            hal_vm_switch(&rq->curr->vm_space);
+            hal_vm_switch(nos_task_active_vm_space(rq->curr));
         }
         arm64_do_context_switch(from, to);
         rq = this_rq();

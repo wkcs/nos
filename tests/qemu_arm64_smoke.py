@@ -75,6 +75,8 @@ def main():
         wait_for(b"ARM64 SMP:")
         wait_for(b"[EL0] Hello via SVC #0!")
         wait_for(b"ARM64 Stage2A selftest PASS")
+        wait_for(b"[EL0-CELL] Telemetry & Sealed VMO OK!")
+        wait_for(b"ARM64 Stage2B selftest PASS")
         wait_for(b"nos# ")
 
         for cmd, expected in (
