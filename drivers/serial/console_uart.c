@@ -134,7 +134,11 @@ static int uart_console_getc(void)
 
 static int uart_console_write_room(void)
 {
+#ifdef CONFIG_LOG_MESSAGE_SIZE
+    return CONFIG_LOG_MESSAGE_SIZE;
+#else
     return 128;
+#endif
 }
 
 static int uart_console_putc(char ch)

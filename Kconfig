@@ -331,15 +331,15 @@ config CONSOLE_CRLF
 
 config LOG_BUFFERED
 	bool "Buffer complete log records"
-	depends on !(ARCH_ARM64 && BOARD_QEMU_VIRT)
 	default y
 	help
-	  使用固定大小的记录队列吸收串口突发输出。
-	  ARM64 QEMU virt 当前只有 PL011 轮询端口，尚不支持后台排空。
+	  使用固定大小的记录队列吸收串口突发输出，并保留 console_init()
+	  之前的早期启动日志记录。
 
 config LOG_FIFO_BUF_SIZE
 	int "Log FIFO buffer size"
 	depends on LOG_BUFFERED
+	default 2048 if ARCH_ARM64
 	default 512
 	range 128 65536
 	help

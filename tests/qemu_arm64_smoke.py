@@ -67,15 +67,20 @@ def main():
     try:
         wait_for(b"Welcome to NOS:")
         wait_for(b"ARM64 CPU:")
+        wait_for(b"ARM64 ISA:")
         wait_for(b"ARM64 GIC initialized")
         wait_for(b"vfs_smoke OK")
         wait_for(b"nos# ")
 
         for cmd, expected in (
             (b"help\r", b"Available commands:"),
+            (b"ver\r", b"NOS Kernel"),
+            (b"lsdev\r", b"UART1"),
             (b"ls /\r", b"dev"),
             (b"ps\r", b"idel"),
             (b"free\r", b"total"),
+            (b"sleep 1\r", b"sleep 1"),
+            (b"uptime\r", b"up 1."),
         ):
             pos = len(output)
             proc.stdin.write(cmd)

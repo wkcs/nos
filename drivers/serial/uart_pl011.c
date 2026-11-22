@@ -142,14 +142,14 @@ static void uart_pl011_irq_handler(uint32_t intid, void *ctx)
 
     while ((*pl011_reg(dev, PL011_FR) & PL011_FR_RXFE) == 0U) {
         unsigned char ch = (unsigned char)*pl011_reg(dev, PL011_DR);
-        addr_t flags = disable_irq_save();
+        spin_lock_irq(&data->lock);
         unsigned int accepted = kfifo_in(&data->rx_fifo, &ch, 1U);
-        enable_irq_save(flags);
         if (accepted == 0U) {
             data->rx_dropped++;
         } else {
             got_data = true;
         }
+        spin_unlock_irq(&data->lock);
     }
 
     *pl011_reg(dev, PL011_ICR) = PL011_INT_RX | PL011_INT_RT;

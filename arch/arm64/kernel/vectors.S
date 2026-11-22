@@ -53,6 +53,8 @@
     .endm
 
     .macro restore_regs from_el0
+    /* 在修改 ELR_EL1 / SPSR_EL1 前屏蔽全部异常，由 ERET 从 SPSR_EL1 原子恢复 */
+    msr     daifset, #0xf
     ldp     x20, x21, [sp, #PT_PC]
     msr     elr_el1, x20
     msr     spsr_el1, x21
