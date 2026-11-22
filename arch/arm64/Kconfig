@@ -20,10 +20,20 @@ config ARM64_CORTEX_A72
 	help
 	  ARM Cortex-A72 处理器支持。
 
+config ARM64_CORTEX_A76
+	bool "Cortex-A76"
+	help
+	  ARM Cortex-A76（ARMv8.2-A，端侧 AI SoC 如 RK3588 大核）处理器支持。
+
 config ARM64_GENERIC
 	bool "Generic ARMv8-A"
 	help
 	  通用 ARMv8-A 架构支持。
+
+config ARM64_GENERIC_V9
+	bool "Generic ARMv9-A"
+	help
+	  通用 ARMv9-A 架构支持（SVE2 / BTI / PAC 等增强特性）。
 
 endchoice
 
@@ -31,6 +41,8 @@ config CPU_TYPE
 	string
 	default "cortex-a53" if ARM64_CORTEX_A53
 	default "cortex-a72" if ARM64_CORTEX_A72
+	default "cortex-a76" if ARM64_CORTEX_A76
+	default "generic-v9" if ARM64_GENERIC_V9
 	default "generic" if ARM64_GENERIC
 
 config ARM64_4K_PAGES
@@ -51,7 +63,7 @@ config ARM64_VA_BITS
 	range 36 48
 	help
 	  虚拟地址空间位数。
-	  39 位支持 512GB 虚拟地址空间。
+	  39 位支持 512GB 虚拟地址空间（3 级 4KB 页表）。
 
 config ARM64_PA_BITS
 	int "Physical address space size"
@@ -59,5 +71,17 @@ config ARM64_PA_BITS
 	range 36 48
 	help
 	  物理地址空间位数。
+
+config ARM64_GICV3
+	bool "Enable GICv3 support (with runtime GICv2 fallback)"
+	default y
+	help
+	  启用 GICv3 系统寄存器中断驱动，并在运行时自动兼容 GICv2 平台。
+
+config ARM64_KERNEL_NO_FP
+	bool "Disable FP/SIMD registers in EL1 kernel (-mgeneral-regs-only)"
+	default y
+	help
+	  禁止内核 EL1 代码隐式使用 FP/SIMD/SVE 寄存器，以支持低开销惰性向量上下文切换。
 
 endif # ARCH_ARM64

@@ -1,9 +1,7 @@
 /**
- * Copyright (C) 2023-2024 胡启航<Nick Hu>
+ * Copyright (C) 2023-2026 Nick Hu <huqihan@live.com>
  *
- * Author: 胡启航<Nick Hu>
- *
- * Email: huqihan@live.com
+ * ARM64 架构 Ticket Spinlock 实现（支持 SMP 语义）
  */
 
 #ifndef __ARM64_ASM_SPINLOCK_H__
@@ -12,8 +10,8 @@
 #include <kernel/kernel.h>
 #include <asm/barrier.h>
 
-#define TICKET_SHIFT 16
-#define ARCH_HAS_SPIN_TRYLOCK 1
+#define TICKET_SHIFT            16
+#define ARCH_HAS_SPIN_TRYLOCK   1
 
 typedef struct {
     union {
@@ -32,10 +30,10 @@ typedef struct {
 
 static inline int arch_spin_is_locked(const arch_spinlock_t *lock)
 {
-    return ACCESS_ONCE(lock->tickets.next) != ACCESS_ONCE(lock->tickets.owner);
+    return __atomic_load_n(&lock->tickets.next, __ATOMIC_RELAXED) !=
+           __atomic_load_n(&lock->tickets.owner, __ATOMIC_RELAXED);
 }
 
-/* Stub ticket lock: contract-compatible with arm; refine with LSE later. */
 static inline void arch_spin_lock(arch_spinlock_t *lock)
 {
     u32 old, newval;
@@ -43,7 +41,6 @@ static inline void arch_spin_lock(arch_spinlock_t *lock)
 
     do {
         old = __atomic_load_n(&lock->slock, __ATOMIC_RELAXED);
-        lockval.slock = old;
         newval = old + (1U << TICKET_SHIFT);
     } while (!__atomic_compare_exchange_n(&lock->slock, &old, newval,
                                           0, __ATOMIC_ACQUIRE, __ATOMIC_RELAXED));
@@ -51,7 +48,7 @@ static inline void arch_spin_lock(arch_spinlock_t *lock)
     lockval.slock = old;
     while (lockval.tickets.next != lockval.tickets.owner) {
         wfe();
-        lockval.tickets.owner = ACCESS_ONCE(lock->tickets.owner);
+        lockval.tickets.owner = __atomic_load_n(&lock->tickets.owner, __ATOMIC_ACQUIRE);
     }
 
     smp_mb();
@@ -78,8 +75,8 @@ static inline int arch_spin_trylock(arch_spinlock_t *lock)
 
 static inline void arch_spin_unlock(arch_spinlock_t *lock)
 {
-    smp_mb();
-    lock->tickets.owner++;
+    u16 next_owner = (u16)(__atomic_load_n(&lock->tickets.owner, __ATOMIC_RELAXED) + 1U);
+    __atomic_store_n(&lock->tickets.owner, next_owner, __ATOMIC_RELEASE);
     dsb(ishst);
     sev();
 }

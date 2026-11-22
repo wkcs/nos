@@ -1,5 +1,20 @@
 add_library(nos_arch OBJECT
-    init.c
+    boot/start.S
+    cpu/cpu.c
+    cpu/cpufeature.c
+    cpu/fpu.c
+    cpu/psci.c
     hal/hal_arm64.c
+    init.c
+    kernel/atomic.c
+    kernel/irq.c
+    kernel/percpu.c
+    kernel/switch.S
+    kernel/task.c
+    kernel/timer.c
+    kernel/trap.c
+    kernel/vectors.S
+    mm/fixmap.c
+    mm/mmu.c
 )
 nos_configure_kernel_target(nos_arch)

@@ -71,6 +71,8 @@ TESTS = [
     ("run_mm_mpu_test.py",),
     ("run_arm_mpu_test.py",),
     ("run_mm_vmm_test.py",),
+    ("run_arm64_mmu_test.py",),
+    ("run_arm64_gic_timer_test.py",),
     ("run_fatfs_config_test.py",),
     ("run_littlefs_statfs_test.py",),
     ("run_mutex_test.py",),

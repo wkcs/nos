@@ -1,21 +1,17 @@
 /**
- * Copyright (C) 2023-2024 胡启航<Nick Hu>
+ * Copyright (C) 2023-2026 Nick Hu <huqihan@live.com>
  *
- * Author: 胡启航<Nick Hu>
- *
- * Email: huqihan@live.com
+ * ARM64 初始化钩子接口
  */
 
 #ifndef __ARM64_ASM_INIT_H__
 #define __ARM64_ASM_INIT_H__
 
+#include <stdint.h>
 #include <kernel/kernel.h>
 
 void arch_early_init(void);
 void arch_init(void);
-
-void asm_cpu_init(void);
-void asm_cpu_delay_usec(uint32_t usec);
-void asm_cpu_reboot(void);
+void nos_arm64_boot(uint64_t dtb_pa, uint64_t boot_el);
 
 #endif /* __ARM64_ASM_INIT_H__ */

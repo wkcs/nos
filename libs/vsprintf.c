@@ -188,6 +188,7 @@ static int64_t format_signed_arg(va_list *args, enum format_length length)
     }
 }
 
+#if !(defined(__aarch64__) && !defined(__ARM_FP))
 /* Keep the embedded formatter's fixed-point %f support without allocating. */
 static void format_float(struct format_output *out, double number, int width,
                          int precision, unsigned int flags)
@@ -262,6 +263,7 @@ static void format_float(struct format_output *out, double number, int width,
         format_repeat(out, ' ', padding);
     }
 }
+#endif
 
 __printf(3, 0) int vsnprintf(char *buf, size_t size, const char *fmt, va_list args)
 {
@@ -383,7 +385,11 @@ __printf(3, 0) int vsnprintf(char *buf, size_t size, const char *fmt, va_list ar
                            width, precision, flags);
             break;
         case 'f':
+#if !(defined(__aarch64__) && !defined(__ARM_FP))
             format_float(&out, va_arg(ap, double), width, precision, flags);
+#else
+            format_text(&out, "%f", 2, width, flags);
+#endif
             break;
         case '%':
             format_char(&out, '%');

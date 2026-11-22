@@ -10,6 +10,7 @@ project(nos VERSION 1.0.0 LANGUAGES C ASM)
 
 include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/kconfig.cmake")
 include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/compiler_flags.cmake")
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/libc_detect.cmake")
 include("${CMAKE_CURRENT_SOURCE_DIR}/soc/chip_flags.cmake")
 include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/helpers.cmake")
 include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/devicetree.cmake")
@@ -38,6 +39,11 @@ if(DEFINED CONFIG_BOARD AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/board/${CONFIG_B
 endif()
 
 target_include_directories(nos_headers INTERFACE ${_NOS_INCLUDE_DIRS})
+if(NOT NOS_HAS_TOOLCHAIN_LIBC)
+    target_include_directories(nos_headers SYSTEM AFTER INTERFACE
+        "${CMAKE_CURRENT_SOURCE_DIR}/libs/libc/freestanding/include"
+    )
+endif()
 
 # ------------------------------------------------------------------------------
 # Subsystems

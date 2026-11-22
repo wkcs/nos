@@ -17,6 +17,9 @@
 #include <lib/vsprintf.h>
 #include <stdarg.h>
 #include <string.h>
+#if defined(__aarch64__) && defined(CONFIG_ARCH_ARM64)
+#include <asm/switch.h>
+#endif
 
 #ifdef CONFIG_SMALL_MEMORY
 #define DUMP_LOCAL_MAX_FRAMES 6U
@@ -325,6 +328,18 @@ static void get_kernel_text_bounds(uintptr_t *text_start,
         }
         check_bl = true;
     }
+#elif defined(__aarch64__) && defined(CONFIG_ARCH_ARM64)
+    {
+        extern char _text[];
+        extern char _etext[];
+        if (start == 0U || (uintptr_t)_text < start) {
+            start = (uintptr_t)_text;
+        }
+        if ((uintptr_t)_etext > end) {
+            end = (uintptr_t)_etext;
+        }
+        check_bl = false;
+    }
 #endif
     *text_start = start;
     *text_end = end;
@@ -440,6 +455,24 @@ size_t unwind_task_frames(struct task_struct *task,
         } else {
             frame.sp = (uintptr_t)task->sp;
             frame.pc = task->wchan_addr;
+        }
+#elif defined(__aarch64__) && defined(CONFIG_ARCH_ARM64)
+        /* 从 AAPCS64 切换帧恢复睡眠任务的 FP/LR 与栈指针 */
+        uintptr_t sp_val = (uintptr_t)task->sp;
+        if (sp_val >= frame.stack_low &&
+            sp_val + sizeof(struct arm64_switch_frame) <= frame.stack_high &&
+            (sp_val & 0xFULL) == 0U) {
+            const struct arm64_switch_frame *sw = (const struct arm64_switch_frame *)sp_val;
+            frame.fp = (uintptr_t)sw->x29;
+            frame.lr = (uintptr_t)sw->x30;
+            frame.pc = (task->wchan_addr != 0U) ? task->wchan_addr : (uintptr_t)sw->x30;
+            frame.sp = sp_val + sizeof(struct arm64_switch_frame);
+        } else {
+            frame.sp = (sp_val >= frame.stack_low && sp_val <= frame.stack_high) ?
+                       sp_val : frame.stack_low;
+            frame.pc = task->wchan_addr;
+            frame.lr = 0U;
+            frame.fp = 0U;
         }
 #else
         frame.sp = (uintptr_t)task->sp;

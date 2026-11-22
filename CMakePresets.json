@@ -121,6 +121,10 @@
     {
       "name": "nutiny-nuc472",
       "configurePreset": "nutiny-nuc472"
+    },
+    {
+      "name": "qemu-virt-arm64",
+      "configurePreset": "qemu-virt-arm64"
     }
   ]
 }

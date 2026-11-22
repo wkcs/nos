@@ -1,17 +1,15 @@
 /**
- * Copyright (C) 2023-2024 胡启航<Nick Hu>
+ * Copyright (C) 2023-2026 Nick Hu <huqihan@live.com>
  *
- * Author: 胡启航<Nick Hu>
- *
- * Email: huqihan@live.com
- *
- * ARM64 platform / SoC glue is not brought up yet (no golden board).
- * Including this header fails loudly so callers know the gap.
+ * ARM64 平台中立抽象声明（具体板级地址通过 board/ 与 DTB 注入）
  */
 
 #ifndef __ARM64_ASM_PLATFORM_H__
 #define __ARM64_ASM_PLATFORM_H__
 
-#error "arm64 port incomplete"
+#include <stdint.h>
+
+uint64_t arm64_get_boot_dtb_phys(void);
+uint8_t arm64_get_boot_el(void);
 
 #endif /* __ARM64_ASM_PLATFORM_H__ */

@@ -40,6 +40,21 @@ if("${CONFIG_BOARD}" STREQUAL "qemu-stm32")
         COMMENT "Running nos.elf in QEMU waiting for GDB on :1234"
         VERBATIM
     )
+elseif("${CONFIG_BOARD}" STREQUAL "qemu-virt" AND CONFIG_ARCH_ARM64)
+    add_custom_target(qemu-run
+        COMMAND qemu-system-aarch64 -M virt,gic-version=3 -cpu cortex-a53 -m 512M -nographic -kernel "$<TARGET_FILE:nos.elf>"
+        DEPENDS nos.elf
+        WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
+        COMMENT "Running nos.elf in QEMU ARM64 (virt, GICv3, Cortex-A53)"
+        VERBATIM
+    )
+    add_custom_target(qemu-run-gdb
+        COMMAND qemu-system-aarch64 -M virt,gic-version=3 -cpu cortex-a53 -m 512M -nographic -kernel "$<TARGET_FILE:nos.elf>" -S -s
+        DEPENDS nos.elf
+        WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
+        COMMENT "Running nos.elf in QEMU ARM64 waiting for GDB on :1234"
+        VERBATIM
+    )
 endif()
 
 add_custom_target(menuconfig

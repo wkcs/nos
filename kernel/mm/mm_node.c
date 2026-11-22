@@ -38,9 +38,9 @@ static struct mm_node *find_first_node(void)
 
 static int __mm_node_early_init(struct mm_node *node)
 {
-    u32 size;
+    size_t size;
     u32 buddy_page_index;
-    u32 page_struct_size;
+    size_t page_struct_size;
 
     if (node->algo == MM_NODE_ALGO_AUTO) {
 #ifdef CONFIG_MM_TLSF
@@ -57,12 +57,12 @@ static int __mm_node_early_init(struct mm_node *node)
             if (node->end <= node->start ||
                 (node->end - node->start) <= 2U * sizeof(struct mm_tlsf_block) + MM_TLSF_MIN_BLOCK_SIZE) {
                 pr_err("node[%s]: too small(0x%lx-0x%lx), skip tlsf\n",
-                       node->name, node->start, node->end);
+                       node->name, (unsigned long)node->start, (unsigned long)node->end);
                 return -ENOMEM;
             }
-            size = (u32)(node->end - node->start);
+            size = (size_t)(node->end - node->start);
             node->start_pfn = GET_PFN(node->start);
-            node->page_num = size / CONFIG_PAGE_SIZE;
+            node->page_num = (u32)(size / CONFIG_PAGE_SIZE);
             node->buddy_page_index = 0U;
             node->free_num = node->page_num;
             list_add_tail(&node->list, &g_node_list);
@@ -71,29 +71,32 @@ static int __mm_node_early_init(struct mm_node *node)
         node->start = ALIGNED_PAGE(node->start);
         node->end = ALIGNED_PAGE_DONE(node->end);
         if (node->end < node->start) {
-            pr_err("node[%s]: too small(0x%lx-0x%lx), skip1\n", node->name, node->start, node->end);
+            pr_err("node[%s]: too small(0x%lx-0x%lx), skip1\n",
+                   node->name, (unsigned long)node->start, (unsigned long)node->end);
             return -ENOMEM;
         }
-        size = node->end - node->start;
+        size = (size_t)(node->end - node->start);
         if (size <= sizeof(struct mem_base)) {
-            pr_err("node[%s]: too small(0x%lx-0x%lx), skip2\n", node->name, node->start, node->end);
+            pr_err("node[%s]: too small(0x%lx-0x%lx), skip2\n",
+                   node->name, (unsigned long)node->start, (unsigned long)node->end);
             return -ENOMEM;
         }
     } else {
-        size = node->end - node->start;
+        size = (size_t)(node->end - node->start);
     }
     node->start_pfn = GET_PFN(node->start);
-    node->page_num = size / CONFIG_PAGE_SIZE;
+    node->page_num = (u32)(size / CONFIG_PAGE_SIZE);
 
     if (node->type == NODE_NORMAL) {
-        page_struct_size = node->page_num * sizeof(struct page);
+        page_struct_size = (size_t)node->page_num * sizeof(struct page);
         if (page_struct_size % CONFIG_PAGE_SIZE) {
-            buddy_page_index = page_struct_size / CONFIG_PAGE_SIZE + 1;
+            buddy_page_index = (u32)(page_struct_size / CONFIG_PAGE_SIZE + 1U);
         } else {
-            buddy_page_index = page_struct_size / CONFIG_PAGE_SIZE;
+            buddy_page_index = (u32)(page_struct_size / CONFIG_PAGE_SIZE);
         }
         if (buddy_page_index >= node->page_num) {
-            pr_err("node[%s]: too small(0x%lx-0x%lx), skip3\n", node->name, node->start, node->end);
+            pr_err("node[%s]: too small(0x%lx-0x%lx), skip3\n",
+                   node->name, (unsigned long)node->start, (unsigned long)node->end);
             return -ENOMEM;
         }
         node->buddy_page_index = buddy_page_index;
@@ -125,8 +128,9 @@ __init int mm_node_early_init(void)
     for (i = 0; i < num; i++) {
         rc = __mm_node_early_init(node);
         if (rc == 0) {
-            pr_info("node[%s]: 0x%lx-0x%lx, start_pfn=%u, page_num=%u, buddy_page_num=%u\n",
-                    node->name, node->start, node->end, node->start_pfn, node->page_num,
+            pr_info("node[%s]: 0x%lx-0x%lx, start_pfn=%lu, page_num=%u, buddy_page_num=%u\n",
+                    node->name, (unsigned long)node->start, (unsigned long)node->end,
+                    (unsigned long)node->start_pfn, node->page_num,
                     node->page_num - node->buddy_page_index);
         }
         node++;
@@ -239,8 +243,9 @@ static void __mm_node_dump(struct mm_node *node)
                 (u32)mm_tlsf_free_size(&node->tlsf));
         return;
     }
-    pr_info("node[%s]: 0x%lx-0x%lx, start_pfn=%u, page_num=%u, buddy_page_num=%u, free_num=%u\n",
-            node->name, node->start, node->end, node->start_pfn, node->page_num,
+    pr_info("node[%s]: 0x%lx-0x%lx, start_pfn=%lu, page_num=%u, buddy_page_num=%u, free_num=%u\n",
+            node->name, (unsigned long)node->start, (unsigned long)node->end,
+            (unsigned long)node->start_pfn, node->page_num,
             node->page_num - node->buddy_page_index, node->free_num);
     mm_buddy_dump_info(&node->buddy);
 }

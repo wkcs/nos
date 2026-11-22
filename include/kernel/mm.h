@@ -100,7 +100,7 @@ struct mm_node {
     addr_t end;
     enum mm_node_type type;
     enum mm_node_algo algo;
-    u32 start_pfn;
+    addr_t start_pfn;
     u32 page_num;
     u32 free_num;
     u32 buddy_page_index; /* 可以使用的第一个页 */
@@ -116,7 +116,7 @@ struct page {
     struct mm_node *node;
     u32 use_cnt;
     s32 private;
-    u32 pfn;
+    addr_t pfn;
     struct list_head list;
 };
 

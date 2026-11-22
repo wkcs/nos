@@ -1,17 +1,58 @@
 /*
  * Copyright (C) 2023-2026 Nick Hu <huqihan@live.com>
+ *
+ * QEMU Virt ARM64 设备树描述（兼容 GICv3 / PL011 / Generic Timer / PSCI）
  */
 
 /dts-v1/;
 
 / {
     compatible = "linux,dummy-virt";
-    model = "QEMU Virt Board";
+    model = "QEMU Virt ARM64 Board";
     #address-cells = <2>;
     #size-cells = <2>;
+
+    chosen {
+        nos,console = <&uart0>;
+    };
+
+    cpus {
+        #address-cells = <1>;
+        #size-cells = <0>;
+
+        cpu0: cpu@0 {
+            device_type = "cpu";
+            compatible = "arm,cortex-a53";
+            reg = <0x0>;
+            capacity-dmips-mhz = <1024>;
+        };
+    };
 
     memory@40000000 {
         device_type = "memory";
         reg = <0x0 0x40000000 0x0 0x20000000>;
+    };
+
+    psci {
+        compatible = "arm,psci-1.0", "arm,psci-0.2";
+        method = "hvc";
+    };
+
+    gic: interrupt-controller@8000000 {
+        compatible = "arm,gic-v3";
+        interrupt-controller;
+        reg = <0x0 0x08000000 0x0 0x00010000>,
+              <0x0 0x080A0000 0x0 0x00F60000>;
+    };
+
+    timer {
+        compatible = "arm,armv8-timer";
+    };
+
+    uart0: serial@9000000 {
+        compatible = "arm,pl011", "arm,primecell";
+        reg = <0x0 0x09000000 0x0 0x00001000>;
+        clock-frequency = <24000000>;
+        status = "okay";
     };
 };

@@ -101,7 +101,7 @@ def write_kallsyms_c(symbols, output_file):
         f.write("};\n\n")
         f.write("const struct kallsym_entry kallsyms_table[] = {\n")
         for (addr, _), off in zip(symbols, offsets):
-            f.write(f"    {{ 0x{addr:08x}, (const char *)&kallsyms_names[{off}] }},\n")
+            f.write(f"    {{ 0x{addr:08x}UL, (const char *)&kallsyms_names[{off}] }},\n")
         f.write("    { 0, (const char *)0 }\n")
         f.write("};\n\n")
         f.write(f"const unsigned int kallsyms_num = {len(symbols)};\n")

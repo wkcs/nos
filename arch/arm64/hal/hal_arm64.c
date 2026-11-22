@@ -1,8 +1,7 @@
 /**
  * Copyright (C) 2023-2026 Nick Hu <huqihan@live.com>
  *
- * Unified Multi-Architecture HAL Implementation for ARM64 (ARMv8-A EL1/EL0)
- * Supports QEMU virt GICv2, ARM Generic Timer, and 4KB 4-level MMU page tables.
+ * ARM64 统一多架构 HAL 契约实现（EL1/EL0、GICv3/v2、Generic Timer、Hardware MMU）
  */
 
 #include <nos/hal_arch.h>
@@ -10,26 +9,25 @@
 #include <uapi/nos/errno.h>
 #include <asm/init.h>
 #include <asm/irq.h>
+#include <asm/gic.h>
 #include <asm/mmu.h>
+#include <asm/percpu.h>
+#include <asm/psci.h>
+#include <asm/switch.h>
+#include <asm/sysreg.h>
+#include <kernel/mm.h>
+#include <string.h>
 
-/* QEMU virt GICv2 Distributor & CPU Interface MMIO bases */
-#define ARM64_GICD_BASE         0x08000000UL
-#define ARM64_GICC_BASE         0x08010000UL
-#define ARM64_UART_PL011_BASE   0x09000000UL
-
-#define GICD_CTLR               ((volatile uint32_t *)(ARM64_GICD_BASE + 0x000UL))
-#define GICD_ISENABLER(n)       ((volatile uint32_t *)(ARM64_GICD_BASE + 0x100UL + (4UL * (n))))
-#define GICD_ICENABLER(n)       ((volatile uint32_t *)(ARM64_GICD_BASE + 0x180UL + (4UL * (n))))
-#define GICC_CTLR               ((volatile uint32_t *)(ARM64_GICC_BASE + 0x000UL))
-#define GICC_PMR                ((volatile uint32_t *)(ARM64_GICC_BASE + 0x004UL))
-#define GICC_EOIR               ((volatile uint32_t *)(ARM64_GICC_BASE + 0x010UL))
+extern volatile uint32_t interrupt_nest;
+extern uint64_t arm64_timer_monotonic_ns(void);
+extern void arm64_timer_init_hz(uint32_t hz);
+extern void arm64_timer_program_oneshot_ns(uint64_t delta_ns);
 
 struct nos_arch_context {
-    uint64_t x19_to_x30[12];
-    uint64_t sp;
-    uint64_t pc;
-    uint64_t pstate;
-    uint64_t tpidr_el0;
+    struct arm64_switch_frame frame;
+    uint64_t                  sp;
+    uint64_t                  pc;
+    uint64_t                  pstate;
 };
 
 void hal_arch_early_init(void)
@@ -39,9 +37,7 @@ void hal_arch_early_init(void)
 
 void hal_arch_trap_init(void)
 {
-    *GICD_CTLR = 1U;
-    *GICC_PMR = 0xFFU;
-    *GICC_CTLR = 1U;
+    /* GIC 具体基址由 board_init() 解析 DTB/平台定义后调用 arm64_gic_init() 完成 */
 }
 
 void hal_arch_context_init(struct nos_arch_context *ctx,
@@ -50,80 +46,99 @@ void hal_arch_context_init(struct nos_arch_context *ctx,
                            uintptr_t arg0,
                            bool is_user)
 {
-    uint32_t i;
-
     if (ctx == NULL) {
         return;
     }
-    for (i = 0; i < 12U; i++) {
-        ctx->x19_to_x30[i] = 0ULL;
-    }
-    ctx->x19_to_x30[0] = (uint64_t)arg0;
-    ctx->x19_to_x30[11] = (uint64_t)entry; /* x30 (LR) */
+    memset(ctx, 0, sizeof(*ctx));
+    ctx->frame.x19 = (uint64_t)arg0;
+    ctx->frame.x30 = (uint64_t)entry;
     ctx->sp = (uint64_t)(stack_top & ~0xFULL);
     ctx->pc = (uint64_t)entry;
-    ctx->pstate = is_user ? 0x0ULL : 0x5ULL; /* EL0t vs EL1h */
-    ctx->tpidr_el0 = 0ULL;
+    ctx->pstate = is_user ? PSR_MODE_EL0t : PSR_MODE_EL1h;
 }
 
 void hal_arch_context_switch(struct nos_arch_context *prev,
                              struct nos_arch_context *next)
 {
-    (void)prev;
-    (void)next;
+    if (prev == NULL || next == NULL) {
+        return;
+    }
+    __arm64_cpu_switch_to((addr_t)&prev->sp, (addr_t)&next->sp);
 }
 
 uintptr_t hal_irq_save(void)
 {
-    uintptr_t flags = 0U;
-#if defined(__aarch64__)
-    __asm__ volatile("mrs %0, daif\n\tmsr daifset, #2" : "=r"(flags) :: "memory");
-#endif
-    return flags;
+    return (uintptr_t)asm_disable_irq_save();
 }
 
 void hal_irq_restore(uintptr_t flags)
 {
-#if defined(__aarch64__)
-    __asm__ volatile("msr daif, %0" :: "r"(flags) : "memory");
-#else
-    (void)flags;
-#endif
+    asm_enable_irq_save((addr_t)flags);
 }
 
 void hal_irq_enable(uint32_t irq)
 {
-    if (irq < 1020U) {
-        *GICD_ISENABLER(irq / 32U) = (1U << (irq % 32U));
-    }
+    arm64_gic_enable_irq(irq);
 }
 
 void hal_irq_disable(uint32_t irq)
 {
-    if (irq < 1020U) {
-        *GICD_ICENABLER(irq / 32U) = (1U << (irq % 32U));
-    }
+    arm64_gic_disable_irq(irq);
 }
 
 void hal_irq_ack(uint32_t irq)
 {
-    *GICC_EOIR = irq;
+    arm64_gic_eoi(irq);
 }
 
 bool hal_in_irq(void)
 {
-    extern volatile uint32_t interrupt_nest;
     return (interrupt_nest > 0U);
 }
 
 int hal_vm_space_init(struct nos_vm_space *space)
 {
-    return nos_vmm_space_init(space);
+    addr_t root_va;
+    uint16_t asid;
+
+    if (space == NULL) {
+        return -EINVAL;
+    }
+    memset(space, 0, sizeof(*space));
+    spin_lock_init(&space->lock);
+    INIT_LIST_HEAD(&space->vma_list);
+    space->mmap_base = 0x00100000UL;
+    space->mmap_limit = 0x3FFFFFF000UL;
+
+    root_va = alloc_page(GFP_KERNEL | GFP_ZERO);
+    if (root_va == 0U) {
+        return -ENOMEM;
+    }
+    asid = arm64_asid_alloc(NULL, NULL);
+    space->root_pt_phys = arm64_virt_to_phys((uintptr_t)root_va);
+    space->asid = asid;
+    space->initialized = true;
+    return 0;
 }
 
 void hal_vm_space_destroy(struct nos_vm_space *space)
 {
-    nos_vmm_space_destroy(space);
+    struct list_head *pos;
+    struct list_head *n;
+
+    if (space == NULL || !space->initialized) {
+        return;
+    }
+    list_for_each_safe(pos, n, &space->vma_list) {
+        struct nos_vm_area *vma = list_entry(pos, struct nos_vm_area, list);
+        list_del(&vma->list);
+        kfree(vma);
+    }
+    if (space->root_pt_phys != 0U) {
+        arm64_pt_destroy(space->root_pt_phys, CONFIG_ARM64_VA_BITS, NULL);
+        space->root_pt_phys = 0U;
+    }
+    space->initialized = false;
 }
 
 int hal_vm_map(struct nos_vm_space *space,
@@ -132,88 +147,59 @@ int hal_vm_map(struct nos_vm_space *space,
                size_t size,
                uint32_t prot_flags)
 {
-    return nos_vmm_map_pages(space, vaddr, paddr, size, prot_flags);
+    if (space == NULL || !space->initialized || space->root_pt_phys == 0U) {
+        return -EINVAL;
+    }
+    int rc = arm64_pt_map_range(space->root_pt_phys,
+                                CONFIG_ARM64_VA_BITS,
+                                vaddr, paddr, size,
+                                prot_flags, true, NULL);
+    return rc;
 }
 
 int hal_vm_unmap(struct nos_vm_space *space, uintptr_t vaddr, size_t size)
 {
-    return nos_vmm_unmap_pages(space, vaddr, size);
+    if (space == NULL || !space->initialized || space->root_pt_phys == 0U) {
+        return -EINVAL;
+    }
+    return arm64_pt_unmap_range(space->root_pt_phys,
+                                CONFIG_ARM64_VA_BITS,
+                                vaddr, size, true, NULL);
 }
 
 void hal_vm_switch(struct nos_vm_space *next_space)
 {
-    if (next_space == NULL || next_space->root_pt_phys == 0U) {
+    if (next_space == NULL || !next_space->initialized || next_space->root_pt_phys == 0U) {
         return;
     }
 #if defined(__aarch64__)
     uint64_t ttbr = ((uint64_t)next_space->asid << 48) |
-                    (uint64_t)(next_space->root_pt_phys & 0x0000FFFFFFFFF000ULL);
+                    (uint64_t)(next_space->root_pt_phys & ARM64_PTE_ADDR_MASK);
     __asm__ volatile("msr ttbr0_el1, %0\n\tisb" :: "r"(ttbr) : "memory");
 #endif
 }
 
 void hal_timer_init(uint32_t hz)
 {
-#if defined(__aarch64__)
-    uint64_t freq = 0ULL;
-    uint64_t tval;
-    uint64_t ctl = 1ULL;
-    __asm__ volatile("mrs %0, cntfrq_el0" : "=r"(freq));
-    tval = (hz > 0U && freq > 0ULL) ? (freq / hz) : 625000ULL;
-    __asm__ volatile("msr cntp_tval_el0, %0\n\tmsr cntp_ctl_el0, %1\n\tisb"
-                     :: "r"(tval), "r"(ctl) : "memory");
-#else
-    (void)hz;
-#endif
+    arm64_timer_init_hz(hz);
 }
 
 uint64_t hal_timer_monotonic_ns(void)
 {
-#if defined(__aarch64__)
-    uint64_t pct = 0ULL;
-    uint64_t freq = 0ULL;
-    __asm__ volatile("mrs %0, cntpct_el0" : "=r"(pct));
-    __asm__ volatile("mrs %0, cntfrq_el0" : "=r"(freq));
-    if (freq == 0ULL) {
-        return 0ULL;
-    }
-    return (pct * 1000000000ULL) / freq;
-#else
-    return 0ULL;
-#endif
+    return arm64_timer_monotonic_ns();
 }
 
 void hal_timer_program_oneshot_ns(uint64_t delta_ns)
 {
-#if defined(__aarch64__)
-    uint64_t freq = 0ULL;
-    uint64_t ticks;
-    uint64_t ctl = 1ULL;
-    __asm__ volatile("mrs %0, cntfrq_el0" : "=r"(freq));
-    ticks = (freq * delta_ns) / 1000000000ULL;
-    if (ticks == 0ULL) {
-        ticks = 1ULL;
-    }
-    __asm__ volatile("msr cntp_tval_el0, %0\n\tmsr cntp_ctl_el0, %1\n\tisb"
-                     :: "r"(ticks), "r"(ctl) : "memory");
-#else
-    (void)delta_ns;
-#endif
+    arm64_timer_program_oneshot_ns(delta_ns);
 }
 
 uint32_t hal_cpu_id(void)
 {
-#if defined(__aarch64__)
-    uint64_t mpidr = 0ULL;
-    __asm__ volatile("mrs %0, mpidr_el1" : "=r"(mpidr));
-    return (uint32_t)(mpidr & 0xFFULL);
-#else
-    return 0U;
-#endif
+    return arm64_this_percpu()->cpu_id;
 }
 
 void hal_smp_send_ipi(uint32_t target_cpu, uint32_t ipi_type)
 {
-    (void)target_cpu;
-    (void)ipi_type;
+    arm64_gic_send_sgi(target_cpu, ipi_type & 0xFU);
 }

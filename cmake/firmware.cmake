@@ -35,15 +35,24 @@ if(EXISTS "${BOARD_LD_S}")
         VERBATIM
     )
 
+    if(NOS_HAS_TOOLCHAIN_LIBC)
+        set(_NOS_STDLIB_LINK_LIBS -lgcc -lc -lm)
+        set(_NOS_STDLIB_LINK_FLAGS "")
+    else()
+        set(_NOS_STDLIB_LINK_LIBS -lgcc)
+        set(_NOS_STDLIB_LINK_FLAGS -nostdlib)
+    endif()
+
     add_executable(nos_pass1.elf ${NOS_OBJECT_LIBS} "${KALLSYMS_EMPTY_C}")
     add_dependencies(nos_pass1.elf nos_linker_script)
     nos_configure_kernel_target(nos_pass1.elf)
     target_link_options(nos_pass1.elf PRIVATE
         ${NOS_LINK_FLAGS}
+        ${_NOS_STDLIB_LINK_FLAGS}
         "-T${BOARD_LD_OUT}"
         "-Wl,-Map=${CMAKE_CURRENT_BINARY_DIR}/nos_pass1.map"
     )
-    target_link_libraries(nos_pass1.elf PRIVATE -lgcc -lc -lm)
+    target_link_libraries(nos_pass1.elf PRIVATE ${_NOS_STDLIB_LINK_LIBS})
 
     # Pass 2: real kallsyms table extracted via Python + objdump (Windows/macOS/Linux safe)
     set(KALLSYMS_REAL_C "${CMAKE_CURRENT_BINARY_DIR}/kallsyms_table.c")
@@ -74,10 +83,11 @@ if(EXISTS "${BOARD_LD_S}")
     nos_configure_kernel_target(nos.elf)
     target_link_options(nos.elf PRIVATE
         ${NOS_LINK_FLAGS}
+        ${_NOS_STDLIB_LINK_FLAGS}
         "-T${BOARD_LD_OUT}"
         "-Wl,-Map=${CMAKE_CURRENT_BINARY_DIR}/nos.map"
     )
-    target_link_libraries(nos.elf PRIVATE -lgcc -lc -lm)
+    target_link_libraries(nos.elf PRIVATE ${_NOS_STDLIB_LINK_LIBS})
 
     # Firmware artifacts: nos.bin, nos.hex, nos.img, nos.list, and size report
     set(NOS_BIN  "${CMAKE_CURRENT_BINARY_DIR}/nos.bin")
