@@ -514,6 +514,59 @@ int task_suspend(struct task_struct *task)
     return rc;
 }
 
+#ifdef CONFIG_NOS_AI_CORE
+int task_suspend_cell_tasks(struct nos_cell *cell, struct task_struct *skip_task)
+{
+    struct task_struct *targets[32];
+    uint32_t count = 0U;
+    struct task_struct *pos;
+
+    if (cell == NULL) {
+        return -EINVAL;
+    }
+
+    spin_lock_irq(&g_task_list_lock);
+    list_for_each_entry(pos, &g_task_list, tlist) {
+        if (pos == skip_task || pos->cell != cell) {
+            continue;
+        }
+        if (pos->status == TASK_ZOMBIE || pos->status == TASK_CLOSE ||
+            pos->status == TASK_SUSPENDED) {
+            continue;
+        }
+        if (count < 32U && task_get(pos)) {
+            targets[count++] = pos;
+        }
+    }
+    spin_unlock_irq(&g_task_list_lock);
+
+    for (uint32_t i = 0U; i < count; i++) {
+        struct task_struct *t = targets[i];
+        uint32_t target_cpu = t->cpu;
+        bool was_running = (t->status == TASK_RUNNING);
+
+        del_task_to_ready_list(t);
+#if CONFIG_NR_CPUS > 1
+        if (was_running && target_cpu < (uint32_t)CONFIG_NR_CPUS &&
+            target_cpu != hal_cpu_id()) {
+            struct sched_rq *remote_rq = sched_rq_of(target_cpu);
+            if (remote_rq != NULL) {
+                spin_lock_irq(&remote_rq->lock);
+                remote_rq->need_resched = true;
+                spin_unlock_irq(&remote_rq->lock);
+            }
+            hal_smp_send_ipi(target_cpu, NOS_IPI_RESCHED);
+        }
+#else
+        (void)target_cpu;
+        (void)was_running;
+#endif
+        task_put(t);
+    }
+    return (int)count;
+}
+#endif
+
 int task_hang_lock(struct task_struct *task)
 {
     uint8_t wait_status = TASK_SLEEPING;

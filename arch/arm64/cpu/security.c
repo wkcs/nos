@@ -67,6 +67,10 @@ uint64_t arm64_security_compute_sctlr(uint64_t base_sctlr, const struct arm64_cp
         /* 仅启用 EL0 同步标签检查与标签指令访问，保持无标签 EL1 内核指针零误报 */
         sctlr |= SCTLR_EL1_ATA0 | SCTLR_EL1_ATA | SCTLR_EL1_TCF0_SYNC;
     }
+    if (caps->has_pan) {
+        /* 清除 SPAN：异常进入 EL1 时硬件自动置位 PSTATE.PAN=1，防止内核直接解引用 EL0 指针 */
+        sctlr &= ~SCTLR_EL1_SPAN;
+    }
     return sctlr;
 }
 
@@ -112,6 +116,11 @@ void arm64_security_init_cpu(void)
     tcr_val = read_sysreg(tcr_el1);
     if (caps->has_pac || caps->mte_version >= 2U) {
         tcr_val |= TCR_EL1_TBI0;
+    }
+    if (caps->has_afdbm) {
+        tcr_val |= TCR_EL1_HA | TCR_EL1_HD;
+    }
+    if (caps->has_pac || caps->mte_version >= 2U || caps->has_afdbm) {
         write_sysreg(tcr_val, tcr_el1);
         __asm__ volatile("isb" ::: "memory");
     }
@@ -119,10 +128,17 @@ void arm64_security_init_cpu(void)
     sctlr_val = arm64_security_compute_sctlr(read_sysreg(sctlr_el1), caps);
     write_sysreg(sctlr_val, sctlr_el1);
     __asm__ volatile("isb" ::: "memory");
+    if (caps->has_pan) {
+        /* msr pan, #1 */
+        __asm__ volatile(".inst 0xD500419F\n\tisb" ::: "memory");
+    }
 #else
     sctlr_val = arm64_security_compute_sctlr(0ULL, caps);
     if (caps->has_pac || caps->mte_version >= 2U) {
         tcr_val |= TCR_EL1_TBI0;
+    }
+    if (caps->has_afdbm) {
+        tcr_val |= TCR_EL1_HA | TCR_EL1_HD;
     }
 #endif
 
@@ -130,6 +146,8 @@ void arm64_security_init_cpu(void)
         g_sec_status.pac_enabled = caps->has_pac;
         g_sec_status.bti_enabled = caps->has_bti;
         g_sec_status.mte_enabled = (caps->mte_version >= 2U);
+        g_sec_status.pan_enabled = caps->has_pan;
+        g_sec_status.afdbm_enabled = caps->has_afdbm;
         g_sec_status.mte_version = caps->mte_version;
         g_sec_status.cca_realm_present = arm64_cca_probe();
         g_sec_status.sctlr_bits = sctlr_val;
@@ -167,10 +185,12 @@ void arm64_security_get_status(struct arm64_sec_status *out)
 
 void arm64_security_dump(void)
 {
-    pr_info("ARM64 Security: PAC=%s BTI=%s MTE=%s(v%u) CCA=%s\n",
+    pr_info("ARM64 Security: PAC=%s BTI=%s MTE=%s(v%u) PAN=%s AFDBM=%s CCA=%s\n",
             g_sec_status.pac_enabled ? "on" : "off",
             g_sec_status.bti_enabled ? "on" : "off",
             g_sec_status.mte_enabled ? "on" : "off",
             (unsigned int)g_sec_status.mte_version,
+            g_sec_status.pan_enabled ? "on" : "off",
+            g_sec_status.afdbm_enabled ? "on" : "off",
             g_sec_status.cca_realm_present ? "realm" : "none");
 }

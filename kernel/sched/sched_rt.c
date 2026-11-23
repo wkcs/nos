@@ -158,7 +158,9 @@ static void rt_check_preempt_curr(struct sched_rq *rq, struct task_struct *p, in
     if (rq->curr == NULL ||
         rq->curr == rq->idle ||
         rq->curr->policy == SCHED_POLICY_NORMAL ||
+#ifdef CONFIG_NOS_AI_CORE
         rq->curr->policy == SCHED_POLICY_INFER ||
+#endif
         rq->curr->policy == SCHED_POLICY_IDLE ||
         p->current_priority < rq->curr->current_priority) {
         rq->need_resched = true;

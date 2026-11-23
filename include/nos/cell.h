@@ -41,15 +41,17 @@ struct nos_cell_snapshot_item {
 };
 
 struct nos_cell_snapshot {
-    struct nos_object            header; /* 必须置于首字段，供 Capability Pinned Lookup */
-    struct nos_cell             *owner_cell;
-    uint32_t                     item_count;
-    uint16_t                     saved_state;
-    uint16_t                     reserved;
-    uint64_t                     saved_cpu_ns_used;
-    uint64_t                     saved_mem_bytes_used;
-    uint64_t                     saved_tool_calls_used;
-    uint64_t                     saved_accel_ops_used;
+    struct nos_object             header; /* 必须置于首字段，供 Capability Pinned Lookup */
+    struct nos_cell              *owner_cell;
+    struct nos_cap_table_snapshot *cap_snap;
+    uint32_t                      item_count;
+    uint16_t                      saved_state;
+    uint16_t                      reserved;
+    uint64_t                      saved_binding_mask;
+    uint64_t                      saved_cpu_ns_used;
+    uint64_t                      saved_mem_bytes_used;
+    uint64_t                      saved_tool_calls_used;
+    uint64_t                      saved_accel_ops_used;
     struct nos_cell_snapshot_item items[NOS_CELL_MAX_TRACKED_VMOS];
 };
 
@@ -58,6 +60,8 @@ struct nos_cell {
     uint32_t                 cell_id;         /* 全局递增 Cell 唯一 ID */
     uint16_t                 state;           /* NOS_CELL_STATE_* */
     uint16_t                 reserved;
+    uint32_t                 iommu_sid;       /* 最近绑定的加速器 SMMU StreamID */
+    bool                     has_iommu_sid;
     spinlock_t               lock;            /* 保护预算计数、Telemetry 同步与审计环 */
     struct nos_cell         *parent;          /* 父 Cell（用于级联预算约束与子数量归还） */
     struct nos_cap_table     cap_table;       /* Cell 专属能力空间根 CNode */
@@ -83,7 +87,11 @@ void nos_cell_subsystem_init(void);
 
 struct nos_cell *nos_cell_create(struct nos_cell *parent,
                                  const struct nos_cell_budget *budget);
+struct nos_cell *nos_cell_fork(struct nos_cell *parent,
+                               const struct nos_cell_budget *budget);
 int nos_cell_destroy(struct nos_cell *cell);
+void nos_cell_notify_event(struct nos_cell *cell, uint64_t evt_bits);
+int nos_cell_bind_iommu_sid(struct nos_cell *cell, uint32_t sid);
 
 int nos_cell_set_budget(struct nos_cell *cell, const struct nos_cell_budget *budget);
 int nos_cell_get_budget(struct nos_cell *cell, struct nos_cell_budget *out_budget);
@@ -126,6 +134,10 @@ void nos_cell_untrack_vmo_map(struct nos_cell *cell, uintptr_t vaddr, size_t len
 struct nos_cell_snapshot *nos_cell_snapshot(struct nos_cell *cell);
 int nos_cell_rollback(struct nos_cell *cell, struct nos_cell_snapshot *snap);
 int nos_cell_handle_cow_fault(struct nos_cell *cell, uintptr_t fault_va);
+int nos_cell_handle_page_fault(struct nos_cell *cell,
+                               uintptr_t fault_va,
+                               bool is_write,
+                               uint32_t dfsc);
 int nos_cell_snapshot_destroy(struct nos_cell_snapshot *snap);
 
 #endif /* __NOS_CELL_H__ */

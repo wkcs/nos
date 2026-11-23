@@ -133,6 +133,17 @@ static ssize_t uart_dw8250_write(const struct device *dev,
     return (ssize_t)written;
 }
 
+static uint32_t uart_dw8250_clear_busy(const struct device *dev)
+{
+    uint32_t iir = *dw8250_reg(dev, DW8250_IIR);
+
+    /* DesignWare Busy Detect 中断 (IIR[3:0] == 0x7) 需读 USR 寄存器清除以防中断风暴 */
+    if ((iir & 0x0FU) == 0x07U) {
+        return *dw8250_reg(dev, DW8250_USR);
+    }
+    return 0U;
+}
+
 #if defined(CONFIG_ARCH_ARM64) && !defined(__HOST_TEST__)
 static void uart_dw8250_irq_handler(uint32_t intid, void *ctx)
 {
@@ -145,6 +156,7 @@ static void uart_dw8250_irq_handler(uint32_t intid, void *ctx)
         return;
     }
     data = dev->data;
+    (void)uart_dw8250_clear_busy(dev);
 
     spin_lock_irq(&data->lock);
     while ((*dw8250_reg(dev, DW8250_LSR) & DW8250_LSR_DR) != 0U) {

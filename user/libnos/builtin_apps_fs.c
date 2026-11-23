@@ -12,12 +12,37 @@
 
 extern const uint8_t g_builtin_ai_agent_elf[];
 extern const size_t g_builtin_ai_agent_elf_size;
+extern const uint8_t g_builtin_tool_srv_elf[];
+extern const size_t g_builtin_tool_srv_elf_size;
+
+static int install_elf_file(const char *path, const uint8_t *buf, size_t size)
+{
+    size_t written = 0U;
+    int fd = nos_open(path, O_CREAT | O_RDWR | O_TRUNC);
+
+    if (fd < 0) {
+        pr_err("builtin_apps_fs: open %s failed (%d)\n", path, fd);
+        return fd;
+    }
+
+    while (written < size) {
+        ssize_t n = nos_write(fd, buf + written, size - written);
+        if (n <= 0) {
+            (void)nos_close(fd);
+            pr_err("builtin_apps_fs: write %s failed\n", path);
+            return -EIO;
+        }
+        written += (size_t)n;
+    }
+
+    (void)nos_close(fd);
+    pr_info("Installed EL0 C app %s (%u bytes)\n", path, (unsigned int)size);
+    return 0;
+}
 
 static int builtin_user_apps_fs_init(void)
 {
-    size_t written = 0U;
     int rc;
-    int fd;
 
     rc = nos_mkdir("/bin", 0755);
     if (rc != 0 && rc != -EEXIST) {
@@ -25,28 +50,12 @@ static int builtin_user_apps_fs_init(void)
         return rc;
     }
 
-    fd = nos_open("/bin/ai_agent.elf", O_CREAT | O_RDWR | O_TRUNC);
-    if (fd < 0) {
-        pr_err("builtin_apps_fs: open /bin/ai_agent.elf failed (%d)\n", fd);
-        return fd;
+    rc = install_elf_file("/bin/ai_agent.elf", g_builtin_ai_agent_elf, g_builtin_ai_agent_elf_size);
+    if (rc != 0) {
+        return rc;
     }
 
-    while (written < g_builtin_ai_agent_elf_size) {
-        ssize_t n = nos_write(fd,
-                              g_builtin_ai_agent_elf + written,
-                              g_builtin_ai_agent_elf_size - written);
-        if (n <= 0) {
-            (void)nos_close(fd);
-            pr_err("builtin_apps_fs: write /bin/ai_agent.elf failed\n");
-            return -EIO;
-        }
-        written += (size_t)n;
-    }
-
-    (void)nos_close(fd);
-    pr_info("Installed EL0 C app /bin/ai_agent.elf (%u bytes)\n",
-            (unsigned int)g_builtin_ai_agent_elf_size);
-    return 0;
+    return install_elf_file("/bin/tool_srv.elf", g_builtin_tool_srv_elf, g_builtin_tool_srv_elf_size);
 }
 
 SYS_INIT(builtin_user_apps_fs_init, INIT_LEVEL_APPLICATION);

@@ -152,6 +152,20 @@ static void test_39bit_4k_64k_2m_and_wx_reject(void)
     /* 6. Unmap 并销毁后池页表必须零泄漏 */
     assert(arm64_pt_unmap_range(root, 39, 0x100000ULL, 4096U, false, &g_be) == 0);
     assert(arm64_pt_translate(root, 39, 0x100000ULL, &out_pa, &out_pte, &g_be) == -ENOENT);
+
+    /* 7. arm64_pt_map_range_noflush 与 arm64_pt_test_and_clear_af 校验 */
+    assert(arm64_pt_map_range_noflush(root, 39, 0x180000ULL, 0x48000000ULL, 4096U,
+                                      HAL_VM_PROT_READ | HAL_VM_PROT_WRITE | HAL_VM_PROT_USER,
+                                      true, &g_be) == 0);
+    bool was_accessed = false;
+    assert(arm64_pt_test_and_clear_af(root, 39, 0x180000ULL, &was_accessed, &g_be) == 0);
+    assert(was_accessed);
+    assert(arm64_pt_translate(root, 39, 0x180000ULL, &out_pa, &out_pte, &g_be) == 0);
+    assert(out_pa == 0x48000000ULL && (out_pte & ARM64_PTE_AF) == 0ULL);
+    was_accessed = true;
+    assert(arm64_pt_test_and_clear_af(root, 39, 0x180000ULL, &was_accessed, &g_be) == 0);
+    assert(!was_accessed);
+
     arm64_pt_destroy(root, 39, &g_be);
     assert(g_pool.active_pages == 0U);
 }

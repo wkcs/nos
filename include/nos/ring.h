@@ -81,6 +81,14 @@ int nos_ring_enter(struct nos_ring *ring,
                    uint32_t flags,
                    uint32_t timeout_ticks);
 
+int nos_ring_enter_with_cap(struct nos_ring *ring,
+                            struct task_struct *caller,
+                            nos_handle_t ring_handle,
+                            uint32_t to_submit,
+                            uint32_t min_complete,
+                            uint32_t flags,
+                            uint32_t timeout_ticks);
+
 int nos_ring_server_pop(struct nos_ring *ring,
                         struct nos_ring_sqe *out_sqe,
                         uint32_t timeout_ticks);

@@ -25,6 +25,14 @@ static uint32_t g_sim_cpu_id;
 static uint64_t g_sim_time_us = 1000ULL;
 static uint32_t g_ipi_count[CONFIG_NR_CPUS];
 static struct task_struct g_idle_tasks[CONFIG_NR_CPUS];
+static uint32_t g_oneshot_calls;
+static uint64_t g_last_oneshot_ns;
+
+void hal_timer_program_oneshot_ns(uint64_t delta_ns)
+{
+    g_oneshot_calls++;
+    g_last_oneshot_ns = delta_ns;
+}
 
 /* Mock HAL & Kernel 基础依赖 */
 uint32_t hal_cpu_id(void)
@@ -328,6 +336,46 @@ static void test_deadline_inheritance_eas_and_gang(void)
     sched_infer_gang_leave(&g_m1);
     assert(sched_infer_query_topo(&topo) == 0);
     assert(topo.active_gangs == 0U);
+
+    /* 4. DECODE 访存核簇打散惩罚与微秒级 oneshot_ns 精准抢占验证 */
+    struct task_struct dec0;
+    struct task_struct dec1;
+    struct nos_infer_sched_param p_dec_micro = {
+        .role = NOS_INFER_ROLE_DECODE,
+        .gang_id = 0U,
+        .runtime_ns = 250000ULL, /* 250 us (< 1ms tick) */
+        .deadline_ns = 5000000ULL,
+        .period_ns = 10000000ULL,
+    };
+    struct sched_rq *rq1 = sched_rq_of(1U);
+
+    init_mock_task(&dec0, "dec0", 40, SCHED_POLICY_NORMAL, 10U, 0U);
+    init_mock_task(&dec1, "dec1", 41, SCHED_POLICY_NORMAL, 10U, 0U);
+    assert(sched_infer_set_param(&dec0, &p_dec_micro) == 0);
+    assert(sched_infer_set_param(&dec1, &p_dec_micro) == 0);
+
+    spin_lock_irq(&rq0->lock);
+    sched_enqueue_task_locked(rq0, &dec0, SCHED_ENQUEUE_WAKEUP);
+    rq0->curr = &dec0;
+    dec0.status = TASK_RUNNING;
+    spin_unlock_irq(&rq0->lock);
+
+    /* dec1 选核应避开正在跑 DECODE 的 cpu0 而分散到空闲核 */
+    picked_cpu = sched_select_task_rq(&dec1, SCHED_ENQUEUE_WAKEUP);
+    assert(picked_cpu != 0U && picked_cpu < CONFIG_NR_CPUS);
+
+    /* pick_next_task 对 remaining < 1ms 触发 oneshot_ns(250us)，推进 250us 即刻精准节流 */
+    g_oneshot_calls = 0U;
+    g_last_oneshot_ns = 0ULL;
+    spin_lock_irq(&rq1->lock);
+    sched_enqueue_task_locked(rq1, &dec1, SCHED_ENQUEUE_WAKEUP);
+    assert(infer_sched_class.pick_next_task(rq1) == &dec1);
+    assert(g_oneshot_calls == 1U && g_last_oneshot_ns == 250000ULL);
+    rq1->curr = &dec1;
+    g_sim_time_us += 250ULL;
+    infer_sched_class.task_tick(rq1, &dec1);
+    assert(dec1.se.infer.throttled);
+    spin_unlock_irq(&rq1->lock);
 }
 
 int main(void)

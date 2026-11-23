@@ -10,13 +10,16 @@
 #include <nos/cap.h>
 #include <nos/ipc.h>
 #include <nos/hal_arch.h>
+#include <nos/uaccess.h>
 #include <uapi/nos/abi.h>
 #include <uapi/nos/errno.h>
 #include <kernel/kernel.h>
+#include <kernel/mm.h>
 #include <kernel/task.h>
 #include <kernel/sched.h>
 #include <kernel/cpu.h>
 #include <kernel/console.h>
+#include <string.h>
 #ifdef CONFIG_NOS_AI_CORE
 #include <nos/accel.h>
 #include <nos/vmo.h>
@@ -63,29 +66,38 @@ static long sys_nos_exit(uintptr_t a0, uintptr_t a1, uintptr_t a2,
 static long sys_nos_debug_console(uintptr_t buf_ptr, uintptr_t len, uintptr_t is_read,
                                   uintptr_t a3, uintptr_t a4, uintptr_t a5)
 {
-    const char *buf = (const char *)buf_ptr;
+    char kbuf[128];
+    size_t done = 0U;
 
     (void)a3;
     (void)a4;
     (void)a5;
 
-    if (buf == NULL && len > 0U) {
-        return -EINVAL;
-    }
     if (len == 0U) {
         return 0;
+    }
+    if (buf_ptr == 0U) {
+        return -EINVAL;
     }
     if (is_read) {
         return -ENOSYS;
     }
-    console_write(buf, (size_t)len);
-    return (long)len;
+
+    while (done < (size_t)len) {
+        size_t chunk = ((size_t)len - done > sizeof(kbuf)) ? sizeof(kbuf) : ((size_t)len - done);
+        int rc = nos_copy_from_user(kbuf, buf_ptr + done, chunk);
+        if (rc < 0) {
+            return (done > 0U) ? (long)done : (long)rc;
+        }
+        console_write(kbuf, (int)chunk);
+        done += chunk;
+    }
+    return (long)done;
 }
 
 static long sys_nos_clock_get(uintptr_t out_ns_ptr, uintptr_t a1, uintptr_t a2,
                               uintptr_t a3, uintptr_t a4, uintptr_t a5)
 {
-    uint64_t *out_ns = (uint64_t *)out_ns_ptr;
     uint64_t ns = (uint64_t)cpu_run_time_us() * 1000ULL;
 
     (void)a1;
@@ -94,9 +106,9 @@ static long sys_nos_clock_get(uintptr_t out_ns_ptr, uintptr_t a1, uintptr_t a2,
     (void)a4;
     (void)a5;
 
-    if (out_ns != NULL) {
-        *out_ns = ns;
-        return 0;
+    if (out_ns_ptr != 0U) {
+        int rc = nos_copy_to_user(out_ns_ptr, &ns, sizeof(ns));
+        return (rc < 0) ? (long)rc : 0L;
     }
     return (long)ns;
 }
@@ -123,13 +135,23 @@ static long sys_nos_thread_create(uintptr_t name_ptr,
                                   uintptr_t stack_size,
                                   uintptr_t out_cap_ptr)
 {
-    const char *name = (name_ptr != 0U) ? (const char *)name_ptr : "uthread";
+    static char g_uthread_names[16][24];
+    static uint32_t g_uthread_name_seq;
+    const char *name = "uthread";
     struct task_struct *child;
     nos_handle_t cap = NOS_HANDLE_INVALID;
     int rc;
 
     if (entry_ptr == 0U) {
         return -EINVAL;
+    }
+    if (name_ptr != 0U) {
+        uint32_t slot = __atomic_fetch_add(&g_uthread_name_seq, 1U, __ATOMIC_RELAXED) & 15U;
+        if (nos_strncpy_from_user(g_uthread_names[slot], name_ptr, sizeof(g_uthread_names[slot])) > 0) {
+            name = g_uthread_names[slot];
+        } else {
+            return -EFAULT;
+        }
     }
     if (stack_size == 0U) {
         stack_size = 1024U;
@@ -160,7 +182,11 @@ static long sys_nos_thread_create(uintptr_t name_ptr,
     }
 
     if (out_cap_ptr != 0U) {
-        *(nos_handle_t *)out_cap_ptr = cap;
+        rc = nos_copy_to_user(out_cap_ptr, &cap, sizeof(cap));
+        if (rc < 0) {
+            task_del(child);
+            return (long)rc;
+        }
     }
     (void)task_ready(child);
     return (long)cap;
@@ -276,12 +302,29 @@ static long sys_nos_ipc_call(uintptr_t ep_cap,
                              uintptr_t a4,
                              uintptr_t a5)
 {
+    struct nos_ipc_msg kreq;
+    struct nos_ipc_msg kresp;
+    int rc;
+
     (void)a4;
     (void)a5;
-    return (long)nos_ipc_call((nos_handle_t)ep_cap,
-                              (const struct nos_ipc_msg *)req_ptr,
-                              (struct nos_ipc_msg *)resp_ptr,
-                              (uint32_t)timeout_ticks);
+    if (req_ptr != 0U) {
+        rc = nos_copy_from_user(&kreq, req_ptr, sizeof(kreq));
+        if (rc < 0) {
+            return (long)rc;
+        }
+    }
+    rc = nos_ipc_call((nos_handle_t)ep_cap,
+                      (req_ptr != 0U) ? &kreq : NULL,
+                      (resp_ptr != 0U) ? &kresp : NULL,
+                      (uint32_t)timeout_ticks);
+    if (rc == 0 && resp_ptr != 0U) {
+        int cp_rc = nos_copy_to_user(resp_ptr, &kresp, sizeof(kresp));
+        if (cp_rc < 0) {
+            return (long)cp_rc;
+        }
+    }
+    return (long)rc;
 }
 
 static long sys_nos_ipc_recv(uintptr_t ep_cap,
@@ -291,12 +334,23 @@ static long sys_nos_ipc_recv(uintptr_t ep_cap,
                              uintptr_t a4,
                              uintptr_t a5)
 {
+    struct nos_ipc_msg kmsg;
+    int rc;
+
     (void)a3;
     (void)a4;
     (void)a5;
-    return (long)nos_ipc_recv((nos_handle_t)ep_cap,
-                              (struct nos_ipc_msg *)msg_ptr,
-                              (uint32_t)timeout_ticks);
+    if (msg_ptr == 0U) {
+        return -EINVAL;
+    }
+    rc = nos_ipc_recv((nos_handle_t)ep_cap, &kmsg, (uint32_t)timeout_ticks);
+    if (rc == 0) {
+        int cp_rc = nos_copy_to_user(msg_ptr, &kmsg, sizeof(kmsg));
+        if (cp_rc < 0) {
+            return (long)cp_rc;
+        }
+    }
+    return (long)rc;
 }
 
 static long sys_nos_ipc_reply_wait(uintptr_t ep_cap,
@@ -306,12 +360,29 @@ static long sys_nos_ipc_reply_wait(uintptr_t ep_cap,
                                    uintptr_t a4,
                                    uintptr_t a5)
 {
+    struct nos_ipc_msg kreply;
+    struct nos_ipc_msg knext;
+    int rc;
+
     (void)a4;
     (void)a5;
-    return (long)nos_ipc_reply_wait((nos_handle_t)ep_cap,
-                                    (const struct nos_ipc_msg *)reply_ptr,
-                                    (struct nos_ipc_msg *)next_req_ptr,
-                                    (uint32_t)timeout_ticks);
+    if (reply_ptr != 0U) {
+        rc = nos_copy_from_user(&kreply, reply_ptr, sizeof(kreply));
+        if (rc < 0) {
+            return (long)rc;
+        }
+    }
+    rc = nos_ipc_reply_wait((nos_handle_t)ep_cap,
+                            (reply_ptr != 0U) ? &kreply : NULL,
+                            (next_req_ptr != 0U) ? &knext : NULL,
+                            (uint32_t)timeout_ticks);
+    if (rc == 0 && next_req_ptr != 0U) {
+        int cp_rc = nos_copy_to_user(next_req_ptr, &knext, sizeof(knext));
+        if (cp_rc < 0) {
+            return (long)cp_rc;
+        }
+    }
+    return (long)rc;
 }
 
 static long sys_nos_notify_signal(uintptr_t notif_cap,
@@ -335,12 +406,23 @@ static long sys_nos_notify_wait(uintptr_t notif_cap,
                                 uintptr_t a4,
                                 uintptr_t a5)
 {
+    uint64_t kbits = 0ULL;
+    int rc;
+
     (void)a3;
     (void)a4;
     (void)a5;
-    return (long)nos_notify_wait((nos_handle_t)notif_cap,
-                                 (uint64_t *)out_bits_ptr,
-                                 (uint32_t)timeout_ticks);
+    if (out_bits_ptr == 0U) {
+        return -EINVAL;
+    }
+    rc = nos_notify_wait((nos_handle_t)notif_cap, &kbits, (uint32_t)timeout_ticks);
+    if (rc == 0) {
+        int cp_rc = nos_copy_to_user(out_bits_ptr, &kbits, sizeof(kbits));
+        if (cp_rc < 0) {
+            return (long)cp_rc;
+        }
+    }
+    return (long)rc;
 }
 
 static long sys_nos_cap_control(uintptr_t op,
@@ -370,25 +452,46 @@ static long sys_nos_cap_control(uintptr_t op,
                             (uint32_t)arg1,
                             &out_h);
         if (rc == 0 && out_ptr != 0U) {
-            *(nos_handle_t *)out_ptr = out_h;
+            int cp_rc = nos_copy_to_user(out_ptr, &out_h, sizeof(out_h));
+            if (cp_rc < 0) {
+                return (long)cp_rc;
+            }
         }
         return (rc < 0) ? (long)rc : (long)out_h;
 
     case NOS_CAP_OP_REVOKE:
         return (long)nos_cap_revoke(cap_tbl, (nos_handle_t)handle);
 
-    case NOS_CAP_OP_INSPECT:
-        return (long)nos_cap_inspect(cap_tbl,
-                                     (nos_handle_t)handle,
-                                     (uint32_t *)arg0,
-                                     (nos_cap_rights_t *)arg1);
+    case NOS_CAP_OP_INSPECT: {
+        uint32_t ktype = 0U;
+        nos_cap_rights_t krights = 0U;
+        rc = nos_cap_inspect(cap_tbl, (nos_handle_t)handle, &ktype, &krights);
+        if (rc == 0) {
+            if (arg0 != 0U) {
+                int cp0 = nos_copy_to_user(arg0, &ktype, sizeof(ktype));
+                if (cp0 < 0) {
+                    return (long)cp0;
+                }
+            }
+            if (arg1 != 0U) {
+                int cp1 = nos_copy_to_user(arg1, &krights, sizeof(krights));
+                if (cp1 < 0) {
+                    return (long)cp1;
+                }
+            }
+        }
+        return (long)rc;
+    }
 
     case NOS_CAP_OP_CREATE_EP:
         if (nos_endpoint_create(&out_h) == NULL) {
             return -ENOMEM;
         }
         if (out_ptr != 0U) {
-            *(nos_handle_t *)out_ptr = out_h;
+            int cp_rc = nos_copy_to_user(out_ptr, &out_h, sizeof(out_h));
+            if (cp_rc < 0) {
+                return (long)cp_rc;
+            }
         }
         return (long)out_h;
 
@@ -397,7 +500,10 @@ static long sys_nos_cap_control(uintptr_t op,
             return -ENOMEM;
         }
         if (out_ptr != 0U) {
-            *(nos_handle_t *)out_ptr = out_h;
+            int cp_rc = nos_copy_to_user(out_ptr, &out_h, sizeof(out_h));
+            if (cp_rc < 0) {
+                return (long)cp_rc;
+            }
         }
         return (long)out_h;
 
@@ -482,12 +588,29 @@ static long sys_nos_cell_control(uintptr_t op,
         }
 
         if (arg0 != 0U) {
-            kbudget = *(const struct nos_cell_budget *)arg0;
+            rc = nos_copy_from_user(&kbudget, arg0, sizeof(kbudget));
+            if (rc < 0) {
+                if (parent != NULL) {
+                    (void)nos_object_put(&parent->header);
+                }
+                return (long)rc;
+            }
         }
-        child = nos_cell_create(parent, (arg0 != 0U) ? &kbudget : NULL);
+        child = (op == NOS_CELL_OP_FORK)
+                    ? nos_cell_fork(parent, (arg0 != 0U) ? &kbudget : NULL)
+                    : nos_cell_create(parent, (arg0 != 0U) ? &kbudget : NULL);
         if (parent != NULL) {
             parent_quota_full = (parent->state != NOS_CELL_STATE_ACTIVE ||
-                                 parent->child_cells_used >= parent->budget.max_child_cells);
+                                 parent->child_cells_used >= parent->budget.max_child_cells ||
+                                 (op == NOS_CELL_OP_FORK &&
+                                  ((parent->budget.cpu_ns_limit != 0ULL &&
+                                    parent->cpu_ns_used >= parent->budget.cpu_ns_limit) ||
+                                   (parent->budget.mem_bytes_limit != 0ULL &&
+                                    parent->mem_bytes_used >= parent->budget.mem_bytes_limit) ||
+                                   (parent->budget.tool_calls_limit != 0ULL &&
+                                    parent->tool_calls_used >= parent->budget.tool_calls_limit) ||
+                                   (parent->budget.accel_ops_limit != 0ULL &&
+                                    parent->accel_ops_used >= parent->budget.accel_ops_limit))));
             (void)nos_object_put(&parent->header);
         }
         if (child == NULL) {
@@ -513,7 +636,10 @@ static long sys_nos_cell_control(uintptr_t op,
             return (long)rc;
         }
         if (out_ptr != 0U) {
-            *(nos_handle_t *)out_ptr = out_h;
+            rc = nos_copy_to_user(out_ptr, &out_h, sizeof(out_h));
+            if (rc < 0) {
+                return (long)rc;
+            }
         }
         return (long)out_h;
     }
@@ -533,9 +659,14 @@ static long sys_nos_cell_control(uintptr_t op,
         (void)nos_object_put(&target->header);
         return (long)rc;
 
-    case NOS_CELL_OP_SET_BUDGET:
+    case NOS_CELL_OP_SET_BUDGET: {
+        struct nos_cell_budget kbudget;
         if (arg0 == 0U) {
             return -EINVAL;
+        }
+        rc = nos_copy_from_user(&kbudget, arg0, sizeof(kbudget));
+        if (rc < 0) {
+            return (long)rc;
         }
         rc = nos_cap_lookup(cap_tbl,
                             (nos_handle_t)cell_cap,
@@ -546,11 +677,13 @@ static long sys_nos_cell_control(uintptr_t op,
         if (rc < 0) {
             return (long)rc;
         }
-        rc = nos_cell_set_budget(target, (const struct nos_cell_budget *)arg0);
+        rc = nos_cell_set_budget(target, &kbudget);
         (void)nos_object_put(&target->header);
         return (long)rc;
+    }
 
-    case NOS_CELL_OP_GET_BUDGET:
+    case NOS_CELL_OP_GET_BUDGET: {
+        struct nos_cell_budget kbudget;
         if (arg0 == 0U) {
             return -EINVAL;
         }
@@ -563,12 +696,21 @@ static long sys_nos_cell_control(uintptr_t op,
         if (rc < 0) {
             return (long)rc;
         }
-        rc = nos_cell_get_budget(target, (struct nos_cell_budget *)arg0);
+        rc = nos_cell_get_budget(target, &kbudget);
         (void)nos_object_put(&target->header);
+        if (rc == 0) {
+            int cp_rc = nos_copy_to_user(arg0, &kbudget, sizeof(kbudget));
+            if (cp_rc < 0) {
+                return (long)cp_rc;
+            }
+        }
         return (long)rc;
+    }
 
-    case NOS_CELL_OP_READ_AUDIT:
-        if (arg0 == 0U || arg1 == 0U) {
+    case NOS_CELL_OP_READ_AUDIT: {
+        uint32_t max_rec = (uint32_t)arg1;
+        struct nos_audit_record *kbuf;
+        if (arg0 == 0U || max_rec == 0U || max_rec > NOS_CELL_AUDIT_RING_CAPACITY) {
             return -EINVAL;
         }
         rc = nos_cap_lookup(cap_tbl,
@@ -580,9 +722,23 @@ static long sys_nos_cell_control(uintptr_t op,
         if (rc < 0) {
             return (long)rc;
         }
-        rc = nos_cell_read_audit(target, (struct nos_audit_record *)arg0, (uint32_t)arg1);
+        kbuf = kmalloc((u32)(sizeof(*kbuf) * max_rec), GFP_KERNEL);
+        if (kbuf == NULL) {
+            (void)nos_object_put(&target->header);
+            return -ENOMEM;
+        }
+        rc = nos_cell_read_audit(target, kbuf, max_rec);
         (void)nos_object_put(&target->header);
+        if (rc > 0) {
+            int cp_rc = nos_copy_to_user(arg0, kbuf, (size_t)rc * sizeof(*kbuf));
+            if (cp_rc < 0) {
+                kfree(kbuf);
+                return (long)cp_rc;
+            }
+        }
+        kfree(kbuf);
         return (long)rc;
+    }
 
     case NOS_CELL_OP_SNAPSHOT: {
         struct nos_cell_snapshot *snap;
@@ -622,7 +778,10 @@ static long sys_nos_cell_control(uintptr_t op,
             return (long)rc;
         }
         if (out_ptr != 0U) {
-            *(nos_handle_t *)out_ptr = out_h;
+            int cp_rc = nos_copy_to_user(out_ptr, &out_h, sizeof(out_h));
+            if (cp_rc < 0) {
+                return (long)cp_rc;
+            }
         }
         return (long)out_h;
     }
@@ -661,6 +820,47 @@ static long sys_nos_cell_control(uintptr_t op,
         return (long)rc;
     }
 
+    case NOS_CELL_OP_BIND_NOTIF: {
+        struct nos_notification *notif = NULL;
+
+        if ((nos_handle_t)cell_cap == NOS_HANDLE_INVALID) {
+            if (current->cell == NULL || !nos_object_get(&current->cell->header)) {
+                return -EBADF;
+            }
+            target = current->cell;
+        } else {
+            rc = nos_cap_lookup(cap_tbl,
+                                (nos_handle_t)cell_cap,
+                                NOS_CAP_CELL,
+                                NOS_CAP_RIGHT_MANAGE,
+                                (void **)&target,
+                                NULL);
+            if (rc < 0) {
+                return (long)rc;
+            }
+        }
+
+        if ((nos_handle_t)arg0 != NOS_HANDLE_INVALID) {
+            rc = nos_cap_lookup(cap_tbl,
+                                (nos_handle_t)arg0,
+                                NOS_CAP_NOTIFICATION,
+                                NOS_CAP_RIGHT_SEND,
+                                (void **)&notif,
+                                NULL);
+            if (rc < 0) {
+                (void)nos_object_put(&target->header);
+                return (long)rc;
+            }
+        }
+
+        rc = nos_cell_bind_budget_notif(target, notif);
+        if (notif != NULL) {
+            (void)nos_object_put(&notif->object);
+        }
+        (void)nos_object_put(&target->header);
+        return (long)rc;
+    }
+
     default:
         return -EINVAL;
     }
@@ -687,7 +887,10 @@ static long sys_nos_vmo_create(uintptr_t args_ptr,
         return -EINVAL;
     }
 
-    kargs = *(const struct nos_vmo_create_args *)args_ptr;
+    rc = nos_copy_from_user(&kargs, args_ptr, sizeof(kargs));
+    if (rc < 0) {
+        return (long)rc;
+    }
     vmo = nos_vmo_create(&kargs);
     if (vmo == NULL) {
         return (kargs.size_bytes == 0U || (kargs.size_bytes % 4096U) != 0U)
@@ -708,7 +911,10 @@ static long sys_nos_vmo_create(uintptr_t args_ptr,
     }
 
     if (out_ptr != 0U) {
-        *(nos_handle_t *)out_ptr = out_h;
+        int cp_rc = nos_copy_to_user(out_ptr, &out_h, sizeof(out_h));
+        if (cp_rc < 0) {
+            return (long)cp_rc;
+        }
     }
     return (long)out_h;
 }
@@ -789,6 +995,9 @@ static long sys_nos_vmo_control(uintptr_t op,
     case NOS_VMO_OP_BIND_EVICT_NOTIF:
         req_rights = NOS_CAP_RIGHT_MANAGE;
         break;
+    case NOS_VMO_OP_SYNC_DMA:
+        req_rights = NOS_CAP_RIGHT_READ;
+        break;
     case NOS_VMO_OP_MAP:
         req_rights = NOS_CAP_RIGHT_MAP;
         if (((uint32_t)arg3 & HAL_VM_PROT_READ) != 0U) {
@@ -837,7 +1046,10 @@ static long sys_nos_vmo_control(uintptr_t op,
             return (long)rc;
         }
         if (arg0 != 0U) {
-            *(nos_handle_t *)arg0 = out_h;
+            int cp_rc = nos_copy_to_user(arg0, &out_h, sizeof(out_h));
+            if (cp_rc < 0) {
+                return (long)cp_rc;
+            }
         }
         return (long)out_h;
 
@@ -854,7 +1066,10 @@ static long sys_nos_vmo_control(uintptr_t op,
             return (long)rc;
         }
         if (arg1 != 0U) {
-            *(nos_handle_t *)arg1 = out_h;
+            int cp_rc = nos_copy_to_user(arg1, &out_h, sizeof(out_h));
+            if (cp_rc < 0) {
+                return (long)cp_rc;
+            }
         }
         return (long)out_h;
 
@@ -869,6 +1084,11 @@ static long sys_nos_vmo_control(uintptr_t op,
             rc = nos_vmo_bind_evict_notif(vmo, notif);
             (void)nos_object_put(&notif->object);
         }
+        (void)nos_object_put(&vmo->header);
+        return (long)rc;
+
+    case NOS_VMO_OP_SYNC_DMA:
+        rc = nos_vmo_sync_dma(vmo, (size_t)arg0, (size_t)arg1, (uint32_t)arg2);
         (void)nos_object_put(&vmo->header);
         return (long)rc;
 
@@ -931,19 +1151,22 @@ static long sys_nos_ring_create(uintptr_t args_ptr,
         return -EINVAL;
     }
 
-    kargs = *(const struct nos_ring_create_args *)args_ptr;
+    rc = nos_copy_from_user(&kargs, args_ptr, sizeof(kargs));
+    if (rc < 0) {
+        return (long)rc;
+    }
     if (kargs.schema_count > NOS_RING_MAX_SCHEMAS) {
         return -EINVAL;
     }
     if (kargs.schema_count > 0U) {
-        const uint64_t *user_schemas;
-        uint32_t i;
         if (kargs.schema_list_ptr == 0ULL) {
             return -EINVAL;
         }
-        user_schemas = (const uint64_t *)(uintptr_t)kargs.schema_list_ptr;
-        for (i = 0U; i < kargs.schema_count; i++) {
-            schemas[i] = user_schemas[i];
+        rc = nos_copy_from_user(schemas,
+                                (uintptr_t)kargs.schema_list_ptr,
+                                (size_t)kargs.schema_count * sizeof(uint64_t));
+        if (rc < 0) {
+            return (long)rc;
         }
     }
 
@@ -967,7 +1190,10 @@ static long sys_nos_ring_create(uintptr_t args_ptr,
     }
 
     if (out_ptr != 0U) {
-        *(nos_handle_t *)out_ptr = out_h;
+        int cp_rc = nos_copy_to_user(out_ptr, &out_h, sizeof(out_h));
+        if (cp_rc < 0) {
+            return (long)cp_rc;
+        }
     }
     return (long)out_h;
 }
@@ -976,33 +1202,98 @@ static long sys_nos_ring_enter(uintptr_t ring_cap,
                                uintptr_t to_submit,
                                uintptr_t min_complete,
                                uintptr_t flags,
-                               uintptr_t timeout_ticks,
-                               uintptr_t a5)
+                               uintptr_t aux4,
+                               uintptr_t aux5)
 {
     struct nos_ring *ring = NULL;
+    nos_cap_rights_t req_rights = NOS_CAP_RIGHT_SEND;
+    uint32_t f = (uint32_t)flags;
     int rc;
 
-    (void)a5;
     if (current == NULL) {
         return -EINVAL;
+    }
+
+    if ((f & NOS_RING_ENTER_BIND_SERVER) != 0U) {
+        req_rights = NOS_CAP_RIGHT_MANAGE | NOS_CAP_RIGHT_RECV;
+    } else if ((f & (NOS_RING_ENTER_SERVER_POP | NOS_RING_ENTER_COMPLETE)) != 0U) {
+        req_rights = NOS_CAP_RIGHT_RECV;
     }
 
     rc = nos_cap_lookup(nos_task_active_cap_table(current),
                         (nos_handle_t)ring_cap,
                         NOS_CAP_RING,
-                        NOS_CAP_RIGHT_SEND,
+                        req_rights,
                         (void **)&ring,
                         NULL);
     if (rc < 0) {
         return (long)rc;
     }
 
-    rc = nos_ring_enter(ring,
-                        current,
-                        (uint32_t)to_submit,
-                        (uint32_t)min_complete,
-                        (uint32_t)flags,
-                        (uint32_t)timeout_ticks);
+    if ((f & NOS_RING_ENTER_BIND_SERVER) != 0U) {
+        rc = nos_ring_bind_server(ring, current, NULL, NULL);
+        if (rc < 0 || f == NOS_RING_ENTER_BIND_SERVER) {
+            (void)nos_object_put(&ring->header);
+            return (long)rc;
+        }
+    }
+
+    if ((f & NOS_RING_ENTER_COMPLETE) != 0U) {
+        struct nos_ring_cqe kcqe;
+        if (aux4 == 0U) {
+            (void)nos_object_put(&ring->header);
+            return -EINVAL;
+        }
+        rc = nos_copy_from_user(&kcqe, aux4, sizeof(kcqe));
+        if (rc == 0) {
+            rc = nos_ring_server_complete(ring, &kcqe);
+        }
+        (void)nos_object_put(&ring->header);
+        return (long)rc;
+    }
+
+    if ((f & NOS_RING_ENTER_SERVER_POP) != 0U) {
+        uint32_t max_pop = (to_submit > 0U && to_submit <= NOS_RING_DEFAULT_ENTRIES)
+                               ? (uint32_t)to_submit
+                               : 1U;
+        uint32_t popped = 0U;
+        uint32_t pop_tmo = (uint32_t)aux5;
+
+        if (aux4 == 0U) {
+            (void)nos_object_put(&ring->header);
+            return -EINVAL;
+        }
+        while (popped < max_pop) {
+            struct nos_ring_sqe ksqe;
+            int prc = nos_ring_server_pop(
+                ring, &ksqe, (popped == 0U) ? pop_tmo : NOS_IPC_TIMEOUT_NONBLOCK);
+            if (prc < 0) {
+                if (popped > 0U && (prc == -EAGAIN || prc == -ETIMEDOUT)) {
+                    rc = (int)popped;
+                } else {
+                    rc = prc;
+                }
+                break;
+            }
+            rc = nos_copy_to_user(aux4 + (uintptr_t)popped * sizeof(ksqe),
+                                  &ksqe, sizeof(ksqe));
+            if (rc < 0) {
+                break;
+            }
+            popped++;
+            rc = (int)popped;
+        }
+        (void)nos_object_put(&ring->header);
+        return (long)rc;
+    }
+
+    rc = nos_ring_enter_with_cap(ring,
+                                 current,
+                                 (nos_handle_t)ring_cap,
+                                 (uint32_t)to_submit,
+                                 (uint32_t)min_complete,
+                                 f,
+                                 (uint32_t)aux4);
     (void)nos_object_put(&ring->header);
     return (long)rc;
 }
@@ -1031,9 +1322,17 @@ static long sys_nos_sched_infer(uintptr_t op,
         }
         rc = sched_infer_query_topo(&topo);
         if (rc == 0) {
-            *(struct nos_cpu_topo_info *)arg = topo;
+            int cp_rc = nos_copy_to_user(arg, &topo, sizeof(topo));
+            if (cp_rc < 0) {
+                return (long)cp_rc;
+            }
         }
         return (long)rc;
+    }
+
+    if (op == NOS_SCHED_OP_GANG_WAKEUP) {
+        uint32_t gid = (arg != 0U) ? (uint32_t)arg : (uint32_t)target_cap;
+        return (long)sched_infer_gang_wakeup(gid);
     }
 
     if ((nos_handle_t)target_cap == NOS_HANDLE_INVALID) {
@@ -1063,8 +1362,10 @@ static long sys_nos_sched_infer(uintptr_t op,
             rc = -EINVAL;
             break;
         }
-        kparam = *(const struct nos_infer_sched_param *)arg;
-        rc = sched_infer_set_param(target, &kparam);
+        rc = nos_copy_from_user(&kparam, arg, sizeof(kparam));
+        if (rc == 0) {
+            rc = sched_infer_set_param(target, &kparam);
+        }
         break;
     }
     case NOS_SCHED_OP_GANG_JOIN:
@@ -1092,7 +1393,6 @@ static long sys_nos_accel_submit(uintptr_t a0, uintptr_t a1, uintptr_t a2,
     struct nos_cap_table *cap_tbl;
     int rc = 0;
 
-    (void)a4;
     (void)a5;
 
     if (current == NULL) {
@@ -1130,7 +1430,10 @@ static long sys_nos_accel_submit(uintptr_t a0, uintptr_t a1, uintptr_t a2,
         }
         rc = nos_accel_query_caps(dev, &kcaps);
         if (rc == 0) {
-            *(struct nos_accel_caps *)a2 = kcaps;
+            int cp_rc = nos_copy_to_user(a2, &kcaps, sizeof(kcaps));
+            if (cp_rc < 0) {
+                rc = cp_rc;
+            }
         }
         break;
     }
@@ -1144,13 +1447,37 @@ static long sys_nos_accel_submit(uintptr_t a0, uintptr_t a1, uintptr_t a2,
             rc = -EINVAL;
             break;
         }
-        kdesc = *(const struct nos_accel_job_desc *)a2;
-        rc = nos_accel_submit(dev, current, &kdesc, &kres);
-        if (a3 != 0U) {
-            *(struct nos_accel_job_result *)a3 = kres;
+        rc = nos_copy_from_user(&kdesc, a2, sizeof(kdesc));
+        if (rc == 0) {
+            rc = nos_accel_submit(dev, current, &kdesc, &kres);
+            if (a3 != 0U) {
+                int cp_rc = nos_copy_to_user(a3, &kres, sizeof(kres));
+                if (cp_rc < 0 && rc == 0) {
+                    rc = cp_rc;
+                }
+            }
         }
         break;
     }
+    case NOS_ACCEL_OP_WAIT: {
+        uint64_t req_id = (uint64_t)a2;
+        uint32_t timeout_ms = (uint32_t)a4;
+        struct nos_accel_job_result kres = { 0 };
+        rc = nos_accel_wait_job(dev, current, req_id, &kres, timeout_ms);
+        if (a3 != 0U && rc != -EAGAIN && rc != -ETIMEDOUT) {
+            int cp_rc = nos_copy_to_user(a3, &kres, sizeof(kres));
+            if (cp_rc < 0 && rc == 0) {
+                rc = cp_rc;
+            }
+        }
+        break;
+    }
+    case NOS_ACCEL_OP_CANCEL:
+        rc = nos_accel_cancel_job(dev, (uint64_t)a2);
+        break;
+    case NOS_ACCEL_OP_RESET_CTX:
+        rc = nos_accel_reset_ctx(dev, current, (uint32_t)a2);
+        break;
     default:
         rc = -EINVAL;
         break;
@@ -1233,7 +1560,10 @@ static long sys_nos_cap_revoke_tree(uintptr_t handle,
                              (nos_handle_t)handle,
                              &revoked);
     if (rc == 0 && out_revoked_ptr != 0U) {
-        *(uint32_t *)out_revoked_ptr = revoked;
+        int cp_rc = nos_copy_to_user(out_revoked_ptr, &revoked, sizeof(revoked));
+        if (cp_rc < 0) {
+            return (long)cp_rc;
+        }
     }
     return (rc < 0) ? (long)rc : (long)revoked;
 }

@@ -507,10 +507,180 @@ static void test_rknpu_desc_and_iommu_pte(void)
     nos_accel_host_reset();
 }
 
+static void test_accel_async_cancel_reset_rknpu_bind_and_iommu_fault(void)
+{
+    struct nos_cell_budget budget = {
+        .cpu_ns_limit = 0ULL,
+        .mem_bytes_limit = 262144ULL,
+        .tool_calls_limit = 4ULL,
+        .accel_ops_limit = 16ULL,
+        .max_child_cells = 0U,
+    };
+    struct nos_vmo_create_args vargs = {
+        .size_bytes = 4096U,
+        .kind = NOS_VMO_DMA_TENSOR,
+        .flags = 0U,
+    };
+    struct nos_vmo_create_args v2args = {
+        .size_bytes = 8192U,
+        .kind = NOS_VMO_DMA_TENSOR,
+        .flags = 0U,
+    };
+    struct nos_cell *cell;
+    struct task_struct client;
+    struct nos_accel_device *dev;
+    struct nos_accel_device *rknpu_dev;
+    struct nos_vmo *w_vmo;
+    struct nos_vmo *in_vmo;
+    struct nos_vmo *out_vmo;
+    struct nos_vmo *rknpu_vmo;
+    nos_handle_t w_h;
+    nos_handle_t in_h;
+    nos_handle_t out_h;
+    nos_handle_t rknpu_h;
+    int32_t w_gemv[8] = { 1, 2, 3, 4, 5, 6, 7, 8 };
+    int32_t x_gemv[4] = { 2, 1, 0, 3 };
+    int32_t y_gemv[2] = { 0, 0 };
+    struct nos_accel_job_desc desc;
+    struct nos_accel_job_result res;
+    struct nos_notification evt_notif;
+    uint64_t evt_bits = 0ULL;
+    struct nos_audit_record audits[16];
+    bool seen_iommu_fault = false;
+
+    smmuv3_host_reset();
+    smmuv3_host_set_pt_backend(&g_pt_be);
+    assert(arm64_smmuv3_init(0UL, 0UL) == 0);
+
+    nos_accel_host_reset();
+    assert(virtio_accel_init() == 0);
+    assert(rknpu_accel_init() == 0);
+    dev = nos_accel_find_by_type(NOS_ACCEL_TYPE_VIRTIO);
+    rknpu_dev = nos_accel_find_by_type(NOS_ACCEL_TYPE_RKNPU);
+    assert(dev != NULL && rknpu_dev != NULL);
+
+    cell = nos_cell_create(NULL, &budget);
+    assert(cell != NULL);
+    memset(&client, 0, sizeof(client));
+    nos_refcount_init(&client.refcount, 1U);
+    client.cell = cell;
+
+    assert(nos_notification_init(&evt_notif) == 0);
+    assert(nos_cell_bind_budget_notif(cell, &evt_notif) == 0);
+
+    w_vmo = nos_vmo_create(&vargs);
+    in_vmo = nos_vmo_create(&vargs);
+    out_vmo = nos_vmo_create(&vargs);
+    rknpu_vmo = nos_vmo_create(&v2args);
+    assert(w_vmo != NULL && in_vmo != NULL && out_vmo != NULL && rknpu_vmo != NULL);
+    assert(nos_vmo_write(w_vmo, 0U, w_gemv, sizeof(w_gemv)) == 0);
+    assert(nos_vmo_write(in_vmo, 0U, x_gemv, sizeof(x_gemv)) == 0);
+    assert(nos_vmo_seal(w_vmo) == 0);
+
+    assert(nos_cap_alloc(nos_cell_cap_table(cell), NOS_CAP_VMO, w_vmo, NOS_CAP_RIGHT_READ, 0U, &w_h) == 0);
+    assert(nos_cap_alloc(nos_cell_cap_table(cell), NOS_CAP_VMO, in_vmo, NOS_CAP_RIGHT_READ, 0U, &in_h) == 0);
+    assert(nos_cap_alloc(nos_cell_cap_table(cell), NOS_CAP_VMO, out_vmo, NOS_CAP_RIGHT_WRITE, 0U, &out_h) == 0);
+    assert(nos_cap_alloc(nos_cell_cap_table(cell), NOS_CAP_VMO, rknpu_vmo, NOS_CAP_RIGHT_READ, 0U, &rknpu_h) == 0);
+
+    /* 1. VirtIO-Accel ASYNC + WAIT 完成 GEMV */
+    memset(&desc, 0, sizeof(desc));
+    desc.kernel_op = NOS_ACCEL_KERNEL_GEMV_I32;
+    desc.flags = NOS_ACCEL_FLAG_ASYNC;
+    desc.req_id = 4001ULL;
+    desc.weight_vmo_cap = w_h;
+    desc.input_vmo_cap = in_h;
+    desc.output_vmo_cap = out_h;
+    desc.notify_cap = NOS_HANDLE_INVALID;
+    desc.dim_m = 2U;
+    desc.dim_k = 4U;
+
+    memset(&res, 0, sizeof(res));
+    assert(nos_accel_submit(dev, &client, &desc, &res) == 0);
+    assert(res.status == -EINPROGRESS);
+    memset(&res, 0, sizeof(res));
+    assert(nos_accel_wait_job(dev, &client, 4001ULL, &res, 1000U) == 0);
+    assert(res.status == 0 && res.output_bytes == 8U);
+    assert(nos_vmo_read(out_vmo, 0U, y_gemv, sizeof(y_gemv)) == 0);
+    assert(y_gemv[0] == 16 && y_gemv[1] == 40);
+
+    /* 2. ASYNC + CANCEL 取消路径验证 */
+    desc.req_id = 4002ULL;
+    assert(nos_accel_submit(dev, &client, &desc, &res) == 0);
+    assert(nos_accel_cancel_job(dev, 4002ULL) == 0);
+    assert(nos_accel_wait_job(dev, &client, 4002ULL, &res, 1000U) == -ECANCELED);
+
+    /* 3. ASYNC + RESET_CTX 批量排空 */
+    desc.req_id = 4003ULL;
+    assert(nos_accel_submit(dev, &client, &desc, &res) == 0);
+    desc.req_id = 4004ULL;
+    assert(nos_accel_submit(dev, &client, &desc, &res) == 0);
+    assert(nos_accel_reset_ctx(dev, &client, 0U) == 0);
+    assert(nos_accel_wait_job(dev, &client, 4003ULL, &res, 1000U) == -ECANCELED);
+    assert(nos_accel_wait_job(dev, &client, 4004ULL, &res, 1000U) == -ECANCELED);
+
+    /* 4. RKNPU 多页 .bind_vmo + ASYNC + CANCEL + RESET_CTX */
+    assert(nos_accel_bind_vmo(rknpu_dev, &client, rknpu_h) == 0);
+    memset(&desc, 0, sizeof(desc));
+    desc.kernel_op = NOS_ACCEL_KERNEL_NOP;
+    desc.flags = NOS_ACCEL_FLAG_ASYNC;
+    desc.req_id = 5001ULL;
+    desc.weight_vmo_cap = NOS_HANDLE_INVALID;
+    desc.input_vmo_cap = NOS_HANDLE_INVALID;
+    desc.output_vmo_cap = NOS_HANDLE_INVALID;
+    desc.notify_cap = NOS_HANDLE_INVALID;
+    assert(nos_accel_submit(rknpu_dev, &client, &desc, &res) == 0);
+    assert(nos_accel_wait_job(rknpu_dev, &client, 5001ULL, &res, 1000U) == 0);
+    desc.req_id = 5002ULL;
+    assert(nos_accel_submit(rknpu_dev, &client, &desc, &res) == 0);
+    assert(nos_accel_cancel_job(rknpu_dev, 5002ULL) == 0);
+    assert(nos_accel_reset_ctx(rknpu_dev, &client, 0U) == 0);
+
+    /* 5. SMMUv3 EVTQ 故障联动 Cell 写入 NOS_AUDIT_IOMMU_FAULT 与事件通知 */
+    struct nos_iommu_fault_event fault = {
+        .sid = dev->caps.stream_id,
+        .pasid = 0U,
+        .event_code = 0x10U,
+        .flags = 1U,
+        .iova = 0xDEADBEEFULL,
+    };
+    smmuv3_host_inject_event(&fault);
+    assert(nos_iommu_poll_events(4U) == 1);
+    assert(nos_notify_wait_obj(&evt_notif, &evt_bits, NOS_NO_WAIT) == 0);
+    assert((evt_bits & NOS_CELL_EVT_IOMMU_FAULT) != 0ULL);
+
+    int an = nos_cell_read_audit(cell, audits, 16U);
+    for (int i = 0; i < an; i++) {
+        if (audits[i].event_type == NOS_AUDIT_IOMMU_FAULT &&
+            audits[i].schema_id == 0xDEADBEEFULL &&
+            audits[i].arg0 == 0x10U) {
+            seen_iommu_fault = true;
+            break;
+        }
+    }
+    assert(seen_iommu_fault);
+
+    (void)nos_object_close(&rknpu_vmo->header);
+    (void)nos_object_retire(&rknpu_vmo->header);
+    (void)nos_object_close(&out_vmo->header);
+    (void)nos_object_retire(&out_vmo->header);
+    (void)nos_object_close(&in_vmo->header);
+    (void)nos_object_retire(&in_vmo->header);
+    (void)nos_object_close(&w_vmo->header);
+    (void)nos_object_retire(&w_vmo->header);
+    (void)nos_object_close(&evt_notif.object);
+    (void)nos_object_retire(&evt_notif.object);
+    (void)nos_object_put(&rknpu_dev->header);
+    (void)nos_object_put(&dev->header);
+    assert(nos_cell_destroy(cell) == 0);
+    nos_accel_host_reset();
+    smmuv3_host_reset();
+}
+
 int main(void)
 {
     test_accel_gemv_matmul_sealed_sva_and_ring();
     test_rknpu_desc_and_iommu_pte();
-    printf("PASS: test_accel_queue (GEMV_I32/MATMUL_I8/RELU, Sealed RO, SMMUv3 SVA, RingIPC single-charge, -EDQUOT, RKNPU)\n");
+    test_accel_async_cancel_reset_rknpu_bind_and_iommu_fault();
+    printf("PASS: test_accel_queue (GEMV_I32/MATMUL_I8/RELU, Sealed RO, SMMUv3 SVA, RingIPC single-charge, -EDQUOT, RKNPU, ASYNC/CANCEL/RESET_CTX/EVTQ)\n");
     return 0;
 }

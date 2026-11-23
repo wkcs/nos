@@ -13,7 +13,8 @@ else()
     list(APPEND NOS_ARCH_FLAGS -march=armv8-a)
 endif()
 
-# 内核态禁止使用 FP/SIMD 寄存器，保障惰性向量切换零污染
+# 内核态禁止使用 FP/SIMD 寄存器，保障惰性向量切换零污染；启用 EL1 BTI 控制流目标保护
 if(NOT DEFINED CONFIG_ARM64_KERNEL_NO_FP OR CONFIG_ARM64_KERNEL_NO_FP)
     list(APPEND NOS_FP_FLAGS -mgeneral-regs-only)
 endif()
+list(APPEND NOS_FP_FLAGS -mbranch-protection=bti)

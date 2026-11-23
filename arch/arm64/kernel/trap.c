@@ -10,6 +10,7 @@
 #include <kernel/sched.h>
 #include <kernel/unwind.h>
 #include <nos/syscall.h>
+#include <nos/uaccess.h>
 #include <uapi/nos/syscall.h>
 #include <uapi/nos/errno.h>
 #include <uapi/nos/ipc.h>
@@ -25,6 +26,14 @@
 #include <asm/task.h>
 
 static arm64_el0_fault_observer_t g_el0_fault_observer;
+
+struct arm64_ex_table_entry {
+    uint64_t insn;
+    uint64_t fixup;
+};
+
+extern const struct arm64_ex_table_entry __ex_table_start[];
+extern const struct arm64_ex_table_entry __ex_table_end[];
 
 void arm64_set_el0_fault_observer(arm64_el0_fault_observer_t cb)
 {
@@ -171,23 +180,22 @@ static bool arm64_validate_el0_syscall(unsigned long sysno, const struct arm64_p
         }
         return true;
     case SYS_NOS_RING_CREATE: {
-        const struct nos_ring_create_args *rargs;
-        if (a0 == 0U || !arm64_user_buf_mapped(task, a0, sizeof(struct nos_ring_create_args), false)) {
+        struct nos_ring_create_args krargs;
+        if (a0 == 0U || nos_copy_from_user(&krargs, a0, sizeof(krargs)) != 0) {
             return false;
         }
-        rargs = (const struct nos_ring_create_args *)a0;
-        if (rargs->schema_count > NOS_RING_MAX_SCHEMAS) {
+        if (krargs.schema_count > NOS_RING_MAX_SCHEMAS) {
             return false;
         }
-        if (rargs->schema_count > 0U &&
+        if (krargs.schema_count > 0U &&
             !arm64_user_buf_mapped(task,
-                                   (uintptr_t)rargs->schema_list_ptr,
-                                   (size_t)rargs->schema_count * sizeof(uint64_t),
+                                   (uintptr_t)krargs.schema_list_ptr,
+                                   (size_t)krargs.schema_count * sizeof(uint64_t),
                                    false)) {
             return false;
         }
-        if (rargs->map_user_vaddr != 0ULL &&
-            !arm64_user_ptr_valid((uintptr_t)rargs->map_user_vaddr, PAGE_SIZE)) {
+        if (krargs.map_user_vaddr != 0ULL &&
+            !arm64_user_ptr_valid((uintptr_t)krargs.map_user_vaddr, PAGE_SIZE)) {
             return false;
         }
         if (a1 != 0U && !arm64_user_buf_mapped(task, a1, sizeof(nos_handle_t), true)) {
@@ -195,8 +203,22 @@ static bool arm64_validate_el0_syscall(unsigned long sysno, const struct arm64_p
         }
         return true;
     }
-    case SYS_NOS_RING_ENTER:
+    case SYS_NOS_RING_ENTER: {
+        uint32_t rflags = (uint32_t)a3;
+        if ((rflags & NOS_RING_ENTER_COMPLETE) != 0U) {
+            if (a4 == 0U || !arm64_user_buf_mapped(task, a4, sizeof(struct nos_ring_cqe), false)) {
+                return false;
+            }
+        } else if ((rflags & NOS_RING_ENTER_SERVER_POP) != 0U) {
+            uint32_t max_pop = (a1 > 0U && a1 <= NOS_RING_DEFAULT_ENTRIES)
+                                   ? (uint32_t)a1 : 1U;
+            if (a4 == 0U || !arm64_user_buf_mapped(
+                                task, a4, (size_t)max_pop * sizeof(struct nos_ring_sqe), true)) {
+                return false;
+            }
+        }
         return true;
+    }
     case SYS_NOS_SCHED_INFER:
         if (a0 == NOS_SCHED_OP_SET_INFER &&
             (a2 == 0U || !arm64_user_buf_mapped(task, a2, sizeof(struct nos_infer_sched_param), false))) {
@@ -219,6 +241,10 @@ static bool arm64_validate_el0_syscall(unsigned long sysno, const struct arm64_p
             if (a3 != 0U && !arm64_user_buf_mapped(task, a3, sizeof(struct nos_accel_job_result), true)) {
                 return false;
             }
+        }
+        if (a0 == NOS_ACCEL_OP_WAIT &&
+            a3 != 0U && !arm64_user_buf_mapped(task, a3, sizeof(struct nos_accel_job_result), true)) {
+            return false;
         }
         return true;
     case SYS_NOS_VMO_CREATE:
@@ -312,10 +338,20 @@ void arm64_sync_handler(struct arm64_pt_regs *regs, bool from_el0)
     if (ec == ESR_ELx_EC_SVC64) {
         long ret;
         unsigned long sysno = (unsigned long)regs->regs[8];
+        struct task_struct *t = current;
+        uint8_t prev_el0 = 0U;
+
+        if (t != NULL) {
+            prev_el0 = t->arch_in_el0_syscall;
+            t->arch_in_el0_syscall = from_el0 ? 1U : 0U;
+        }
 
         /* 允许在系统调用期间响应时钟与外设中断 */
         arch_irq_enable_global();
         if (from_el0 && !arm64_validate_el0_syscall(sysno, regs)) {
+            if (t != NULL) {
+                t->arch_in_el0_syscall = prev_el0;
+            }
             regs->regs[0] = (uint64_t)(long)-EFAULT;
             return;
         }
@@ -327,6 +363,9 @@ void arm64_sync_handler(struct arm64_pt_regs *regs, bool from_el0)
                                    (uintptr_t)regs->regs[3],
                                    (uintptr_t)regs->regs[4],
                                    (uintptr_t)regs->regs[5]);
+        if (t != NULL) {
+            t->arch_in_el0_syscall = prev_el0;
+        }
         regs->regs[0] = (uint64_t)ret;
         return;
     }
@@ -341,13 +380,17 @@ void arm64_sync_handler(struct arm64_pt_regs *regs, bool from_el0)
         struct task_struct *fault_task = current;
 
 #ifdef CONFIG_NOS_AI_CORE
-        /* 硬件 CoW 写时复制快路：仅当 WnR=1 且命中 Cell 可写 ANON/KV 绑定页时才透明分裂恢复 RW- */
+        /* 硬件页故障快路：透明处理 Permission Fault CoW 分裂与 LAZY_ALLOC/RECOMPUTABLE 按需缺页 */
         if (ec == ESR_ELx_EC_DABT_LOW &&
-            (ESR_ELx_ISS(regs->esr) & (1U << 6)) != 0U &&
             fault_task != NULL &&
-            fault_task->cell != NULL &&
-            nos_cell_handle_cow_fault(fault_task->cell, (uintptr_t)regs->far) == 0) {
-            return;
+            fault_task->cell != NULL) {
+            uint32_t iss = ESR_ELx_ISS(regs->esr);
+            bool is_write = (iss & (1U << 6)) != 0U;
+            uint32_t dfsc = iss & 0x3FU;
+            if (nos_cell_handle_page_fault(fault_task->cell, (uintptr_t)regs->far,
+                                           is_write, dfsc) == 0) {
+                return;
+            }
         }
 #endif
 
@@ -378,6 +421,17 @@ void arm64_sync_handler(struct arm64_pt_regs *regs, bool from_el0)
         }
         while (1) {
             switch_task();
+        }
+    }
+
+    if (!from_el0 && ec == ESR_ELx_EC_DABT_CUR) {
+        for (const struct arm64_ex_table_entry *ex = __ex_table_start;
+             ex < __ex_table_end;
+             ex++) {
+            if (ex->insn == regs->pc) {
+                regs->pc = ex->fixup;
+                return;
+            }
         }
     }
 

@@ -29,6 +29,9 @@
 #include <asm/barrier.h>
 #include <asm/cpufeature.h>
 #include <asm/fdt_scan.h>
+#include <asm/gic.h>
+#include <asm/irq.h>
+#include <kernel/irq.h>
 #include <kernel/mm.h>
 #include <kernel/printk.h>
 #include <nos/devicetree.h>
@@ -69,15 +72,26 @@ struct smmuv3_state {
     uint8_t                 *evtq;
     uintptr_t                evtq_phys;
     uint64_t                 cmdq_submitted;
+    uint64_t                 irq_events;
     uint32_t                 active_bindings;
+    uint32_t                 evtq_irq;
+    uint32_t                 gerror_irq;
+    bool                     irq_registered;
     struct smmu_stream_state streams[SMMU_MAX_STREAMS];
 };
 
 static struct smmuv3_state g_smmu;
 
+#define SMMU_MAX_FAULT_CBS 4U
+static nos_iommu_fault_cb_t g_fault_cbs[SMMU_MAX_FAULT_CBS];
+
 #ifdef __HOST_TEST__
 static struct smmuv3_host_mmio_ops g_host_mmio;
 static const struct arm64_pt_backend *g_host_pt_be;
+static struct nos_iommu_fault_event g_host_inj_events[16];
+static uint32_t g_host_inj_head;
+static uint32_t g_host_inj_tail;
+static uint32_t g_host_inj_cnt;
 #endif
 
 static void *smmu_alloc_page(uintptr_t *out_phys)
@@ -499,6 +513,19 @@ int arm64_smmuv3_init(uintptr_t mmio_base, size_t mmio_size)
         goto fallback_shadow;
     }
 
+    /* 4. 使能 EVTQ 与 GERROR 硬件中断门控 */
+    smmu_write32(SMMU_IRQ_CTRL, SMMU_IRQ_CTRL_GERROR_IRQEN | SMMU_IRQ_CTRL_EVENTQ_IRQEN);
+    {
+        uint32_t ack_tries = 10000U;
+        while (ack_tries-- > 0U) {
+            uint32_t ack = smmu_read32(SMMU_IRQ_CTRLACK);
+            if ((ack & (SMMU_IRQ_CTRL_GERROR_IRQEN | SMMU_IRQ_CTRL_EVENTQ_IRQEN)) ==
+                (SMMU_IRQ_CTRL_GERROR_IRQEN | SMMU_IRQ_CTRL_EVENTQ_IRQEN)) {
+                break;
+            }
+        }
+    }
+
     g_smmu.hw_present = true;
     rc = smmu_issue_cfgi_all_locked();
     if (rc != 0) {
@@ -529,10 +556,59 @@ fallback_shadow:
     return 0;
 }
 
+#ifndef __HOST_TEST__
+static void smmu_irq_handler(uint32_t intid, void *ctx)
+{
+    uint32_t gerr;
+    uint32_t gerrn;
+    (void)intid;
+    (void)ctx;
+
+    spin_lock_irq(&g_smmu.lock);
+    if (g_smmu.hw_present) {
+        gerr = smmu_read32(SMMU_GERROR);
+        gerrn = smmu_read32(SMMU_GERRORN);
+        if (gerr != gerrn) {
+            smmu_write32(SMMU_GERRORN, gerr);
+        }
+    }
+    spin_unlock_irq(&g_smmu.lock);
+    (void)nos_iommu_poll_events(16U);
+}
+
+static void smmu_setup_irqs_from_fdt(void)
+{
+    uint32_t evtq_irq = 0U;
+    uint32_t gerror_irq = 0U;
+
+    if (g_smmu.irq_registered || !g_smmu.hw_present) {
+        return;
+    }
+    if (arm64_fdt_find_irq("arm,smmu-v3", 0U, 0U, &evtq_irq) == 0 && evtq_irq >= 32U) {
+        if (nos_irq_register(evtq_irq, smmu_irq_handler, NULL) == 0) {
+            arm64_gic_set_priority(evtq_irq, 0x80U);
+            arm64_gic_enable_irq(evtq_irq);
+            g_smmu.evtq_irq = evtq_irq;
+            g_smmu.irq_registered = true;
+        }
+    }
+    if (arm64_fdt_find_irq("arm,smmu-v3", 0U, 3U, &gerror_irq) == 0 &&
+        gerror_irq >= 32U && gerror_irq != evtq_irq) {
+        if (nos_irq_register(gerror_irq, smmu_irq_handler, NULL) == 0) {
+            arm64_gic_set_priority(gerror_irq, 0x80U);
+            arm64_gic_enable_irq(gerror_irq);
+            g_smmu.gerror_irq = gerror_irq;
+            g_smmu.irq_registered = true;
+        }
+    }
+}
+#endif
+
 int arm64_smmuv3_probe_default(void)
 {
     uintptr_t base = 0U;
     size_t sz = 0U;
+    int rc;
 
 #ifndef __HOST_TEST__
     uint64_t fdt_base = 0ULL;
@@ -562,7 +638,13 @@ int arm64_smmuv3_probe_default(void)
         }
     }
 #endif
-    return arm64_smmuv3_init(base, sz);
+    rc = arm64_smmuv3_init(base, sz);
+#ifndef __HOST_TEST__
+    if (rc == 0) {
+        smmu_setup_irqs_from_fdt();
+    }
+#endif
+    return rc;
 }
 
 int nos_iommu_bind_space(uint32_t stream_id, uint32_t pasid, struct nos_vm_space *space)
@@ -765,6 +847,124 @@ void nos_iommu_tlbi_va(uint16_t asid, uintptr_t va)
     spin_unlock_irq(&g_smmu.lock);
 }
 
+void nos_iommu_tlbi_range(uint16_t asid, uintptr_t va, size_t size)
+{
+    if (size == 0U || asid == 0U) {
+        return;
+    }
+    if ((size / PAGE_SIZE) > 16U) {
+        nos_iommu_tlbi_asid(asid);
+        return;
+    }
+
+    spin_lock_irq(&g_smmu.lock);
+    if (g_smmu.initialized && g_smmu.hw_present) {
+        size_t off;
+        bool pushed = false;
+        for (off = 0U; off < size; off += PAGE_SIZE) {
+            struct smmuv3_cmd cmd;
+            memset(&cmd, 0, sizeof(cmd));
+            cmd.dw[0] = (uint64_t)SMMU_CMD_TLBI_NH_VA | ((uint64_t)asid << 48);
+            cmd.dw[1] = (uint64_t)(va + off) & ~0xFFFULL;
+            if (smmu_cmdq_push_locked(&cmd) != 0) {
+                break;
+            }
+            pushed = true;
+        }
+        if (pushed) {
+            (void)smmu_cmdq_sync_locked();
+        }
+    }
+    spin_unlock_irq(&g_smmu.lock);
+}
+
+void nos_iommu_register_fault_cb(nos_iommu_fault_cb_t cb)
+{
+    uint32_t i;
+
+    spin_lock_irq(&g_smmu.lock);
+    if (cb == NULL) {
+        for (i = 0U; i < SMMU_MAX_FAULT_CBS; i++) {
+            g_fault_cbs[i] = NULL;
+        }
+        spin_unlock_irq(&g_smmu.lock);
+        return;
+    }
+    for (i = 0U; i < SMMU_MAX_FAULT_CBS; i++) {
+        if (g_fault_cbs[i] == cb) {
+            spin_unlock_irq(&g_smmu.lock);
+            return;
+        }
+        if (g_fault_cbs[i] == NULL) {
+            g_fault_cbs[i] = cb;
+            spin_unlock_irq(&g_smmu.lock);
+            return;
+        }
+    }
+    spin_unlock_irq(&g_smmu.lock);
+}
+
+int nos_iommu_poll_events(uint32_t max_events)
+{
+    struct nos_iommu_fault_event batch[16];
+    nos_iommu_fault_cb_t cbs[SMMU_MAX_FAULT_CBS];
+    uint32_t batch_cnt = 0U;
+    uint32_t limit = (max_events == 0U || max_events > 16U) ? 16U : max_events;
+    uint32_t wrap_mask = smmu_queue_wrap_mask(SMMU_EVTQ_LOG2SIZE);
+    uint32_t idx_mask = smmu_queue_idx_mask(SMMU_EVTQ_LOG2SIZE);
+    uint32_t i;
+
+    spin_lock_irq(&g_smmu.lock);
+    if (g_smmu.initialized && g_smmu.hw_present && g_smmu.evtq != NULL) {
+        uint32_t prod = smmu_read32(SMMU_EVTQ_PROD) & wrap_mask;
+        uint32_t cons = smmu_read32(SMMU_EVTQ_CONS) & wrap_mask;
+
+        while (prod != cons && batch_cnt < limit) {
+            uint32_t slot = cons & idx_mask;
+            const uint8_t *raw = g_smmu.evtq + ((size_t)slot * 32U);
+            uint64_t d0;
+            uint64_t d2;
+#ifndef __HOST_TEST__
+            arm64_inv_dcache_poc((uintptr_t)raw, 32U);
+#endif
+            memcpy(&d0, raw, sizeof(d0));
+            memcpy(&d2, raw + 16U, sizeof(d2));
+
+            batch[batch_cnt].event_code = (uint32_t)(d0 & 0xFFULL);
+            batch[batch_cnt].pasid = (uint32_t)((d0 >> 12) & 0xFFFFFULL);
+            batch[batch_cnt].sid = (uint32_t)(d0 >> 32);
+            batch[batch_cnt].flags = (uint32_t)((d0 >> 11) & 1ULL); /* SSV */
+            batch[batch_cnt].iova = d2;
+            batch_cnt++;
+            g_smmu.irq_events++;
+
+            cons = (cons + 1U) & wrap_mask;
+            smmu_write32(SMMU_EVTQ_CONS, cons);
+        }
+    }
+#ifdef __HOST_TEST__
+    while (g_host_inj_cnt > 0U && batch_cnt < limit) {
+        batch[batch_cnt++] = g_host_inj_events[g_host_inj_head];
+        g_host_inj_head = (g_host_inj_head + 1U) % 16U;
+        g_host_inj_cnt--;
+        g_smmu.irq_events++;
+    }
+#endif
+    for (i = 0U; i < SMMU_MAX_FAULT_CBS; i++) {
+        cbs[i] = g_fault_cbs[i];
+    }
+    spin_unlock_irq(&g_smmu.lock);
+
+    for (uint32_t e = 0U; e < batch_cnt; e++) {
+        for (i = 0U; i < SMMU_MAX_FAULT_CBS; i++) {
+            if (cbs[i] != NULL) {
+                cbs[i](&batch[e]);
+            }
+        }
+    }
+    return (int)batch_cnt;
+}
+
 int nos_iommu_get_status(struct nos_iommu_info *out)
 {
     if (out == NULL) {
@@ -781,7 +981,7 @@ int nos_iommu_get_status(struct nos_iommu_info *out)
     out->max_pasids = g_smmu.max_pasids;
     out->active_bindings = g_smmu.active_bindings;
     out->cmdq_submitted = g_smmu.cmdq_submitted;
-    out->irq_events = 0ULL;
+    out->irq_events = g_smmu.irq_events;
     spin_unlock_irq(&g_smmu.lock);
     return 0;
 }
@@ -801,6 +1001,20 @@ void smmuv3_host_set_pt_backend(const struct arm64_pt_backend *be)
     g_host_pt_be = be;
 }
 
+void smmuv3_host_inject_event(const struct nos_iommu_fault_event *evt)
+{
+    if (evt == NULL) {
+        return;
+    }
+    spin_lock_irq(&g_smmu.lock);
+    if (g_host_inj_cnt < 16U) {
+        g_host_inj_events[g_host_inj_tail] = *evt;
+        g_host_inj_tail = (g_host_inj_tail + 1U) % 16U;
+        g_host_inj_cnt++;
+    }
+    spin_unlock_irq(&g_smmu.lock);
+}
+
 void smmuv3_host_reset(void)
 {
     uint32_t i;
@@ -813,5 +1027,9 @@ void smmuv3_host_reset(void)
     smmu_free_page(g_smmu.cmdq);
     smmu_free_page(g_smmu.evtq);
     memset(&g_smmu, 0, sizeof(g_smmu));
+    memset(g_fault_cbs, 0, sizeof(g_fault_cbs));
+    g_host_inj_head = 0U;
+    g_host_inj_tail = 0U;
+    g_host_inj_cnt = 0U;
 }
 #endif

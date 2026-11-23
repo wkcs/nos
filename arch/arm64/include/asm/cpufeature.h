@@ -38,5 +38,13 @@ struct arm64_cpu_caps {
 void arm64_cpufeature_init(uint8_t boot_el);
 const struct arm64_cpu_caps *arm64_get_cpu_caps(void);
 void arm64_cpufeature_dump(void);
+void arm64_topo_classify_from_caps(const uint32_t *caps,
+                                   uint32_t nr_cpus,
+                                   uint32_t online_mask,
+                                   uint32_t *out_big_mask,
+                                   uint32_t *out_little_mask);
+void arm64_topo_classify_masks(uint32_t online_mask,
+                               uint32_t *out_big_mask,
+                               uint32_t *out_little_mask);
 
 #endif /* __ASM_ARM64_CPUFEATURE_H__ */

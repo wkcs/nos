@@ -30,9 +30,28 @@ struct nos_gang_group {
 static struct nos_gang_group g_gang_groups[NOS_GANG_MAX_GROUPS];
 static spinlock_t g_gang_lock;
 
+__attribute__((weak)) void hal_timer_program_oneshot_ns(uint64_t delta_ns)
+{
+    (void)delta_ns;
+}
+
 static uint64_t infer_now_ns(void)
 {
     return hal_timer_monotonic_ns();
+}
+
+static void infer_program_cbs_oneshot(const struct nos_infer_entity *inf)
+{
+#ifdef CONFIG_SYS_TICK_MS
+    uint64_t tick_ns = (uint64_t)((CONFIG_SYS_TICK_MS > 0) ? CONFIG_SYS_TICK_MS : 1) * 1000000ULL;
+#else
+    uint64_t tick_ns = 1000000ULL;
+#endif
+    if (inf != NULL && !inf->throttled &&
+        inf->remaining_runtime_ns >= 20000ULL &&
+        inf->remaining_runtime_ns < tick_ns) {
+        hal_timer_program_oneshot_ns(inf->remaining_runtime_ns);
+    }
 }
 
 static void infer_refresh_earliest_locked(struct infer_rq *infer)
@@ -153,10 +172,44 @@ static void infer_enqueue_task(struct sched_rq *rq, struct task_struct *p, int f
         inf->remaining_runtime_ns = inf->runtime_ns;
     }
 
+    inf->last_account_ns = 0ULL;
     infer_insert_edf_locked(&rq->infer, p);
     rq->infer.nr_running++;
     rq->nr_running++;
     p->se.on_rq = true;
+
+#if CONFIG_NR_CPUS > 1
+    /* 若以常规 wakeup 加入运行队列且隶属 Gang 组，协同通知其余在线 Gang 核 */
+    if ((flags & SCHED_ENQUEUE_WAKEUP) != 0 &&
+        (flags & SCHED_ENQUEUE_RESTORE) == 0 &&
+        inf->gang_id != 0U) {
+        uint32_t notify_mask = 0U;
+        uint32_t self_cpu = hal_cpu_id();
+        spin_lock_irq(&g_gang_lock);
+        for (uint32_t gi = 0U; gi < NOS_GANG_MAX_GROUPS; gi++) {
+            if (g_gang_groups[gi].in_use && g_gang_groups[gi].gang_id == inf->gang_id) {
+                for (uint32_t mj = 0U; mj < g_gang_groups[gi].member_count; mj++) {
+                    struct task_struct *m = g_gang_groups[gi].members[mj];
+                    if (m != NULL && m != p && READ_ONCE(m->status) != TASK_ZOMBIE) {
+                        uint32_t m_cpu = READ_ONCE(m->cpu);
+                        if (m_cpu < (uint32_t)CONFIG_NR_CPUS &&
+                            m_cpu != rq->cpu_id && m_cpu != self_cpu &&
+                            g_sched_rqs[m_cpu].online) {
+                            notify_mask |= (1U << m_cpu);
+                        }
+                    }
+                }
+                break;
+            }
+        }
+        spin_unlock_irq(&g_gang_lock);
+        for (uint32_t c = 0U; c < (uint32_t)CONFIG_NR_CPUS && c < 32U; c++) {
+            if ((notify_mask & (1U << c)) != 0U) {
+                hal_smp_send_ipi(c, NOS_IPI_RESCHED);
+            }
+        }
+    }
+#endif
 }
 
 static void infer_dequeue_task(struct sched_rq *rq, struct task_struct *p, int flags)
@@ -248,6 +301,8 @@ static struct task_struct *infer_pick_next_task(struct sched_rq *rq)
 
     list_for_each_entry(pos, &rq->infer.tasks_edf, se.run_node) {
         if (!pos->se.infer.throttled) {
+            pos->se.infer.last_account_ns = now_ns;
+            infer_program_cbs_oneshot(&pos->se.infer);
             return pos;
         }
     }
@@ -257,8 +312,31 @@ static struct task_struct *infer_pick_next_task(struct sched_rq *rq)
 
 static void infer_put_prev_task(struct sched_rq *rq, struct task_struct *prev)
 {
+    uint64_t now_ns;
+    struct nos_infer_entity *inf;
+    uint64_t delta;
+
     (void)rq;
-    (void)prev;
+    if (prev == NULL || prev->policy != SCHED_POLICY_INFER) {
+        return;
+    }
+
+    inf = &prev->se.infer;
+    if (inf->last_account_ns != 0ULL) {
+        now_ns = infer_now_ns();
+        if (now_ns > inf->last_account_ns) {
+            delta = now_ns - inf->last_account_ns;
+            if (inf->remaining_runtime_ns > delta) {
+                inf->remaining_runtime_ns -= delta;
+            } else {
+                inf->remaining_runtime_ns = 0ULL;
+                if (now_ns < inf->throttle_until_ns) {
+                    inf->throttled = true;
+                }
+            }
+        }
+        inf->last_account_ns = 0ULL;
+    }
 }
 
 static void infer_task_tick(struct sched_rq *rq, struct task_struct *curr)
@@ -267,6 +345,11 @@ static void infer_task_tick(struct sched_rq *rq, struct task_struct *curr)
     uint64_t now_ns;
     uint64_t step_ns;
     uint64_t period;
+#ifdef CONFIG_SYS_TICK_MS
+    uint64_t default_step_ns = (uint64_t)((CONFIG_SYS_TICK_MS > 0) ? CONFIG_SYS_TICK_MS : 1) * 1000000ULL;
+#else
+    uint64_t default_step_ns = 1000000ULL;
+#endif
 
     if (rq == NULL || curr == NULL) {
         return;
@@ -281,16 +364,19 @@ static void infer_task_tick(struct sched_rq *rq, struct task_struct *curr)
     }
     period = (inf->period_ns != 0ULL) ? inf->period_ns : SCHED_INFER_DEFAULT_PERIOD_NS;
 
-#ifdef CONFIG_SYS_TICK_MS
-    step_ns = (uint64_t)((CONFIG_SYS_TICK_MS > 0) ? CONFIG_SYS_TICK_MS : 1) * 1000000ULL;
-#else
-    step_ns = 1000000ULL;
-#endif
+    if (inf->last_account_ns != 0ULL && now_ns > inf->last_account_ns) {
+        step_ns = now_ns - inf->last_account_ns;
+    } else {
+        step_ns = default_step_ns;
+    }
+    inf->last_account_ns = now_ns;
 
     if (inf->remaining_runtime_ns > step_ns) {
         inf->remaining_runtime_ns -= step_ns;
         if (rq->infer.earliest_deadline_ns < inf->abs_deadline_ns) {
             rq->need_resched = true;
+        } else {
+            infer_program_cbs_oneshot(inf);
         }
         return;
     }
@@ -386,7 +472,23 @@ static uint32_t infer_select_task_rq(struct task_struct *p, uint32_t prev_cpu, i
         }
         rq = &g_sched_rqs[cpu];
         score = rq->infer.nr_running * 64U + rq->nr_running * 8U + rq->cpu_util_avg;
-        /* DECODE 角色倾向优先打散到不同核以避免内存带宽拥堵，相同分数时偏向分散核 */
+        /* DECODE 角色倾向优先打散到不同核以避免内存带宽拥堵 */
+        if (p->se.infer.role == NOS_INFER_ROLE_DECODE) {
+            if (rq->curr != NULL && rq->curr->policy == SCHED_POLICY_INFER &&
+                rq->curr->se.infer.role == NOS_INFER_ROLE_DECODE) {
+                score += 256U;
+            }
+            if (!list_empty(&rq->infer.tasks_edf)) {
+                struct task_struct *epos;
+                list_for_each_entry(epos, &rq->infer.tasks_edf, se.run_node) {
+                    if (epos->se.infer.role == NOS_INFER_ROLE_DECODE &&
+                        !epos->se.infer.throttled) {
+                        score += 128U;
+                        break;
+                    }
+                }
+            }
+        }
         if (!found || score < best_load) {
             best_cpu = cpu;
             best_load = score;
@@ -750,7 +852,7 @@ int sched_infer_gang_wakeup(uint32_t gang_id)
         rq = sched_rq_of(m->cpu);
         spin_lock_irq(&rq->lock);
         if (!m->se.on_rq && m->status != TASK_ZOMBIE) {
-            sched_enqueue_task_locked(rq, m, SCHED_ENQUEUE_WAKEUP);
+            sched_enqueue_task_locked(rq, m, SCHED_ENQUEUE_WAKEUP | SCHED_ENQUEUE_RESTORE);
         }
         rq->need_resched = true;
         if (rq->cpu_id < 32U) {

@@ -39,6 +39,9 @@ typedef void (*nos_cap_audit_cb_t)(void *cell,
                                    uint64_t arg0,
                                    uint64_t arg1);
 
+/* 级联撤销在途排空回调签名（用于排空 RingIPC/AccelQueue 等在途请求） */
+typedef void (*nos_cap_revoke_drain_cb_t)(uint16_t cap_type, void *obj);
+
 struct nos_cap_slot {
     uint16_t         type;       /* enum nos_cap_type */
     uint16_t         gen;        /* 16-bit generation counter (never 0 when active) */
@@ -62,11 +65,29 @@ struct nos_cap_table {
     spinlock_t          lock;
     struct nos_cap_slot slots[NOS_CAP_MAX_SLOTS];
 #ifdef CONFIG_NOS_CAP_CDT
-    struct nos_cap_slot **ext_pages;     /* 按需页式扩展二层槽位目录 */
-    uint16_t             cap_capacity;   /* 当前已分配的总槽位数 (<= 4096) */
-    uint16_t             ext_page_count; /* 已分配扩展页数量 */
-    void                *audit_cell;     /* 关联的 Agent Cell 审计对象指针 */
+    struct nos_cap_slot **ext_pages;        /* 按需页式扩展二层槽位目录 */
+    uint16_t             cap_capacity;      /* 当前已分配的总槽位数 (<= 4096) */
+    uint16_t             ext_page_count;    /* 已分配扩展页数量 */
+    void                *audit_cell;        /* 关联的 Agent Cell 审计对象指针 */
+    uint64_t            *base_schema_masks; /* 首页槽位可选 schema_mask 约束数组 */
+    uint64_t           **ext_schema_pages;  /* 扩展页槽位可选 schema_mask 目录 */
 #endif
+};
+
+struct nos_cap_snapshot_entry {
+    uint16_t         slot_idx;
+    uint16_t         type;
+    uint16_t         gen;
+    nos_cap_rights_t rights;
+    uint32_t         badge;
+    void            *obj;
+    uint64_t         schema_mask;
+};
+
+struct nos_cap_table_snapshot {
+    struct nos_cap_table          *owner_table;
+    uint32_t                       entry_count;
+    struct nos_cap_snapshot_entry *entries;
 };
 
 void nos_cap_table_init(struct nos_cap_table *table);
@@ -108,7 +129,28 @@ int nos_cap_revoke_tree(struct nos_cap_table *table,
                         uint32_t *out_revoked_count);
 
 void nos_cap_register_audit_hook(nos_cap_audit_cb_t hook);
+void nos_cap_register_revoke_drain_hook(nos_cap_revoke_drain_cb_t hook);
 void nos_cap_table_bind_cell(struct nos_cap_table *table, void *cell);
+
+int nos_cap_set_schema_mask(struct nos_cap_table *table,
+                            nos_handle_t handle,
+                            uint64_t schema_mask);
+int nos_cap_get_schema_mask(struct nos_cap_table *table,
+                            nos_handle_t handle,
+                            uint64_t *out_mask);
+int nos_cap_check_schema(struct nos_cap_table *table,
+                         nos_handle_t handle,
+                         uint64_t schema_id);
+
+struct nos_cap_table_snapshot *nos_cap_table_snapshot(struct nos_cap_table *table);
+int nos_cap_table_restore(struct nos_cap_table *table,
+                          const struct nos_cap_table_snapshot *snap);
+int nos_cap_table_restore_ex(struct nos_cap_table *table,
+                             const struct nos_cap_table_snapshot *snap,
+                             const void *preserve_snap_obj);
+void nos_cap_table_snapshot_free(struct nos_cap_table_snapshot *snap);
+int nos_cap_table_clone_for_fork(struct nos_cap_table *src_table,
+                                 struct nos_cap_table *dst_table);
 
 int nos_cap_inspect(struct nos_cap_table *table,
                     nos_handle_t handle,

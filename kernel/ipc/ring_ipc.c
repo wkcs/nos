@@ -39,6 +39,15 @@ __attribute__((weak)) int nos_accel_dispatch_ring_sqe(void *accel_obj,
     return -ENOSYS;
 }
 
+__attribute__((weak)) int nos_accel_cancel_by_obj(void *accel_obj, uint64_t job_id)
+{
+    (void)job_id;
+    if (accel_obj != NULL) {
+        (void)nos_object_put((struct nos_object *)accel_obj);
+    }
+    return -ENOSYS;
+}
+
 static nos_timeout_t ring_to_timeout(uint32_t timeout_ticks)
 {
     if (timeout_ticks == NOS_IPC_TIMEOUT_NONBLOCK) {
@@ -155,6 +164,49 @@ static void ring_push_immediate_error(struct nos_ring *ring, uint64_t req_id, in
     }
 }
 
+static void ring_cdt_revoke_drain_cb(uint16_t cap_type, void *obj)
+{
+    struct nos_ring *ring;
+    struct nos_ring_sqe canceled_sqes[NOS_RING_DEFAULT_ENTRIES];
+    uint32_t cnt = 0U;
+    struct task_struct *restore_srv = NULL;
+
+    if (cap_type != NOS_CAP_RING || obj == NULL) {
+        return;
+    }
+
+    ring = (struct nos_ring *)obj;
+    spin_lock_irq(&ring->lock);
+    while (ring->pending_count > 0U && cnt < NOS_RING_DEFAULT_ENTRIES) {
+        canceled_sqes[cnt++] = ring->pending_queue[ring->pending_head].sqe;
+        ring->pending_head = (ring->pending_head + 1U) % NOS_RING_DEFAULT_ENTRIES;
+        ring->pending_count--;
+    }
+    if (ring->active_boosts > 0U) {
+        ring->active_boosts = 0U;
+        if (ring->server_task != NULL && task_get(ring->server_task)) {
+            restore_srv = ring->server_task;
+        }
+    }
+    for (uint32_t i = 0U; i < cnt; i++) {
+        struct nos_ring_cqe cqe;
+        memset(&cqe, 0, sizeof(cqe));
+        cqe.req_id = canceled_sqes[i].req_id;
+        cqe.status = -ECANCELED;
+        (void)ring_push_cqe_locked(ring, &cqe);
+    }
+    spin_unlock_irq(&ring->lock);
+
+    if (restore_srv != NULL) {
+        sched_infer_restore_deadline(restore_srv);
+        (void)task_put(restore_srv);
+    }
+    (void)nos_notify_signal_obj(&ring->sq_notif, 1ULL);
+    (void)nos_notify_signal_obj(&ring->cq_notif, 1ULL);
+}
+
+static uint32_t g_ring_drain_registered = 0U;
+
 struct nos_ring *nos_ring_create(const struct nos_ring_create_args *args,
                                  const uint64_t *schemas,
                                  struct nos_vm_space *map_space,
@@ -246,6 +298,10 @@ struct nos_ring *nos_ring_create(const struct nos_ring_create_args *args,
             (void)nos_ring_destroy(ring);
             return NULL;
         }
+    }
+
+    if (__atomic_exchange_n(&g_ring_drain_registered, 1U, __ATOMIC_ACQ_REL) == 0U) {
+        nos_cap_register_revoke_drain_hook(ring_cdt_revoke_drain_cb);
     }
 
     return ring;
@@ -362,6 +418,7 @@ static uint64_t ring_compute_abs_deadline(uint64_t deadline_ns)
 
 static void ring_dispatch_one_sqe(struct nos_ring *ring,
                                   struct task_struct *caller,
+                                  nos_handle_t ring_handle,
                                   const struct nos_ring_sqe *sqe)
 {
     struct nos_cell *cell = NULL;
@@ -369,6 +426,7 @@ static void ring_dispatch_one_sqe(struct nos_ring *ring,
     struct task_struct *server_ref = NULL;
     nos_ring_handler_t handler = NULL;
     void *handler_ctx = NULL;
+    struct nos_ring_sqe dispatch_sqe = *sqe;
     bool boosted = false;
     int rc;
 
@@ -383,8 +441,11 @@ static void ring_dispatch_one_sqe(struct nos_ring *ring,
         cap_tbl = nos_cell_cap_table(cell);
     }
 
-    /* 1. Schema 白名单校验 */
-    if (!ring_schema_allowed(ring, sqe->schema_id)) {
+    /* 1. CNode schema_mask 与 Ring 实例 Schema 白名单双重校验 */
+    if (!ring_schema_allowed(ring, sqe->schema_id) ||
+        (ring_handle != NOS_HANDLE_INVALID && cap_tbl != NULL &&
+         sqe->opcode != NOS_RING_OP_CANCEL &&
+         nos_cap_check_schema(cap_tbl, ring_handle, sqe->schema_id) < 0)) {
         if (cell != NULL) {
             nos_cell_record_audit(cell,
                                   NOS_AUDIT_TOOL_CALL,
@@ -395,6 +456,78 @@ static void ring_dispatch_one_sqe(struct nos_ring *ring,
                                   0ULL);
         }
         ring_push_immediate_error(ring, sqe->req_id, -EACCES);
+        return;
+    }
+
+    /* 1.5 NOS_RING_OP_CANCEL：优先从 pending_queue 摘除挂起 SQE，或向加速器转发取消 */
+    if (sqe->opcode == NOS_RING_OP_CANCEL) {
+        uint64_t target_req = (sqe->inline_arg[0] != 0ULL) ? sqe->inline_arg[0] : sqe->vmo_offset;
+        struct task_struct *restore_srv = NULL;
+        bool canceled_in_ring = false;
+
+        spin_lock_irq(&ring->lock);
+        for (uint32_t k = 0U; k < ring->pending_count; k++) {
+            uint32_t idx = (ring->pending_head + k) % NOS_RING_DEFAULT_ENTRIES;
+            if (ring->pending_queue[idx].sqe.req_id == target_req) {
+                bool was_boosted = ring->pending_queue[idx].deadline_boosted;
+                for (uint32_t m = k; m + 1U < ring->pending_count; m++) {
+                    uint32_t dst_i = (ring->pending_head + m) % NOS_RING_DEFAULT_ENTRIES;
+                    uint32_t src_i = (ring->pending_head + m + 1U) % NOS_RING_DEFAULT_ENTRIES;
+                    ring->pending_queue[dst_i] = ring->pending_queue[src_i];
+                }
+                ring->pending_tail = (ring->pending_tail + NOS_RING_DEFAULT_ENTRIES - 1U) %
+                                     NOS_RING_DEFAULT_ENTRIES;
+                ring->pending_count--;
+                if (was_boosted && ring->active_boosts > 0U) {
+                    ring->active_boosts--;
+                    if (ring->active_boosts == 0U &&
+                        ring->server_task != NULL &&
+                        task_get(ring->server_task)) {
+                        restore_srv = ring->server_task;
+                    }
+                }
+                {
+                    struct nos_ring_cqe cqe_target;
+                    struct nos_ring_cqe cqe_cancel;
+                    memset(&cqe_target, 0, sizeof(cqe_target));
+                    cqe_target.req_id = target_req;
+                    cqe_target.status = -ECANCELED;
+                    (void)ring_push_cqe_locked(ring, &cqe_target);
+
+                    memset(&cqe_cancel, 0, sizeof(cqe_cancel));
+                    cqe_cancel.req_id = sqe->req_id;
+                    cqe_cancel.status = 0;
+                    (void)ring_push_cqe_locked(ring, &cqe_cancel);
+                }
+                canceled_in_ring = true;
+                break;
+            }
+        }
+        spin_unlock_irq(&ring->lock);
+
+        if (restore_srv != NULL) {
+            sched_infer_restore_deadline(restore_srv);
+            (void)task_put(restore_srv);
+        }
+        if (canceled_in_ring) {
+            (void)nos_notify_signal_obj(&ring->cq_notif, 1ULL);
+            return;
+        }
+
+        if (cap_tbl != NULL &&
+            (sqe->target_cap != NOS_HANDLE_INVALID || sqe->vmo_cap != NOS_HANDLE_INVALID)) {
+            void *accel_obj = NULL;
+            nos_handle_t ah = (nos_handle_t)((sqe->target_cap != NOS_HANDLE_INVALID)
+                                             ? sqe->target_cap : sqe->vmo_cap);
+            if (nos_cap_lookup(cap_tbl, ah, NOS_CAP_ACCEL, NOS_CAP_RIGHT_SEND,
+                               &accel_obj, NULL) == 0) {
+                int cancel_rc = nos_accel_cancel_by_obj(accel_obj, target_req);
+                ring_push_immediate_error(ring, sqe->req_id, cancel_rc);
+                return;
+            }
+        }
+
+        ring_push_immediate_error(ring, sqe->req_id, -ENOENT);
         return;
     }
 
@@ -496,6 +629,36 @@ static void ring_dispatch_one_sqe(struct nos_ring *ring,
         }
     }
 
+    /* 4.5 NOS_RING_FLAG_MOVE_SLICE：派发给异步服务前派生至服务端能力表并原子撤销源句柄 */
+    if ((dispatch_sqe.flags & NOS_RING_FLAG_MOVE_SLICE) != 0U &&
+        dispatch_sqe.vmo_cap != NOS_HANDLE_INVALID &&
+        server_ref != NULL && cap_tbl != NULL) {
+        struct nos_cap_table *dst_tbl = nos_task_active_cap_table(server_ref);
+        nos_cap_rights_t xfer_rights = NOS_CAP_RIGHT_READ | NOS_CAP_RIGHT_MAP |
+                                       ((dispatch_sqe.flags & NOS_RING_FLAG_ZERO_COPY_RO)
+                                            ? 0U : NOS_CAP_RIGHT_WRITE);
+        nos_handle_t new_vmo_h = NOS_HANDLE_INVALID;
+        int xfer_rc = (dst_tbl != NULL)
+                          ? nos_cap_derive(cap_tbl,
+                                           (nos_handle_t)dispatch_sqe.vmo_cap,
+                                           dst_tbl,
+                                           xfer_rights,
+                                           0U,
+                                           &new_vmo_h)
+                          : -EINVAL;
+        if (xfer_rc < 0) {
+            if (boosted) {
+                sched_infer_restore_deadline(server_ref);
+            }
+            (void)task_put(server_ref);
+            ring_push_immediate_error(ring, sqe->req_id, xfer_rc);
+            return;
+        }
+        /* 仅撤销客户端源句柄槽位并把子节点重挂原父（避免吊销刚派发给服务端的派生句柄） */
+        (void)nos_cap_revoke(cap_tbl, (nos_handle_t)dispatch_sqe.vmo_cap);
+        dispatch_sqe.vmo_cap = (uint32_t)new_vmo_h;
+    }
+
     spin_lock_irq(&ring->lock);
     if (ring->pending_count >= NOS_RING_DEFAULT_ENTRIES) {
         spin_unlock_irq(&ring->lock);
@@ -509,7 +672,7 @@ static void ring_dispatch_one_sqe(struct nos_ring *ring,
         return;
     }
 
-    ring->pending_queue[ring->pending_tail].sqe = *sqe;
+    ring->pending_queue[ring->pending_tail].sqe = dispatch_sqe;
     ring->pending_queue[ring->pending_tail].deadline_boosted = boosted;
     ring->pending_tail = (ring->pending_tail + 1U) % NOS_RING_DEFAULT_ENTRIES;
     ring->pending_count++;
@@ -524,12 +687,13 @@ static void ring_dispatch_one_sqe(struct nos_ring *ring,
     (void)nos_notify_signal_obj(&ring->sq_notif, 1ULL);
 }
 
-int nos_ring_enter(struct nos_ring *ring,
-                   struct task_struct *caller,
-                   uint32_t to_submit,
-                   uint32_t min_complete,
-                   uint32_t flags,
-                   uint32_t timeout_ticks)
+int nos_ring_enter_with_cap(struct nos_ring *ring,
+                            struct task_struct *caller,
+                            nos_handle_t ring_handle,
+                            uint32_t to_submit,
+                            uint32_t min_complete,
+                            uint32_t flags,
+                            uint32_t timeout_ticks)
 {
     uint32_t submitted = 0U;
 
@@ -584,7 +748,7 @@ int nos_ring_enter(struct nos_ring *ring,
             spin_unlock_irq(&ring->lock);
 
             for (uint32_t i = 0U; i < batch_cnt; i++) {
-                ring_dispatch_one_sqe(ring, caller, &batch[i]);
+                ring_dispatch_one_sqe(ring, caller, ring_handle, &batch[i]);
             }
             submitted += batch_cnt;
         }
@@ -619,6 +783,17 @@ int nos_ring_enter(struct nos_ring *ring,
     }
 
     return (int)submitted;
+}
+
+int nos_ring_enter(struct nos_ring *ring,
+                   struct task_struct *caller,
+                   uint32_t to_submit,
+                   uint32_t min_complete,
+                   uint32_t flags,
+                   uint32_t timeout_ticks)
+{
+    return nos_ring_enter_with_cap(ring, caller, NOS_HANDLE_INVALID,
+                                   to_submit, min_complete, flags, timeout_ticks);
 }
 
 int nos_ring_server_pop(struct nos_ring *ring,

@@ -6,6 +6,9 @@
 
 #include <nos/hal_arch.h>
 #include <nos/mm.h>
+#ifdef CONFIG_NOS_AI_CORE
+#include <nos/iommu.h>
+#endif
 #include <uapi/nos/errno.h>
 #include <asm/init.h>
 #include <asm/irq.h>
@@ -136,6 +139,9 @@ void hal_vm_space_destroy(struct nos_vm_space *space)
     }
     if (space->root_pt_phys != 0U) {
         arm64_tlbi_asid(space->asid);
+#ifdef CONFIG_NOS_AI_CORE
+        nos_iommu_tlbi_asid(space->asid);
+#endif
         arm64_pt_destroy(space->root_pt_phys, CONFIG_ARM64_VA_BITS, NULL);
         space->root_pt_phys = 0U;
     }
@@ -160,12 +166,78 @@ int hal_vm_map(struct nos_vm_space *space,
 
 int hal_vm_unmap(struct nos_vm_space *space, uintptr_t vaddr, size_t size)
 {
+    int rc;
+
+    if (space == NULL || !space->initialized || space->root_pt_phys == 0U) {
+        return -EINVAL;
+    }
+    rc = arm64_pt_unmap_range(space->root_pt_phys,
+                              CONFIG_ARM64_VA_BITS,
+                              vaddr, size, true, NULL);
+#ifdef CONFIG_NOS_AI_CORE
+    if (rc == 0) {
+        nos_iommu_tlbi_range(space->asid, vaddr, size);
+    }
+#endif
+    return rc;
+}
+
+void hal_vm_flush_asid(struct nos_vm_space *space)
+{
+    if (space != NULL && space->initialized && space->asid != 0U) {
+        arm64_tlbi_asid(space->asid);
+    }
+}
+
+int hal_vm_unmap_noflush(struct nos_vm_space *space, uintptr_t vaddr, size_t size)
+{
     if (space == NULL || !space->initialized || space->root_pt_phys == 0U) {
         return -EINVAL;
     }
     return arm64_pt_unmap_range(space->root_pt_phys,
                                 CONFIG_ARM64_VA_BITS,
-                                vaddr, size, true, NULL);
+                                vaddr, size, false, NULL);
+}
+
+int hal_vm_map_noflush(struct nos_vm_space *space,
+                       uintptr_t vaddr,
+                       uintptr_t paddr,
+                       size_t size,
+                       uint32_t prot_flags)
+{
+    if (space == NULL || !space->initialized || space->root_pt_phys == 0U) {
+        return -EINVAL;
+    }
+    return arm64_pt_map_range_noflush(space->root_pt_phys,
+                                      CONFIG_ARM64_VA_BITS,
+                                      vaddr, paddr, size,
+                                      prot_flags, true, NULL);
+}
+
+void hal_dcache_sync(uintptr_t va, size_t size, uint32_t dir)
+{
+    if (va == 0U || size == 0U) {
+        return;
+    }
+    if (dir == 0U) {
+        arm64_clean_dcache_poc(va, size);
+    } else if (dir == 1U) {
+        arm64_inv_dcache_poc(va, size);
+    } else {
+        arm64_clean_inv_dcache_poc(va, size);
+    }
+}
+
+int hal_vm_test_and_clear_af(struct nos_vm_space *space,
+                             uintptr_t vaddr,
+                             bool *was_accessed)
+{
+    if (space == NULL || !space->initialized || space->root_pt_phys == 0U) {
+        return -EINVAL;
+    }
+    return arm64_pt_test_and_clear_af(space->root_pt_phys,
+                                      CONFIG_ARM64_VA_BITS,
+                                      vaddr, was_accessed, NULL);
 }
 
 void hal_vm_switch(struct nos_vm_space *next_space)

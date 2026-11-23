@@ -52,6 +52,41 @@ static int32_t  g_fail_map_on_call = -1;
 static uint64_t g_mock_cell_mem_used;
 static uint64_t g_mock_cell_mem_limit = UINT64_MAX;
 static uint64_t g_mock_evict_signals;
+static uint32_t g_mock_dcache_ops[4];
+static uint32_t g_mock_af_bits;
+
+void hal_dcache_sync(uintptr_t va, size_t size, uint32_t dir)
+{
+    (void)va;
+    if (size > 0U && dir <= NOS_DMA_BIDIRECTIONAL) {
+        g_mock_dcache_ops[dir]++;
+    }
+}
+
+int hal_vm_test_and_clear_af(struct nos_vm_space *space,
+                             uintptr_t vaddr,
+                             bool *was_accessed)
+{
+    uint32_t i;
+    (void)space;
+    if (was_accessed == NULL) {
+        return -EINVAL;
+    }
+    for (i = 0U; i < 32U; i++) {
+        if (g_maps[i].active &&
+            vaddr >= g_maps[i].vaddr &&
+            vaddr < (g_maps[i].vaddr + g_maps[i].size)) {
+            uint32_t bit = (uint32_t)((vaddr - g_maps[i].vaddr) / 4096U);
+            bool af = (bit < 32U) ? ((g_mock_af_bits & (1U << bit)) != 0U) : false;
+            *was_accessed = af;
+            if (af && bit < 32U) {
+                g_mock_af_bits &= ~(1U << bit);
+            }
+            return 0;
+        }
+    }
+    return -ENOENT;
+}
 
 int hal_vm_map(struct nos_vm_space *space,
                uintptr_t vaddr,
@@ -154,6 +189,8 @@ static void reset_mock_env(void)
     g_mock_cell_mem_used = 0ULL;
     g_mock_cell_mem_limit = UINT64_MAX;
     g_mock_evict_signals = 0ULL;
+    memset(g_mock_dcache_ops, 0, sizeof(g_mock_dcache_ops));
+    g_mock_af_bits = 0U;
 }
 
 static void release_vmo(struct nos_vmo *vmo)
@@ -375,11 +412,115 @@ static void test_vmo_quota_and_rollback(void)
     release_vmo(vmo);
 }
 
+static void test_vmo_stage6_blocks_lazy_hash_sync_and_af_reclaim(void)
+{
+    struct nos_vmo_create_args c64_args = {
+        .size_bytes = 16U * 4096U,
+        .kind = NOS_VMO_WEIGHT,
+        .flags = NOS_VMO_FLAG_CONTIG_64K,
+    };
+    struct nos_vmo_create_args lazy_args = {
+        .size_bytes = 4U * 4096U,
+        .kind = NOS_VMO_ANON,
+        .flags = NOS_VMO_FLAG_LAZY_ALLOC | NOS_VMO_FLAG_RECOMPUTABLE,
+    };
+    struct nos_vmo_create_args dma_args = {
+        .size_bytes = 2U * 4096U,
+        .kind = NOS_VMO_DMA_TENSOR,
+        .flags = 0U,
+    };
+    struct nos_vm_space dummy_space;
+    struct nos_vmo *c64;
+    struct nos_vmo *c64_cow;
+    struct nos_vmo *lazy;
+    struct nos_vmo *dma;
+    struct nos_notification ev_notif;
+    uint64_t hash1;
+    uintptr_t ensure_pa = 0U;
+    bool newly = false;
+    uint8_t rb[16] = {0};
+
+    reset_mock_env();
+    memset(&dummy_space, 0, sizeof(dummy_space));
+    (void)nos_object_init(&ev_notif.object, true);
+
+    /* 1. 64KB 连续物理块 + 单页独立 CoW 分裂 + Seal FNV-1a 指纹 */
+    c64 = nos_vmo_create(&c64_args);
+    assert(c64 != NULL);
+    assert(c64->pages[0]->backing_block != NULL);
+    assert(c64->pages[0]->backing_block == c64->pages[15]->backing_block);
+    assert(c64->pages[0]->backing_block->order == 4U);
+    assert(c64->pages[15]->paddr == c64->pages[0]->paddr + 15U * 4096U);
+
+    assert(nos_vmo_write(c64, 0U, "BLOCK64K_BASE", 14U) == 0);
+    c64_cow = nos_vmo_clone_cow(c64);
+    assert(c64_cow != NULL);
+    /* 写第 3 页引发块内单页 CoW 分裂：仅第 3 页脱离 backing_block */
+    assert(nos_vmo_write(c64_cow, 3U * 4096U, "COW_PAGE3", 10U) == 0);
+    assert(c64_cow->pages[3]->backing_block == NULL);
+    assert(c64_cow->pages[4]->backing_block == c64->pages[4]->backing_block);
+
+    assert(nos_vmo_seal(c64) == 0);
+    hash1 = nos_vmo_content_hash(c64);
+    assert(hash1 != 0ULL && hash1 == nos_vmo_content_hash(c64));
+
+    /* 验证 64KB 连续物理区一次性整段 hal_vm_map */
+    assert(nos_vmo_map(c64, &dummy_space, 0x50000000UL, 0U, 16U * 4096U,
+                       HAL_VM_PROT_USER | HAL_VM_PROT_READ, NULL) == 0);
+    assert(g_map_call_count == 1U && g_maps[0].size == 16U * 4096U);
+    assert(nos_vmo_unmap(&dummy_space, 0x50000000UL, 16U * 4096U, NULL) == 0);
+
+    release_vmo(c64_cow);
+    release_vmo(c64);
+
+    /* 2. LAZY_ALLOC 按需分配 + ensure_page + AF 位二次机会冷页驱逐 */
+    reset_mock_env();
+    lazy = nos_vmo_create(&lazy_args);
+    assert(lazy != NULL);
+    assert(lazy->pages[0] == NULL && lazy->pages[1] == NULL);
+    assert(nos_vmo_bind_evict_notif(lazy, &ev_notif) == 0);
+
+    /* map LAZY_ALLOC 不提前分配也不扣完整虚拟大小配额 */
+    assert(nos_vmo_map(lazy, &dummy_space, 0x60000000UL, 0U, 4U * 4096U,
+                       HAL_VM_PROT_USER | HAL_VM_PROT_READ | HAL_VM_PROT_WRITE,
+                       (struct nos_cell *)0x1234UL) == 0);
+    assert(g_mock_cell_mem_used == 0ULL);
+
+    /* ensure 第 0、1 页并手工映射（模拟缺页完成），第 0 页标记 AF=1（热），第 1 页保持 AF=0（冷） */
+    assert(nos_vmo_ensure_page(lazy, 0U, &ensure_pa, &newly) == 0 && newly);
+    assert(hal_vm_map(&dummy_space, 0x60000000UL, ensure_pa, 4096U, HAL_VM_PROT_USER | HAL_VM_PROT_READ) == 0);
+    assert(nos_vmo_ensure_page(lazy, 1U, &ensure_pa, &newly) == 0 && newly);
+    assert(hal_vm_map(&dummy_space, 0x60001000UL, ensure_pa, 4096U, HAL_VM_PROT_USER | HAL_VM_PROT_READ) == 0);
+    assert(nos_vmo_write(lazy, 0U, "HOT_P0", 7U) == 0);
+    assert(nos_vmo_write(lazy, 4096U, "COLD_P1", 8U) == 0);
+    g_mock_af_bits = (1U << 0);
+
+    /* 第 1 轮扫描：P0 清 AF 并保留，P1 因 AF==0 直接被驱逐；第 2 轮扫描：P0 变冷也被驱逐 */
+    assert(nos_vmo_reclaim_cold_pages(lazy, &dummy_space, 0x60000000UL, 8U) == 1);
+    assert(lazy->pages[0] != NULL && lazy->pages[1] == NULL);
+    assert(nos_vmo_read(lazy, 0U, rb, 7U) == 0 && strcmp((const char *)rb, "HOT_P0") == 0);
+    assert(g_mock_evict_signals == 1ULL);
+
+    assert(nos_vmo_reclaim_cold_pages(lazy, &dummy_space, 0x60000000UL, 8U) == 1);
+    assert(lazy->pages[0] == NULL && g_mock_evict_signals == 2ULL);
+    release_vmo(lazy);
+
+    /* 3. SYNC_DMA 验证 */
+    dma = nos_vmo_create(&dma_args);
+    assert(dma != NULL);
+    assert(nos_vmo_sync_dma(dma, 0U, 2U * 4096U, NOS_DMA_TO_DEVICE) == 0);
+    assert(nos_vmo_sync_dma(dma, 0U, 4096U, NOS_DMA_FROM_DEVICE) == 0);
+    assert(g_mock_dcache_ops[NOS_DMA_TO_DEVICE] == 2U);
+    assert(g_mock_dcache_ops[NOS_DMA_FROM_DEVICE] == 1U);
+    release_vmo(dma);
+}
+
 int main(void)
 {
     test_vmo_seal_and_wx();
     test_vmo_cow_and_kv_prefix();
     test_vmo_quota_and_rollback();
-    printf("PASS: test_vmo (Seal, W^X, CoW split, KV-prefix share, evict, Cell quota rollback)\n");
+    test_vmo_stage6_blocks_lazy_hash_sync_and_af_reclaim();
+    printf("PASS: test_vmo (Seal+Hash, W^X, 64K/CoW split, LazyAlloc, SyncDMA, AF Reclaim)\n");
     return 0;
 }

@@ -25,10 +25,30 @@
 #endif
 
 #define NOS_ACCEL_MAX_DEVICES   8U
+#define NOS_ACCEL_ASYNC_SLOTS   32U
+
+enum accel_async_state {
+    ACCEL_JOB_FREE     = 0,
+    ACCEL_JOB_PENDING  = 1,
+    ACCEL_JOB_DONE     = 2,
+    ACCEL_JOB_CANCELED = 3,
+};
+
+struct accel_async_slot {
+    bool                        in_use;
+    uint8_t                     state;
+    struct nos_accel_device    *dev;
+    struct nos_cell            *cell;
+    uint32_t                    pasid;
+    uint64_t                    req_id;
+    struct nos_accel_job_result result;
+};
 
 static struct nos_accel_device *g_accel_devs[NOS_ACCEL_MAX_DEVICES];
+static struct accel_async_slot g_async_jobs[NOS_ACCEL_ASYNC_SLOTS];
 static spinlock_t g_accel_list_lock;
 static bool g_accel_lock_inited;
+static uint32_t g_accel_drain_registered;
 
 /* 弱符号默认值：允许在未链接硬件 SMMUv3 的宿主单测/小架构中平滑工作 */
 __attribute__((weak)) int nos_iommu_get_status(struct nos_iommu_info *out)
@@ -51,11 +71,51 @@ __attribute__((weak)) int nos_iommu_bind_space(uint32_t stream_id,
     return 0;
 }
 
+__attribute__((weak)) void nos_iommu_tlbi_asid(uint16_t asid)
+{
+    (void)asid;
+}
+
 static void accel_ensure_lock(void)
 {
     if (!g_accel_lock_inited) {
         spin_lock_init(&g_accel_list_lock);
         g_accel_lock_inited = true;
+    }
+}
+
+static void accel_cdt_revoke_drain_cb(uint16_t cap_type, void *obj)
+{
+    struct nos_accel_device *dev;
+    uint64_t cancel_ids[NOS_ACCEL_ASYNC_SLOTS];
+    uint32_t cancel_cnt = 0U;
+    uint32_t i;
+
+    if (cap_type != NOS_CAP_ACCEL || obj == NULL) {
+        return;
+    }
+    dev = (struct nos_accel_device *)obj;
+
+    accel_ensure_lock();
+    spin_lock_irq(&g_accel_list_lock);
+    for (i = 0U; i < NOS_ACCEL_ASYNC_SLOTS; i++) {
+        if (g_async_jobs[i].in_use && g_async_jobs[i].dev == dev &&
+            g_async_jobs[i].state == ACCEL_JOB_PENDING) {
+            g_async_jobs[i].state = ACCEL_JOB_CANCELED;
+            g_async_jobs[i].result.req_id = g_async_jobs[i].req_id;
+            g_async_jobs[i].result.status = -ECANCELED;
+            cancel_ids[cancel_cnt++] = g_async_jobs[i].req_id;
+        }
+    }
+    spin_unlock_irq(&g_accel_list_lock);
+
+    for (i = 0U; i < cancel_cnt; i++) {
+        if (dev->ops != NULL && dev->ops->cancel_job != NULL) {
+            (void)dev->ops->cancel_job(dev, cancel_ids[i]);
+        }
+    }
+    if (dev->ops != NULL && dev->ops->reset_ctx != NULL) {
+        (void)dev->ops->reset_ctx(dev, 0U);
     }
 }
 
@@ -95,6 +155,9 @@ int nos_accel_register(struct nos_accel_device *dev,
             dev->index = i;
             g_accel_devs[i] = dev;
             spin_unlock_irq(&g_accel_list_lock);
+            if (__atomic_exchange_n(&g_accel_drain_registered, 1U, __ATOMIC_ACQ_REL) == 0U) {
+                nos_cap_register_revoke_drain_hook(accel_cdt_revoke_drain_cb);
+            }
             return 0;
         }
     }
@@ -204,6 +267,7 @@ int nos_accel_bind_vmo(struct nos_accel_device *dev,
         }
         (void)nos_iommu_bind_space(dev->caps.stream_id, pasid,
                                    nos_cell_vm_space(caller->cell));
+        (void)nos_cell_bind_iommu_sid(caller->cell, dev->caps.stream_id);
     }
 
     if (dev->ops != NULL && dev->ops->bind_vmo != NULL) {
@@ -452,10 +516,12 @@ static int nos_accel_submit_internal(struct nos_accel_device *dev,
         goto out_put;
     }
 
+    uint32_t pasid = 0U;
+    int async_slot_idx = -1;
+
     if (cell != NULL) {
         struct nos_iommu_info iinfo;
         struct nos_vm_space *vms = nos_cell_vm_space(cell);
-        uint32_t pasid = 0U;
 
         if (!already_charged) {
             rc = nos_cell_charge_accel_op(cell, (uint64_t)desc->kernel_op, (uint32_t)desc->req_id);
@@ -474,6 +540,7 @@ static int nos_accel_submit_internal(struct nos_accel_device *dev,
                 goto out_put;
             }
         }
+        (void)nos_cell_bind_iommu_sid(cell, dev->caps.stream_id);
 
         nos_cell_record_audit(cell,
                               NOS_AUDIT_ACCEL_SUBMIT,
@@ -484,11 +551,53 @@ static int nos_accel_submit_internal(struct nos_accel_device *dev,
                               (uint64_t)desc->dim_m);
     }
 
+    if ((desc->flags & NOS_ACCEL_FLAG_ASYNC) != 0U) {
+        accel_ensure_lock();
+        spin_lock_irq(&g_accel_list_lock);
+        for (uint32_t s = 0U; s < NOS_ACCEL_ASYNC_SLOTS; s++) {
+            if (!g_async_jobs[s].in_use) {
+                g_async_jobs[s].in_use = true;
+                g_async_jobs[s].state = ACCEL_JOB_PENDING;
+                g_async_jobs[s].dev = dev;
+                g_async_jobs[s].cell = cell;
+                g_async_jobs[s].pasid = pasid;
+                g_async_jobs[s].req_id = desc->req_id;
+                memset(&g_async_jobs[s].result, 0, sizeof(g_async_jobs[s].result));
+                g_async_jobs[s].result.req_id = desc->req_id;
+                g_async_jobs[s].result.status = -EINPROGRESS;
+                async_slot_idx = (int)s;
+                break;
+            }
+        }
+        spin_unlock_irq(&g_accel_list_lock);
+        if (async_slot_idx < 0) {
+            rc = -EBUSY;
+            goto out_put;
+        }
+    }
+
     memset(&local_res, 0, sizeof(local_res));
     local_res.req_id = desc->req_id;
     rc = dev->ops->submit_job(dev, caller, desc, w_vmo, in_vmo, out_vmo, &local_res);
+    if (async_slot_idx >= 0) {
+        accel_ensure_lock();
+        spin_lock_irq(&g_accel_list_lock);
+        if (rc == 0) {
+            if (local_res.status != -EINPROGRESS) {
+                g_async_jobs[async_slot_idx].state = ACCEL_JOB_DONE;
+                g_async_jobs[async_slot_idx].result = local_res;
+            }
+        } else {
+            g_async_jobs[async_slot_idx].in_use = false;
+            g_async_jobs[async_slot_idx].state = ACCEL_JOB_FREE;
+        }
+        spin_unlock_irq(&g_accel_list_lock);
+    }
+
     if (rc == 0) {
-        dev->jobs_completed++;
+        if (local_res.status != -EINPROGRESS) {
+            dev->jobs_completed++;
+        }
     } else {
         dev->jobs_failed++;
         local_res.status = rc;
@@ -497,7 +606,7 @@ static int nos_accel_submit_internal(struct nos_accel_device *dev,
     if (out_res != NULL) {
         *out_res = local_res;
     }
-    if (rc == 0 && notif != NULL) {
+    if (rc == 0 && local_res.status != -EINPROGRESS && notif != NULL) {
         (void)nos_notify_signal_obj(notif, 1ULL);
     }
 
@@ -523,6 +632,181 @@ int nos_accel_submit(struct nos_accel_device *dev,
                      struct nos_accel_job_result *out_res)
 {
     return nos_accel_submit_internal(dev, caller, desc, out_res, false);
+}
+
+int nos_accel_wait_job(struct nos_accel_device *dev,
+                       struct task_struct *caller,
+                       uint64_t req_id,
+                       struct nos_accel_job_result *out_res,
+                       uint32_t timeout_ms)
+{
+    struct nos_accel_job_result local_res;
+    int slot_idx = -1;
+    uint8_t state = ACCEL_JOB_FREE;
+    int rc;
+
+    (void)caller;
+    if (dev == NULL || !dev->registered) {
+        return -EINVAL;
+    }
+
+    memset(&local_res, 0, sizeof(local_res));
+    local_res.req_id = req_id;
+
+    accel_ensure_lock();
+    spin_lock_irq(&g_accel_list_lock);
+    for (uint32_t i = 0U; i < NOS_ACCEL_ASYNC_SLOTS; i++) {
+        if (g_async_jobs[i].in_use && g_async_jobs[i].dev == dev &&
+            g_async_jobs[i].req_id == req_id) {
+            slot_idx = (int)i;
+            state = g_async_jobs[i].state;
+            if (state != ACCEL_JOB_PENDING) {
+                local_res = g_async_jobs[i].result;
+                g_async_jobs[i].in_use = false;
+                g_async_jobs[i].state = ACCEL_JOB_FREE;
+            }
+            break;
+        }
+    }
+    spin_unlock_irq(&g_accel_list_lock);
+
+    if (slot_idx >= 0 && state != ACCEL_JOB_PENDING) {
+        if (out_res != NULL) {
+            *out_res = local_res;
+        }
+        return (state == ACCEL_JOB_CANCELED) ? -ECANCELED : local_res.status;
+    }
+
+    if (dev->ops != NULL && dev->ops->wait_job != NULL) {
+        rc = dev->ops->wait_job(dev, req_id, &local_res, timeout_ms);
+    } else {
+        rc = (slot_idx < 0) ? -ENOENT : local_res.status;
+    }
+
+    if (slot_idx >= 0 && rc != -ETIMEDOUT && rc != -EAGAIN) {
+        accel_ensure_lock();
+        spin_lock_irq(&g_accel_list_lock);
+        if (g_async_jobs[slot_idx].in_use && g_async_jobs[slot_idx].req_id == req_id) {
+            if (g_async_jobs[slot_idx].state == ACCEL_JOB_CANCELED) {
+                local_res = g_async_jobs[slot_idx].result;
+                rc = -ECANCELED;
+            }
+            g_async_jobs[slot_idx].in_use = false;
+            g_async_jobs[slot_idx].state = ACCEL_JOB_FREE;
+        }
+        spin_unlock_irq(&g_accel_list_lock);
+    }
+
+    if (rc == 0) {
+        dev->jobs_completed++;
+    } else if (rc != -ENOENT && rc != -ETIMEDOUT && rc != -EAGAIN) {
+        dev->jobs_failed++;
+        local_res.status = rc;
+    }
+
+    if (out_res != NULL) {
+        *out_res = local_res;
+    }
+    return rc;
+}
+
+int nos_accel_cancel_job(struct nos_accel_device *dev, uint64_t req_id)
+{
+    bool found_pending = false;
+    int drv_rc = -ENOENT;
+
+    if (dev == NULL || !dev->registered) {
+        return -EINVAL;
+    }
+
+    accel_ensure_lock();
+    spin_lock_irq(&g_accel_list_lock);
+    for (uint32_t i = 0U; i < NOS_ACCEL_ASYNC_SLOTS; i++) {
+        if (g_async_jobs[i].in_use && g_async_jobs[i].dev == dev &&
+            g_async_jobs[i].req_id == req_id) {
+            if (g_async_jobs[i].state == ACCEL_JOB_PENDING) {
+                g_async_jobs[i].state = ACCEL_JOB_CANCELED;
+                g_async_jobs[i].result.req_id = req_id;
+                g_async_jobs[i].result.status = -ECANCELED;
+                found_pending = true;
+            }
+            break;
+        }
+    }
+    spin_unlock_irq(&g_accel_list_lock);
+
+    if (dev->ops != NULL && dev->ops->cancel_job != NULL) {
+        drv_rc = dev->ops->cancel_job(dev, req_id);
+        if (drv_rc == 0) {
+            return 0;
+        }
+    }
+    return found_pending ? 0 : drv_rc;
+}
+
+int nos_accel_reset_ctx(struct nos_accel_device *dev,
+                        struct task_struct *caller,
+                        uint32_t pasid)
+{
+    uint64_t cancel_ids[NOS_ACCEL_ASYNC_SLOTS];
+    uint32_t cancel_cnt = 0U;
+    uint32_t target_pasid = pasid;
+    int rc = 0;
+
+    if (dev == NULL || !dev->registered) {
+        return -EINVAL;
+    }
+    if (target_pasid == 0U && caller != NULL && caller->cell != NULL) {
+        struct nos_iommu_info iinfo;
+        (void)nos_iommu_get_status(&iinfo);
+        if (iinfo.max_pasids > 1U) {
+            target_pasid = caller->cell->cell_id % iinfo.max_pasids;
+        }
+    }
+
+    accel_ensure_lock();
+    spin_lock_irq(&g_accel_list_lock);
+    for (uint32_t i = 0U; i < NOS_ACCEL_ASYNC_SLOTS; i++) {
+        if (g_async_jobs[i].in_use && g_async_jobs[i].dev == dev &&
+            (target_pasid == 0U || g_async_jobs[i].pasid == target_pasid) &&
+            g_async_jobs[i].state == ACCEL_JOB_PENDING) {
+            g_async_jobs[i].state = ACCEL_JOB_CANCELED;
+            g_async_jobs[i].result.req_id = g_async_jobs[i].req_id;
+            g_async_jobs[i].result.status = -ECANCELED;
+            cancel_ids[cancel_cnt++] = g_async_jobs[i].req_id;
+        }
+    }
+    spin_unlock_irq(&g_accel_list_lock);
+
+    for (uint32_t i = 0U; i < cancel_cnt; i++) {
+        if (dev->ops != NULL && dev->ops->cancel_job != NULL) {
+            (void)dev->ops->cancel_job(dev, cancel_ids[i]);
+        }
+    }
+
+    if (dev->ops != NULL && dev->ops->reset_ctx != NULL) {
+        rc = dev->ops->reset_ctx(dev, target_pasid);
+    }
+    if (caller != NULL && caller->cell != NULL) {
+        struct nos_vm_space *vms = nos_cell_vm_space(caller->cell);
+        if (vms != NULL && vms->asid != 0U) {
+            nos_iommu_tlbi_asid(vms->asid);
+        }
+    }
+    return rc;
+}
+
+int nos_accel_cancel_by_obj(void *accel_obj, uint64_t job_id)
+{
+    struct nos_accel_device *dev = (struct nos_accel_device *)accel_obj;
+    int rc;
+
+    if (dev == NULL) {
+        return -EINVAL;
+    }
+    rc = nos_accel_cancel_job(dev, job_id);
+    (void)nos_object_put(&dev->header);
+    return rc;
 }
 
 int nos_accel_dispatch_ring_sqe(void *accel_obj,
@@ -583,6 +867,7 @@ void nos_accel_host_reset(void)
             g_accel_devs[i] = NULL;
         }
     }
+    memset(g_async_jobs, 0, sizeof(g_async_jobs));
     spin_unlock_irq(&g_accel_list_lock);
 }
 #endif

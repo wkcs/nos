@@ -24,6 +24,13 @@
 /* 全局 CDT 拓扑保护锁：加锁顺序严格为 g_cdt_lock -> table->lock（双表按地址升序） */
 static spinlock_t g_cdt_lock;
 static nos_cap_audit_cb_t g_cap_audit_hook;
+#define CAP_REVOKE_DRAIN_MAX_HOOKS 4U
+static nos_cap_revoke_drain_cb_t g_cap_revoke_drain_hooks[CAP_REVOKE_DRAIN_MAX_HOOKS];
+
+struct cap_drain_item {
+    uint16_t type;
+    void    *obj;
+};
 #endif
 
 static uint16_t next_generation(uint16_t current_gen)
@@ -96,6 +103,118 @@ static void cap_init_slot(struct nos_cap_slot *slot,
 #endif
 }
 
+#ifdef CONFIG_NOS_CAP_CDT
+static uint64_t *cap_schema_ptr_locked(struct nos_cap_table *table, uint16_t idx)
+{
+    if (table == NULL) {
+        return NULL;
+    }
+    if (idx < NOS_CAP_MAX_SLOTS) {
+        return (table->base_schema_masks != NULL) ? &table->base_schema_masks[idx] : NULL;
+    }
+    if (idx < cap_table_capacity_locked(table) && table->ext_schema_pages != NULL) {
+        uint32_t ext_idx = (uint32_t)idx - NOS_CAP_MAX_SLOTS;
+        uint32_t page_idx = ext_idx / NOS_CAP_EXT_SLOTS_PER_PAGE;
+        uint32_t in_page = ext_idx % NOS_CAP_EXT_SLOTS_PER_PAGE;
+        if (page_idx < NOS_CAP_EXT_MAX_PAGES && table->ext_schema_pages[page_idx] != NULL) {
+            return &table->ext_schema_pages[page_idx][in_page];
+        }
+    }
+    return NULL;
+}
+
+static uint64_t cap_schema_get_locked(struct nos_cap_table *table, uint16_t idx)
+{
+    uint64_t *p = cap_schema_ptr_locked(table, idx);
+    return (p != NULL) ? *p : 0ULL;
+}
+
+static int cap_ensure_schema_slot(struct nos_cap_table *table, uint16_t idx)
+{
+    uint64_t *new_base = NULL;
+    uint64_t **new_dir = NULL;
+    uint64_t *new_page = NULL;
+
+    if (table == NULL || idx >= NOS_CAP_CDT_MAX_SLOTS) {
+        return -EINVAL;
+    }
+
+    if (idx < NOS_CAP_MAX_SLOTS) {
+        spin_lock_irq(&table->lock);
+        if (table->base_schema_masks != NULL) {
+            spin_unlock_irq(&table->lock);
+            return 0;
+        }
+        spin_unlock_irq(&table->lock);
+
+        new_base = kzalloc((uint32_t)(sizeof(uint64_t) * NOS_CAP_MAX_SLOTS), GFP_KERNEL);
+        if (new_base == NULL) {
+            return -ENOMEM;
+        }
+        spin_lock_irq(&table->lock);
+        if (table->base_schema_masks == NULL) {
+            table->base_schema_masks = new_base;
+            new_base = NULL;
+        }
+        spin_unlock_irq(&table->lock);
+        if (new_base != NULL) {
+            kfree(new_base);
+        }
+        return 0;
+    }
+
+    {
+        uint32_t ext_idx = (uint32_t)idx - NOS_CAP_MAX_SLOTS;
+        uint32_t page_idx = ext_idx / NOS_CAP_EXT_SLOTS_PER_PAGE;
+        bool need_dir;
+
+        if (page_idx >= NOS_CAP_EXT_MAX_PAGES) {
+            return -EINVAL;
+        }
+        spin_lock_irq(&table->lock);
+        if (table->ext_schema_pages != NULL && table->ext_schema_pages[page_idx] != NULL) {
+            spin_unlock_irq(&table->lock);
+            return 0;
+        }
+        need_dir = (table->ext_schema_pages == NULL);
+        spin_unlock_irq(&table->lock);
+
+        if (need_dir) {
+            new_dir = kzalloc((uint32_t)(sizeof(uint64_t *) * NOS_CAP_EXT_MAX_PAGES), GFP_KERNEL);
+            if (new_dir == NULL) {
+                return -ENOMEM;
+            }
+        }
+        new_page = kzalloc((uint32_t)(sizeof(uint64_t) * NOS_CAP_EXT_SLOTS_PER_PAGE), GFP_KERNEL);
+        if (new_page == NULL) {
+            if (new_dir != NULL) {
+                kfree(new_dir);
+            }
+            return -ENOMEM;
+        }
+
+        spin_lock_irq(&table->lock);
+        if (table->ext_schema_pages == NULL && new_dir != NULL) {
+            table->ext_schema_pages = new_dir;
+            new_dir = NULL;
+        }
+        if (table->ext_schema_pages != NULL && table->ext_schema_pages[page_idx] == NULL) {
+            table->ext_schema_pages[page_idx] = new_page;
+            new_page = NULL;
+        }
+        spin_unlock_irq(&table->lock);
+
+        if (new_dir != NULL) {
+            kfree(new_dir);
+        }
+        if (new_page != NULL) {
+            kfree(new_page);
+        }
+    }
+    return 0;
+}
+#endif
+
 static void cap_clear_slot_preserve_owner(struct nos_cap_slot *slot)
 {
     slot->type = NOS_CAP_NONE;
@@ -104,6 +223,12 @@ static void cap_clear_slot_preserve_owner(struct nos_cap_slot *slot)
     slot->badge = 0U;
     slot->obj = NULL;
 #ifdef CONFIG_NOS_CAP_CDT
+    if (slot->owner_table != NULL) {
+        uint64_t *sp = cap_schema_ptr_locked(slot->owner_table, slot->slot_idx);
+        if (sp != NULL) {
+            *sp = 0ULL;
+        }
+    }
     slot->cdt_flags = 0U;
     slot->cdt_parent = NULL;
     slot->cdt_first_child = NULL;
@@ -339,6 +464,34 @@ void nos_cap_register_audit_hook(nos_cap_audit_cb_t hook)
 #endif
 }
 
+void nos_cap_register_revoke_drain_hook(nos_cap_revoke_drain_cb_t hook)
+{
+#ifdef CONFIG_NOS_CAP_CDT
+    uint32_t i;
+
+    if (hook == NULL) {
+        for (i = 0U; i < CAP_REVOKE_DRAIN_MAX_HOOKS; i++) {
+            __atomic_store_n(&g_cap_revoke_drain_hooks[i], NULL, __ATOMIC_RELEASE);
+        }
+        return;
+    }
+
+    for (i = 0U; i < CAP_REVOKE_DRAIN_MAX_HOOKS; i++) {
+        nos_cap_revoke_drain_cb_t cur =
+            __atomic_load_n(&g_cap_revoke_drain_hooks[i], __ATOMIC_ACQUIRE);
+        if (cur == hook) {
+            return;
+        }
+        if (cur == NULL) {
+            __atomic_store_n(&g_cap_revoke_drain_hooks[i], hook, __ATOMIC_RELEASE);
+            return;
+        }
+    }
+#else
+    (void)hook;
+#endif
+}
+
 void nos_cap_table_bind_cell(struct nos_cap_table *table, void *cell)
 {
 #ifdef CONFIG_NOS_CAP_CDT
@@ -371,6 +524,8 @@ void nos_cap_table_init(struct nos_cap_table *table)
     table->cap_capacity = (uint16_t)NOS_CAP_MAX_SLOTS;
     table->ext_page_count = 0U;
     table->audit_cell = NULL;
+    table->base_schema_masks = NULL;
+    table->ext_schema_pages = NULL;
 #endif
 }
 
@@ -381,6 +536,8 @@ void nos_cap_table_destroy(struct nos_cap_table *table)
 #ifdef CONFIG_NOS_CAP_CDT
     struct nos_cap_slot **ext_pages = NULL;
     uint16_t ext_page_count = 0U;
+    uint64_t *base_schemas = NULL;
+    uint64_t **ext_schemas = NULL;
     uint16_t p;
 #endif
 
@@ -406,10 +563,14 @@ void nos_cap_table_destroy(struct nos_cap_table *table)
 #ifdef CONFIG_NOS_CAP_CDT
     ext_pages = table->ext_pages;
     ext_page_count = table->ext_page_count;
+    base_schemas = table->base_schema_masks;
+    ext_schemas = table->ext_schema_pages;
     table->ext_pages = NULL;
     table->ext_page_count = 0U;
     table->cap_capacity = (uint16_t)NOS_CAP_MAX_SLOTS;
     table->audit_cell = NULL;
+    table->base_schema_masks = NULL;
+    table->ext_schema_pages = NULL;
 #endif
     spin_unlock_irq(&table->lock);
 #ifdef CONFIG_NOS_CAP_CDT
@@ -422,6 +583,17 @@ void nos_cap_table_destroy(struct nos_cap_table *table)
             }
         }
         kfree(ext_pages);
+    }
+    if (base_schemas != NULL) {
+        kfree(base_schemas);
+    }
+    if (ext_schemas != NULL) {
+        for (p = 0; p < NOS_CAP_EXT_MAX_PAGES; p++) {
+            if (ext_schemas[p] != NULL) {
+                kfree(ext_schemas[p]);
+            }
+        }
+        kfree(ext_schemas);
     }
 #endif
 }
@@ -658,6 +830,8 @@ int nos_cap_derive(struct nos_cap_table *src_table,
         nos_handle_t h;
         void *audit_cell;
         void *obj_ptr;
+        uint64_t src_mask;
+        uint64_t *dst_mask_ptr = NULL;
 
         spin_lock_irq(&g_cdt_lock);
         cap_lock_two_tables(src_table, dst_table);
@@ -691,6 +865,7 @@ int nos_cap_derive(struct nos_cap_table *src_table,
             return -EACCES;
         }
         effective_badge = (src_slot->badge != 0U) ? src_slot->badge : new_badge;
+        src_mask = cap_schema_get_locked(src_table, idx);
 
         dst_slot = cap_find_free_slot_locked(dst_table);
         if (dst_slot == NULL) {
@@ -709,6 +884,22 @@ int nos_cap_derive(struct nos_cap_table *src_table,
             continue;
         }
 
+        if (src_mask != 0ULL) {
+            dst_mask_ptr = cap_schema_ptr_locked(dst_table, dst_slot->slot_idx);
+            if (dst_mask_ptr == NULL) {
+                uint16_t need_idx = dst_slot->slot_idx;
+                cap_unlock_two_tables(src_table, dst_table);
+                spin_unlock_irq(&g_cdt_lock);
+                {
+                    int rc = cap_ensure_schema_slot(dst_table, need_idx);
+                    if (rc != 0) {
+                        return rc;
+                    }
+                }
+                continue;
+            }
+        }
+
         if (dst_slot->gen == 0U) {
             dst_slot->gen = 1U;
         }
@@ -716,6 +907,14 @@ int nos_cap_derive(struct nos_cap_table *src_table,
         dst_slot->rights = effective_rights;
         dst_slot->badge = effective_badge;
         dst_slot->obj = src_slot->obj;
+        if (dst_mask_ptr != NULL) {
+            *dst_mask_ptr = src_mask;
+        } else {
+            uint64_t *clr = cap_schema_ptr_locked(dst_table, dst_slot->slot_idx);
+            if (clr != NULL) {
+                *clr = 0ULL;
+            }
+        }
         cap_cdt_attach_locked(src_slot, dst_slot);
 
         h = nos_handle_make(cap_slot_handle_index(dst_table, dst_slot), dst_slot->gen);
@@ -842,6 +1041,10 @@ int nos_cap_revoke_tree(struct nos_cap_table *table,
     void *audit_cell = NULL;
     void *root_obj = NULL;
     uint32_t root_badge = 0U;
+    nos_cap_revoke_drain_cb_t drain_hooks[CAP_REVOKE_DRAIN_MAX_HOOKS];
+    bool has_drain_hook = false;
+    struct cap_drain_item drain_items[16];
+    uint32_t drain_cnt = 0U;
 
     if (table == NULL || handle == NOS_HANDLE_INVALID) {
         return -EBADF;
@@ -851,6 +1054,13 @@ int nos_cap_revoke_tree(struct nos_cap_table *table,
     gen = nos_handle_gen(handle);
     if (idx == 0U || gen == 0U) {
         return -EBADF;
+    }
+
+    for (uint32_t h_i = 0U; h_i < CAP_REVOKE_DRAIN_MAX_HOOKS; h_i++) {
+        drain_hooks[h_i] = __atomic_load_n(&g_cap_revoke_drain_hooks[h_i], __ATOMIC_ACQUIRE);
+        if (drain_hooks[h_i] != NULL) {
+            has_drain_hook = true;
+        }
     }
 
     spin_lock_irq(&g_cdt_lock);
@@ -901,6 +1111,23 @@ int nos_cap_revoke_tree(struct nos_cap_table *table,
                     if (audit_cell == NULL && cur_tbl->audit_cell != NULL) {
                         audit_cell = cur_tbl->audit_cell;
                     }
+                    if (has_drain_hook &&
+                        (cur->type == NOS_CAP_RING || cur->type == NOS_CAP_ACCEL) &&
+                        cur->obj != NULL && drain_cnt < 16U) {
+                        bool dup = false;
+                        for (uint32_t d = 0U; d < drain_cnt; d++) {
+                            if (drain_items[d].type == cur->type &&
+                                drain_items[d].obj == cur->obj) {
+                                dup = true;
+                                break;
+                            }
+                        }
+                        if (!dup && nos_object_get((struct nos_object *)cur->obj)) {
+                            drain_items[drain_cnt].type = cur->type;
+                            drain_items[drain_cnt].obj = cur->obj;
+                            drain_cnt++;
+                        }
+                    }
                     cap_clear_slot_preserve_owner(cur);
                     revoked++;
                 }
@@ -911,6 +1138,15 @@ int nos_cap_revoke_tree(struct nos_cap_table *table,
     }
 
     spin_unlock_irq(&g_cdt_lock);
+
+    for (uint32_t d = 0U; d < drain_cnt; d++) {
+        for (uint32_t h_i = 0U; h_i < CAP_REVOKE_DRAIN_MAX_HOOKS; h_i++) {
+            if (drain_hooks[h_i] != NULL) {
+                drain_hooks[h_i](drain_items[d].type, drain_items[d].obj);
+            }
+        }
+        (void)nos_object_put((struct nos_object *)drain_items[d].obj);
+    }
 
     cap_emit_audit(audit_cell,
                    NOS_AUDIT_CAP_REVOKE,
@@ -930,6 +1166,392 @@ int nos_cap_revoke_tree(struct nos_cap_table *table,
         *out_revoked_count = 1U;
     }
     return rc;
+#endif
+}
+
+int nos_cap_set_schema_mask(struct nos_cap_table *table,
+                            nos_handle_t handle,
+                            uint64_t schema_mask)
+{
+#ifdef CONFIG_NOS_CAP_CDT
+    uint16_t idx;
+    uint16_t gen;
+    struct nos_cap_slot *slot;
+    uint64_t *mp;
+    uint64_t old_mask;
+    int rc;
+
+    if (table == NULL || handle == NOS_HANDLE_INVALID) {
+        return -EBADF;
+    }
+    idx = nos_handle_index(handle);
+    gen = nos_handle_gen(handle);
+    if (idx == 0U || gen == 0U) {
+        return -EBADF;
+    }
+
+    if (schema_mask != 0ULL) {
+        rc = cap_ensure_schema_slot(table, idx);
+        if (rc != 0) {
+            return rc;
+        }
+    }
+
+    spin_lock_irq(&table->lock);
+    slot = cap_slot_ptr_locked(table, idx);
+    if (slot == NULL || slot->type == NOS_CAP_NONE || slot->gen != gen) {
+        spin_unlock_irq(&table->lock);
+        return -EBADF;
+    }
+    mp = cap_schema_ptr_locked(table, idx);
+    old_mask = (mp != NULL) ? *mp : 0ULL;
+    /* 若已有非零约束则只允许单调收紧，禁止放宽 */
+    if (old_mask != 0ULL && (schema_mask == 0ULL || (schema_mask & ~old_mask) != 0ULL)) {
+        spin_unlock_irq(&table->lock);
+        return -EACCES;
+    }
+    if (mp != NULL) {
+        *mp = schema_mask;
+    }
+    spin_unlock_irq(&table->lock);
+    return 0;
+#else
+    (void)table;
+    (void)handle;
+    (void)schema_mask;
+    return -ENOSYS;
+#endif
+}
+
+int nos_cap_get_schema_mask(struct nos_cap_table *table,
+                            nos_handle_t handle,
+                            uint64_t *out_mask)
+{
+#ifdef CONFIG_NOS_CAP_CDT
+    uint16_t idx;
+    uint16_t gen;
+    struct nos_cap_slot *slot;
+
+    if (table == NULL || handle == NOS_HANDLE_INVALID || out_mask == NULL) {
+        return -EINVAL;
+    }
+    idx = nos_handle_index(handle);
+    gen = nos_handle_gen(handle);
+    if (idx == 0U || gen == 0U) {
+        return -EBADF;
+    }
+
+    spin_lock_irq(&table->lock);
+    slot = cap_slot_ptr_locked(table, idx);
+    if (slot == NULL || slot->type == NOS_CAP_NONE || slot->gen != gen) {
+        spin_unlock_irq(&table->lock);
+        return -EBADF;
+    }
+    *out_mask = cap_schema_get_locked(table, idx);
+    spin_unlock_irq(&table->lock);
+    return 0;
+#else
+    (void)table;
+    (void)handle;
+    (void)out_mask;
+    return -ENOSYS;
+#endif
+}
+
+int nos_cap_check_schema(struct nos_cap_table *table,
+                         nos_handle_t handle,
+                         uint64_t schema_id)
+{
+#ifdef CONFIG_NOS_CAP_CDT
+    uint64_t mask = 0ULL;
+    int rc = nos_cap_get_schema_mask(table, handle, &mask);
+    if (rc < 0) {
+        return rc;
+    }
+    if (mask == 0ULL) {
+        return 0;
+    }
+    if (schema_id == 0ULL || (schema_id & mask) != schema_id) {
+        return -EACCES;
+    }
+    return 0;
+#else
+    (void)table;
+    (void)handle;
+    (void)schema_id;
+    return 0;
+#endif
+}
+
+struct nos_cap_table_snapshot *nos_cap_table_snapshot(struct nos_cap_table *table)
+{
+#ifdef CONFIG_NOS_CAP_CDT
+    struct nos_cap_table_snapshot *snap;
+    struct nos_cap_snapshot_entry *entries;
+    uint32_t alloc_cap = 32U;
+    uint16_t cap;
+    uint16_t i;
+
+    if (table == NULL) {
+        return NULL;
+    }
+
+    snap = kzalloc(sizeof(*snap), GFP_KERNEL);
+    if (snap == NULL) {
+        return NULL;
+    }
+
+    spin_lock_irq(&table->lock);
+    cap = cap_table_capacity_locked(table);
+    alloc_cap = 0U;
+    for (i = 1U; i < cap; i++) {
+        struct nos_cap_slot *slot = cap_slot_ptr_locked(table, i);
+        if (slot != NULL && slot->type != NOS_CAP_NONE) {
+            alloc_cap++;
+        }
+    }
+    spin_unlock_irq(&table->lock);
+
+    if (alloc_cap == 0U) {
+        snap->owner_table = table;
+        snap->entry_count = 0U;
+        snap->entries = NULL;
+        return snap;
+    }
+
+    /* 预留冗余空间防止锁释放期间少量新增句柄导致重分配 */
+    alloc_cap += 16U;
+    entries = kzalloc((uint32_t)(sizeof(*entries) * alloc_cap), GFP_KERNEL);
+    if (entries == NULL) {
+        kfree(snap);
+        return NULL;
+    }
+
+    spin_lock_irq(&table->lock);
+    cap = cap_table_capacity_locked(table);
+    for (i = 1U; i < cap && snap->entry_count < alloc_cap; i++) {
+        struct nos_cap_slot *slot = cap_slot_ptr_locked(table, i);
+        struct nos_cap_snapshot_entry *e;
+
+        if (slot == NULL || slot->type == NOS_CAP_NONE) {
+            continue;
+        }
+        if (slot->obj != NULL && cap_type_has_object_header(slot->type)) {
+            struct nos_object *obj = (struct nos_object *)slot->obj;
+            if (obj->retired || !nos_object_get(obj)) {
+                continue;
+            }
+        }
+        e = &entries[snap->entry_count++];
+        e->slot_idx = i;
+        e->type = slot->type;
+        e->gen = slot->gen;
+        e->rights = slot->rights;
+        e->badge = slot->badge;
+        e->obj = slot->obj;
+        e->schema_mask = cap_schema_get_locked(table, i);
+    }
+    spin_unlock_irq(&table->lock);
+
+    snap->owner_table = table;
+    snap->entries = entries;
+    return snap;
+#else
+    (void)table;
+    return NULL;
+#endif
+}
+
+int nos_cap_table_restore_ex(struct nos_cap_table *table,
+                             const struct nos_cap_table_snapshot *snap,
+                             const void *preserve_snap_obj)
+{
+#ifdef CONFIG_NOS_CAP_CDT
+    uint32_t i;
+    uint16_t slot_idx;
+    uint16_t cap;
+
+    if (table == NULL || snap == NULL || snap->owner_table != table) {
+        return -EINVAL;
+    }
+
+    /* 在持有全局 CDT 锁之前为快照中包含非零 schema_mask 的槽位预先补齐扩展存储页 */
+    for (i = 0U; i < snap->entry_count; i++) {
+        if (snap->entries[i].schema_mask != 0ULL) {
+            int rc = cap_ensure_schema_slot(table, snap->entries[i].slot_idx);
+            if (rc != 0) {
+                return rc;
+            }
+        }
+    }
+
+    spin_lock_irq(&g_cdt_lock);
+    spin_lock_irq(&table->lock);
+    cap = cap_table_capacity_locked(table);
+
+    for (slot_idx = 1U; slot_idx < cap; slot_idx++) {
+        struct nos_cap_slot *slot = cap_slot_ptr_locked(table, slot_idx);
+        const struct nos_cap_snapshot_entry *match = NULL;
+
+        if (slot == NULL) {
+            continue;
+        }
+        for (i = 0U; i < snap->entry_count; i++) {
+            if (snap->entries[i].slot_idx == slot_idx) {
+                match = &snap->entries[i];
+                break;
+            }
+        }
+
+        if (match == NULL) {
+            /* 若是当前正在用于回滚的 Cell 自检查点快照句柄本身，保留以支持多次投机重试 */
+            if (preserve_snap_obj != NULL &&
+                slot->type == NOS_CAP_SNAPSHOT &&
+                slot->obj == preserve_snap_obj) {
+                continue;
+            }
+            /* 分支期新分配或派生的句柄：摘除 CDT 并升代失效 */
+            if (slot->type != NOS_CAP_NONE) {
+                cap_cdt_detach_reparent_locked(slot);
+                cap_clear_slot_preserve_owner(slot);
+            }
+            continue;
+        }
+
+        if (slot->type == match->type && slot->gen == match->gen && slot->obj == match->obj) {
+            /* 未被销毁的同一句柄原位保留 CDT 关系，仅恢复权位、徽章与 schema_mask */
+            slot->rights = match->rights;
+            slot->badge = match->badge;
+            {
+                uint64_t *mp = cap_schema_ptr_locked(table, slot_idx);
+                if (mp != NULL) {
+                    *mp = match->schema_mask;
+                }
+            }
+        } else {
+            if (slot->type != NOS_CAP_NONE) {
+                cap_cdt_detach_reparent_locked(slot);
+                cap_clear_slot_preserve_owner(slot);
+            }
+            if (match->obj != NULL && cap_type_has_object_header(match->type) &&
+                ((const struct nos_object *)match->obj)->retired) {
+                continue;
+            }
+            slot->type = match->type;
+            slot->gen = (match->gen == 0U) ? 1U : match->gen;
+            slot->rights = match->rights;
+            slot->badge = match->badge;
+            slot->obj = match->obj;
+            {
+                uint64_t *mp = cap_schema_ptr_locked(table, slot_idx);
+                if (mp != NULL) {
+                    *mp = match->schema_mask;
+                }
+            }
+        }
+    }
+
+    spin_unlock_irq(&table->lock);
+    spin_unlock_irq(&g_cdt_lock);
+    return 0;
+#else
+    (void)table;
+    (void)snap;
+    (void)preserve_snap_obj;
+    return -ENOSYS;
+#endif
+}
+
+int nos_cap_table_restore(struct nos_cap_table *table,
+                          const struct nos_cap_table_snapshot *snap)
+{
+    return nos_cap_table_restore_ex(table, snap, NULL);
+}
+
+void nos_cap_table_snapshot_free(struct nos_cap_table_snapshot *snap)
+{
+#ifdef CONFIG_NOS_CAP_CDT
+    uint32_t i;
+
+    if (snap == NULL) {
+        return;
+    }
+    for (i = 0U; i < snap->entry_count; i++) {
+        struct nos_cap_snapshot_entry *e = &snap->entries[i];
+        if (e->obj != NULL && cap_type_has_object_header(e->type)) {
+            (void)nos_object_put((struct nos_object *)e->obj);
+        }
+    }
+    if (snap->entries != NULL) {
+        kfree(snap->entries);
+    }
+    kfree(snap);
+#else
+    (void)snap;
+#endif
+}
+
+int nos_cap_table_clone_for_fork(struct nos_cap_table *src_table,
+                                 struct nos_cap_table *dst_table)
+{
+#ifdef CONFIG_NOS_CAP_CDT
+    nos_handle_t *handles;
+    uint32_t max_h = 0U;
+    uint32_t count = 0U;
+    uint16_t cap;
+    uint16_t i;
+
+    if (src_table == NULL || dst_table == NULL || src_table == dst_table) {
+        return -EINVAL;
+    }
+
+    spin_lock_irq(&src_table->lock);
+    cap = cap_table_capacity_locked(src_table);
+    for (i = 1U; i < cap; i++) {
+        struct nos_cap_slot *slot = cap_slot_ptr_locked(src_table, i);
+        if (slot != NULL && slot->type != NOS_CAP_NONE &&
+            (slot->rights & NOS_CAP_RIGHT_GRANT) != 0U &&
+            slot->type != NOS_CAP_CELL && slot->type != NOS_CAP_SNAPSHOT) {
+            max_h++;
+        }
+    }
+    spin_unlock_irq(&src_table->lock);
+
+    if (max_h == 0U) {
+        return 0;
+    }
+
+    handles = kmalloc((uint32_t)(sizeof(nos_handle_t) * max_h), GFP_KERNEL);
+    if (handles == NULL) {
+        return -ENOMEM;
+    }
+
+    spin_lock_irq(&src_table->lock);
+    cap = cap_table_capacity_locked(src_table);
+    for (i = 1U; i < cap && count < max_h; i++) {
+        struct nos_cap_slot *slot = cap_slot_ptr_locked(src_table, i);
+        if (slot != NULL && slot->type != NOS_CAP_NONE &&
+            (slot->rights & NOS_CAP_RIGHT_GRANT) != 0U &&
+            slot->type != NOS_CAP_CELL && slot->type != NOS_CAP_SNAPSHOT) {
+            handles[count++] = nos_handle_make(i, slot->gen);
+        }
+    }
+    spin_unlock_irq(&src_table->lock);
+
+    for (uint32_t j = 0U; j < count; j++) {
+        int rc = nos_cap_derive(src_table, handles[j], dst_table, 0U, 0U, NULL);
+        if (rc < 0 && rc != -EBADF && rc != -EACCES) {
+            kfree(handles);
+            return rc;
+        }
+    }
+
+    kfree(handles);
+    return 0;
+#else
+    (void)src_table;
+    (void)dst_table;
+    return -ENOSYS;
 #endif
 }
 

@@ -74,12 +74,16 @@ struct mock_smmu_hw {
     uint32_t cr0ack;
     uint32_t cr1;
     uint32_t cr2;
+    uint32_t irq_ctrl;
+    uint32_t irq_ctrlack;
     uint64_t strtab_base;
     uint32_t strtab_cfg;
     uint64_t cmdq_base;
     uint32_t cmdq_prod;
     uint32_t cmdq_cons;
     uint64_t evtq_base;
+    uint32_t evtq_prod;
+    uint32_t evtq_cons;
     uint32_t op_mask;
     uint32_t cmds_executed;
 };
@@ -100,10 +104,18 @@ static uint32_t mock_read32(uintptr_t off, void *ctx)
         return hw->cr0;
     case SMMU_CR0ACK:
         return hw->cr0ack;
+    case SMMU_IRQ_CTRL:
+        return hw->irq_ctrl;
+    case SMMU_IRQ_CTRLACK:
+        return hw->irq_ctrlack;
     case SMMU_CMDQ_PROD:
         return hw->cmdq_prod;
     case SMMU_CMDQ_CONS:
         return hw->cmdq_cons;
+    case SMMU_EVTQ_PROD:
+        return hw->evtq_prod;
+    case SMMU_EVTQ_CONS:
+        return hw->evtq_cons;
     default:
         return 0U;
     }
@@ -122,6 +134,10 @@ static void mock_write32(uintptr_t off, uint32_t val, void *ctx)
         break;
     case SMMU_CR2:
         hw->cr2 = val;
+        break;
+    case SMMU_IRQ_CTRL:
+        hw->irq_ctrl = val;
+        hw->irq_ctrlack = val;
         break;
     case SMMU_STRTAB_BASE_CFG:
         hw->strtab_cfg = val;
@@ -148,6 +164,12 @@ static void mock_write32(uintptr_t off, uint32_t val, void *ctx)
         break;
     case SMMU_CMDQ_CONS:
         hw->cmdq_cons = val;
+        break;
+    case SMMU_EVTQ_PROD:
+        hw->evtq_prod = val;
+        break;
+    case SMMU_EVTQ_CONS:
+        hw->evtq_cons = val;
         break;
     default:
         break;
@@ -189,18 +211,34 @@ static void put_be32(uint8_t *p, uint32_t v)
     p[3] = (uint8_t)v;
 }
 
+static struct nos_iommu_fault_event g_fault_log[8];
+static uint32_t g_fault_hits;
+
+static void host_fault_cb(const struct nos_iommu_fault_event *evt)
+{
+    if (evt != NULL && g_fault_hits < 8U) {
+        g_fault_log[g_fault_hits++] = *evt;
+    }
+}
+
 static void test_fdt_scanner(void)
 {
-    uint8_t blob[512];
+    uint8_t blob[1024];
     uint32_t off = 40U;
     uint32_t off_strings;
     uint32_t size_struct;
     uint64_t base = 0ULL;
     uint64_t sz = 0ULL;
+    uint32_t irq0 = 0U;
+    uint32_t irq1 = 0U;
+    uint32_t cpu_caps[4] = { 0 };
+    uint32_t cpu_cnt = 0U;
+    const char strings[] = "compatible\0reg\0interrupts\0device_type\0capacity-dmips-mhz";
 
     memset(blob, 0, sizeof(blob));
     put_be32(&blob[off], 1U); off += 4U;                   /* FDT_BEGIN_NODE "" */
     off += 4U;
+
     put_be32(&blob[off], 1U); off += 4U;                   /* FDT_BEGIN_NODE "smmuv3@9050000" */
     memcpy(&blob[off], "smmuv3@9050000", 15U); off += 16U;
     put_be32(&blob[off], 3U);                              /* FDT_PROP compatible */
@@ -215,14 +253,52 @@ static void test_fdt_scanner(void)
     put_be32(&blob[off], 0U); put_be32(&blob[off + 4U], 0x09050000U);
     put_be32(&blob[off + 8U], 0U); put_be32(&blob[off + 12U], 0x00020000U);
     off += 16U;
-    put_be32(&blob[off], 2U); off += 4U;                   /* FDT_END_NODE */
-    put_be32(&blob[off], 2U); off += 4U;                   /* FDT_END_NODE */
+    put_be32(&blob[off], 3U);                              /* FDT_PROP interrupts */
+    put_be32(&blob[off + 4U], 24U);
+    put_be32(&blob[off + 8U], 15U);
+    off += 12U;
+    put_be32(&blob[off], 0U); put_be32(&blob[off + 4U], 74U); put_be32(&blob[off + 8U], 4U);
+    put_be32(&blob[off + 12U], 0U); put_be32(&blob[off + 16U], 75U); put_be32(&blob[off + 20U], 4U);
+    off += 24U;
+    put_be32(&blob[off], 2U); off += 4U;                   /* FDT_END_NODE smmuv3 */
+
+    put_be32(&blob[off], 1U); off += 4U;                   /* FDT_BEGIN_NODE "cpus" */
+    memcpy(&blob[off], "cpus", 5U); off += 8U;
+
+    put_be32(&blob[off], 1U); off += 4U;                   /* FDT_BEGIN_NODE "cpu@0" */
+    memcpy(&blob[off], "cpu@0", 6U); off += 8U;
+    put_be32(&blob[off], 3U); put_be32(&blob[off + 4U], 4U); put_be32(&blob[off + 8U], 26U);
+    off += 12U;
+    memcpy(&blob[off], "cpu", 4U); off += 4U;
+    put_be32(&blob[off], 3U); put_be32(&blob[off + 4U], 4U); put_be32(&blob[off + 8U], 11U);
+    off += 12U;
+    put_be32(&blob[off], 0U); off += 4U;
+    put_be32(&blob[off], 3U); put_be32(&blob[off + 4U], 4U); put_be32(&blob[off + 8U], 38U);
+    off += 12U;
+    put_be32(&blob[off], 450U); off += 4U;
+    put_be32(&blob[off], 2U); off += 4U;                   /* FDT_END_NODE cpu@0 */
+
+    put_be32(&blob[off], 1U); off += 4U;                   /* FDT_BEGIN_NODE "cpu@1" */
+    memcpy(&blob[off], "cpu@1", 6U); off += 8U;
+    put_be32(&blob[off], 3U); put_be32(&blob[off + 4U], 4U); put_be32(&blob[off + 8U], 26U);
+    off += 12U;
+    memcpy(&blob[off], "cpu", 4U); off += 4U;
+    put_be32(&blob[off], 3U); put_be32(&blob[off + 4U], 4U); put_be32(&blob[off + 8U], 11U);
+    off += 12U;
+    put_be32(&blob[off], 1U); off += 4U;
+    put_be32(&blob[off], 3U); put_be32(&blob[off + 4U], 4U); put_be32(&blob[off + 8U], 38U);
+    off += 12U;
+    put_be32(&blob[off], 1024U); off += 4U;
+    put_be32(&blob[off], 2U); off += 4U;                   /* FDT_END_NODE cpu@1 */
+
+    put_be32(&blob[off], 2U); off += 4U;                   /* FDT_END_NODE cpus */
+    put_be32(&blob[off], 2U); off += 4U;                   /* FDT_END_NODE root */
     put_be32(&blob[off], 9U); off += 4U;                   /* FDT_END */
 
     size_struct = off - 40U;
     off_strings = off;
-    memcpy(&blob[off], "compatible\0reg\0", 15U);
-    off += 15U;
+    memcpy(&blob[off], strings, sizeof(strings));
+    off += (uint32_t)sizeof(strings);
 
     put_be32(&blob[0], ARM64_FDT_MAGIC);
     put_be32(&blob[4], off);
@@ -231,12 +307,17 @@ static void test_fdt_scanner(void)
     put_be32(&blob[16], 40U);
     put_be32(&blob[20], 17U);
     put_be32(&blob[24], 16U);
-    put_be32(&blob[32], 15U);
+    put_be32(&blob[32], (uint32_t)sizeof(strings));
     put_be32(&blob[36], size_struct);
 
     assert(arm64_fdt_blob_find_reg(blob, sizeof(blob), "arm,smmu-v3", 0U, &base, &sz) == 0);
     assert(base == 0x09050000ULL && sz == 0x00020000ULL);
     assert(arm64_fdt_blob_find_reg(blob, sizeof(blob), "arm,missing", 0U, &base, &sz) == -ENOENT);
+    assert(arm64_fdt_blob_find_irq(blob, sizeof(blob), "arm,smmu-v3", 0U, 0U, &irq0) == 0);
+    assert(arm64_fdt_blob_find_irq(blob, sizeof(blob), "arm,smmu-v3", 0U, 1U, &irq1) == 0);
+    assert(irq0 == 106U && irq1 == 107U);
+    assert(arm64_fdt_blob_scan_cpus(blob, sizeof(blob), cpu_caps, 4U, &cpu_cnt) == 0);
+    assert(cpu_cnt == 2U && cpu_caps[0] == 450U && cpu_caps[1] == 1024U);
 }
 
 int main(void)
@@ -331,8 +412,40 @@ int main(void)
     assert(pa == 0x91001040UL);
     assert(nos_iommu_translate(2U, 0U, 0x400000UL, &pa, &prot) == -ENOENT);
 
-    nos_iommu_tlbi_va(10U, 0x400000UL);
+    g_hw.op_mask = 0U;
+    nos_iommu_tlbi_range(10U, 0x400000UL, 8192U);
     assert((g_hw.op_mask & (1U << SMMU_CMD_TLBI_NH_VA)) != 0U);
+
+    assert((g_hw.irq_ctrlack & (SMMU_IRQ_CTRL_EVENTQ_IRQEN | SMMU_IRQ_CTRL_GERROR_IRQEN)) ==
+           (SMMU_IRQ_CTRL_EVENTQ_IRQEN | SMMU_IRQ_CTRL_GERROR_IRQEN));
+
+    /* 验证硬件 EVTQ 环形描述符解析 + host 注入故障回调触发 */
+    g_fault_hits = 0U;
+    memset(g_fault_log, 0, sizeof(g_fault_log));
+    nos_iommu_register_fault_cb(host_fault_cb);
+    uint64_t *evtq = (uint64_t *)(uintptr_t)(g_hw.evtq_base & 0x0000FFFFFFFFFFE0ULL);
+    assert(evtq != NULL);
+    evtq[0] = 0x10ULL | (1ULL << 11) | (2ULL << 12) | (1ULL << 32);
+    evtq[1] = 0ULL;
+    evtq[2] = 0xDEAD0000ULL;
+    evtq[3] = 0ULL;
+    g_hw.evtq_prod = 1U;
+
+    struct nos_iommu_fault_event inj = {
+        .sid = 1U,
+        .pasid = 2U,
+        .event_code = 0x11U,
+        .flags = 1U,
+        .iova = 0xBEEF0000ULL,
+    };
+    smmuv3_host_inject_event(&inj);
+    assert(nos_iommu_poll_events(8U) == 2);
+    assert(g_fault_hits == 2U);
+    assert(g_fault_log[0].sid == 1U && g_fault_log[0].pasid == 2U &&
+           g_fault_log[0].event_code == 0x10U && g_fault_log[0].iova == 0xDEAD0000ULL);
+    assert(g_fault_log[1].sid == 1U && g_fault_log[1].pasid == 2U &&
+           g_fault_log[1].event_code == 0x11U && g_fault_log[1].iova == 0xBEEF0000ULL);
+    assert(nos_iommu_get_status(&info) == 0 && info.irq_events == 2ULL);
 
     assert(nos_iommu_unbind_space(1U, 2U) == 0);
     assert((cds[2].dw[0] & SMMU_CD0_V) == 0ULL);

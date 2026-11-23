@@ -27,9 +27,9 @@ _start:
     lsr     x21, x21, #2
     and     x21, x21, #3                    /* x21 = Boot EL (1 或 2) */
 
-    /* 2. 检查 CPU 核号：仅主核 (Aff0 == 0) 继续引导，从核休眠等待 PSCI */
+    /* 2. 检查 CPU 核号：仅主核 (Aff0..Aff2 == 0) 继续引导，兼容 RK3588 Aff1 分簇核号 */
     mrs     x0, mpidr_el1
-    and     x0, x0, #0xFF
+    ubfx    x0, x0, #0, #24
     cbnz    x0, secondary_park
 
     /* 3. 若处于 EL2，完成硬件直通配置后降级进入 EL1h */
@@ -279,8 +279,8 @@ el1_entry:
     mov     sp, x0
     mov     x0, x20                         /* 参数 0: DTB 物理地址 */
     mov     x1, x21                         /* 参数 1: 引导异常级别 */
-    ldr     x8, =nos_arm64_boot
-    br      x8
+    ldr     x16, =nos_arm64_boot
+    br      x16
 
     /* 不应到达此处 */
     b       secondary_park
@@ -391,8 +391,8 @@ secondary_el1_entry:
     mov     x29, #0
     mov     x30, #0
     mov     x0, x20
-    ldr     x8, =arm64_secondary_main
-    br      x8
+    ldr     x16, =arm64_secondary_main
+    br      x16
 
     b       secondary_park
     .ltorg

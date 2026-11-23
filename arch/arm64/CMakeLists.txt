@@ -18,6 +18,8 @@ add_library(nos_arch OBJECT
     kernel/task.c
     kernel/timer.c
     kernel/trap.c
+    kernel/uaccess.S
+    kernel/uaccess.c
     kernel/vectors.S
     mm/fixmap.c
     mm/mmu.c

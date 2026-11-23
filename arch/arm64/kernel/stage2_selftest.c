@@ -20,6 +20,7 @@
 #include <nos/cap.h>
 #include <nos/elf64.h>
 #include <nos/iommu.h>
+#include <nos/uaccess.h>
 #include <nos/vmo.h>
 #include <nos/cell.h>
 #include <nos/ring.h>
@@ -1665,7 +1666,7 @@ static int run_stage5_selftest(void)
 
     memset(&elf_tm, 0, sizeof(elf_tm));
     rc = nos_elf64_spawn_from_vfs("/bin/ai_agent.elf", NULL, &elf_exit, &elf_tm);
-    if (rc != 0 || elf_exit != 0 || elf_tm.accel_ops_used != 1ULL) {
+    if (rc != 0 || elf_exit != 0 || elf_tm.accel_ops_used != 3ULL) {
         pr_err("Stage5 ELF64 C Agent spawn failed (rc=%d exit=%d accel_used=%lu)\n",
                rc, elf_exit, (unsigned long)elf_tm.accel_ops_used);
         return (rc != 0) ? rc : -EFAULT;
@@ -1675,6 +1676,311 @@ static int run_stage5_selftest(void)
             sve_hw ? "ok" : "na",
             (unsigned int)arm64_sve_get_vl());
     return 0;
+}
+
+static int run_stage6_selftest(void)
+{
+    uint64_t uprobe = 0ULL;
+    struct nos_cell_budget b = {
+        .cpu_ns_limit = 5000000000ULL,
+        .mem_bytes_limit = 512ULL * 1024ULL,
+        .tool_calls_limit = 16ULL,
+        .accel_ops_limit = 8ULL,
+        .max_child_cells = 2U,
+    };
+    struct nos_vmo_create_args lazy_args = {
+        .size_bytes = 8192ULL,
+        .kind = NOS_VMO_ANON,
+        .flags = NOS_VMO_FLAG_LAZY_ALLOC | NOS_VMO_FLAG_RECOMPUTABLE,
+    };
+    struct nos_vmo_create_args weight_args = {
+        .size_bytes = 4096ULL,
+        .kind = NOS_VMO_WEIGHT,
+        .flags = 0U,
+    };
+    struct nos_cell *cell = NULL;
+    struct nos_cell *child = NULL;
+    struct nos_vmo *lazy_vmo = NULL;
+    struct nos_vmo *w_vmo = NULL;
+    struct nos_vmo *br_vmo = NULL;
+    struct nos_cell_snapshot *snap = NULL;
+    struct nos_notification evt_notif;
+    bool evt_notif_init = false;
+    struct nos_accel_device *vdev = NULL;
+    struct nos_ring *srv_ring = NULL;
+    struct nos_elf64_proc *srv_proc = NULL;
+    nos_handle_t kept_h = NOS_HANDLE_INVALID;
+    nos_handle_t branch_h = NOS_HANDLE_INVALID;
+    int rc = 0;
+
+    /* 1. PAN + __ex_table 越界与未映射用户地址安全恢复 (-EFAULT) */
+    if (nos_copy_from_user(&uprobe, 0UL, sizeof(uprobe)) != -EFAULT ||
+        nos_copy_from_user(&uprobe, 0x0000000000333000UL, sizeof(uprobe)) != -EFAULT ||
+        nos_copy_to_user(0x0000000000333000UL, &uprobe, sizeof(uprobe)) != -EFAULT) {
+        pr_err("Stage6 PAN __ex_table uaccess fault check failed\n");
+        return -EFAULT;
+    }
+
+    /* 2. Cell + VMO LAZY_ALLOC + AF 冷页两阶段淘汰与缺页恢复 + Seal FNV-1a + SYNC_DMA */
+    cell = nos_cell_create(NULL, &b);
+    if (cell == NULL) {
+        return -ENOMEM;
+    }
+    if (nos_notification_init(&evt_notif) != 0 ||
+        nos_cell_bind_budget_notif(cell, &evt_notif) != 0) {
+        rc = -ENOMEM;
+        goto cleanup;
+    }
+    evt_notif_init = true;
+
+    lazy_vmo = nos_vmo_create(&lazy_args);
+    w_vmo = nos_vmo_create(&weight_args);
+    if (lazy_vmo == NULL || w_vmo == NULL || lazy_vmo->pages[0] != NULL) {
+        rc = -ENOMEM;
+        goto cleanup;
+    }
+
+    {
+        uint32_t wpat = 0x5A5AA5A5U;
+        if (nos_vmo_write(w_vmo, 0U, &wpat, sizeof(wpat)) != 0 ||
+            nos_vmo_sync_dma(w_vmo, 0U, 4096U, NOS_DMA_TO_DEVICE) != 0 ||
+            nos_vmo_seal(w_vmo) != 0 ||
+            nos_vmo_content_hash(w_vmo) == 0ULL) {
+            pr_err("Stage6 VMO Seal/FNV1a/SYNC_DMA check failed\n");
+            rc = -EFAULT;
+            goto cleanup;
+        }
+    }
+
+    {
+        const uintptr_t lazy_va = 0x0000000000520000UL;
+        rc = nos_vmo_map(lazy_vmo, nos_cell_vm_space(cell),
+                         lazy_va, 0U, 8192U,
+                         HAL_VM_PROT_USER | HAL_VM_PROT_READ | HAL_VM_PROT_WRITE,
+                         cell);
+        if (rc != 0 ||
+            nos_cell_handle_page_fault(cell, lazy_va, true, 0x07U) != 0 ||
+            lazy_vmo->pages[0] == NULL) {
+            pr_err("Stage6 VMO LAZY_ALLOC fault commit failed\n");
+            rc = -EFAULT;
+            goto cleanup;
+        }
+        if (nos_vmo_reclaim_cold_pages(lazy_vmo, nos_cell_vm_space(cell), lazy_va, 2U) != 0 ||
+            lazy_vmo->pages[0] == NULL ||
+            nos_vmo_reclaim_cold_pages(lazy_vmo, nos_cell_vm_space(cell), lazy_va, 2U) != 1 ||
+            lazy_vmo->pages[0] != NULL ||
+            nos_cell_handle_page_fault(cell, lazy_va, true, 0x07U) != 0 ||
+            lazy_vmo->pages[0] == NULL) {
+            pr_err("Stage6 VMO AF cold page reclaim/recovery failed\n");
+            rc = -EFAULT;
+            goto cleanup;
+        }
+    }
+
+    /* 3. Cell Snapshot/Rollback (含 CNode 冻结恢复) + Fork 余量继承 */
+    if (nos_cap_alloc(nos_cell_cap_table(cell), NOS_CAP_VMO, w_vmo,
+                      NOS_CAP_RIGHT_READ | NOS_CAP_RIGHT_GRANT, 0U, &kept_h) != 0) {
+        rc = -ENOMEM;
+        goto cleanup;
+    }
+    snap = nos_cell_snapshot(cell);
+    if (snap == NULL) {
+        rc = -ENOMEM;
+        goto cleanup;
+    }
+
+    br_vmo = nos_vmo_create(&weight_args);
+    if (br_vmo == NULL ||
+        nos_cap_alloc(nos_cell_cap_table(cell), NOS_CAP_VMO, br_vmo,
+                      NOS_CAP_RIGHT_READ, 0U, &branch_h) != 0 ||
+        nos_cell_rollback(cell, snap) != 0) {
+        pr_err("Stage6 Cell snapshot/rollback failed\n");
+        rc = -EFAULT;
+        goto cleanup;
+    }
+    {
+        void *dummy = NULL;
+        if (nos_cap_lookup(nos_cell_cap_table(cell), branch_h, NOS_CAP_VMO,
+                           NOS_CAP_RIGHT_READ, &dummy, NULL) == 0) {
+            (void)nos_object_put(&((struct nos_vmo *)dummy)->header);
+            pr_err("Stage6 Cell rollback failed to revoke branch CNode handle\n");
+            rc = -EFAULT;
+            goto cleanup;
+        }
+    }
+
+    child = nos_cell_fork(cell, NULL);
+    if (child == NULL || cell->child_cells_used != 1U) {
+        pr_err("Stage6 Cell fork failed\n");
+        rc = -EFAULT;
+        goto cleanup;
+    }
+    {
+        void *fork_obj = NULL;
+        if (nos_cap_lookup(nos_cell_cap_table(child), kept_h, NOS_CAP_VMO,
+                           NOS_CAP_RIGHT_READ, &fork_obj, NULL) != 0) {
+            pr_err("Stage6 Cell fork CNode GRANT clone missing\n");
+            rc = -EFAULT;
+            goto cleanup;
+        }
+        (void)nos_object_put(&((struct nos_vmo *)fork_obj)->header);
+    }
+    (void)nos_cell_destroy(child);
+    child = NULL;
+    if (cell->child_cells_used != 0U) {
+        pr_err("Stage6 Cell fork child_cells_used accounting failed\n");
+        rc = -EFAULT;
+        goto cleanup;
+    }
+
+    /* 4. AccelQueue ASYNC + WAIT 与 ASYNC + CANCEL 验证 */
+    vdev = nos_accel_find_by_type(NOS_ACCEL_TYPE_VIRTIO);
+    if (vdev != NULL) {
+        struct nos_accel_job_desc desc;
+        struct nos_accel_job_result res;
+        int c_rc;
+
+        memset(&desc, 0, sizeof(desc));
+        desc.kernel_op = NOS_ACCEL_KERNEL_NOP;
+        desc.flags = NOS_ACCEL_FLAG_ASYNC;
+        desc.req_id = 0x6101ULL;
+        desc.weight_vmo_cap = NOS_HANDLE_INVALID;
+        desc.input_vmo_cap = NOS_HANDLE_INVALID;
+        desc.output_vmo_cap = NOS_HANDLE_INVALID;
+        desc.notify_cap = NOS_HANDLE_INVALID;
+
+        memset(&res, 0, sizeof(res));
+        if (nos_accel_submit(vdev, current, &desc, &res) != 0 ||
+            res.status != -EINPROGRESS ||
+            nos_accel_wait_job(vdev, current, 0x6101ULL, &res, 2000U) != 0 ||
+            res.status != 0) {
+            pr_err("Stage6 Accel ASYNC+WAIT failed\n");
+            rc = -EFAULT;
+            goto cleanup;
+        }
+
+        desc.req_id = 0x6102ULL;
+        if (nos_accel_submit(vdev, current, &desc, &res) != 0) {
+            pr_err("Stage6 Accel ASYNC+CANCEL submit failed\n");
+            rc = -EFAULT;
+            goto cleanup;
+        }
+        (void)nos_accel_cancel_job(vdev, 0x6102ULL);
+        c_rc = nos_accel_wait_job(vdev, current, 0x6102ULL, &res, 2000U);
+        if (c_rc != 0 && c_rc != -ECANCELED) {
+            pr_err("Stage6 Accel ASYNC+CANCEL wait unexpected rc=%d\n", c_rc);
+            rc = -EFAULT;
+            goto cleanup;
+        }
+    }
+
+    /* 5. 跨 Cell 真实 EL0 PIE /bin/tool_srv.elf RingIPC 服务端闭环验证 */
+    {
+        struct nos_ring_create_args rargs;
+        struct nos_ring_header *hdr;
+        struct nos_ring_sqe *sq;
+        struct nos_ring_cqe *cq;
+        struct nos_elf64_spawn_opts opts;
+        const char *srv_argv[2] = { "/bin/tool_srv.elf", "--srv" };
+        int srv_exit = -1;
+
+        memset(&rargs, 0, sizeof(rargs));
+        rargs.sq_entries = 16U;
+        rargs.cq_entries = 16U;
+        srv_ring = nos_ring_create(&rargs, NULL, NULL, NULL);
+        if (srv_ring == NULL || srv_ring->ring_vmo == NULL ||
+            srv_ring->ring_vmo->page_count == 0U ||
+            srv_ring->ring_vmo->pages[0] == NULL ||
+            srv_ring->ring_vmo->pages[0]->kvaddr == 0U) {
+            rc = -ENOMEM;
+            goto cleanup;
+        }
+
+        memset(&opts, 0, sizeof(opts));
+        opts.argc = 2;
+        opts.argv = srv_argv;
+        opts.shared_ring = srv_ring;
+        opts.ring_rights = NOS_CAP_RIGHT_ALL;
+        rc = nos_elf64_start_from_vfs_ex("/bin/tool_srv.elf", &opts, &srv_proc);
+        if (rc != 0 || srv_proc == NULL) {
+            pr_err("Stage6 failed to start PIE /bin/tool_srv.elf (rc=%d)\n", rc);
+            goto cleanup;
+        }
+
+        hdr = (struct nos_ring_header *)(uintptr_t)srv_ring->ring_vmo->pages[0]->kvaddr;
+        sq = (struct nos_ring_sqe *)((uint8_t *)hdr + hdr->sq_offset);
+        cq = (struct nos_ring_cqe *)((uint8_t *)hdr + hdr->cq_offset);
+
+        memset(&sq[0], 0, sizeof(sq[0]));
+        sq[0].opcode = NOS_RING_OP_TOOL_CALL;
+        sq[0].target_cap = NOS_HANDLE_INVALID;
+        sq[0].vmo_cap = NOS_HANDLE_INVALID;
+        sq[0].req_id = 0x6001ULL;
+        sq[0].inline_arg[0] = 19ULL;
+        sq[0].inline_arg[1] = 23ULL;
+        __atomic_store_n(&hdr->sq_tail, 1U, __ATOMIC_RELEASE);
+
+        rc = nos_ring_enter(srv_ring, current, 1U, 1U,
+                            NOS_RING_ENTER_SUBMIT | NOS_RING_ENTER_WAIT_CQ, 5000U);
+        if (rc != 1 || cq[0].req_id != 0x6001ULL ||
+            cq[0].status != 0 || cq[0].result_len != 42U) {
+            pr_err("Stage6 EL0 PIE Tool Server RingIPC failed (rc=%d st=%d len=%u)\n",
+                   rc, cq[0].status, (unsigned int)cq[0].result_len);
+            (void)nos_elf64_wait_proc(srv_proc, 5000U, &srv_exit, NULL);
+            srv_proc = NULL;
+            rc = -EFAULT;
+            goto cleanup;
+        }
+
+        rc = nos_elf64_wait_proc(srv_proc, 5000U, &srv_exit, NULL);
+        srv_proc = NULL;
+        if (rc != 0 || srv_exit != 0) {
+            pr_err("Stage6 /bin/tool_srv.elf wait failed (rc=%d exit=%d)\n", rc, srv_exit);
+            rc = (rc != 0) ? rc : -EFAULT;
+            goto cleanup;
+        }
+    }
+
+    pr_info("ARM64 Stage6 selftest PASS (pan_uaccess=ok, cell_fork_snap=ok, vmo_lazy_af=ok, el0_pie_tool_srv=ok, accel_async=ok)\n");
+    rc = 0;
+
+cleanup:
+    if (srv_proc != NULL) {
+        int dummy_exit = -1;
+        (void)nos_elf64_wait_proc(srv_proc, 3000U, &dummy_exit, NULL);
+    }
+    if (srv_ring != NULL) {
+        (void)nos_ring_destroy(srv_ring);
+    }
+    if (vdev != NULL) {
+        (void)nos_object_put(&vdev->header);
+    }
+    if (child != NULL) {
+        (void)nos_cell_destroy(child);
+    }
+    if (snap != NULL) {
+        (void)nos_cell_snapshot_destroy(snap);
+    }
+    if (br_vmo != NULL) {
+        (void)nos_object_close(&br_vmo->header);
+        (void)nos_object_retire(&br_vmo->header);
+    }
+    if (w_vmo != NULL) {
+        (void)nos_object_close(&w_vmo->header);
+        (void)nos_object_retire(&w_vmo->header);
+    }
+    if (lazy_vmo != NULL) {
+        (void)nos_object_close(&lazy_vmo->header);
+        (void)nos_object_retire(&lazy_vmo->header);
+    }
+    if (evt_notif_init) {
+        (void)nos_object_close(&evt_notif.object);
+        (void)nos_object_retire(&evt_notif.object);
+    }
+    if (cell != NULL) {
+        (void)nos_cell_destroy(cell);
+    }
+    return rc;
 }
 #endif
 
@@ -1742,6 +2048,12 @@ static int stage2_selftest_init(void)
     rc = run_stage5_selftest();
     if (rc != 0) {
         pr_err("ARM64 Stage5 selftest FAILED (%d)\n", rc);
+        return rc;
+    }
+
+    rc = run_stage6_selftest();
+    if (rc != 0) {
+        pr_err("ARM64 Stage6 selftest FAILED (%d)\n", rc);
         return rc;
     }
 #endif

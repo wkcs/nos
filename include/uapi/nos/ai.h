@@ -20,6 +20,14 @@
 #define NOS_CELL_OP_SNAPSHOT    6U
 #define NOS_CELL_OP_ROLLBACK    7U
 #define NOS_CELL_OP_READ_AUDIT  8U
+#define NOS_CELL_OP_BIND_NOTIF  9U
+
+/* Agent Cell 异常/预算超限 Notification 事件位掩码 */
+#define NOS_CELL_EVT_BUDGET_CPU   (1ULL << 0)
+#define NOS_CELL_EVT_BUDGET_MEM   (1ULL << 1)
+#define NOS_CELL_EVT_BUDGET_TOOL  (1ULL << 2)
+#define NOS_CELL_EVT_BUDGET_ACCEL (1ULL << 3)
+#define NOS_CELL_EVT_IOMMU_FAULT  (1ULL << 4)
 
 /* Agent Cell 只读 Telemetry 共享页契约 */
 #define NOS_CELL_TELEMETRY_MAGIC    0x4E43454CU /* "NCEL" */
@@ -92,6 +100,11 @@ enum nos_vmo_kind {
 #define NOS_VMO_FLAG_CONTIG_64K     (1U << 1)
 #define NOS_VMO_FLAG_RECOMPUTABLE   (1U << 2)   /* 允许在内存紧缺时协同驱逐 */
 #define NOS_VMO_FLAG_IO_COHERENT    (1U << 3)
+#define NOS_VMO_FLAG_LAZY_ALLOC     (1U << 4)   /* 按需分配物理页，首次缺页时提交 */
+
+#define NOS_DMA_TO_DEVICE           0U          /* Host 写出至加速器前 Clean D-Cache */
+#define NOS_DMA_FROM_DEVICE         1U          /* 加速器写入后 Host 读前 Invalidate D-Cache */
+#define NOS_DMA_BIDIRECTIONAL       2U          /* 双向 Clean + Invalidate D-Cache */
 
 #define NOS_VMO_OP_SEAL             1U          /* 永久封印为只读不可变权重 */
 #define NOS_VMO_OP_CLONE_COW        2U          /* 写时复制克隆 */
@@ -134,6 +147,8 @@ struct nos_vmo_create_args {
 #define NOS_RING_ENTER_SUBMIT       (1U << 0)
 #define NOS_RING_ENTER_WAIT_CQ      (1U << 1)
 #define NOS_RING_ENTER_COMPLETE     (1U << 2)
+#define NOS_RING_ENTER_SERVER_POP   (1U << 3)
+#define NOS_RING_ENTER_BIND_SERVER  (1U << 4)
 
 /* RingIPC 共享页头部：严格 128 字节（两条 Cache Line 消除 SQ/CQ 伪共享） */
 struct nos_ring_header {
@@ -205,6 +220,7 @@ enum nos_infer_role {
 #define NOS_SCHED_OP_GANG_JOIN      2U
 #define NOS_SCHED_OP_GANG_LEAVE     3U
 #define NOS_SCHED_OP_QUERY_TOPO     4U
+#define NOS_SCHED_OP_GANG_WAKEUP    5U
 
 struct nos_infer_sched_param {
     uint32_t role;              /* enum nos_infer_role */
@@ -241,6 +257,8 @@ struct nos_cpu_topo_info {
 #define NOS_ACCEL_OP_WAIT           4U
 #define NOS_ACCEL_OP_CANCEL         5U
 #define NOS_ACCEL_OP_RESET_CTX      6U
+
+#define NOS_ACCEL_FLAG_ASYNC        (1U << 0)
 
 #define NOS_ACCEL_KERNEL_NOP            0U
 #define NOS_ACCEL_KERNEL_MATMUL_I8      1U

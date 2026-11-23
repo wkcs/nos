@@ -114,6 +114,7 @@ TESTS = [
     ("run_arm64_sve_test.py",),
     ("run_elf64_loader_test.py",),
     ("run_dw8250_uart_test.py",),
+    ("run_stage6_completeness_test.py",),
 ]
 
 

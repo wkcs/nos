@@ -178,6 +178,15 @@ int arm64_pt_map_range(uintptr_t root_phys,
                        bool non_global,
                        const struct arm64_pt_backend *be);
 
+int arm64_pt_map_range_noflush(uintptr_t root_phys,
+                               int va_bits,
+                               uintptr_t vaddr,
+                               uintptr_t paddr,
+                               size_t size,
+                               uint32_t prot_flags,
+                               bool non_global,
+                               const struct arm64_pt_backend *be);
+
 int arm64_pt_unmap_range(uintptr_t root_phys,
                          int va_bits,
                          uintptr_t vaddr,
@@ -200,6 +209,12 @@ int arm64_pt_translate(uintptr_t root_phys,
                        uint64_t *out_pte,
                        const struct arm64_pt_backend *be);
 
+int arm64_pt_test_and_clear_af(uintptr_t root_phys,
+                               int va_bits,
+                               uintptr_t vaddr,
+                               bool *was_accessed,
+                               const struct arm64_pt_backend *be);
+
 void arm64_pt_destroy(uintptr_t root_phys,
                       int va_bits,
                       const struct arm64_pt_backend *be);
@@ -215,6 +230,8 @@ void *arm64_ioremap(uintptr_t paddr, size_t size);
 void arm64_mmu_init_kernel_wx(void);
 uintptr_t arm64_mmu_get_kernel_ttbr1(void);
 void arm64_clean_dcache_poc(uintptr_t va, size_t size);
+void arm64_inv_dcache_poc(uintptr_t va, size_t size);
+void arm64_clean_inv_dcache_poc(uintptr_t va, size_t size);
 void arm64_sync_icache_dcache(uintptr_t va, size_t size);
 void arm64_tlbi_asid(uint16_t asid);
 

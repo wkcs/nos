@@ -24,6 +24,8 @@ struct arm64_sec_status {
     bool     pac_enabled;
     bool     bti_enabled;
     bool     mte_enabled;
+    bool     pan_enabled;
+    bool     afdbm_enabled;
     bool     cca_realm_present;
     uint8_t  mte_version;
     uint64_t sctlr_bits;

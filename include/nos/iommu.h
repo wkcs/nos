@@ -9,9 +9,20 @@
 #define __NOS_IOMMU_H__
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 struct nos_vm_space;
+
+struct nos_iommu_fault_event {
+    uint32_t sid;
+    uint32_t pasid;
+    uint32_t event_code;
+    uint32_t flags;
+    uint64_t iova;
+};
+
+typedef void (*nos_iommu_fault_cb_t)(const struct nos_iommu_fault_event *evt);
 
 struct nos_iommu_info {
     bool     hw_present;        /* true=硬件 IOMMU（如 ARM SMMUv3）已激活；false=软件影子隔离模式 */
@@ -50,6 +61,10 @@ int nos_iommu_translate(uint32_t stream_id,
  */
 void nos_iommu_tlbi_asid(uint16_t asid);
 void nos_iommu_tlbi_va(uint16_t asid, uintptr_t va);
+void nos_iommu_tlbi_range(uint16_t asid, uintptr_t va, size_t size);
+
+void nos_iommu_register_fault_cb(nos_iommu_fault_cb_t cb);
+int nos_iommu_poll_events(uint32_t max_events);
 
 /**
  * 读取当前 IOMMU 状态摘要

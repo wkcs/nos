@@ -301,7 +301,7 @@ struct nos_notification *nos_notification_create(nos_handle_t *out_cap)
     nos_object_set_release(&notif->object, nos_notification_free_release);
 
     if (out_cap != NULL && task != NULL) {
-        rc = nos_cap_alloc(&task->cap_table,
+        rc = nos_cap_alloc(nos_task_active_cap_table(task),
                            NOS_CAP_NOTIFICATION,
                            notif,
                            NOS_CAP_RIGHT_ALL,
@@ -327,7 +327,7 @@ int nos_notify_signal(nos_handle_t notif_cap, uint64_t bits)
         return -EINVAL;
     }
 
-    rc = nos_cap_lookup(&task->cap_table,
+    rc = nos_cap_lookup(nos_task_active_cap_table(task),
                         notif_cap,
                         NOS_CAP_NOTIFICATION,
                         NOS_CAP_RIGHT_SEND,
@@ -355,7 +355,7 @@ int nos_notify_wait(nos_handle_t notif_cap,
         return -EINVAL;
     }
 
-    rc = nos_cap_lookup(&task->cap_table,
+    rc = nos_cap_lookup(nos_task_active_cap_table(task),
                         notif_cap,
                         NOS_CAP_NOTIFICATION,
                         NOS_CAP_RIGHT_RECV,

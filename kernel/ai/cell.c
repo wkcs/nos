@@ -12,6 +12,7 @@
 
 #include <nos/cell.h>
 #include <nos/vmo.h>
+#include <nos/iommu.h>
 #include <nos/notification.h>
 #include <nos/hal_arch.h>
 #include <uapi/nos/errno.h>
@@ -27,6 +28,108 @@
 
 static uint32_t g_next_cell_id = 1U;
 static uint32_t g_cell_subsys_inited = 0U;
+
+#define CELL_SID_MAP_CAP 16U
+struct cell_sid_slot {
+    bool             in_use;
+    uint32_t         sid;
+    struct nos_cell *cell;
+};
+static struct cell_sid_slot g_cell_sid_map[CELL_SID_MAP_CAP];
+static spinlock_t g_cell_sid_lock;
+static bool g_cell_sid_lock_inited;
+
+__attribute__((weak)) void nos_iommu_register_fault_cb(nos_iommu_fault_cb_t cb)
+{
+    (void)cb;
+}
+
+static void cell_iommu_fault_cb(const struct nos_iommu_fault_event *evt)
+{
+    struct nos_cell *hit = NULL;
+    uint32_t i;
+
+    if (evt == NULL || !g_cell_sid_lock_inited) {
+        return;
+    }
+
+    spin_lock_irq(&g_cell_sid_lock);
+    for (i = 0U; i < CELL_SID_MAP_CAP; i++) {
+        if (g_cell_sid_map[i].in_use && g_cell_sid_map[i].sid == evt->sid &&
+            g_cell_sid_map[i].cell != NULL &&
+            nos_object_get(&g_cell_sid_map[i].cell->header)) {
+            hit = g_cell_sid_map[i].cell;
+            break;
+        }
+    }
+    spin_unlock_irq(&g_cell_sid_lock);
+
+    if (hit != NULL) {
+        nos_cell_record_audit(hit,
+                              NOS_AUDIT_IOMMU_FAULT,
+                              evt->iova,
+                              evt->sid,
+                              -EFAULT,
+                              (uint64_t)evt->event_code,
+                              (uint64_t)evt->pasid);
+        nos_cell_notify_event(hit, NOS_CELL_EVT_IOMMU_FAULT);
+        (void)nos_object_put(&hit->header);
+    }
+}
+
+static void cell_unbind_iommu_sid_all(const struct nos_cell *cell)
+{
+    if (cell == NULL || !g_cell_sid_lock_inited) {
+        return;
+    }
+    spin_lock_irq(&g_cell_sid_lock);
+    for (uint32_t i = 0U; i < CELL_SID_MAP_CAP; i++) {
+        if (g_cell_sid_map[i].in_use && g_cell_sid_map[i].cell == cell) {
+            g_cell_sid_map[i].in_use = false;
+            g_cell_sid_map[i].cell = NULL;
+        }
+    }
+    spin_unlock_irq(&g_cell_sid_lock);
+}
+
+int nos_cell_bind_iommu_sid(struct nos_cell *cell, uint32_t sid)
+{
+    uint32_t i;
+    int empty = -1;
+
+    if (cell == NULL) {
+        return -EINVAL;
+    }
+    if (!g_cell_sid_lock_inited) {
+        spin_lock_init(&g_cell_sid_lock);
+        g_cell_sid_lock_inited = true;
+    }
+    nos_iommu_register_fault_cb(cell_iommu_fault_cb);
+
+    spin_lock_irq(&cell->lock);
+    cell->iommu_sid = sid;
+    cell->has_iommu_sid = true;
+    spin_unlock_irq(&cell->lock);
+
+    spin_lock_irq(&g_cell_sid_lock);
+    for (i = 0U; i < CELL_SID_MAP_CAP; i++) {
+        if (g_cell_sid_map[i].in_use && g_cell_sid_map[i].cell == cell &&
+            g_cell_sid_map[i].sid == sid) {
+            spin_unlock_irq(&g_cell_sid_lock);
+            return 0;
+        }
+        if (!g_cell_sid_map[i].in_use && empty < 0) {
+            empty = (int)i;
+        }
+    }
+    if (empty >= 0) {
+        g_cell_sid_map[empty].in_use = true;
+        g_cell_sid_map[empty].sid = sid;
+        g_cell_sid_map[empty].cell = cell;
+    }
+    spin_unlock_irq(&g_cell_sid_lock);
+    return (empty >= 0) ? 0 : -ENOSPC;
+}
 
 static int cell_alloc_telemetry_page(uintptr_t *out_kv, uintptr_t *out_pa)
 {
@@ -194,6 +297,7 @@ static void cell_release(struct nos_object *obj)
     notif = cell->budget_notif;
     cell->parent = NULL;
     cell->budget_notif = NULL;
+    cell_unbind_iommu_sid_all(cell);
 
     for (uint32_t i = 0U; i < NOS_CELL_MAX_TRACKED_VMOS; i++) {
         if (cell->vmo_bindings[i].active && cell->vmo_bindings[i].vmo != NULL) {
@@ -257,10 +361,30 @@ static bool cell_is_stopped_state(uint16_t state)
     return (state == NOS_CELL_STATE_DESTROYED || state == NOS_CELL_STATE_SUSPENDED);
 }
 
-static void cell_notify_budget_hit(struct nos_notification *notif)
+static void cell_notify_budget_hit(struct nos_notification *notif, uint64_t evt_bits)
 {
     if (notif != NULL) {
-        (void)nos_notify_signal_obj(notif, 1ULL);
+        (void)nos_notify_signal_obj(notif, (evt_bits != 0ULL) ? evt_bits : 1ULL);
+        (void)nos_object_put(&notif->object);
+    }
+}
+
+void nos_cell_notify_event(struct nos_cell *cell, uint64_t evt_bits)
+{
+    struct nos_notification *notif = NULL;
+
+    if (cell == NULL || evt_bits == 0ULL) {
+        return;
+    }
+
+    spin_lock_irq(&cell->lock);
+    if (cell->budget_notif != NULL && nos_object_get(&cell->budget_notif->object)) {
+        notif = cell->budget_notif;
+    }
+    spin_unlock_irq(&cell->lock);
+
+    if (notif != NULL) {
+        (void)nos_notify_signal_obj(notif, evt_bits);
         (void)nos_object_put(&notif->object);
     }
 }
@@ -268,7 +392,12 @@ static void cell_notify_budget_hit(struct nos_notification *notif)
 void nos_cell_subsystem_init(void)
 {
     if (__atomic_exchange_n(&g_cell_subsys_inited, 1U, __ATOMIC_ACQ_REL) == 0U) {
+        if (!g_cell_sid_lock_inited) {
+            spin_lock_init(&g_cell_sid_lock);
+            g_cell_sid_lock_inited = true;
+        }
         nos_cap_register_audit_hook(cell_cap_audit_hook);
+        nos_iommu_register_fault_cb(cell_iommu_fault_cb);
     }
 }
 
@@ -302,7 +431,7 @@ struct nos_cell *nos_cell_create(struct nos_cell *parent,
                                                    (uint64_t)parent->child_cells_used + 1ULL,
                                                    (uint64_t)parent->budget.max_child_cells);
             spin_unlock_irq(&parent->lock);
-            cell_notify_budget_hit(notif);
+            cell_notify_budget_hit(notif, NOS_CELL_EVT_BUDGET_CPU);
             (void)nos_object_put(&parent->header);
             return NULL;
         }
@@ -354,6 +483,141 @@ err_uncount_parent:
         (void)nos_object_put(&parent->header);
     }
     return NULL;
+}
+
+struct nos_cell *nos_cell_fork(struct nos_cell *parent,
+                               const struct nos_cell_budget *budget)
+{
+    struct nos_cell_budget rem_budget;
+    struct nos_cell_budget eff_budget;
+    struct nos_cell *child;
+    struct nos_cell_vmo_binding parent_vmos[NOS_CELL_MAX_TRACKED_VMOS];
+    uint32_t vmo_cnt = 0U;
+    uint32_t i;
+
+    if (parent == NULL) {
+        return NULL;
+    }
+
+    memset(&rem_budget, 0, sizeof(rem_budget));
+    memset(parent_vmos, 0, sizeof(parent_vmos));
+
+    spin_lock_irq(&parent->lock);
+    if (cell_is_stopped_state(parent->state) ||
+        parent->child_cells_used >= parent->budget.max_child_cells) {
+        spin_unlock_irq(&parent->lock);
+        return NULL;
+    }
+
+    /* 若父 Cell 任意受限硬预算已耗尽，禁止 Fork 绕过配额并触发审计 */
+    if ((parent->budget.cpu_ns_limit != 0ULL &&
+         parent->cpu_ns_used >= parent->budget.cpu_ns_limit) ||
+        (parent->budget.mem_bytes_limit != 0ULL &&
+         parent->mem_bytes_used >= parent->budget.mem_bytes_limit) ||
+        (parent->budget.tool_calls_limit != 0ULL &&
+         parent->tool_calls_used >= parent->budget.tool_calls_limit) ||
+        (parent->budget.accel_ops_limit != 0ULL &&
+         parent->accel_ops_used >= parent->budget.accel_ops_limit)) {
+        struct nos_notification *notif = cell_trigger_budget_hit_locked(
+            parent, 0ULL, 0U, parent->mem_bytes_used, parent->budget.mem_bytes_limit);
+        spin_unlock_irq(&parent->lock);
+        cell_notify_budget_hit(notif, NOS_CELL_EVT_BUDGET_MEM);
+        return NULL;
+    }
+
+    /* 以父级剩余可用配额作为单调上界夹紧子 Cell 预算 */
+    rem_budget.cpu_ns_limit = (parent->budget.cpu_ns_limit != 0ULL)
+                                  ? (parent->budget.cpu_ns_limit - parent->cpu_ns_used)
+                                  : 0ULL;
+    rem_budget.mem_bytes_limit = (parent->budget.mem_bytes_limit != 0ULL)
+                                     ? (parent->budget.mem_bytes_limit - parent->mem_bytes_used)
+                                     : 0ULL;
+    rem_budget.tool_calls_limit = (parent->budget.tool_calls_limit != 0ULL)
+                                      ? (parent->budget.tool_calls_limit - parent->tool_calls_used)
+                                      : 0ULL;
+    rem_budget.accel_ops_limit = (parent->budget.accel_ops_limit != 0ULL)
+                                     ? (parent->budget.accel_ops_limit - parent->accel_ops_used)
+                                     : 0ULL;
+    rem_budget.max_child_cells = parent->budget.max_child_cells - parent->child_cells_used - 1U;
+
+    for (i = 0U; i < NOS_CELL_MAX_TRACKED_VMOS; i++) {
+        if (parent->vmo_bindings[i].active && parent->vmo_bindings[i].vmo != NULL &&
+            nos_object_get(&parent->vmo_bindings[i].vmo->header)) {
+            parent_vmos[vmo_cnt++] = parent->vmo_bindings[i];
+        }
+    }
+    spin_unlock_irq(&parent->lock);
+
+    cell_apply_monotonic_budget(&eff_budget, &rem_budget, budget);
+    child = nos_cell_create(parent, &eff_budget);
+    if (child == NULL) {
+        for (i = 0U; i < vmo_cnt; i++) {
+            (void)nos_object_put(&parent_vmos[i].vmo->header);
+        }
+        return NULL;
+    }
+
+    /* 1. 复制地址空间绑定：只读权重直接共享同一 VMO；可写页启用 CoW 克隆 */
+    for (i = 0U; i < vmo_cnt; i++) {
+        struct nos_cell_vmo_binding *b = &parent_vmos[i];
+        bool writable = (b->prot_flags & HAL_VM_PROT_WRITE) != 0U &&
+                        !b->vmo->sealed &&
+                        b->vmo->kind != NOS_VMO_WEIGHT;
+        int rc = 0;
+
+        if (writable && (b->vmo->kind == NOS_VMO_ANON || b->vmo->kind == NOS_VMO_KVCACHE)) {
+            struct nos_vmo *cow_vmo = nos_vmo_clone_cow(b->vmo);
+            if (cow_vmo == NULL) {
+                rc = -ENOMEM;
+            } else {
+                /* 先将父 Cell 页表降权 RO 武装 CoW，防止父后续写脏子页 */
+                rc = nos_vmo_remap_range(b->vmo,
+                                         &parent->vm_space,
+                                         b->vaddr,
+                                         b->offset,
+                                         b->len,
+                                         b->prot_flags & ~HAL_VM_PROT_WRITE);
+                if (rc == 0) {
+                    rc = nos_vmo_map_tracked_nocharge(cow_vmo,
+                                                      child,
+                                                      b->vaddr,
+                                                      b->offset,
+                                                      b->len,
+                                                      b->prot_flags & ~HAL_VM_PROT_WRITE,
+                                                      b->prot_flags);
+                }
+                /* 交出初始创建者引用：仅由 child->vmo_bindings 持有并保持可被 CoW/Snapshot get */
+                (void)nos_object_put(&cow_vmo->header);
+            }
+        } else if ((b->vmo->flags & NOS_VMO_FLAG_IO_COHERENT) == 0U &&
+                   b->vmo->kind != NOS_VMO_DMA_TENSOR) {
+            uint32_t ro_prot = b->prot_flags & ~HAL_VM_PROT_WRITE;
+            rc = nos_vmo_map_tracked_nocharge(b->vmo,
+                                              child,
+                                              b->vaddr,
+                                              b->offset,
+                                              b->len,
+                                              ro_prot,
+                                              ro_prot);
+        }
+
+        if (rc != 0) {
+            for (uint32_t j = i; j < vmo_cnt; j++) {
+                (void)nos_object_put(&parent_vmos[j].vmo->header);
+            }
+            (void)nos_cell_destroy(child);
+            return NULL;
+        }
+        (void)nos_object_put(&b->vmo->header);
+    }
+
+    /* 2. 派生父 CNode 中允许传播的能力句柄，并在父 CDT 建立父子依赖以便父销毁时连根吊销 */
+    if (nos_cap_table_clone_for_fork(&parent->cap_table, &child->cap_table) != 0) {
+        (void)nos_cell_destroy(child);
+        return NULL;
+    }
+
+    return child;
 }
 
 int nos_cell_destroy(struct nos_cell *cell)
@@ -507,7 +771,7 @@ int nos_cell_charge_cpu(struct nos_cell *cell, uint64_t delta_ns)
                                                attempted,
                                                cell->budget.cpu_ns_limit);
         spin_unlock_irq(&cell->lock);
-        cell_notify_budget_hit(notif);
+        cell_notify_budget_hit(notif, NOS_CELL_EVT_BUDGET_CPU);
         return -EDQUOT;
     }
     cell->cpu_ns_used += delta_ns;
@@ -539,7 +803,7 @@ int nos_cell_charge_mem(struct nos_cell *cell, uint64_t bytes)
                                                attempted,
                                                cell->budget.mem_bytes_limit);
         spin_unlock_irq(&cell->lock);
-        cell_notify_budget_hit(notif);
+        cell_notify_budget_hit(notif, NOS_CELL_EVT_BUDGET_MEM);
         return -EDQUOT;
     }
     cell->mem_bytes_used += bytes;
@@ -585,7 +849,7 @@ int nos_cell_charge_tool_call(struct nos_cell *cell, uint64_t schema_id, uint32_
                                                cell->tool_calls_used + 1ULL,
                                                cell->budget.tool_calls_limit);
         spin_unlock_irq(&cell->lock);
-        cell_notify_budget_hit(notif);
+        cell_notify_budget_hit(notif, NOS_CELL_EVT_BUDGET_TOOL);
         return -EDQUOT;
     }
     cell->tool_calls_used++;
@@ -621,7 +885,7 @@ int nos_cell_charge_accel_op(struct nos_cell *cell, uint64_t schema_id, uint32_t
                                                cell->accel_ops_used + 1ULL,
                                                cell->budget.accel_ops_limit);
         spin_unlock_irq(&cell->lock);
-        cell_notify_budget_hit(notif);
+        cell_notify_budget_hit(notif, NOS_CELL_EVT_BUDGET_ACCEL);
         return -EDQUOT;
     }
     cell->accel_ops_used++;
@@ -844,6 +1108,11 @@ static void cell_snapshot_release(struct nos_object *obj)
         }
     }
 
+    if (snap->cap_snap != NULL) {
+        nos_cap_table_snapshot_free(snap->cap_snap);
+        snap->cap_snap = NULL;
+    }
+
     if (snap->owner_cell != NULL) {
         (void)nos_object_put(&snap->owner_cell->header);
         snap->owner_cell = NULL;
@@ -856,6 +1125,7 @@ struct nos_cell_snapshot *nos_cell_snapshot(struct nos_cell *cell)
 {
     struct nos_cell_snapshot *snap;
     struct nos_cell_vmo_binding local[NOS_CELL_MAX_TRACKED_VMOS];
+    uint64_t binding_mask = 0ULL;
     uint32_t count = 0U;
     uint32_t i;
 
@@ -885,16 +1155,28 @@ struct nos_cell_snapshot *nos_cell_snapshot(struct nos_cell *cell)
     snap->saved_accel_ops_used = cell->accel_ops_used;
 
     for (i = 0U; i < NOS_CELL_MAX_TRACKED_VMOS; i++) {
+        if (cell->vmo_bindings[i].active) {
+            binding_mask |= (1ULL << i);
+        }
         if (cell_vmo_should_snapshot(&cell->vmo_bindings[i]) &&
             nos_object_get(&cell->vmo_bindings[i].vmo->header)) {
             local[count++] = cell->vmo_bindings[i];
         }
     }
+    snap->saved_binding_mask = binding_mask;
     spin_unlock_irq(&cell->lock);
 
     (void)nos_object_init(&snap->header, false);
     nos_object_set_release(&snap->header, cell_snapshot_release);
     snap->owner_cell = cell;
+
+#ifdef CONFIG_NOS_CAP_CDT
+    snap->cap_snap = nos_cap_table_snapshot(&cell->cap_table);
+    if (snap->cap_snap == NULL) {
+        i = 0U;
+        goto err_cleanup;
+    }
+#endif
 
     for (i = 0U; i < count; i++) {
         struct nos_vmo *frozen = nos_vmo_clone_cow(local[i].vmo);
@@ -988,9 +1270,94 @@ int nos_cell_handle_cow_fault(struct nos_cell *cell, uintptr_t fault_va)
         return -EACCES;
     }
 
-    rc = nos_vmo_cow_break_page(vmo, page_idx, &new_pa);
+    rc = nos_cell_charge_mem(cell, PAGE_SIZE);
     if (rc == 0) {
-        rc = hal_vm_map(&cell->vm_space, page_va, new_pa, PAGE_SIZE, orig_prot);
+        rc = nos_vmo_cow_break_page(vmo, page_idx, &new_pa);
+        if (rc == 0) {
+            rc = hal_vm_map(&cell->vm_space, page_va, new_pa, PAGE_SIZE, orig_prot);
+        }
+        if (rc != 0) {
+            nos_cell_uncharge_mem(cell, PAGE_SIZE);
+        }
+    }
+
+    (void)nos_object_put(&vmo->header);
+    return rc;
+}
+
+int nos_cell_handle_page_fault(struct nos_cell *cell,
+                               uintptr_t fault_va,
+                               bool is_write,
+                               uint32_t dfsc)
+{
+    uint32_t fault_class = dfsc & 0x3CU;
+    struct nos_vmo *vmo = NULL;
+    uintptr_t page_va = 0U;
+    uint32_t page_idx = 0U;
+    uint32_t prot_flags = 0U;
+    uint32_t vmo_flags = 0U;
+    uintptr_t pa = 0U;
+    bool newly_alloc = false;
+    bool charged = false;
+    uint32_t i;
+    int rc;
+
+    if (cell == NULL) {
+        return -EINVAL;
+    }
+
+    /* Permission Fault (0x0C..0x0F) 且为写操作：进入硬件 CoW 分裂快路 */
+    if (fault_class == 0x0CU && is_write) {
+        return nos_cell_handle_cow_fault(cell, fault_va);
+    }
+
+    /* Translation Fault (0x04..0x07)：为 LAZY_ALLOC 与 RECOMPUTABLE 绑定页执行按需提交 */
+    if (fault_class != 0x04U) {
+        return -EFAULT;
+    }
+
+    spin_lock_irq(&cell->lock);
+    for (i = 0U; i < NOS_CELL_MAX_TRACKED_VMOS; i++) {
+        struct nos_cell_vmo_binding *b = &cell->vmo_bindings[i];
+
+        if (!b->active || b->vmo == NULL) {
+            continue;
+        }
+        if (fault_va >= b->vaddr && fault_va < (b->vaddr + b->len)) {
+            if ((b->vmo->flags & (NOS_VMO_FLAG_LAZY_ALLOC | NOS_VMO_FLAG_RECOMPUTABLE)) != 0U &&
+                (!is_write || (b->prot_flags & HAL_VM_PROT_WRITE) != 0U) &&
+                nos_object_get(&b->vmo->header)) {
+                vmo = b->vmo;
+                vmo_flags = b->vmo->flags;
+                page_va = fault_va & ~(uintptr_t)(PAGE_SIZE - 1U);
+                page_idx = (uint32_t)((b->offset + (page_va - b->vaddr)) / PAGE_SIZE);
+                prot_flags = b->prot_flags;
+            }
+            break;
+        }
+    }
+    spin_unlock_irq(&cell->lock);
+
+    if (vmo == NULL) {
+        return -EACCES;
+    }
+
+    if ((vmo_flags & NOS_VMO_FLAG_LAZY_ALLOC) != 0U) {
+        rc = nos_cell_charge_mem(cell, PAGE_SIZE);
+        if (rc != 0) {
+            (void)nos_object_put(&vmo->header);
+            return rc;
+        }
+        charged = true;
+    }
+
+    rc = nos_vmo_ensure_page(vmo, page_idx, &pa, &newly_alloc);
+    if (rc == 0) {
+        rc = hal_vm_map(&cell->vm_space, page_va, pa, PAGE_SIZE, prot_flags);
+    }
+
+    if (charged && (rc != 0 || !newly_alloc)) {
+        nos_cell_uncharge_mem(cell, PAGE_SIZE);
     }
 
     (void)nos_object_put(&vmo->header);
@@ -999,10 +1366,41 @@ int nos_cell_handle_cow_fault(struct nos_cell *cell, uintptr_t fault_va)
 
 int nos_cell_rollback(struct nos_cell *cell, struct nos_cell_snapshot *snap)
 {
+    struct {
+        uintptr_t       vaddr;
+        size_t          len;
+        struct nos_vmo *vmo;
+    } branch_unmaps[NOS_CELL_MAX_TRACKED_VMOS];
+    uint32_t branch_cnt = 0U;
     uint32_t i;
 
     if (cell == NULL || snap == NULL || snap->owner_cell != cell) {
         return -EINVAL;
+    }
+
+    spin_lock_irq(&cell->lock);
+    if (cell->state == NOS_CELL_STATE_DESTROYED) {
+        spin_unlock_irq(&cell->lock);
+        return -ESTALE;
+    }
+    for (i = 0U; i < NOS_CELL_MAX_TRACKED_VMOS; i++) {
+        struct nos_cell_vmo_binding *b = &cell->vmo_bindings[i];
+        if (b->active && (snap->saved_binding_mask & (1ULL << i)) == 0ULL) {
+            branch_unmaps[branch_cnt].vaddr = b->vaddr;
+            branch_unmaps[branch_cnt].len = b->len;
+            branch_unmaps[branch_cnt].vmo = b->vmo;
+            branch_cnt++;
+            b->active = false;
+            b->vmo = NULL;
+        }
+    }
+    spin_unlock_irq(&cell->lock);
+
+    for (i = 0U; i < branch_cnt; i++) {
+        (void)hal_vm_unmap(&cell->vm_space, branch_unmaps[i].vaddr, branch_unmaps[i].len);
+        if (branch_unmaps[i].vmo != NULL) {
+            (void)nos_object_put(&branch_unmaps[i].vmo->header);
+        }
     }
 
     for (i = 0U; i < snap->item_count; i++) {
@@ -1026,6 +1424,13 @@ int nos_cell_rollback(struct nos_cell *cell, struct nos_cell_snapshot *snap)
         }
     }
 
+    if (snap->cap_snap != NULL) {
+        int rc = nos_cap_table_restore_ex(&cell->cap_table, snap->cap_snap, snap);
+        if (rc != 0) {
+            return rc;
+        }
+    }
+
     spin_lock_irq(&cell->lock);
     if (cell->state == NOS_CELL_STATE_DESTROYED) {
         spin_unlock_irq(&cell->lock);
@@ -1043,6 +1448,7 @@ int nos_cell_rollback(struct nos_cell *cell, struct nos_cell_snapshot *snap)
                              0,
                              (uint64_t)snap->item_count,
                              cell->mem_bytes_used);
+    cell_sync_telemetry_locked(cell);
     spin_unlock_irq(&cell->lock);
 
     return 0;

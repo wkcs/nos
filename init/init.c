@@ -15,7 +15,9 @@
 #include <kernel/timer.h>
 #include <nos/sched.h>
 
+#if defined(CONFIG_NR_CPUS) && (CONFIG_NR_CPUS > 1)
 __attribute__((weak)) void arch_smp_boot_secondary_cpus(void) {}
+#endif
 
 extern addr_t __task_data_start;
 extern addr_t __task_data_end;
@@ -64,7 +66,9 @@ void task_init_call(void) {
 
 static void core_task_entry(void *parameter) {
   pr_info("init\n");
+#if defined(CONFIG_NR_CPUS) && (CONFIG_NR_CPUS > 1)
   arch_smp_boot_secondary_cpus();
+#endif
   task_init_call();
 }
 

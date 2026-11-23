@@ -35,6 +35,34 @@ int arm64_fdt_find_reg(const char *compatible,
                        uint64_t *out_base,
                        uint64_t *out_size);
 
+int arm64_fdt_blob_find_irq(const void *blob,
+                            size_t blob_max,
+                            const char *compatible,
+                            uint32_t index,
+                            uint32_t irq_idx,
+                            uint32_t *out_intid);
+
+int arm64_fdt_find_irq(const char *compatible,
+                       uint32_t index,
+                       uint32_t irq_idx,
+                       uint32_t *out_intid);
+
+/**
+ * 扫描给定 FDT blob 的 /cpus 节点各核 capacity-dmips-mhz 算力权重
+ */
+int arm64_fdt_blob_scan_cpus(const void *blob,
+                             size_t blob_max,
+                             uint32_t *out_caps,
+                             uint32_t max_cpus,
+                             uint32_t *out_count);
+
+/**
+ * 综合运行时引导 FDT 与静态 DTS 扫描各核算力权重
+ */
+int arm64_fdt_scan_cpu_capacities(uint32_t *out_caps,
+                                  uint32_t max_cpus,
+                                  uint32_t *out_count);
+
 /**
  * 运行时引导 FDT 是否可用（魔数校验通过）
  */

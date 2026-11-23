@@ -27,6 +27,10 @@ struct nos_accel_ops {
                       struct nos_vmo *output_vmo,
                       struct nos_accel_job_result *out_res);
     int (*cancel_job)(struct nos_accel_device *dev, uint64_t req_id);
+    int (*wait_job)(struct nos_accel_device *dev,
+                    uint64_t req_id,
+                    struct nos_accel_job_result *out_res,
+                    uint32_t timeout_ms);
     int (*reset_ctx)(struct nos_accel_device *dev, uint32_t pasid);
 };
 
@@ -59,6 +63,20 @@ int nos_accel_submit(struct nos_accel_device *dev,
                      struct task_struct *caller,
                      const struct nos_accel_job_desc *desc,
                      struct nos_accel_job_result *out_res);
+
+int nos_accel_wait_job(struct nos_accel_device *dev,
+                       struct task_struct *caller,
+                       uint64_t req_id,
+                       struct nos_accel_job_result *out_res,
+                       uint32_t timeout_ms);
+
+int nos_accel_cancel_job(struct nos_accel_device *dev, uint64_t req_id);
+
+int nos_accel_reset_ctx(struct nos_accel_device *dev,
+                        struct task_struct *caller,
+                        uint32_t pasid);
+
+int nos_accel_cancel_by_obj(void *accel_obj, uint64_t job_id);
 
 int nos_accel_dispatch_ring_sqe(void *accel_obj,
                                 struct task_struct *caller,

@@ -49,12 +49,22 @@ struct virtio_accel_slot {
     struct nos_completion       done;
     uint64_t                    abs_deadline_ns;
     int                         rc;
+    uint32_t                    pasid;
+    uint32_t                    waiters;
+    bool                        in_use;
+    bool                        is_async;
+    bool                        running;
+    bool                        completing;
+    bool                        executed;
+    bool                        canceled;
+    bool                        auto_reap;
 };
 
 struct virtio_accel_state {
     spinlock_t                lock;
     struct nos_notification   queue_notif;
     struct virtio_accel_slot *queue[VIRTIO_ACCEL_QUEUE_CAP];
+    struct virtio_accel_slot  async_pool[VIRTIO_ACCEL_QUEUE_CAP];
     uint32_t                  head;
     uint32_t                  tail;
     uint32_t                  count;
@@ -196,6 +206,80 @@ out:
     return rc;
 }
 
+static void virtio_slot_retain_vmos(struct virtio_accel_slot *slot)
+{
+    if (slot == NULL) {
+        return;
+    }
+    if (slot->weight_vmo != NULL) {
+        (void)nos_object_get(&slot->weight_vmo->header);
+    }
+    if (slot->input_vmo != NULL) {
+        (void)nos_object_get(&slot->input_vmo->header);
+    }
+    if (slot->output_vmo != NULL) {
+        (void)nos_object_get(&slot->output_vmo->header);
+    }
+}
+
+static void virtio_slot_release_vmos(struct virtio_accel_slot *slot)
+{
+    if (slot == NULL) {
+        return;
+    }
+    if (slot->weight_vmo != NULL) {
+        (void)nos_object_put(&slot->weight_vmo->header);
+        slot->weight_vmo = NULL;
+    }
+    if (slot->input_vmo != NULL) {
+        (void)nos_object_put(&slot->input_vmo->header);
+        slot->input_vmo = NULL;
+    }
+    if (slot->output_vmo != NULL) {
+        (void)nos_object_put(&slot->output_vmo->header);
+        slot->output_vmo = NULL;
+    }
+}
+
+/* 必须在持有 st->lock 时调用 */
+static bool virtio_queue_remove_locked(struct virtio_accel_state *st,
+                                       const struct virtio_accel_slot *target)
+{
+    struct virtio_accel_slot *kept[VIRTIO_ACCEL_QUEUE_CAP];
+    uint32_t k = 0U;
+    bool removed = false;
+
+    for (uint32_t i = 0U; i < st->count; i++) {
+        uint32_t idx = (st->head + i) % VIRTIO_ACCEL_QUEUE_CAP;
+        struct virtio_accel_slot *s = st->queue[idx];
+        st->queue[idx] = NULL;
+        if (s == target) {
+            removed = true;
+        } else if (s != NULL) {
+            kept[k++] = s;
+        }
+    }
+
+    st->head = 0U;
+    st->tail = k % VIRTIO_ACCEL_QUEUE_CAP;
+    st->count = k;
+    for (uint32_t i = 0U; i < k; i++) {
+        st->queue[i] = kept[i];
+    }
+    return removed;
+}
+
+static void virtio_reap_async_slot_unlocked(struct virtio_accel_slot *slot)
+{
+#ifndef __HOST_TEST__
+    if (slot->is_async) {
+        (void)nos_object_close(&slot->done.object);
+        (void)nos_object_retire(&slot->done.object);
+    }
+#endif
+    virtio_slot_release_vmos(slot);
+}
+
 #ifndef __HOST_TEST__
 static void virtio_accel_worker_entry(void *param)
 {
@@ -205,6 +289,9 @@ static void virtio_accel_worker_entry(void *param)
         struct virtio_accel_slot *slot = NULL;
         uint64_t bits = 0ULL;
         bool boosted;
+        bool skip_exec = false;
+        bool notify_done = false;
+        bool reap_now = false;
 
         spin_lock_irq(&st->lock);
         if (st->count > 0U) {
@@ -212,6 +299,12 @@ static void virtio_accel_worker_entry(void *param)
             st->queue[st->head] = NULL;
             st->head = (st->head + 1U) % VIRTIO_ACCEL_QUEUE_CAP;
             st->count--;
+            if (slot != NULL) {
+                skip_exec = slot->canceled;
+                if (!skip_exec) {
+                    slot->running = true;
+                }
+            }
         }
         spin_unlock_irq(&st->lock);
 
@@ -223,12 +316,63 @@ static void virtio_accel_worker_entry(void *param)
             continue;
         }
 
-        boosted = (slot->abs_deadline_ns != 0ULL);
-        slot->rc = virtio_execute_slot(slot);
-        if (boosted && current != NULL) {
-            sched_infer_restore_deadline(current);
+        if (skip_exec) {
+            slot->rc = -ECANCELED;
+            slot->result.req_id = slot->desc.req_id;
+            slot->result.status = -ECANCELED;
+            slot->result.output_bytes = 0U;
+            spin_lock_irq(&st->lock);
+            slot->executed = true;
+            if (slot->is_async && slot->auto_reap && slot->waiters == 0U) {
+                reap_now = true;
+            } else {
+                notify_done = true;
+                slot->completing = true;
+            }
+            spin_unlock_irq(&st->lock);
+        } else {
+            int exec_rc;
+            boosted = (slot->abs_deadline_ns != 0ULL);
+            exec_rc = virtio_execute_slot(slot);
+            if (boosted && current != NULL) {
+                sched_infer_restore_deadline(current);
+            }
+            spin_lock_irq(&st->lock);
+            if (slot->canceled) {
+                slot->rc = -ECANCELED;
+                slot->result.req_id = slot->desc.req_id;
+                slot->result.status = -ECANCELED;
+                slot->result.output_bytes = 0U;
+            } else {
+                slot->rc = exec_rc;
+            }
+            slot->running = false;
+            slot->executed = true;
+            if (slot->is_async && slot->auto_reap && slot->waiters == 0U) {
+                reap_now = true;
+            } else {
+                notify_done = true;
+                slot->completing = true;
+            }
+            spin_unlock_irq(&st->lock);
         }
-        (void)nos_complete(&slot->done);
+
+        if (notify_done) {
+            (void)nos_complete(&slot->done);
+            spin_lock_irq(&st->lock);
+            slot->completing = false;
+            if (slot->is_async && slot->auto_reap && slot->waiters == 0U) {
+                reap_now = true;
+            }
+            spin_unlock_irq(&st->lock);
+        }
+
+        if (reap_now) {
+            virtio_reap_async_slot_unlocked(slot);
+            spin_lock_irq(&st->lock);
+            memset(slot, 0, sizeof(*slot));
+            spin_unlock_irq(&st->lock);
+        }
     }
 }
 
@@ -280,73 +424,434 @@ static int virtio_submit_job(struct nos_accel_device *dev,
                              struct nos_vmo *output_vmo,
                              struct nos_accel_job_result *out_res)
 {
-    struct virtio_accel_slot slot;
+    bool is_async;
 
     (void)dev;
     (void)caller;
-    memset(&slot, 0, sizeof(slot));
-    slot.desc = *desc;
-    slot.weight_vmo = weight_vmo;
-    slot.input_vmo = input_vmo;
-    slot.output_vmo = output_vmo;
+    if (desc == NULL) {
+        return -EINVAL;
+    }
+
+    is_async = ((desc->flags & NOS_ACCEL_FLAG_ASYNC) != 0U);
+    if (is_async) {
+        struct virtio_accel_slot *slot = NULL;
+        bool use_worker = false;
+        int rc = 0;
 
 #ifndef __HOST_TEST__
-    if (kernel_running && !hal_in_irq() && virtio_ensure_worker_started() == 0) {
-        struct task_struct *worker = NULL;
-        uint64_t dl_abs = 0ULL;
-
-        (void)nos_completion_init(&slot.done);
-        if (desc->deadline_ns > 0ULL) {
-            uint64_t now_ns = hal_timer_monotonic_ns();
-            dl_abs = (desc->deadline_ns <= 100000000000ULL) ?
-                     (now_ns + desc->deadline_ns) : desc->deadline_ns;
-            slot.abs_deadline_ns = dl_abs;
+        if (kernel_running && !hal_in_irq() && virtio_ensure_worker_started() == 0) {
+            use_worker = true;
         }
+#endif
 
         spin_lock_irq(&g_virtio_state.lock);
-        if (g_virtio_state.count >= VIRTIO_ACCEL_QUEUE_CAP) {
+        for (uint32_t i = 0U; i < VIRTIO_ACCEL_QUEUE_CAP; i++) {
+            if (g_virtio_state.async_pool[i].in_use &&
+                g_virtio_state.async_pool[i].desc.req_id == desc->req_id) {
+                spin_unlock_irq(&g_virtio_state.lock);
+                return -EEXIST;
+            }
+            if (!g_virtio_state.async_pool[i].in_use && slot == NULL) {
+                slot = &g_virtio_state.async_pool[i];
+            }
+        }
+        if (slot == NULL || (use_worker && g_virtio_state.count >= VIRTIO_ACCEL_QUEUE_CAP)) {
+            spin_unlock_irq(&g_virtio_state.lock);
+            return -EBUSY;
+        }
+
+        memset(slot, 0, sizeof(*slot));
+        slot->desc = *desc;
+        slot->weight_vmo = weight_vmo;
+        slot->input_vmo = input_vmo;
+        slot->output_vmo = output_vmo;
+        slot->rc = -EINPROGRESS;
+        slot->result.req_id = desc->req_id;
+        slot->result.status = -EINPROGRESS;
+        slot->in_use = true;
+        slot->is_async = true;
+        virtio_slot_retain_vmos(slot);
+        spin_unlock_irq(&g_virtio_state.lock);
+
+#ifndef __HOST_TEST__
+        if (use_worker) {
+            struct task_struct *worker = NULL;
+            uint64_t dl_abs = 0ULL;
+
+            (void)nos_completion_init(&slot->done);
+            if (desc->deadline_ns > 0ULL) {
+                uint64_t now_ns = hal_timer_monotonic_ns();
+                dl_abs = (desc->deadline_ns <= 100000000000ULL) ?
+                         (now_ns + desc->deadline_ns) : desc->deadline_ns;
+                slot->abs_deadline_ns = dl_abs;
+            }
+
+            spin_lock_irq(&g_virtio_state.lock);
+            if (slot->canceled) {
+                spin_unlock_irq(&g_virtio_state.lock);
+                virtio_reap_async_slot_unlocked(slot);
+                spin_lock_irq(&g_virtio_state.lock);
+                memset(slot, 0, sizeof(*slot));
+                spin_unlock_irq(&g_virtio_state.lock);
+                return -ECANCELED;
+            }
+            if (g_virtio_state.count >= VIRTIO_ACCEL_QUEUE_CAP) {
+                spin_unlock_irq(&g_virtio_state.lock);
+                virtio_reap_async_slot_unlocked(slot);
+                spin_lock_irq(&g_virtio_state.lock);
+                memset(slot, 0, sizeof(*slot));
+                spin_unlock_irq(&g_virtio_state.lock);
+                return -EBUSY;
+            }
+            g_virtio_state.queue[g_virtio_state.tail] = slot;
+            g_virtio_state.tail = (g_virtio_state.tail + 1U) % VIRTIO_ACCEL_QUEUE_CAP;
+            g_virtio_state.count++;
+            if (dl_abs != 0ULL && g_virtio_state.worker_task != NULL &&
+                task_get(g_virtio_state.worker_task)) {
+                worker = g_virtio_state.worker_task;
+            }
+            spin_unlock_irq(&g_virtio_state.lock);
+
+            if (worker != NULL) {
+                (void)sched_infer_boost_deadline(worker, dl_abs);
+                (void)task_put(worker);
+            }
+            (void)nos_notify_signal_obj(&g_virtio_state.queue_notif, 1ULL);
+        }
+#endif
+
+        if (out_res != NULL) {
+            memset(out_res, 0, sizeof(*out_res));
+            out_res->req_id = desc->req_id;
+            out_res->status = -EINPROGRESS;
+        }
+        return rc;
+    }
+
+    {
+        struct virtio_accel_slot slot;
+
+        memset(&slot, 0, sizeof(slot));
+        slot.desc = *desc;
+        slot.weight_vmo = weight_vmo;
+        slot.input_vmo = input_vmo;
+        slot.output_vmo = output_vmo;
+
+#ifndef __HOST_TEST__
+        if (kernel_running && !hal_in_irq() && virtio_ensure_worker_started() == 0) {
+            struct task_struct *worker = NULL;
+            uint64_t dl_abs = 0ULL;
+
+            (void)nos_completion_init(&slot.done);
+            if (desc->deadline_ns > 0ULL) {
+                uint64_t now_ns = hal_timer_monotonic_ns();
+                dl_abs = (desc->deadline_ns <= 100000000000ULL) ?
+                         (now_ns + desc->deadline_ns) : desc->deadline_ns;
+                slot.abs_deadline_ns = dl_abs;
+            }
+
+            spin_lock_irq(&g_virtio_state.lock);
+            if (g_virtio_state.count >= VIRTIO_ACCEL_QUEUE_CAP) {
+                spin_unlock_irq(&g_virtio_state.lock);
+                (void)nos_object_close(&slot.done.object);
+                (void)nos_object_retire(&slot.done.object);
+                return -EBUSY;
+            }
+            g_virtio_state.queue[g_virtio_state.tail] = &slot;
+            g_virtio_state.tail = (g_virtio_state.tail + 1U) % VIRTIO_ACCEL_QUEUE_CAP;
+            g_virtio_state.count++;
+            if (dl_abs != 0ULL && g_virtio_state.worker_task != NULL &&
+                task_get(g_virtio_state.worker_task)) {
+                worker = g_virtio_state.worker_task;
+            }
+            spin_unlock_irq(&g_virtio_state.lock);
+
+            if (worker != NULL) {
+                (void)sched_infer_boost_deadline(worker, dl_abs);
+                (void)task_put(worker);
+            }
+            (void)nos_notify_signal_obj(&g_virtio_state.queue_notif, 1ULL);
+            (void)nos_completion_wait(&slot.done, NOS_WAIT_FOREVER);
+            spin_lock_irq(&g_virtio_state.lock);
+            while (slot.completing) {
+                spin_unlock_irq(&g_virtio_state.lock);
+                spin_lock_irq(&g_virtio_state.lock);
+            }
             spin_unlock_irq(&g_virtio_state.lock);
             (void)nos_object_close(&slot.done.object);
             (void)nos_object_retire(&slot.done.object);
-            return -EBUSY;
+            if (out_res != NULL) {
+                *out_res = slot.result;
+            }
+            return slot.rc;
         }
-        g_virtio_state.queue[g_virtio_state.tail] = &slot;
-        g_virtio_state.tail = (g_virtio_state.tail + 1U) % VIRTIO_ACCEL_QUEUE_CAP;
-        g_virtio_state.count++;
-        if (dl_abs != 0ULL && g_virtio_state.worker_task != NULL &&
-            task_get(g_virtio_state.worker_task)) {
-            worker = g_virtio_state.worker_task;
-        }
-        spin_unlock_irq(&g_virtio_state.lock);
+#endif
 
-        if (worker != NULL) {
-            (void)sched_infer_boost_deadline(worker, dl_abs);
-            (void)task_put(worker);
-        }
-        (void)nos_notify_signal_obj(&g_virtio_state.queue_notif, 1ULL);
-        (void)nos_completion_wait(&slot.done, NOS_WAIT_FOREVER);
-        (void)nos_object_close(&slot.done.object);
-        (void)nos_object_retire(&slot.done.object);
+        slot.rc = virtio_execute_slot(&slot);
         if (out_res != NULL) {
             *out_res = slot.result;
         }
         return slot.rc;
     }
+}
+
+static int virtio_wait_job(struct nos_accel_device *dev,
+                           uint64_t req_id,
+                           struct nos_accel_job_result *out_res,
+                           uint32_t timeout_ms)
+{
+    struct virtio_accel_slot *slot = NULL;
+    struct nos_accel_job_result local_res;
+    bool already_done = false;
+    bool canceled = false;
+    bool need_sync_exec = false;
+    int rc = 0;
+
+    (void)dev;
+    (void)timeout_ms;
+    memset(&local_res, 0, sizeof(local_res));
+    local_res.req_id = req_id;
+
+    spin_lock_irq(&g_virtio_state.lock);
+    for (uint32_t i = 0U; i < VIRTIO_ACCEL_QUEUE_CAP; i++) {
+        if (g_virtio_state.async_pool[i].in_use &&
+            g_virtio_state.async_pool[i].is_async &&
+            g_virtio_state.async_pool[i].desc.req_id == req_id) {
+            slot = &g_virtio_state.async_pool[i];
+            break;
+        }
+    }
+    if (slot == NULL) {
+        spin_unlock_irq(&g_virtio_state.lock);
+        return -ENOENT;
+    }
+
+    if (slot->canceled) {
+        canceled = true;
+        if (slot->running || slot->completing || slot->waiters > 0U) {
+            slot->auto_reap = true;
+            spin_unlock_irq(&g_virtio_state.lock);
+            if (out_res != NULL) {
+                local_res.status = -ECANCELED;
+                *out_res = local_res;
+            }
+            return -ECANCELED;
+        }
+        local_res = slot->result;
+        local_res.status = -ECANCELED;
+        spin_unlock_irq(&g_virtio_state.lock);
+        goto reap_return;
+    }
+
+    if (slot->executed && !slot->running && !slot->completing) {
+        already_done = true;
+        rc = slot->rc;
+        local_res = slot->result;
+        spin_unlock_irq(&g_virtio_state.lock);
+        goto reap_return;
+    }
+
+#ifdef __HOST_TEST__
+    slot->running = true;
+    need_sync_exec = true;
+    spin_unlock_irq(&g_virtio_state.lock);
+#else
+    if (!g_virtio_state.worker_started) {
+        slot->running = true;
+        need_sync_exec = true;
+        spin_unlock_irq(&g_virtio_state.lock);
+    } else {
+        nos_timeout_t ticks;
+        int wrc;
+
+        slot->waiters++;
+        spin_unlock_irq(&g_virtio_state.lock);
+        if (timeout_ms == UINT32_MAX) {
+            ticks = NOS_WAIT_FOREVER;
+        } else if (timeout_ms == 0U) {
+            ticks = NOS_NO_WAIT;
+        } else {
+            ticks = (nos_timeout_t)timeout_ms;
+        }
+        wrc = nos_completion_wait(&slot->done, ticks);
+
+        spin_lock_irq(&g_virtio_state.lock);
+        if (slot->waiters > 0U) {
+            slot->waiters--;
+        }
+        if (wrc == -EAGAIN || wrc == -ETIMEDOUT) {
+            if (!slot->canceled || slot->running || slot->completing || slot->waiters > 0U) {
+                spin_unlock_irq(&g_virtio_state.lock);
+                return wrc;
+            }
+            canceled = true;
+            local_res = slot->result;
+            local_res.status = -ECANCELED;
+            spin_unlock_irq(&g_virtio_state.lock);
+            goto reap_return;
+        }
+        while (slot->running || slot->completing) {
+            spin_unlock_irq(&g_virtio_state.lock);
+            spin_lock_irq(&g_virtio_state.lock);
+        }
+        canceled = slot->canceled;
+        if (slot->waiters > 0U) {
+            rc = canceled ? -ECANCELED : slot->rc;
+            local_res = slot->result;
+            slot->auto_reap = true;
+            spin_unlock_irq(&g_virtio_state.lock);
+            if (out_res != NULL) {
+                if (canceled) {
+                    local_res.status = -ECANCELED;
+                }
+                *out_res = local_res;
+            }
+            return rc;
+        }
+        rc = canceled ? -ECANCELED : slot->rc;
+        local_res = slot->result;
+        if (canceled) {
+            local_res.status = -ECANCELED;
+        }
+        spin_unlock_irq(&g_virtio_state.lock);
+        goto reap_return;
+    }
 #endif
 
-    slot.rc = virtio_execute_slot(&slot);
-    if (out_res != NULL) {
-        *out_res = slot.result;
+    if (need_sync_exec) {
+        rc = virtio_execute_slot(slot);
+        spin_lock_irq(&g_virtio_state.lock);
+        slot->running = false;
+        slot->executed = true;
+        if (slot->canceled) {
+            canceled = true;
+            rc = -ECANCELED;
+            slot->rc = -ECANCELED;
+            slot->result.status = -ECANCELED;
+        } else {
+            slot->rc = rc;
+        }
+        local_res = slot->result;
+        spin_unlock_irq(&g_virtio_state.lock);
     }
-    return slot.rc;
+
+reap_return:
+    (void)already_done;
+    virtio_reap_async_slot_unlocked(slot);
+    spin_lock_irq(&g_virtio_state.lock);
+    memset(slot, 0, sizeof(*slot));
+    spin_unlock_irq(&g_virtio_state.lock);
+
+    if (out_res != NULL) {
+        *out_res = local_res;
+    }
+    return canceled ? -ECANCELED : rc;
+}
+
+static int virtio_cancel_job(struct nos_accel_device *dev, uint64_t req_id)
+{
+    struct virtio_accel_slot *slot = NULL;
+    bool wait_worker = false;
+
+    (void)dev;
+    spin_lock_irq(&g_virtio_state.lock);
+    for (uint32_t i = 0U; i < VIRTIO_ACCEL_QUEUE_CAP; i++) {
+        if (g_virtio_state.async_pool[i].in_use &&
+            g_virtio_state.async_pool[i].desc.req_id == req_id) {
+            slot = &g_virtio_state.async_pool[i];
+            break;
+        }
+    }
+    if (slot == NULL) {
+        spin_unlock_irq(&g_virtio_state.lock);
+        return -ENOENT;
+    }
+
+    slot->canceled = true;
+    slot->rc = -ECANCELED;
+    slot->result.req_id = req_id;
+    slot->result.status = -ECANCELED;
+    slot->result.output_bytes = 0U;
+    (void)virtio_queue_remove_locked(&g_virtio_state, slot);
+
+    if (slot->running || slot->completing || slot->waiters > 0U) {
+        slot->auto_reap = true;
+        wait_worker = true;
+    }
+    spin_unlock_irq(&g_virtio_state.lock);
+
+#ifndef __HOST_TEST__
+    if (slot->is_async && wait_worker) {
+        (void)nos_complete_all(&slot->done);
+    }
+#endif
+
+    if (!wait_worker) {
+        virtio_reap_async_slot_unlocked(slot);
+        spin_lock_irq(&g_virtio_state.lock);
+        memset(slot, 0, sizeof(*slot));
+        spin_unlock_irq(&g_virtio_state.lock);
+    }
+    return 0;
+}
+
+static int virtio_reset_ctx(struct nos_accel_device *dev, uint32_t pasid)
+{
+    struct virtio_accel_slot *reap_list[VIRTIO_ACCEL_QUEUE_CAP];
+    struct virtio_accel_slot *wake_list[VIRTIO_ACCEL_QUEUE_CAP];
+    uint32_t reap_cnt = 0U;
+    uint32_t wake_cnt = 0U;
+
+    (void)dev;
+    spin_lock_irq(&g_virtio_state.lock);
+    for (uint32_t i = 0U; i < VIRTIO_ACCEL_QUEUE_CAP; i++) {
+        struct virtio_accel_slot *slot = &g_virtio_state.async_pool[i];
+        if (!slot->in_use) {
+            continue;
+        }
+        if (pasid != 0U && slot->pasid != pasid) {
+            continue;
+        }
+        slot->canceled = true;
+        slot->rc = -ECANCELED;
+        slot->result.status = -ECANCELED;
+        (void)virtio_queue_remove_locked(&g_virtio_state, slot);
+        if (slot->running || slot->completing || slot->waiters > 0U) {
+            slot->auto_reap = true;
+            if (slot->is_async) {
+                wake_list[wake_cnt++] = slot;
+            }
+        } else {
+            reap_list[reap_cnt++] = slot;
+        }
+    }
+    spin_unlock_irq(&g_virtio_state.lock);
+
+#ifndef __HOST_TEST__
+    for (uint32_t i = 0U; i < wake_cnt; i++) {
+        (void)nos_complete_all(&wake_list[i]->done);
+    }
+#else
+    (void)wake_list;
+    (void)wake_cnt;
+#endif
+
+    for (uint32_t i = 0U; i < reap_cnt; i++) {
+        virtio_reap_async_slot_unlocked(reap_list[i]);
+        spin_lock_irq(&g_virtio_state.lock);
+        memset(reap_list[i], 0, sizeof(*reap_list[i]));
+        spin_unlock_irq(&g_virtio_state.lock);
+    }
+    return 0;
 }
 
 static const struct nos_accel_ops g_virtio_ops = {
     .query_caps = virtio_query_caps,
     .bind_vmo   = NULL,
     .submit_job = virtio_submit_job,
-    .cancel_job = NULL,
-    .reset_ctx  = NULL,
+    .cancel_job = virtio_cancel_job,
+    .wait_job   = virtio_wait_job,
+    .reset_ctx  = virtio_reset_ctx,
 };
 
 int virtio_accel_init(void)

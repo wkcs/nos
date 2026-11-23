@@ -259,6 +259,215 @@ static inline int nos_user_accel_submit(nos_handle_t accel_cap,
                                   (unsigned long)(uintptr_t)out_res);
 }
 
+static inline int nos_user_accel_bind_vmo(nos_handle_t accel_cap, nos_handle_t vmo_cap)
+{
+    return (int)nos_user_syscall4(SYS_NOS_ACCEL_SUBMIT,
+                                  NOS_ACCEL_OP_BIND_VMO,
+                                  (unsigned long)accel_cap,
+                                  (unsigned long)vmo_cap,
+                                  0UL);
+}
+
+static inline int nos_user_accel_wait(nos_handle_t accel_cap,
+                                      uint64_t req_id,
+                                      struct nos_accel_job_result *out_res,
+                                      uint32_t timeout_ms)
+{
+    return (int)nos_user_syscall6(SYS_NOS_ACCEL_SUBMIT,
+                                  NOS_ACCEL_OP_WAIT,
+                                  (unsigned long)accel_cap,
+                                  (unsigned long)req_id,
+                                  (unsigned long)(uintptr_t)out_res,
+                                  (unsigned long)timeout_ms,
+                                  0UL);
+}
+
+static inline int nos_user_accel_cancel(nos_handle_t accel_cap, uint64_t req_id)
+{
+    return (int)nos_user_syscall4(SYS_NOS_ACCEL_SUBMIT,
+                                  NOS_ACCEL_OP_CANCEL,
+                                  (unsigned long)accel_cap,
+                                  (unsigned long)req_id,
+                                  0UL);
+}
+
+static inline int nos_user_accel_reset_ctx(nos_handle_t accel_cap, uint32_t pasid)
+{
+    return (int)nos_user_syscall4(SYS_NOS_ACCEL_SUBMIT,
+                                  NOS_ACCEL_OP_RESET_CTX,
+                                  (unsigned long)accel_cap,
+                                  (unsigned long)pasid,
+                                  0UL);
+}
+
+static inline int nos_user_cell_bind_notif(nos_handle_t cell_cap, nos_handle_t notif_cap)
+{
+    return (int)nos_user_syscall3(SYS_NOS_CELL_CONTROL,
+                                  NOS_CELL_OP_BIND_NOTIF,
+                                  (unsigned long)cell_cap,
+                                  (unsigned long)notif_cap);
+}
+
+static inline int nos_user_cell_fork(nos_handle_t parent_cap,
+                                     const struct nos_cell_budget *budget,
+                                     uintptr_t telem_va,
+                                     nos_handle_t *out_cap)
+{
+    nos_handle_t h = NOS_HANDLE_INVALID;
+    long rc = nos_user_syscall6(SYS_NOS_CELL_CONTROL,
+                                NOS_CELL_OP_FORK,
+                                (unsigned long)parent_cap,
+                                (unsigned long)(uintptr_t)budget,
+                                (unsigned long)telem_va,
+                                (unsigned long)(uintptr_t)&h,
+                                0UL);
+    if (rc < 0) {
+        return (int)rc;
+    }
+    if (out_cap != NULL) {
+        *out_cap = h;
+    }
+    return 0;
+}
+
+static inline int nos_user_cell_snapshot(nos_handle_t cell_cap, nos_handle_t *out_snap_cap)
+{
+    nos_handle_t h = NOS_HANDLE_INVALID;
+    long rc = nos_user_syscall6(SYS_NOS_CELL_CONTROL,
+                                NOS_CELL_OP_SNAPSHOT,
+                                (unsigned long)cell_cap,
+                                0UL,
+                                0UL,
+                                (unsigned long)(uintptr_t)&h,
+                                0UL);
+    if (rc < 0) {
+        return (int)rc;
+    }
+    if (out_snap_cap != NULL) {
+        *out_snap_cap = h;
+    }
+    return 0;
+}
+
+static inline int nos_user_cell_rollback(nos_handle_t cell_cap, nos_handle_t snap_cap)
+{
+    return (int)nos_user_syscall3(SYS_NOS_CELL_CONTROL,
+                                  NOS_CELL_OP_ROLLBACK,
+                                  (unsigned long)cell_cap,
+                                  (unsigned long)snap_cap);
+}
+
+static inline int nos_user_cell_read_audit(nos_handle_t cell_cap,
+                                           struct nos_audit_record *out_buf,
+                                           uint32_t max_records)
+{
+    return (int)nos_user_syscall4(SYS_NOS_CELL_CONTROL,
+                                  NOS_CELL_OP_READ_AUDIT,
+                                  (unsigned long)cell_cap,
+                                  (unsigned long)(uintptr_t)out_buf,
+                                  (unsigned long)max_records);
+}
+
+static inline int nos_user_vmo_clone_cow(nos_handle_t vmo_cap, nos_handle_t *out_cap)
+{
+    nos_handle_t h = NOS_HANDLE_INVALID;
+    long rc = nos_user_syscall3(SYS_NOS_VMO_CONTROL,
+                                NOS_VMO_OP_CLONE_COW,
+                                (unsigned long)vmo_cap,
+                                (unsigned long)(uintptr_t)&h);
+    if (rc < 0) {
+        return (int)rc;
+    }
+    if (out_cap != NULL) {
+        *out_cap = h;
+    }
+    return 0;
+}
+
+static inline int nos_user_vmo_sync_dma(nos_handle_t vmo_cap,
+                                        size_t offset,
+                                        size_t len,
+                                        uint32_t dir)
+{
+    return (int)nos_user_syscall6(SYS_NOS_VMO_CONTROL,
+                                  NOS_VMO_OP_SYNC_DMA,
+                                  (unsigned long)vmo_cap,
+                                  (unsigned long)offset,
+                                  (unsigned long)len,
+                                  (unsigned long)dir,
+                                  0UL);
+}
+
+static inline int nos_user_ring_bind_server(nos_handle_t ring_cap)
+{
+    return (int)nos_user_syscall6(SYS_NOS_RING_ENTER,
+                                  (unsigned long)ring_cap,
+                                  0UL,
+                                  0UL,
+                                  NOS_RING_ENTER_BIND_SERVER,
+                                  0UL,
+                                  0UL);
+}
+
+static inline int nos_user_ring_server_pop(nos_handle_t ring_cap,
+                                           struct nos_ring_sqe *out_sqes,
+                                           uint32_t max_pop,
+                                           uint32_t timeout_ticks)
+{
+    return (int)nos_user_syscall6(SYS_NOS_RING_ENTER,
+                                  (unsigned long)ring_cap,
+                                  (unsigned long)max_pop,
+                                  0UL,
+                                  NOS_RING_ENTER_SERVER_POP,
+                                  (unsigned long)(uintptr_t)out_sqes,
+                                  (unsigned long)timeout_ticks);
+}
+
+static inline int nos_user_ring_complete(nos_handle_t ring_cap,
+                                         const struct nos_ring_cqe *cqe)
+{
+    return (int)nos_user_syscall6(SYS_NOS_RING_ENTER,
+                                  (unsigned long)ring_cap,
+                                  0UL,
+                                  0UL,
+                                  NOS_RING_ENTER_COMPLETE,
+                                  (unsigned long)(uintptr_t)cqe,
+                                  0UL);
+}
+
+static inline int nos_user_sched_set_infer(nos_handle_t target_cap,
+                                           const struct nos_infer_sched_param *param)
+{
+    return (int)nos_user_syscall3(SYS_NOS_SCHED_INFER,
+                                  NOS_SCHED_OP_SET_INFER,
+                                  (unsigned long)target_cap,
+                                  (unsigned long)(uintptr_t)param);
+}
+
+static inline int nos_user_sched_gang_join(nos_handle_t target_cap, uint32_t gang_id)
+{
+    return (int)nos_user_syscall3(SYS_NOS_SCHED_INFER,
+                                  NOS_SCHED_OP_GANG_JOIN,
+                                  (unsigned long)target_cap,
+                                  (unsigned long)gang_id);
+}
+
+static inline int nos_user_sched_gang_leave(nos_handle_t target_cap)
+{
+    return (int)nos_user_syscall3(SYS_NOS_SCHED_INFER,
+                                  NOS_SCHED_OP_GANG_LEAVE,
+                                  (unsigned long)target_cap,
+                                  0UL);
+}
+
+static inline int nos_user_sched_gang_wakeup(uint32_t gang_id)
+{
+    return (int)nos_user_syscall3(SYS_NOS_SCHED_INFER,
+                                  NOS_SCHED_OP_GANG_WAKEUP,
+                                  0UL,
+                                  (unsigned long)gang_id);
+}
+
 static inline int nos_user_cap_revoke_tree(nos_handle_t handle, uint32_t *out_revoked)
 {
     return (int)nos_user_syscall2(SYS_NOS_CAP_REVOKE_TREE,

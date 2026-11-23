@@ -61,14 +61,21 @@ int main(void)
            (SCTLR_EL1_ATA0 | SCTLR_EL1_ATA | SCTLR_EL1_TCF0_SYNC));
     assert((sctlr & SCTLR_EL1_TCF_SYNC) == 0ULL);
 
+    /* 3.5. 验证 PAN (清 SPAN) 与 AFDBM (TCR HA|HD) 启用 */
+    caps.has_pan = true;
+    caps.has_afdbm = true;
+    sctlr = arm64_security_compute_sctlr(SCTLR_EL1_SPAN, &caps);
+    assert((sctlr & SCTLR_EL1_SPAN) == 0ULL);
+
     /* 4. 验证 arm64_security_init_cpu 与 arm64_security_get_status 状态汇总 */
     g_fake_caps = caps;
     arm64_security_init_cpu();
     arm64_security_get_status(&st);
-    assert(st.pac_enabled && st.bti_enabled && st.mte_enabled);
+    assert(st.pac_enabled && st.bti_enabled && st.mte_enabled && st.pan_enabled && st.afdbm_enabled);
     assert(st.mte_version == 2U);
     assert(!st.cca_realm_present);
-    assert((st.tcr_bits & TCR_EL1_TBI0) != 0ULL);
+    assert((st.tcr_bits & (TCR_EL1_TBI0 | TCR_EL1_HA | TCR_EL1_HD)) ==
+           (TCR_EL1_TBI0 | TCR_EL1_HA | TCR_EL1_HD));
 
     /* 5. 验证 Per-Task 128-bit PAC 密钥高熵且互不相同、非全零 */
     arm64_pac_generate_keys(&k1, 1001ULL);

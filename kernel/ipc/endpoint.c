@@ -61,9 +61,9 @@ static void ipc_transfer_caps(struct task_struct *src_task,
     for (i = 0U; i < cap_cnt; i++) {
         nos_handle_t dst_h = NOS_HANDLE_INVALID;
         if (msg->caps[i] != NOS_HANDLE_INVALID) {
-            int rc = nos_cap_derive(&src_task->cap_table,
+            int rc = nos_cap_derive(nos_task_active_cap_table(src_task),
                                     msg->caps[i],
-                                    &dst_task->cap_table,
+                                    nos_task_active_cap_table(dst_task),
                                     0U,
                                     0U,
                                     &dst_h);
@@ -128,7 +128,7 @@ struct nos_endpoint *nos_endpoint_create(nos_handle_t *out_cap)
     nos_object_set_release(&ep->object, nos_endpoint_release);
 
     if (out_cap != NULL && task != NULL) {
-        rc = nos_cap_alloc(&task->cap_table,
+        rc = nos_cap_alloc(nos_task_active_cap_table(task),
                            NOS_CAP_ENDPOINT,
                            ep,
                            NOS_CAP_RIGHT_ALL,
@@ -624,7 +624,7 @@ int nos_ipc_call(nos_handle_t ep_cap,
         return -EINVAL;
     }
 
-    rc = nos_cap_lookup(&task->cap_table,
+    rc = nos_cap_lookup(nos_task_active_cap_table(task),
                         ep_cap,
                         NOS_CAP_ENDPOINT,
                         NOS_CAP_RIGHT_SEND,
@@ -651,7 +651,7 @@ int nos_ipc_recv(nos_handle_t ep_cap,
         return -EINVAL;
     }
 
-    rc = nos_cap_lookup(&task->cap_table,
+    rc = nos_cap_lookup(nos_task_active_cap_table(task),
                         ep_cap,
                         NOS_CAP_ENDPOINT,
                         NOS_CAP_RIGHT_RECV,
@@ -680,7 +680,7 @@ int nos_ipc_reply_wait(nos_handle_t ep_cap,
     }
 
     if (ep_cap != NOS_HANDLE_INVALID) {
-        rc = nos_cap_lookup(&task->cap_table,
+        rc = nos_cap_lookup(nos_task_active_cap_table(task),
                             ep_cap,
                             NOS_CAP_ENDPOINT,
                             NOS_CAP_RIGHT_RECV,

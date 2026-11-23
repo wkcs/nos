@@ -11,6 +11,8 @@
 #ifndef __HOST_TEST__
 #include <asm/mmu.h>
 #include <asm/platform.h>
+#include <nos/devicetree.h>
+#include <stdio.h>
 #endif
 
 #define FDT_BEGIN_NODE          0x1U
@@ -159,6 +161,263 @@ int arm64_fdt_blob_find_reg(const void *blob,
     return -ENOENT;
 }
 
+int arm64_fdt_blob_scan_cpus(const void *blob,
+                             size_t blob_max,
+                             uint32_t *out_caps,
+                             uint32_t max_cpus,
+                             uint32_t *out_count)
+{
+    const uint8_t *b = (const uint8_t *)blob;
+    uint32_t total;
+    uint32_t off_struct;
+    uint32_t off_strings;
+    uint32_t size_struct;
+    uint32_t pos;
+    uint32_t end;
+    uint32_t depth = 0U;
+    bool in_cpus = false;
+    bool in_cpu = false;
+    uint32_t cpu_depth = 0U;
+    bool is_cpu_name = false;
+    bool is_cpu_type = false;
+    bool has_reg = false;
+    uint64_t cpu_reg = 0ULL;
+    uint32_t cpu_cap = 0U;
+    uint32_t found = 0U;
+    uint32_t max_slot = 0U;
+
+    if (b == NULL || out_caps == NULL || max_cpus == 0U || blob_max < 40U) {
+        return -EINVAL;
+    }
+    if (fdt_be32(b) != ARM64_FDT_MAGIC) {
+        return -EINVAL;
+    }
+    total = fdt_be32(b + 4);
+    off_struct = fdt_be32(b + 8);
+    off_strings = fdt_be32(b + 12);
+    size_struct = fdt_be32(b + 36);
+    if (total < 40U || total > blob_max || off_struct >= total ||
+        off_strings >= total || size_struct > total - off_struct) {
+        return -EINVAL;
+    }
+
+    memset(out_caps, 0, sizeof(uint32_t) * max_cpus);
+    pos = off_struct;
+    end = off_struct + size_struct;
+
+    while (pos + 4U <= end) {
+        uint32_t tok = fdt_be32(b + pos);
+        pos += 4U;
+
+        switch (tok) {
+        case FDT_BEGIN_NODE: {
+            const char *nname = (const char *)(b + pos);
+            uint32_t nlen = 0U;
+
+            while (pos + nlen < end && b[pos + nlen] != '\0') {
+                nlen++;
+            }
+            pos = (pos + nlen + 4U) & ~3U;
+            depth++;
+            if (depth == 2U && nlen == 4U && memcmp(nname, "cpus", 4U) == 0) {
+                in_cpus = true;
+            } else if (in_cpus && depth == 3U && nlen >= 4U &&
+                       memcmp(nname, "cpu@", 4U) == 0) {
+                in_cpu = true;
+                cpu_depth = depth;
+                is_cpu_name = true;
+                is_cpu_type = false;
+                has_reg = false;
+                cpu_reg = 0ULL;
+                cpu_cap = 0U;
+            } else if (in_cpus && depth == 3U) {
+                in_cpu = true;
+                cpu_depth = depth;
+                is_cpu_name = false;
+                is_cpu_type = false;
+                has_reg = false;
+                cpu_reg = 0ULL;
+                cpu_cap = 0U;
+            }
+            break;
+        }
+        case FDT_END_NODE:
+            if (in_cpu && depth == cpu_depth) {
+                if ((is_cpu_name || is_cpu_type) && has_reg) {
+                    uint32_t idx;
+                    if ((cpu_reg & 0xFFULL) != 0ULL || found == 0U) {
+                        idx = (uint32_t)(cpu_reg & 0xFFULL);
+                    } else {
+                        idx = (uint32_t)((cpu_reg >> 8) & 0xFFULL);
+                    }
+                    if (idx < max_cpus) {
+                        out_caps[idx] = (cpu_cap != 0U) ? cpu_cap : 1024U;
+                        if (idx + 1U > max_slot) {
+                            max_slot = idx + 1U;
+                        }
+                        found++;
+                    }
+                }
+                in_cpu = false;
+            } else if (in_cpus && depth == 2U) {
+                in_cpus = false;
+            }
+            if (depth > 0U) {
+                depth--;
+            }
+            break;
+        case FDT_PROP: {
+            uint32_t len;
+            uint32_t nameoff;
+            const char *name;
+
+            if (pos + 8U > end) {
+                return -EINVAL;
+            }
+            len = fdt_be32(b + pos);
+            nameoff = fdt_be32(b + pos + 4U);
+            pos += 8U;
+            if (len > end - pos || nameoff >= total - off_strings) {
+                return -EINVAL;
+            }
+            name = (const char *)(b + off_strings + nameoff);
+            if (in_cpu && depth == cpu_depth) {
+                if (strcmp(name, "device_type") == 0 && len >= 3U &&
+                    memcmp(b + pos, "cpu", 3U) == 0) {
+                    is_cpu_type = true;
+                } else if (strcmp(name, "reg") == 0) {
+                    if (len == 4U) {
+                        cpu_reg = (uint64_t)fdt_be32(b + pos);
+                        has_reg = true;
+                    } else if (len >= 8U) {
+                        cpu_reg = fdt_be64(b + pos);
+                        has_reg = true;
+                    }
+                } else if (strcmp(name, "capacity-dmips-mhz") == 0 && len >= 4U) {
+                    cpu_cap = fdt_be32(b + pos);
+                }
+            }
+            pos = (pos + len + 3U) & ~3U;
+            break;
+        }
+        case FDT_NOP:
+            break;
+        case FDT_END:
+            goto done;
+        default:
+            return -EINVAL;
+        }
+    }
+
+done:
+    if (out_count != NULL) {
+        *out_count = max_slot;
+    }
+    return (found > 0U) ? 0 : -ENOENT;
+}
+
+int arm64_fdt_blob_find_irq(const void *blob,
+                            size_t blob_max,
+                            const char *compatible,
+                            uint32_t index,
+                            uint32_t irq_idx,
+                            uint32_t *out_intid)
+{
+    const uint8_t *b = (const uint8_t *)blob;
+    uint32_t total;
+    uint32_t off_struct;
+    uint32_t off_strings;
+    uint32_t size_struct;
+    uint32_t pos;
+    uint32_t end;
+    uint32_t hits = 0U;
+    bool node_match = false;
+    const uint8_t *node_irqs = NULL;
+    uint32_t node_irqs_len = 0U;
+
+    if (b == NULL || compatible == NULL || out_intid == NULL || blob_max < 40U) {
+        return -EINVAL;
+    }
+    if (fdt_be32(b) != ARM64_FDT_MAGIC) {
+        return -EINVAL;
+    }
+    total = fdt_be32(b + 4);
+    off_struct = fdt_be32(b + 8);
+    off_strings = fdt_be32(b + 12);
+    size_struct = fdt_be32(b + 36);
+    if (total < 40U || total > blob_max || off_struct >= total ||
+        off_strings >= total || size_struct > total - off_struct) {
+        return -EINVAL;
+    }
+
+    pos = off_struct;
+    end = off_struct + size_struct;
+    while (pos + 4U <= end) {
+        uint32_t tok = fdt_be32(b + pos);
+        pos += 4U;
+
+        switch (tok) {
+        case FDT_BEGIN_NODE:
+            while (pos < end && b[pos] != '\0') {
+                pos++;
+            }
+            pos = (pos + 4U) & ~3U;
+            node_match = false;
+            node_irqs = NULL;
+            node_irqs_len = 0U;
+            break;
+        case FDT_END_NODE:
+            if (node_match && node_irqs != NULL && node_irqs_len >= (irq_idx + 1U) * 12U) {
+                if (hits == index) {
+                    const uint8_t *ent = node_irqs + irq_idx * 12U;
+                    uint32_t itype = fdt_be32(ent);
+                    uint32_t inum = fdt_be32(ent + 4U);
+                    *out_intid = (itype == 0U) ? (inum + 32U)
+                                               : ((itype == 1U) ? (inum + 16U) : inum);
+                    return 0;
+                }
+                hits++;
+            }
+            node_match = false;
+            node_irqs = NULL;
+            node_irqs_len = 0U;
+            break;
+        case FDT_PROP: {
+            uint32_t len;
+            uint32_t nameoff;
+            const char *name;
+
+            if (pos + 8U > end) {
+                return -EINVAL;
+            }
+            len = fdt_be32(b + pos);
+            nameoff = fdt_be32(b + pos + 4U);
+            pos += 8U;
+            if (len > end - pos || nameoff >= total - off_strings) {
+                return -EINVAL;
+            }
+            name = (const char *)(b + off_strings + nameoff);
+            if (strcmp(name, "compatible") == 0 &&
+                fdt_compat_match(b + pos, len, compatible)) {
+                node_match = true;
+            } else if (strcmp(name, "interrupts") == 0) {
+                node_irqs = b + pos;
+                node_irqs_len = len;
+            }
+            pos = (pos + len + 3U) & ~3U;
+            break;
+        }
+        case FDT_NOP:
+            break;
+        case FDT_END:
+            return -ENOENT;
+        default:
+            return -EINVAL;
+        }
+    }
+    return -ENOENT;
+}
+
 #ifndef __HOST_TEST__
 static const void *arm64_fdt_runtime_blob(void)
 {
@@ -197,5 +456,58 @@ int arm64_fdt_find_reg(const char *compatible,
     }
     return arm64_fdt_blob_find_reg(blob, ARM64_FDT_MAX_SIZE, compatible, index,
                                    out_base, out_size);
+}
+
+int arm64_fdt_find_irq(const char *compatible,
+                       uint32_t index,
+                       uint32_t irq_idx,
+                       uint32_t *out_intid)
+{
+    const void *blob = arm64_fdt_runtime_blob();
+    if (blob == NULL) {
+        return -ENODEV;
+    }
+    return arm64_fdt_blob_find_irq(blob, ARM64_FDT_MAX_SIZE, compatible, index,
+                                   irq_idx, out_intid);
+}
+
+int arm64_fdt_scan_cpu_capacities(uint32_t *out_caps,
+                                  uint32_t max_cpus,
+                                  uint32_t *out_count)
+{
+    const void *blob;
+    uint32_t dts_cnt = 0U;
+
+    if (out_caps == NULL || max_cpus == 0U) {
+        return -EINVAL;
+    }
+
+    blob = arm64_fdt_runtime_blob();
+    if (blob != NULL &&
+        arm64_fdt_blob_scan_cpus(blob, ARM64_FDT_MAX_SIZE, out_caps, max_cpus, out_count) == 0) {
+        return 0;
+    }
+
+    memset(out_caps, 0, sizeof(uint32_t) * max_cpus);
+    for (uint32_t i = 0U; i < max_cpus; i++) {
+        char path[32];
+        const struct nos_dt_node *node;
+        uint32_t cap = 0U;
+
+        snprintf(path, sizeof(path), "/cpus/cpu@%u", (unsigned int)i);
+        node = nos_dt_find_path(path);
+        if (node != NULL && nos_dt_read_u32(node, "capacity-dmips-mhz", 0U, &cap) == 0) {
+            out_caps[i] = cap;
+            dts_cnt = i + 1U;
+        }
+    }
+    if (dts_cnt > 0U) {
+        if (out_count != NULL) {
+            *out_count = dts_cnt;
+        }
+        return 0;
+    }
+
+    return -ENOENT;
 }
 #endif

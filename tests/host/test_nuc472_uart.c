@@ -438,7 +438,7 @@ static void test_uart_rx_sem_overflow_and_blocking_wakeup(void)
     assert(arg.result == 0);
 
     /* 注入 10 字节新数据并触发中断 */
-    uint8_t test_bytes[10] = "1234567890";
+    uint8_t test_bytes[10] = { '1', '2', '3', '4', '5', '6', '7', '8', '9', '0' };
     hw_rx_inject(test_bytes, sizeof(test_bytes));
     g_test_uart.INTSTS = NUC472_UART_INTSTS_RDAINT;
     g_in_irq = true;

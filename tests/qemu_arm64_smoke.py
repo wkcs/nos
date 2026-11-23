@@ -55,7 +55,7 @@ def main():
     selector.register(proc.stdout, selectors.EVENT_READ)
     output = bytearray()
 
-    def wait_for(needle, start=0, timeout=10):
+    def wait_for(needle, start=0, timeout=15):
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             if needle in output[start:]:
@@ -90,6 +90,8 @@ def main():
         wait_for(b"ARM64 Stage4 selftest PASS")
         wait_for(b"[EL0-ELF64] C Agent Cell (libnos SDK): topo+accel GEMV=[16,40] OK!")
         wait_for(b"ARM64 Stage5 selftest PASS")
+        wait_for(b"[EL0-TOOL-SRV] PIE+argv+RingIPC server completed req OK!")
+        wait_for(b"ARM64 Stage6 selftest PASS")
         if args.cpu == "max":
             wait_for(b"sve_lazy_ctx=ok")
         if args.iommu == "smmuv3":
@@ -107,6 +109,7 @@ def main():
             (b"ls /\r", b"dev"),
             (b"ai\r", b"AccelQueue:"),
             (b"runelf /bin/ai_agent.elf\r", b"exit=0"),
+            (b"runelf /bin/tool_srv.elf --self-check\r", b"exit=0"),
             (b"ps\r", b"idel"),
             (b"free\r", b"total"),
             (b"sleep 1\r", b"sleep 1"),

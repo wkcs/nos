@@ -266,8 +266,123 @@ int main(void)
 
     nos_elf64_unload_image(&img);
     assert(nos_cell_destroy(cell) == 0);
+
+    /* 3. ET_DYN PIE + PT_DYNAMIC + R_AARCH64_RELATIVE 重定位与安全拦截测试 */
+    {
+        uint8_t pie[4096];
+        Elf64_Ehdr *eh = (Elf64_Ehdr *)pie;
+        Elf64_Phdr *ph = (Elf64_Phdr *)(pie + sizeof(Elf64_Ehdr));
+        Elf64_Dyn *dyn;
+        Elf64_Rela *rela;
+        struct nos_elf64_image pie_img;
+        struct nos_cell *pie_cell;
+        uint64_t reloc_val = 0ULL;
+        uintptr_t pie_entry = 0U;
+
+        memset(pie, 0, sizeof(pie));
+        eh->e_ident[0] = ELF_MAGIC0;
+        eh->e_ident[1] = ELF_MAGIC1;
+        eh->e_ident[2] = ELF_MAGIC2;
+        eh->e_ident[3] = ELF_MAGIC3;
+        eh->e_ident[4] = ELFCLASS64;
+        eh->e_ident[5] = ELFDATA2LSB;
+        eh->e_ident[6] = 1U;
+        eh->e_type = ET_DYN;
+        eh->e_machine = EM_AARCH64;
+        eh->e_version = 1U;
+        eh->e_entry = 0x0ULL;
+        eh->e_phoff = sizeof(Elf64_Ehdr);
+        eh->e_ehsize = sizeof(Elf64_Ehdr);
+        eh->e_phentsize = sizeof(Elf64_Phdr);
+        eh->e_phnum = 4U;
+
+        /* 段 0: R-X .text (link_vaddr=0x0) */
+        ph[0].p_type = PT_LOAD;
+        ph[0].p_flags = PF_R | PF_X;
+        ph[0].p_offset = 512U;
+        ph[0].p_vaddr = 0x0ULL;
+        ph[0].p_filesz = 16U;
+        ph[0].p_memsz = 16U;
+        ph[0].p_align = 4096U;
+        uint32_t pie_insn[4] = { 0xD503245FU, 0xD2800000U, 0xD2800028U, 0xD4000001U };
+        memcpy(pie + 512U, pie_insn, sizeof(pie_insn));
+
+        /* 段 1: R-- .rodata + .rela.dyn (link_vaddr=0x10000) */
+        ph[1].p_type = PT_LOAD;
+        ph[1].p_flags = PF_R;
+        ph[1].p_offset = 640U;
+        ph[1].p_vaddr = 0x10000ULL;
+        ph[1].p_filesz = 128U;
+        ph[1].p_memsz = 128U;
+        ph[1].p_align = 4096U;
+        memcpy(pie + 640U, "PIE_MSG\0", 8U);
+        /* 在 .rela.dyn (vaddr=0x10020) 放置 2 项 R_AARCH64_RELATIVE:
+         * 项 0 更新 .rodata+0x10 指向 .rodata ("PIE_MSG")
+         * 项 1 更新 .data+0x0 指向 .text+0x08
+         */
+        rela = (Elf64_Rela *)(pie + 640U + 0x20U);
+        rela[0].r_offset = 0x10010ULL;
+        rela[0].r_info = (uint64_t)R_AARCH64_RELATIVE;
+        rela[0].r_addend = 0x10000LL;
+        rela[1].r_offset = 0x20000ULL;
+        rela[1].r_info = (uint64_t)R_AARCH64_RELATIVE;
+        rela[1].r_addend = 8LL;
+
+        /* 段 2: RW- .data + .dynamic (link_vaddr=0x20000) */
+        ph[2].p_type = PT_LOAD;
+        ph[2].p_flags = PF_R | PF_W;
+        ph[2].p_offset = 1024U;
+        ph[2].p_vaddr = 0x20000ULL;
+        ph[2].p_filesz = 128U;
+        ph[2].p_memsz = 4096U;
+        ph[2].p_align = 4096U;
+
+        dyn = (Elf64_Dyn *)(pie + 1024U + 32U);
+        dyn[0].d_tag = DT_RELA;    dyn[0].d_val = 0x10020ULL;
+        dyn[1].d_tag = DT_RELASZ;  dyn[1].d_val = 2ULL * sizeof(Elf64_Rela);
+        dyn[2].d_tag = DT_RELAENT; dyn[2].d_val = sizeof(Elf64_Rela);
+        dyn[3].d_tag = DT_NULL;    dyn[3].d_val = 0ULL;
+
+        /* 段 3: PT_DYNAMIC */
+        ph[3].p_type = PT_DYNAMIC;
+        ph[3].p_flags = PF_R | PF_W;
+        ph[3].p_offset = 1024U + 32U;
+        ph[3].p_vaddr = 0x20020ULL;
+        ph[3].p_filesz = 4ULL * sizeof(Elf64_Dyn);
+        ph[3].p_memsz = 4ULL * sizeof(Elf64_Dyn);
+        ph[3].p_align = 8U;
+
+        assert(nos_elf64_validate(pie, sizeof(pie), &pie_entry) == 0);
+        assert(pie_entry == NOS_ELF64_PIE_BASE);
+
+        pie_cell = nos_cell_create(NULL, &b);
+        assert(pie_cell != NULL);
+        assert(nos_elf64_load_into_cell(pie, sizeof(pie), pie_cell, &pie_img) == 0);
+        assert(pie_img.is_pie && pie_img.load_bias == NOS_ELF64_PIE_BASE);
+        assert(pie_img.seg_vmos[0]->sealed && pie_img.seg_vmos[1]->sealed && !pie_img.seg_vmos[2]->sealed);
+
+        /* 核验 R_AARCH64_RELATIVE 已在 Seal 前正确回填至 .rodata 与 .data */
+        assert(nos_vmo_read(pie_img.seg_vmos[1], 0x10U, &reloc_val, sizeof(reloc_val)) == 0);
+        assert(reloc_val == (uint64_t)(NOS_ELF64_PIE_BASE + 0x10000ULL));
+        assert(nos_vmo_read(pie_img.seg_vmos[2], 0x0U, &reloc_val, sizeof(reloc_val)) == 0);
+        assert(reloc_val == (uint64_t)(NOS_ELF64_PIE_BASE + 8ULL));
+
+        nos_elf64_unload_image(&pie_img);
+
+        /* 负向 1：禁止重定位写入 PF_X 代码页 (-EPERM) */
+        rela[1].r_offset = 0x0ULL;
+        assert(nos_elf64_load_into_cell(pie, sizeof(pie), pie_cell, &pie_img) == -EPERM);
+
+        /* 负向 2：拒绝未知动态重定位类型 (-ENOEXEC) */
+        rela[1].r_offset = 0x20000ULL;
+        rela[1].r_info = 257ULL; /* R_AARCH64_ABS64 */
+        assert(nos_elf64_load_into_cell(pie, sizeof(pie), pie_cell, &pie_img) == -ENOEXEC);
+
+        assert(nos_cell_destroy(pie_cell) == 0);
+    }
+
     assert(g_pt_active == 0U);
 
-    printf("PASS: test_elf64_loader (3-seg W^X, Seal+RO/RW/RX PTE, BSS zero, -EPERM/-EFAULT guards)\n");
+    printf("PASS: test_elf64_loader (3-seg W^X, ET_DYN PIE R_AARCH64_RELATIVE, Seal+RO/RW/RX PTE, BSS zero, -EPERM/-EFAULT guards)\n");
     return 0;
 }

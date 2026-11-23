@@ -11,6 +11,7 @@
     .global __arm64_cpu_switch_to
     .type __arm64_cpu_switch_to, %function
 __arm64_cpu_switch_to:
+    hint    #34
     /* x0 = &from_task->sp, x1 = &to_task->sp */
     sub     sp, sp, #112
     stp     x19, x20, [sp, #0]
@@ -43,6 +44,7 @@ __arm64_cpu_switch_to:
     .global __arm64_cpu_switch_first
     .type __arm64_cpu_switch_first, %function
 __arm64_cpu_switch_first:
+    hint    #34
     /* x0 = &to_task->sp */
     ldr     x9, [x0]
     mov     sp, x9
@@ -62,6 +64,7 @@ __arm64_cpu_switch_first:
     .global arm64_task_trampoline
     .type arm64_task_trampoline, %function
 arm64_task_trampoline:
+    hint    #34
     /* x19 = entry, x20 = parameter, x21 = task_exit（callee-saved 在函数调用后不变） */
     bl      arm64_finish_first_switch
     mov     x0, x20
@@ -79,6 +82,7 @@ arm64_task_trampoline:
     .global arm64_fp_save
     .type arm64_fp_save, %function
 arm64_fp_save:
+    hint    #34
     stp     q0,  q1,  [x0, #0]
     stp     q2,  q3,  [x0, #32]
     stp     q4,  q5,  [x0, #64]
@@ -105,6 +109,7 @@ arm64_fp_save:
     .global arm64_fp_restore
     .type arm64_fp_restore, %function
 arm64_fp_restore:
+    hint    #34
     ldp     q0,  q1,  [x0, #0]
     ldp     q2,  q3,  [x0, #32]
     ldp     q4,  q5,  [x0, #64]
@@ -131,6 +136,7 @@ arm64_fp_restore:
     .global arm64_fp_zero
     .type arm64_fp_zero, %function
 arm64_fp_zero:
+    hint    #34
     movi    v0.2d,  #0
     movi    v1.2d,  #0
     movi    v2.2d,  #0

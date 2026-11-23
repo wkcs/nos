@@ -507,8 +507,10 @@ void switch_task(void)
         } else {
             context_switch_to((addr_t)&to_task->sp);
         }
+#if defined(CONFIG_NR_CPUS) && (CONFIG_NR_CPUS > 1)
         /* 任务唤醒后可能已跨核迁移，必须重取当前所在核的 runqueue 再解锁 */
         rq = this_rq();
+#endif
         spin_unlock_irq(&rq->lock);
         return;
     }
@@ -628,6 +630,16 @@ uint32_t get_sch_lock_level(void)
     return scheduler_lock_nest;
 }
 
+#ifdef CONFIG_NOS_AI_CORE
+__attribute__((weak)) int task_suspend_cell_tasks(struct nos_cell *cell,
+                                                  struct task_struct *skip_task)
+{
+    (void)cell;
+    (void)skip_task;
+    return 0;
+}
+#endif
+
 void sch_heartbeat(void)
 {
     struct sched_rq *rq;
@@ -681,6 +693,7 @@ void sch_heartbeat(void)
         if (charge_task->cell != NULL &&
             nos_cell_charge_cpu(charge_task->cell, charge_ns) == -EDQUOT) {
             del_task_to_ready_list(charge_task);
+            (void)task_suspend_cell_tasks(charge_task->cell, charge_task);
             rq->need_resched = true;
         }
         task_put(charge_task);

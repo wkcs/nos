@@ -446,10 +446,132 @@ static void test_ring_async_worker_and_deadline_inheritance(void)
     assert(pthread_join(th, NULL) == 0);
 }
 
+static void test_ring_stage6_cancel_move_schema_and_drain(void)
+{
+    struct nos_ring_create_args rargs = {
+        .sq_entries = 8U,
+        .cq_entries = 8U,
+        .flags = 0U,
+        .schema_count = 0U,
+    };
+    struct nos_vmo_create_args vargs = {
+        .size_bytes = 4096U,
+        .kind = NOS_VMO_ANON,
+        .flags = 0U,
+    };
+    struct nos_cell *cli_cell;
+    struct nos_cell *srv_cell;
+    struct task_struct cli_task;
+    struct task_struct srv_task;
+    struct nos_ring *ring;
+    struct nos_vmo *vmo;
+    struct nos_ring_header *hdr;
+    struct nos_ring_sqe *sq;
+    struct nos_ring_cqe *cq;
+    nos_handle_t ring_h = NOS_HANDLE_INVALID;
+    nos_handle_t vmo_h = NOS_HANDLE_INVALID;
+    struct nos_ring_sqe popped;
+    uint32_t revoked = 0U;
+
+    cli_cell = nos_cell_create(NULL, NULL);
+    srv_cell = nos_cell_create(NULL, NULL);
+    assert(cli_cell != NULL && srv_cell != NULL);
+
+    memset(&cli_task, 0, sizeof(cli_task));
+    memset(&srv_task, 0, sizeof(srv_task));
+    nos_refcount_init(&cli_task.refcount, 1U);
+    nos_refcount_init(&srv_task.refcount, 1U);
+    nos_cap_table_init(&cli_task.cap_table);
+    nos_cap_table_init(&srv_task.cap_table);
+    assert(nos_cell_attach_task(&cli_task, cli_cell) == 0);
+    assert(nos_cell_attach_task(&srv_task, srv_cell) == 0);
+
+    ring = nos_ring_create(&rargs, NULL, NULL, cli_cell);
+    vmo = nos_vmo_create(&vargs);
+    assert(ring != NULL && vmo != NULL);
+    assert(nos_cap_alloc(nos_cell_cap_table(cli_cell), NOS_CAP_RING, ring,
+                         NOS_CAP_RIGHT_ALL, 0U, &ring_h) == 0);
+    assert(nos_cap_set_schema_mask(nos_cell_cap_table(cli_cell), ring_h, 0x0FUL) == 0);
+    assert(nos_cap_alloc(nos_cell_cap_table(cli_cell), NOS_CAP_VMO, vmo,
+                         NOS_CAP_RIGHT_ALL, 0U, &vmo_h) == 0);
+    assert(nos_ring_bind_server(ring, &srv_task, NULL, NULL) == 0);
+
+    hdr = (struct nos_ring_header *)ring->ring_vmo->pages[0]->kvaddr;
+    sq = (struct nos_ring_sqe *)((uint8_t *)hdr + hdr->sq_offset);
+    cq = (struct nos_ring_cqe *)((uint8_t *)hdr + hdr->cq_offset);
+
+    /* 1. CNode schema_mask 拦阻越权 schema_id (0x10 不在 0x0F 内) */
+    memset(&sq[0], 0, sizeof(sq[0]));
+    sq[0].opcode = NOS_RING_OP_TOOL_CALL;
+    sq[0].req_id = 1001ULL;
+    sq[0].schema_id = 0x10ULL;
+    /* 2. MOVE_SLICE + 有效 schema_id (0x02)：提交后源 vmo_h 撤销，srv_cell 得新句柄 */
+    memset(&sq[1], 0, sizeof(sq[1]));
+    sq[1].opcode = NOS_RING_OP_TOOL_CALL;
+    sq[1].flags = NOS_RING_FLAG_MOVE_SLICE;
+    sq[1].req_id = 1002ULL;
+    sq[1].schema_id = 0x02ULL;
+    sq[1].vmo_cap = (uint32_t)vmo_h;
+    sq[1].vmo_len = 128U;
+    /* 3. 待 CANCEL 的请求 1003 与 CANCEL 请求 1004 */
+    memset(&sq[2], 0, sizeof(sq[2]));
+    sq[2].opcode = NOS_RING_OP_TOOL_CALL;
+    sq[2].req_id = 1003ULL;
+    sq[2].schema_id = 0x04ULL;
+    memset(&sq[3], 0, sizeof(sq[3]));
+    sq[3].opcode = NOS_RING_OP_CANCEL;
+    sq[3].req_id = 1004ULL;
+    sq[3].schema_id = 0x04ULL;
+    sq[3].vmo_offset = 1003ULL;
+    __atomic_store_n(&hdr->sq_tail, 4U, __ATOMIC_RELEASE);
+
+    assert(nos_ring_enter_with_cap(ring, &cli_task, ring_h, 4U, 0U,
+                                   NOS_RING_ENTER_SUBMIT, NOS_IPC_TIMEOUT_NONBLOCK) == 4);
+
+    /* CQE 顺序：0=[1001 -EACCES], 1=[1003 -ECANCELED], 2=[1004 0] */
+    assert(hdr->cq_tail == 3U);
+    assert(cq[0].req_id == 1001ULL && cq[0].status == -EACCES);
+    assert(cq[1].req_id == 1003ULL && cq[1].status == -ECANCELED);
+    assert(cq[2].req_id == 1004ULL && cq[2].status == 0);
+
+    /* 客户端原 vmo_h 已被撤销，服务端弹出 SQE 拿到有效转移句柄 */
+    assert(nos_cap_inspect(nos_cell_cap_table(cli_cell), vmo_h, NULL, NULL) == -EBADF);
+    assert(nos_ring_server_pop(ring, &popped, NOS_IPC_TIMEOUT_NONBLOCK) == 0);
+    assert(popped.req_id == 1002ULL && popped.vmo_cap != (uint32_t)vmo_h);
+    void *srv_vmo_ptr = NULL;
+    assert(nos_cap_lookup(nos_cell_cap_table(srv_cell), (nos_handle_t)popped.vmo_cap,
+                          NOS_CAP_VMO, NOS_CAP_RIGHT_WRITE, &srv_vmo_ptr, NULL) == 0);
+    assert(srv_vmo_ptr == vmo);
+    (void)nos_object_put(&vmo->header);
+
+    /* 4. 提交 req=1005 挂起在 pending_queue，随后 revoke_tree(ring_h) 验证排空回调产生 -ECANCELED */
+    memset(&sq[4], 0, sizeof(sq[4]));
+    sq[4].opcode = NOS_RING_OP_TOOL_CALL;
+    sq[4].req_id = 1005ULL;
+    sq[4].schema_id = 0x01ULL;
+    __atomic_store_n(&hdr->sq_tail, 5U, __ATOMIC_RELEASE);
+    assert(nos_ring_enter_with_cap(ring, &cli_task, ring_h, 1U, 0U,
+                                   NOS_RING_ENTER_SUBMIT, NOS_IPC_TIMEOUT_NONBLOCK) == 1);
+    assert(nos_cap_revoke_tree(nos_cell_cap_table(cli_cell), ring_h, &revoked) == 0);
+    assert(revoked == 1U);
+    assert(hdr->cq_tail == 4U && cq[3].req_id == 1005ULL && cq[3].status == -ECANCELED);
+
+    nos_cell_detach_task(&cli_task);
+    nos_cell_detach_task(&srv_task);
+    nos_cap_table_destroy(&cli_task.cap_table);
+    nos_cap_table_destroy(&srv_task.cap_table);
+    assert(nos_ring_destroy(ring) == 0);
+    assert(nos_object_close(&vmo->header) == 0);
+    assert(nos_object_retire(&vmo->header) == 0);
+    assert(nos_cell_destroy(cli_cell) == 0);
+    assert(nos_cell_destroy(srv_cell) == 0);
+}
+
 int main(void)
 {
     test_ring_whitelist_vmo_and_budgets();
     test_ring_async_worker_and_deadline_inheritance();
-    printf("PASS: test_ring_ipc (Schema whitelist, 5D budgets, async pthread CQ, Deadline Inheritance)\n");
+    test_ring_stage6_cancel_move_schema_and_drain();
+    printf("PASS: test_ring_ipc (Schema+Mask, MOVE_SLICE, CANCEL, CDT drain, async CQ, Deadline Inheritance)\n");
     return 0;
 }

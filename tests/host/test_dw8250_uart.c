@@ -65,6 +65,13 @@ int main(void)
     uart_dw8250_panic_write(&dev, (const unsigned char *)"!", 1U);
     assert(regs[DW8250_THR / 4U] == '!');
 
-    printf("PASS: test_dw8250_uart (1.5M/115200 baud divisor, THRE/DR, NUL-safe RX, panic)\n");
+    /* 6. 验证 DesignWare Busy Detect (IIR=0x07) 必须读 USR 清中断，正常 RX IIR 不读 USR */
+    regs[DW8250_USR / 4U] = 0x15U;
+    regs[DW8250_IIR / 4U] = 0x04U;
+    assert(uart_dw8250_clear_busy(&dev) == 0U);
+    regs[DW8250_IIR / 4U] = 0xC7U;
+    assert(uart_dw8250_clear_busy(&dev) == 0x15U);
+
+    printf("PASS: test_dw8250_uart (1.5M/115200 baud divisor, THRE/DR, NUL-safe RX, busy-clear, panic)\n");
     return 0;
 }

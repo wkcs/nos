@@ -317,14 +317,15 @@ static int pt_split_2m_block(volatile uint64_t *l2_entry,
     return 0;
 }
 
-int arm64_pt_map_range(uintptr_t root_phys,
-                       int va_bits,
-                       uintptr_t vaddr,
-                       uintptr_t paddr,
-                       size_t size,
-                       uint32_t prot_flags,
-                       bool non_global,
-                       const struct arm64_pt_backend *be)
+static int pt_map_range_internal(uintptr_t root_phys,
+                                 int va_bits,
+                                 uintptr_t vaddr,
+                                 uintptr_t paddr,
+                                 size_t size,
+                                 uint32_t prot_flags,
+                                 bool non_global,
+                                 bool flush_bbm,
+                                 const struct arm64_pt_backend *be)
 {
     const struct arm64_pt_backend *ops = resolve_backend(be);
     size_t offset = 0U;
@@ -395,20 +396,54 @@ int arm64_pt_map_range(uintptr_t root_phys,
             for (uint32_t i = 0U; i < ARM64_CONT_64K_PAGES; i++) {
                 uint64_t leaf = arm64_pte_make_leaf(cur_pa + ((uintptr_t)i << PAGE_SHIFT),
                                                     prot_flags, false, true, non_global);
-                arm64_bbm_update_pte(&l3[idx3 + i],
-                                     cur_va + ((uintptr_t)i << PAGE_SHIFT),
-                                     leaf);
+                if (flush_bbm) {
+                    arm64_bbm_update_pte(&l3[idx3 + i],
+                                         cur_va + ((uintptr_t)i << PAGE_SHIFT),
+                                         leaf);
+                } else {
+                    arm64_write_pte(&l3[idx3 + i], leaf);
+                }
             }
             offset += ARM64_CONT_64K_SIZE;
             continue;
         }
 
         uint64_t leaf = arm64_pte_make_leaf(cur_pa, prot_flags, false, false, non_global);
-        arm64_bbm_update_pte(&l3[idx3], cur_va, leaf);
+        if (flush_bbm) {
+            arm64_bbm_update_pte(&l3[idx3], cur_va, leaf);
+        } else {
+            arm64_write_pte(&l3[idx3], leaf);
+        }
         offset += PAGE_SIZE;
     }
 
     return 0;
+}
+
+int arm64_pt_map_range(uintptr_t root_phys,
+                       int va_bits,
+                       uintptr_t vaddr,
+                       uintptr_t paddr,
+                       size_t size,
+                       uint32_t prot_flags,
+                       bool non_global,
+                       const struct arm64_pt_backend *be)
+{
+    return pt_map_range_internal(root_phys, va_bits, vaddr, paddr, size,
+                                 prot_flags, non_global, true, be);
+}
+
+int arm64_pt_map_range_noflush(uintptr_t root_phys,
+                               int va_bits,
+                               uintptr_t vaddr,
+                               uintptr_t paddr,
+                               size_t size,
+                               uint32_t prot_flags,
+                               bool non_global,
+                               const struct arm64_pt_backend *be)
+{
+    return pt_map_range_internal(root_phys, va_bits, vaddr, paddr, size,
+                                 prot_flags, non_global, false, be);
 }
 
 int arm64_pt_unmap_range(uintptr_t root_phys,
@@ -620,6 +655,77 @@ int arm64_pt_translate(uintptr_t root_phys,
     return 0;
 }
 
+int arm64_pt_test_and_clear_af(uintptr_t root_phys,
+                               int va_bits,
+                               uintptr_t vaddr,
+                               bool *was_accessed,
+                               const struct arm64_pt_backend *be)
+{
+    const struct arm64_pt_backend *ops = resolve_backend(be);
+    uint64_t *l1;
+    uint64_t *l2;
+    uint64_t *l3;
+    uint32_t idx1;
+    uint32_t idx2;
+    uint32_t idx3;
+    uint64_t old_val;
+
+    if (root_phys == 0U || was_accessed == NULL) {
+        return -EINVAL;
+    }
+
+    *was_accessed = false;
+    l1 = pt_get_l1(root_phys, va_bits, vaddr, false, ops);
+    if (l1 == NULL) {
+        return -ENOENT;
+    }
+
+    idx1 = (uint32_t)(((uint64_t)vaddr >> 30) & ARM64_PT_INDEX_MASK);
+    if ((l1[idx1] & ARM64_PTE_VALID) == 0ULL) {
+        return -ENOENT;
+    }
+    if ((l1[idx1] & ARM64_PTE_TABLE) == 0ULL) {
+        old_val = l1[idx1];
+        *was_accessed = ((old_val & ARM64_PTE_AF) != 0ULL);
+        if (*was_accessed) {
+            arm64_write_pte(&l1[idx1], old_val & ~ARM64_PTE_AF);
+            arm64_tlbi_va(vaddr & ~(ARM64_BLOCK_1G_SIZE - 1UL));
+        }
+        return 0;
+    }
+
+    l2 = (uint64_t *)ops->phys_to_pt_virt(
+        ops->ctx, (uintptr_t)(l1[idx1] & ARM64_PTE_ADDR_MASK));
+    idx2 = (uint32_t)(((uint64_t)vaddr >> 21) & ARM64_PT_INDEX_MASK);
+    if ((l2[idx2] & ARM64_PTE_VALID) == 0ULL) {
+        return -ENOENT;
+    }
+    if ((l2[idx2] & ARM64_PTE_TABLE) == 0ULL) {
+        old_val = l2[idx2];
+        *was_accessed = ((old_val & ARM64_PTE_AF) != 0ULL);
+        if (*was_accessed) {
+            arm64_write_pte(&l2[idx2], old_val & ~ARM64_PTE_AF);
+            arm64_tlbi_va(vaddr & ARM64_BLOCK_2M_MASK);
+        }
+        return 0;
+    }
+
+    l3 = (uint64_t *)ops->phys_to_pt_virt(
+        ops->ctx, (uintptr_t)(l2[idx2] & ARM64_PTE_ADDR_MASK));
+    idx3 = (uint32_t)(((uint64_t)vaddr >> 12) & ARM64_PT_INDEX_MASK);
+    if ((l3[idx3] & ARM64_PTE_VALID) == 0ULL) {
+        return -ENOENT;
+    }
+
+    old_val = l3[idx3];
+    *was_accessed = ((old_val & ARM64_PTE_AF) != 0ULL);
+    if (*was_accessed) {
+        arm64_write_pte(&l3[idx3], old_val & ~ARM64_PTE_AF);
+        arm64_tlbi_va(vaddr & ~(uintptr_t)(PAGE_SIZE - 1UL));
+    }
+    return 0;
+}
+
 static void pt_destroy_l2(uintptr_t l2_pa, const struct arm64_pt_backend *ops)
 {
     uint64_t *l2 = (uint64_t *)ops->phys_to_pt_virt(ops->ctx, l2_pa);
@@ -780,14 +886,18 @@ void arm64_mmu_init_kernel_wx(void)
                              false,
                              NULL);
 
-    /* 3. 内核镜像按 4KB 页严格施加 W^X 权限 */
+    /* 3. 内核镜像按 4KB 页严格施加 W^X 权限（若支持 BTI 则附加 GP 守护页位） */
     uintptr_t text_s = (uintptr_t)__kernel_text_start & PAGE_MASK;
     uintptr_t text_e = ((uintptr_t)__kernel_text_end + PAGE_SIZE - 1UL) & PAGE_MASK;
     if (text_e > text_s) {
+        uint32_t text_prot = HAL_VM_PROT_READ | HAL_VM_PROT_EXEC;
+        if (arm64_get_cpu_caps()->has_bti) {
+            text_prot |= HAL_VM_PROT_BTI;
+        }
         (void)arm64_pt_map_range(root_pa, CONFIG_ARM64_VA_BITS,
                                  text_s, arm64_virt_to_phys(text_s),
                                  text_e - text_s,
-                                 HAL_VM_PROT_READ | HAL_VM_PROT_EXEC,
+                                 text_prot,
                                  false, NULL);
     }
 
@@ -887,6 +997,40 @@ void arm64_clean_dcache_poc(uintptr_t va, size_t size)
     uintptr_t end = va + size;
     while (addr < end) {
         __asm__ volatile("dc cvac, %0" :: "r"(addr) : "memory");
+        addr += line;
+    }
+    __asm__ volatile("dsb sy" ::: "memory");
+#else
+    (void)va;
+    (void)size;
+#endif
+}
+
+void arm64_inv_dcache_poc(uintptr_t va, size_t size)
+{
+#if defined(__aarch64__)
+    const uintptr_t line = 64UL;
+    uintptr_t addr = va & ~(line - 1UL);
+    uintptr_t end = va + size;
+    while (addr < end) {
+        __asm__ volatile("dc ivac, %0" :: "r"(addr) : "memory");
+        addr += line;
+    }
+    __asm__ volatile("dsb sy" ::: "memory");
+#else
+    (void)va;
+    (void)size;
+#endif
+}
+
+void arm64_clean_inv_dcache_poc(uintptr_t va, size_t size)
+{
+#if defined(__aarch64__)
+    const uintptr_t line = 64UL;
+    uintptr_t addr = va & ~(line - 1UL);
+    uintptr_t end = va + size;
+    while (addr < end) {
+        __asm__ volatile("dc civac, %0" :: "r"(addr) : "memory");
         addr += line;
     }
     __asm__ volatile("dsb sy" ::: "memory");

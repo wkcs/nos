@@ -49,6 +49,7 @@ enum task_status {
 #define TASK_PRIO_INVALID 0xFFU
 
 struct mutex;
+struct nos_cell;
 
 #ifdef CONFIG_NOS_AI_CORE
 struct nos_infer_entity {
@@ -65,6 +66,7 @@ struct nos_infer_entity {
     bool     deadline_inherited;    /* 当前是否处于截止期继承提升状态 */
     bool     throttled;             /* CBS 带宽耗尽限流标志 */
     uint64_t throttle_until_ns;     /* 本周期限流解禁单调时间戳 */
+    uint64_t last_account_ns;       /* 最近一次开始运行/记账的单调时间戳 */
 };
 #endif
 
@@ -158,9 +160,10 @@ struct task_struct {
 #endif
 
 #ifdef CONFIG_ARCH_ARM64
-    /* ARM64 惰性 NEON/FP 上下文状态区与每任务 PAC 密钥 */
+    /* ARM64 惰性 NEON/FP 上下文状态区与每任务 PAC 密钥、EL0 系统调用上下文标记 */
     struct arm64_fp_state fp_state;
     struct arm64_pac_keys pac_keys;
+    uint8_t               arch_in_el0_syscall;
 #endif
 
     /* 通用等待底座记录与原子引用计数 */
@@ -261,6 +264,9 @@ int task_waitpid(pid_t pid, int *status, uint32_t timeout_ticks);
 int task_hang(struct task_struct *task);
 int task_hang_lock(struct task_struct *task);
 int task_suspend(struct task_struct *task);
+#ifdef CONFIG_NOS_AI_CORE
+int task_suspend_cell_tasks(struct nos_cell *cell, struct task_struct *skip_task);
+#endif
 int task_block_lock(struct task_struct *task, uint8_t wait_status,
                     const char *wchan_name, uintptr_t wchan_addr);
 int task_resume(struct task_struct *task);

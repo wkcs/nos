@@ -269,7 +269,7 @@ static void test_cell_5d_hard_budgets_and_audit_ring(void)
     assert(tm->mem_bytes_used == 4096ULL);
     assert(nos_cell_charge_mem(cell, 8192ULL) == -EDQUOT);
     assert(tm->state == NOS_CELL_STATE_BUDGET_HIT);
-    assert(g_notif_signals == 1ULL);
+    assert(g_notif_signals == NOS_CELL_EVT_BUDGET_MEM);
     nos_cell_uncharge_mem(cell, 4096ULL);
     assert(tm->mem_bytes_used == 0ULL);
     assert(nos_cell_destroy(cell) == 0);
@@ -285,7 +285,7 @@ static void test_cell_5d_hard_budgets_and_audit_ring(void)
     assert(nos_cell_charge_tool_call(cell, 0x2222ULL, 0x10U) == 0);
     assert(tm->tool_calls_used == 2ULL);
     assert(nos_cell_charge_tool_call(cell, 0x3333ULL, 0x10U) == -EDQUOT);
-    assert(g_notif_signals == 1ULL);
+    assert(g_notif_signals == NOS_CELL_EVT_BUDGET_TOOL);
     assert(nos_cell_destroy(cell) == 0);
 
     cell = nos_cell_create(NULL, &b_mem);
@@ -445,6 +445,37 @@ static void test_cell_hardware_cow_snapshot_and_rollback(void)
     }
     assert(seen_snap && seen_rb);
 
+    /* 6. CNode 冻结/恢复验证：分支期新增与降权句柄在 Rollback 后恢复原状 */
+    {
+        struct nos_object extra_obj;
+        nos_handle_t h_base = NOS_HANDLE_INVALID;
+        nos_handle_t h_branch = NOS_HANDLE_INVALID;
+        uint32_t out_type = 0U;
+        nos_cap_rights_t out_rights = 0U;
+        uint64_t out_mask = 0ULL;
+
+        nos_object_init(&extra_obj, true);
+        assert(nos_cap_alloc(nos_cell_cap_table(cell), NOS_CAP_VMO, &extra_obj,
+                             NOS_CAP_RIGHT_ALL, 0x12U, &h_base) == 0);
+        assert(nos_cap_set_schema_mask(nos_cell_cap_table(cell), h_base, 0x0FUL) == 0);
+
+        struct nos_cell_snapshot *snap_cnode = nos_cell_snapshot(cell);
+        assert(snap_cnode != NULL);
+
+        /* 分支期额外分配句柄并收紧 schema_mask */
+        assert(nos_cap_alloc(nos_cell_cap_table(cell), NOS_CAP_VMO, &extra_obj,
+                             NOS_CAP_RIGHT_READ, 0x34U, &h_branch) == 0);
+        assert(nos_cap_set_schema_mask(nos_cell_cap_table(cell), h_base, 0x03UL) == 0);
+
+        assert(nos_cell_rollback(cell, snap_cnode) == 0);
+        /* 分支期新分配的 h_branch 已被回滚失效，基础句柄 schema_mask 恢复 0x0F */
+        assert(nos_cap_inspect(nos_cell_cap_table(cell), h_branch, &out_type, &out_rights) == -EBADF);
+        assert(nos_cap_get_schema_mask(nos_cell_cap_table(cell), h_base, &out_mask) == 0);
+        assert(out_mask == 0x0FUL);
+        assert(nos_cap_revoke(nos_cell_cap_table(cell), h_base) == 0);
+        assert(nos_cell_snapshot_destroy(snap_cnode) == 0);
+    }
+
     assert(nos_cell_snapshot_destroy(snap) == 0);
     assert(nos_vmo_unmap(nos_cell_vm_space(cell), 0x440000UL, 4096U, cell) == 0);
     assert(nos_vmo_unmap(nos_cell_vm_space(cell), 0x450000UL, 4096U, cell) == 0);
@@ -455,11 +486,132 @@ static void test_cell_hardware_cow_snapshot_and_rollback(void)
     assert(nos_cell_destroy(cell) == 0);
 }
 
+static void test_cell_true_fork_semantics(void)
+{
+    struct nos_cell_budget parent_b = {
+        .cpu_ns_limit = 10000ULL,
+        .mem_bytes_limit = 16384ULL,
+        .tool_calls_limit = 10ULL,
+        .accel_ops_limit = 4ULL,
+        .max_child_cells = 4U,
+    };
+    struct nos_cell_budget greedy_req = {
+        .cpu_ns_limit = 99999ULL,
+        .mem_bytes_limit = 99999ULL,
+        .tool_calls_limit = 99ULL,
+        .accel_ops_limit = 99ULL,
+        .max_child_cells = 10U,
+    };
+    struct nos_vmo_create_args w_args = {
+        .size_bytes = 4096U,
+        .kind = NOS_VMO_WEIGHT,
+        .flags = 0U,
+    };
+    struct nos_vmo_create_args a_args = {
+        .size_bytes = 4096U,
+        .kind = NOS_VMO_ANON,
+        .flags = 0U,
+    };
+    struct nos_cell *parent;
+    struct nos_cell *child;
+    struct nos_vmo *w_vmo;
+    struct nos_vmo *a_vmo;
+    struct nos_cell_budget child_b;
+    struct nos_object shared_cap_obj;
+    nos_handle_t h_parent = NOS_HANDLE_INVALID;
+    nos_handle_t h_child_cap = NOS_HANDLE_INVALID;
+    struct mock_va_slot *pte_parent_w;
+    uint32_t revoked = 0U;
+
+    mock_pte_clear();
+    parent = nos_cell_create(NULL, &parent_b);
+    assert(parent != NULL);
+
+    w_vmo = nos_vmo_create(&w_args);
+    a_vmo = nos_vmo_create(&a_args);
+    assert(w_vmo != NULL && a_vmo != NULL);
+    assert(nos_vmo_write(w_vmo, 0U, "FROZEN_W", 9U) == 0);
+    assert(nos_vmo_seal(w_vmo) == 0);
+    assert(nos_vmo_write(a_vmo, 0U, "ORIG_ANON", 10U) == 0);
+
+    assert(nos_vmo_map(w_vmo, nos_cell_vm_space(parent), 0x410000UL, 0U, 4096U,
+                       HAL_VM_PROT_USER | HAL_VM_PROT_READ, parent) == 0);
+    assert(nos_vmo_map(a_vmo, nos_cell_vm_space(parent), 0x460000UL, 0U, 4096U,
+                       HAL_VM_PROT_USER | HAL_VM_PROT_READ | HAL_VM_PROT_WRITE, parent) == 0);
+    /* 父 Cell 已消耗 8192B 内存与 3 次 tool_calls */
+    assert(nos_cell_charge_tool_call(parent, 0x1ULL, 1U) == 0);
+    assert(nos_cell_charge_tool_call(parent, 0x1ULL, 1U) == 0);
+    assert(nos_cell_charge_tool_call(parent, 0x1ULL, 1U) == 0);
+
+    /* 在父 CNode 放置可传播句柄 */
+    nos_object_init(&shared_cap_obj, true);
+    assert(nos_cap_alloc(nos_cell_cap_table(parent), NOS_CAP_NOTIFICATION, &shared_cap_obj,
+                         NOS_CAP_RIGHT_ALL, 0x88U, &h_parent) == 0);
+
+    child = nos_cell_fork(parent, &greedy_req);
+    assert(child != NULL);
+
+    /* 1. 验证父级剩余配额夹紧：mem <= 16384-8192=8192, tool <= 10-3=7 */
+    assert(nos_cell_get_budget(child, &child_b) == 0);
+    assert(child_b.mem_bytes_limit == 8192ULL);
+    assert(child_b.tool_calls_limit == 7ULL);
+
+    /* 2. 验证父的 ANON 被降权 CoW 且子共享同一权重物理页与 ANON 初始页 */
+    pte_parent_w = mock_pte_find(0x460000UL);
+    assert(pte_parent_w != NULL && (pte_parent_w->prot & HAL_VM_PROT_WRITE) == 0U);
+    assert(child->vmo_bindings[0].active && child->vmo_bindings[1].active);
+    assert(child->vmo_bindings[0].vmo == w_vmo);
+    assert(child->vmo_bindings[1].vmo != a_vmo);
+    assert(child->vmo_bindings[1].vmo->pages[0]->paddr == a_vmo->pages[0]->paddr);
+
+    /* 3. 子触发可写页 CoW 分裂后父页物理地址保持不变 */
+    uintptr_t parent_pa = a_vmo->pages[0]->paddr;
+    assert(nos_cell_handle_cow_fault(child, 0x460010UL) == 0);
+    assert(child->vmo_bindings[1].vmo->pages[0]->paddr != parent_pa);
+    assert(a_vmo->pages[0]->paddr == parent_pa);
+    assert(nos_vmo_write(child->vmo_bindings[1].vmo, 0U, "CHILD_NEW", 10U) == 0);
+    char check_p[16] = {0};
+    assert(nos_vmo_read(a_vmo, 0U, check_p, 9U) == 0);
+    assert(strcmp(check_p, "ORIG_ANON") == 0);
+
+    /* 4. 验证子 CNode 中已存在派生句柄且父 revoke_tree 连带吊销子句柄 */
+    void *found_obj = NULL;
+    uint32_t found_badge = 0U;
+    for (uint16_t idx = 1U; idx < 16U; idx++) {
+        nos_handle_t probe = nos_handle_make(idx, 1U);
+        uint32_t tp = 0U;
+        if (nos_cap_inspect(nos_cell_cap_table(child), probe, &tp, NULL) == 0 &&
+            tp == NOS_CAP_NOTIFICATION) {
+            h_child_cap = probe;
+            break;
+        }
+    }
+    assert(h_child_cap != NOS_HANDLE_INVALID);
+    assert(nos_cap_lookup(nos_cell_cap_table(child), h_child_cap, NOS_CAP_NOTIFICATION,
+                          NOS_CAP_RIGHT_SEND, &found_obj, &found_badge) == 0);
+    assert(found_obj == &shared_cap_obj && found_badge == 0x88U);
+    nos_object_put(&shared_cap_obj);
+
+    assert(nos_cap_revoke_tree(nos_cell_cap_table(parent), h_parent, &revoked) == 0);
+    assert(revoked == 2U);
+    assert(nos_cap_inspect(nos_cell_cap_table(child), h_child_cap, NULL, NULL) == -EBADF);
+
+    assert(nos_cell_destroy(child) == 0);
+    assert(nos_vmo_unmap(nos_cell_vm_space(parent), 0x410000UL, 4096U, parent) == 0);
+    assert(nos_vmo_unmap(nos_cell_vm_space(parent), 0x460000UL, 4096U, parent) == 0);
+    assert(nos_object_close(&w_vmo->header) == 0);
+    assert(nos_object_retire(&w_vmo->header) == 0);
+    assert(nos_object_close(&a_vmo->header) == 0);
+    assert(nos_object_retire(&a_vmo->header) == 0);
+    assert(nos_cell_destroy(parent) == 0);
+}
+
 int main(void)
 {
     test_cell_hierarchy_and_telemetry();
     test_cell_5d_hard_budgets_and_audit_ring();
     test_cell_hardware_cow_snapshot_and_rollback();
-    printf("PASS: test_agent_cell (5D budgets, RO telemetry, 64B audit, CDT, CoW Snapshot/Rollback)\n");
+    test_cell_true_fork_semantics();
+    printf("PASS: test_agent_cell (5D budgets, RO telemetry, 64B audit, CDT, CoW Snapshot/Rollback, True Fork)\n");
     return 0;
 }

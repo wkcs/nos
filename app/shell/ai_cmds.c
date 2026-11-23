@@ -46,11 +46,13 @@ static void ai_print_security(void)
     const struct arm64_cpu_caps *caps = arm64_get_cpu_caps();
 
     arm64_security_get_status(&sec);
-    nos_shell_printf("Security: PAC=%s BTI=%s MTE=%s(v%u) SVE=%s(vl=%uB) CCA=%s\r\n",
+    nos_shell_printf("Security: PAC=%s BTI=%s MTE=%s(v%u) PAN=%s AFDBM=%s SVE=%s(vl=%uB) CCA=%s\r\n",
                      sec.pac_enabled ? "on" : "off",
                      sec.bti_enabled ? "on" : "off",
                      sec.mte_enabled ? "on" : "off",
                      (unsigned int)sec.mte_version,
+                     sec.pan_enabled ? "on" : "off",
+                     sec.afdbm_enabled ? "on" : "off",
                      (caps != NULL && caps->has_sve) ? "on" : "off",
                      (unsigned int)arm64_sve_get_vl(),
                      sec.cca_realm_present ? "realm" : "none");
@@ -140,12 +142,17 @@ static int cmd_runelf(int argc, char *argv[])
     int rc;
 
     if (argc < 2) {
-        nos_shell_error("Usage: runelf <elf_path>\r\n");
+        nos_shell_error("Usage: runelf <elf_path> [args...]\r\n");
         return -EINVAL;
     }
 
     memset(&tm, 0, sizeof(tm));
-    rc = nos_elf64_spawn_from_vfs(argv[1], NULL, &exit_code, &tm);
+    rc = nos_elf64_spawn_from_vfs_argv(argv[1],
+                                       argc - 1,
+                                       (const char *const *)&argv[1],
+                                       NULL,
+                                       &exit_code,
+                                       &tm);
     if (rc != 0) {
         nos_shell_error("runelf: failed to run %s (err=%d)\r\n", argv[1], rc);
         return rc;

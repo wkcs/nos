@@ -109,6 +109,11 @@ SECTIONS
         *(.rodata .rodata.*)
 
         . = ALIGN(8);
+        __ex_table_start = .;
+        KEEP(*(__ex_table))
+        __ex_table_end = .;
+
+        . = ALIGN(8);
         PROVIDE_HIDDEN(__preinit_array_start = .);
         KEEP(*(.preinit_array*))
         PROVIDE_HIDDEN(__preinit_array_end = .);

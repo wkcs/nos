@@ -170,6 +170,7 @@ el0_serror_invalid:
     .global arm64_enter_user_mode
     .type arm64_enter_user_mode, %function
 arm64_enter_user_mode:
+    hint    #34
     msr     daifset, #0xf
     msr     elr_el1, x0
     msr     sp_el0, x1

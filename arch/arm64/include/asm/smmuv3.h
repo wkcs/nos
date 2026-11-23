@@ -24,6 +24,8 @@
 #define SMMU_CR0ACK                     0x0024U
 #define SMMU_CR1                        0x0028U
 #define SMMU_CR2                        0x002CU
+#define SMMU_IRQ_CTRL                   0x0050U
+#define SMMU_IRQ_CTRLACK                0x0054U
 #define SMMU_GERROR                     0x0060U
 #define SMMU_GERRORN                    0x0064U
 #define SMMU_STRTAB_BASE                0x0080U
@@ -60,6 +62,11 @@
 
 /* CR2 控制位 */
 #define SMMU_CR2_PTM                    (1U << 2)
+
+/* IRQ_CTRL 中断使能控制位 */
+#define SMMU_IRQ_CTRL_GERROR_IRQEN      (1U << 0)
+#define SMMU_IRQ_CTRL_PRIQ_IRQEN        (1U << 1)
+#define SMMU_IRQ_CTRL_EVENTQ_IRQEN      (1U << 2)
 
 /* 队列与表尺寸规格（均严格对齐单个 4KB 页） */
 #define SMMU_MAX_STREAMS                64U
@@ -151,6 +158,7 @@ struct smmuv3_host_mmio_ops {
 
 void smmuv3_host_set_mmio_ops(const struct smmuv3_host_mmio_ops *ops);
 void smmuv3_host_set_pt_backend(const struct arm64_pt_backend *be);
+void smmuv3_host_inject_event(const struct nos_iommu_fault_event *evt);
 void smmuv3_host_reset(void);
 #endif
 

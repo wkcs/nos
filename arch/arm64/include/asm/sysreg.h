@@ -29,8 +29,10 @@
 #define SCTLR_EL1_ATA0          (1ULL << 42)    /* 允许 EL0 访问内存分配标签 */
 #define SCTLR_EL1_ATA           (1ULL << 43)    /* 允许 EL1 访问内存分配标签 */
 
-/* TCR_EL1 安全扩展位 */
+/* TCR_EL1 安全与硬件访问位 */
 #define TCR_EL1_TBI0            (1ULL << 37)    /* 启用 TTBR0 顶字节忽略（PAC/MTE 依赖） */
+#define TCR_EL1_HA              (1ULL << 39)    /* ARMv8.1 硬件 Access Flag 自动更新 */
+#define TCR_EL1_HD              (1ULL << 40)    /* ARMv8.1 硬件 Dirty Bit State 自动管理 */
 
 /* HCR_EL2 控制位 */
 #define HCR_EL2_RW              (1ULL << 31)    /* EL1 运行于 AArch64 模式 */

@@ -7,6 +7,8 @@
 #include <kernel/kernel.h>
 #include <kernel/printk.h>
 #include <asm/cpufeature.h>
+#include <asm/fdt_scan.h>
+#include <asm/percpu.h>
 #include <asm/sysreg.h>
 #ifdef CONFIG_NOS_AI_CORE
 #include <nos/sched.h>
@@ -110,10 +112,92 @@ void arm64_cpufeature_dump(void)
             (c->mte_version >= 2U) ? "MTE2 " : (c->has_mte ? "MTE " : ""));
 }
 
+void arm64_topo_classify_from_caps(const uint32_t *caps,
+                                   uint32_t nr_cpus,
+                                   uint32_t online_mask,
+                                   uint32_t *out_big_mask,
+                                   uint32_t *out_little_mask)
+{
+    uint32_t max_cap = 0U;
+    uint32_t min_cap = UINT32_MAX;
+    uint32_t big_mask = 0U;
+    uint32_t little_mask = 0U;
+    uint32_t threshold;
+
+    for (uint32_t i = 0U; i < nr_cpus && i < 32U; i++) {
+        uint32_t c;
+        if ((online_mask & (1U << i)) == 0U) {
+            continue;
+        }
+        c = (caps != NULL && caps[i] != 0U) ? caps[i] : 1024U;
+        if (c > max_cap) {
+            max_cap = c;
+        }
+        if (c < min_cap) {
+            min_cap = c;
+        }
+    }
+
+    if (max_cap == 0U || min_cap == max_cap) {
+        big_mask = online_mask;
+        little_mask = 0U;
+    } else {
+        threshold = (max_cap * 3U) / 4U;
+        for (uint32_t i = 0U; i < nr_cpus && i < 32U; i++) {
+            uint32_t c;
+            if ((online_mask & (1U << i)) == 0U) {
+                continue;
+            }
+            c = (caps != NULL && caps[i] != 0U) ? caps[i] : 1024U;
+            if (c >= threshold) {
+                big_mask |= (1U << i);
+            } else {
+                little_mask |= (1U << i);
+            }
+        }
+    }
+
+    if (out_big_mask != NULL) {
+        *out_big_mask = big_mask;
+    }
+    if (out_little_mask != NULL) {
+        *out_little_mask = little_mask;
+    }
+}
+
+void arm64_topo_classify_masks(uint32_t online_mask,
+                               uint32_t *out_big_mask,
+                               uint32_t *out_little_mask)
+{
+    uint32_t caps[CONFIG_NR_CPUS];
+    uint32_t cnt = 0U;
+
+    for (uint32_t i = 0U; i < CONFIG_NR_CPUS; i++) {
+        caps[i] = 1024U;
+    }
+    if (arm64_fdt_scan_cpu_capacities(caps, CONFIG_NR_CPUS, &cnt) != 0) {
+#ifdef CONFIG_SOC_RK3588
+        for (uint32_t i = 0U; i < CONFIG_NR_CPUS; i++) {
+            caps[i] = (i < 4U) ? 450U : 1024U;
+        }
+#endif
+    }
+    for (uint32_t i = 0U; i < CONFIG_NR_CPUS; i++) {
+        if (caps[i] == 0U) {
+            caps[i] = 1024U;
+        }
+        arm64_percpu_of(i)->cpu_capacity = caps[i];
+    }
+    arm64_topo_classify_from_caps(caps, CONFIG_NR_CPUS, online_mask,
+                                  out_big_mask, out_little_mask);
+}
+
 #ifdef CONFIG_NOS_AI_CORE
 int arch_sched_query_topo(struct nos_cpu_topo_info *out_info)
 {
     uint32_t online_mask = 0U;
+    uint32_t big_mask = 0U;
+    uint32_t little_mask = 0U;
     uint32_t isa = 0U;
     uint32_t cpu;
 
@@ -131,6 +215,8 @@ int arch_sched_query_topo(struct nos_cpu_topo_info *out_info)
     if (online_mask == 0U) {
         online_mask = 1U;
     }
+
+    arm64_topo_classify_masks(online_mask, &big_mask, &little_mask);
 
     if (g_cpu_caps.has_dotprod) {
         isa |= NOS_AI_ISA_DOTPROD;
@@ -152,8 +238,8 @@ int arch_sched_query_topo(struct nos_cpu_topo_info *out_info)
     }
 
     out_info->online_mask = online_mask;
-    out_info->big_cpu_mask = online_mask;
-    out_info->little_cpu_mask = online_mask;
+    out_info->big_cpu_mask = big_mask;
+    out_info->little_cpu_mask = little_mask;
     out_info->ai_isa_flags = isa;
     return 0;
 }

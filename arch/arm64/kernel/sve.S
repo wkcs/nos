@@ -12,6 +12,7 @@
     .global arm64_sve_rdvl
     .type arm64_sve_rdvl, %function
 arm64_sve_rdvl:
+    hint    #34
     rdvl    x0, #1
     ret
     .size arm64_sve_rdvl, .-arm64_sve_rdvl
@@ -23,6 +24,7 @@ arm64_sve_rdvl:
     .global arm64_sve_save
     .type arm64_sve_save, %function
 arm64_sve_save:
+    hint    #34
     uxtw    x1, w1
     str     z0,  [x0, #0,  mul vl]
     str     z1,  [x0, #1,  mul vl]
@@ -98,6 +100,7 @@ arm64_sve_save:
     .global arm64_sve_restore
     .type arm64_sve_restore, %function
 arm64_sve_restore:
+    hint    #34
     uxtw    x1, w1
     add     x9, x0, x1, lsl #5
     add     x10, x9, x1, lsl #1
@@ -171,6 +174,7 @@ arm64_sve_restore:
     .global arm64_sve_zero
     .type arm64_sve_zero, %function
 arm64_sve_zero:
+    hint    #34
     dup     z0.d,  #0
     dup     z1.d,  #0
     dup     z2.d,  #0

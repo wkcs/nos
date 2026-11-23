@@ -44,7 +44,8 @@ uint64_t arm64_timer_ns_to_ticks(uint64_t ns, uint64_t freq)
 #ifndef __HOST_TEST__
 static uint64_t g_timer_freq;
 static uint64_t g_tick_interval;
-static uint64_t g_next_cval[CONFIG_NR_CPUS];
+static uint64_t g_next_tick_cval[CONFIG_NR_CPUS];
+static uint64_t g_oneshot_cval[CONFIG_NR_CPUS];
 static bool g_timer_registered;
 
 static inline uint32_t timer_cpu_idx(void)
@@ -71,30 +72,59 @@ static inline uint64_t read_cntfrq(void)
     return val;
 }
 
+static void timer_rearm_hw_cval(uint32_t cpu)
+{
+    uint64_t target = g_next_tick_cval[cpu];
+
+    if (g_oneshot_cval[cpu] != 0ULL &&
+        (target == 0ULL || g_oneshot_cval[cpu] < target)) {
+        target = g_oneshot_cval[cpu];
+    }
+#if defined(__aarch64__)
+    write_sysreg(target, cntp_cval_el0);
+    __asm__ volatile("isb" ::: "memory");
+#else
+    (void)target;
+#endif
+}
+
 static void arm64_timer_irq_handler(uint32_t intid, void *ctx)
 {
     uint32_t cpu = timer_cpu_idx();
-    uint64_t now;
+    uint64_t now = read_cntpct();
+    bool tick_due = (g_tick_interval > 0ULL &&
+                     g_next_tick_cval[cpu] != 0ULL &&
+                     now >= g_next_tick_cval[cpu]);
+    bool oneshot_due = (g_oneshot_cval[cpu] != 0ULL && now >= g_oneshot_cval[cpu]);
     (void)intid;
     (void)ctx;
 
-    if (g_tick_interval > 0ULL) {
-        g_next_cval[cpu] += g_tick_interval;
-        now = read_cntpct();
-        if (g_next_cval[cpu] <= now) {
-            g_next_cval[cpu] = now + g_tick_interval;
-        }
-#if defined(__aarch64__)
-        write_sysreg(g_next_cval[cpu], cntp_cval_el0);
-        __asm__ volatile("isb" ::: "memory");
-#endif
+    if (!tick_due && !oneshot_due && g_tick_interval > 0ULL) {
+        tick_due = true;
     }
-    if (cpu == 0U) {
-        system_heartbeat_process();
-    } else if (kernel_running) {
-        /* 从核不重复递增全局 run_ticks，仅驱动本核调度节拍与 Per-CPU 定时器 */
+
+    if (oneshot_due) {
+        g_oneshot_cval[cpu] = 0ULL;
+    }
+    if (tick_due && g_tick_interval > 0ULL) {
+        g_next_tick_cval[cpu] += g_tick_interval;
+        if (g_next_tick_cval[cpu] <= now) {
+            g_next_tick_cval[cpu] = now + g_tick_interval;
+        }
+    }
+    timer_rearm_hw_cval(cpu);
+
+    if (tick_due) {
+        if (cpu == 0U) {
+            system_heartbeat_process();
+        } else if (kernel_running) {
+            /* 从核不重复递增全局 run_ticks，仅驱动本核调度节拍与 Per-CPU 定时器 */
+            sch_heartbeat();
+            timer_check_handle();
+        }
+    } else if (oneshot_due && kernel_running) {
+        /* 微秒级精准 oneshot 抢占路径：不触发周期系统时钟增量，严格防止时钟漂移 */
         sch_heartbeat();
-        timer_check_handle();
     }
 }
 
@@ -122,9 +152,10 @@ void arm64_timer_init_hz(uint32_t hz)
     }
 
     now = read_cntpct();
-    g_next_cval[cpu] = now + g_tick_interval;
+    g_next_tick_cval[cpu] = now + g_tick_interval;
+    g_oneshot_cval[cpu] = 0ULL;
+    timer_rearm_hw_cval(cpu);
 #if defined(__aarch64__)
-    write_sysreg(g_next_cval[cpu], cntp_cval_el0);
     write_sysreg(1ULL, cntp_ctl_el0);
     __asm__ volatile("isb" ::: "memory");
 #endif
@@ -140,9 +171,10 @@ void arm64_timer_enable_irq(void)
         return;
     }
     now = read_cntpct();
-    g_next_cval[cpu] = now + g_tick_interval;
+    g_next_tick_cval[cpu] = now + g_tick_interval;
+    g_oneshot_cval[cpu] = 0ULL;
+    timer_rearm_hw_cval(cpu);
 #if defined(__aarch64__)
-    write_sysreg(g_next_cval[cpu], cntp_cval_el0);
     write_sysreg(1ULL, cntp_ctl_el0);
     __asm__ volatile("isb" ::: "memory");
 #endif
@@ -174,9 +206,9 @@ void arm64_timer_program_oneshot_ns(uint64_t delta_ns)
     if (ticks == 0ULL) {
         ticks = 1ULL;
     }
-    g_next_cval[cpu] = read_cntpct() + ticks;
+    g_oneshot_cval[cpu] = read_cntpct() + ticks;
+    timer_rearm_hw_cval(cpu);
 #if defined(__aarch64__)
-    write_sysreg(g_next_cval[cpu], cntp_cval_el0);
     write_sysreg(1ULL, cntp_ctl_el0);
     __asm__ volatile("isb" ::: "memory");
 #endif

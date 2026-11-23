@@ -12,6 +12,7 @@
     .global _start
     .type _start, %function
 _start:
+    hint    #34
     mov     x29, #0
     mov     x30, #0
     bl      nos_user_main
