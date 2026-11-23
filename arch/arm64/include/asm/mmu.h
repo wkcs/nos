@@ -63,9 +63,29 @@
 #define ARM64_TCR_T1SZ          (_AC(64, ULL) - _AC(39, ULL))
 #endif
 
-/* QEMU virt 等默认 DRAM 起始后 2MB 加载，规避启动时覆盖 DTB */
+/* 早期物理引导布局（支持 QEMU virt @ 0x40200000 与 RK3588 @ 0x00200000） */
+#ifdef CONFIG_SOC_RK3588
+#define ARM64_DRAM_BASE             _AC(0x00000000, ULL)
+#define ARM64_DRAM_L1_IDX           0
+#define ARM64_EARLY_MMIO_BASE       _AC(0xFC000000, ULL)
+#define ARM64_EARLY_MMIO_SIZE       _AC(0x04000000, ULL)
+#define ARM64_EARLY_MMIO_L1_IDX     3
+#define ARM64_EARLY_MMIO_L2_START   480
+#define ARM64_EARLY_MMIO_L2_END     512
 #ifndef ARM64_KERNEL_PBASE
-#define ARM64_KERNEL_PBASE      _AC(0x40200000, ULL)
+#define ARM64_KERNEL_PBASE          _AC(0x00200000, ULL)
+#endif
+#else
+#define ARM64_DRAM_BASE             _AC(0x40000000, ULL)
+#define ARM64_DRAM_L1_IDX           1
+#define ARM64_EARLY_MMIO_BASE       _AC(0x08000000, ULL)
+#define ARM64_EARLY_MMIO_SIZE       _AC(0x04000000, ULL)
+#define ARM64_EARLY_MMIO_L1_IDX     0
+#define ARM64_EARLY_MMIO_L2_START   64
+#define ARM64_EARLY_MMIO_L2_END     96
+#ifndef ARM64_KERNEL_PBASE
+#define ARM64_KERNEL_PBASE          _AC(0x40200000, ULL)
+#endif
 #endif
 
 /* MAIR_EL1 内存属性索引定义 */

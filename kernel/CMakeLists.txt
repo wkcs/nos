@@ -53,6 +53,7 @@ if(CONFIG_NOS_AI_CORE)
         mm/vmo.c
         ai/cell.c
         accel/accel_core.c
+        loader/elf64_loader.c
         sched/sched_infer.c
         ipc/ring_ipc.c
     )

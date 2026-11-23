@@ -957,6 +957,9 @@ const char *task_policy_short_str(uint8_t policy)
 
 static void task_free(struct task_struct *task)
 {
+#ifdef CONFIG_ARCH_ARM64
+    arm64_fpu_task_cleanup(task);
+#endif
 #ifdef CONFIG_NOS_AI_CORE
     extern void sched_infer_gang_leave(struct task_struct *task);
     extern void nos_cell_detach_task(struct task_struct *task);

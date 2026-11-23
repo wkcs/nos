@@ -18,6 +18,7 @@
 #ifdef CONFIG_NOS_AI_CORE
 #include <nos/accel.h>
 #include <nos/cap.h>
+#include <nos/elf64.h>
 #include <nos/iommu.h>
 #include <nos/vmo.h>
 #include <nos/cell.h>
@@ -54,6 +55,8 @@ extern const uint8_t arm64_el0_stage3_code_start[];
 extern const uint8_t arm64_el0_stage3_code_end[];
 extern const uint8_t arm64_el0_stage4_code_start[];
 extern const uint8_t arm64_el0_stage4_code_end[];
+extern const uint8_t arm64_el0_sve_worker_start[];
+extern const uint8_t arm64_el0_sve_worker_end[];
 
 #define SELFTEST_CELL_CODE_VA     0x0000000000400000UL
 #define SELFTEST_CELL_TELEM_VA    0x0000000000420000UL
@@ -1503,6 +1506,176 @@ cleanup:
     }
     return rc;
 }
+
+struct stage5_sve_ctx {
+    uintptr_t             pattern;
+    int                   exit_code;
+    struct nos_completion done;
+};
+
+static void el0_sve_launcher_entry(void *param)
+{
+    struct stage5_sve_ctx *ctx = (struct stage5_sve_ctx *)param;
+    uintptr_t pattern = (ctx != NULL) ? ctx->pattern : 0U;
+
+    arm64_enter_user_mode(SELFTEST_CELL_CODE_VA,
+                          SELFTEST_CELL_STACK_VA + PAGE_SIZE,
+                          pattern);
+}
+
+static void el0_sve_task_cleanup(struct task_struct *task)
+{
+    struct stage5_sve_ctx *ctx;
+
+    if (task == NULL || task->parameter == NULL) {
+        return;
+    }
+    ctx = (struct stage5_sve_ctx *)task->parameter;
+    ctx->exit_code = (int)task->exit_code;
+    (void)nos_complete(&ctx->done);
+}
+
+static int run_stage5_sve_concurrency_test(void)
+{
+    static struct stage5_sve_ctx ctx_a;
+    static struct stage5_sve_ctx ctx_b;
+    addr_t code_va = 0U;
+    addr_t stack_a = 0U;
+    addr_t stack_b = 0U;
+    struct task_struct *ta = NULL;
+    struct task_struct *tb = NULL;
+    size_t code_len = (size_t)(arm64_el0_sve_worker_end - arm64_el0_sve_worker_start);
+    uint8_t cpu_mask = (arm64_smp_online_count() > 1U) ?
+                       (uint8_t)(1U << 1) : (uint8_t)NOS_CPU_MASK_ALL;
+    bool started_a = false;
+    bool started_b = false;
+    int rc = 0;
+
+    if (code_len > PAGE_SIZE) {
+        return -E2BIG;
+    }
+
+    code_va = alloc_page(GFP_KERNEL | GFP_ZERO);
+    stack_a = alloc_page(GFP_KERNEL | GFP_ZERO);
+    stack_b = alloc_page(GFP_KERNEL | GFP_ZERO);
+    if (code_va == 0U || stack_a == 0U || stack_b == 0U) {
+        rc = -ENOMEM;
+        goto out_free;
+    }
+
+    memcpy((void *)code_va, arm64_el0_sve_worker_start, code_len);
+    arm64_sync_icache_dcache((uintptr_t)code_va, PAGE_SIZE);
+
+    memset(&ctx_a, 0, sizeof(ctx_a));
+    memset(&ctx_b, 0, sizeof(ctx_b));
+    ctx_a.pattern = 0x1122334455667700ULL;
+    ctx_b.pattern = 0x8899AABBCCDDEE00ULL;
+    ctx_a.exit_code = -1;
+    ctx_b.exit_code = -1;
+    (void)nos_completion_init(&ctx_a.done);
+    (void)nos_completion_init(&ctx_b.done);
+
+    ta = task_create_ex("sve_a", el0_sve_launcher_entry, &ctx_a,
+                        SCHED_POLICY_NORMAL, 8U, 0, cpu_mask,
+                        CONFIG_CORE_TASK_STACK_SIZE, 10U, el0_sve_task_cleanup);
+    tb = task_create_ex("sve_b", el0_sve_launcher_entry, &ctx_b,
+                        SCHED_POLICY_NORMAL, 8U, 0, cpu_mask,
+                        CONFIG_CORE_TASK_STACK_SIZE, 10U, el0_sve_task_cleanup);
+    if (ta == NULL || tb == NULL) {
+        rc = -ENOMEM;
+        goto out_comp;
+    }
+
+    if (hal_vm_map(&ta->vm_space, SELFTEST_CELL_CODE_VA,
+                   arm64_virt_to_phys((uintptr_t)code_va), PAGE_SIZE,
+                   HAL_VM_PROT_USER | HAL_VM_PROT_READ | HAL_VM_PROT_EXEC) != 0 ||
+        hal_vm_map(&ta->vm_space, SELFTEST_CELL_STACK_VA,
+                   arm64_virt_to_phys((uintptr_t)stack_a), PAGE_SIZE,
+                   HAL_VM_PROT_USER | HAL_VM_PROT_READ | HAL_VM_PROT_WRITE) != 0 ||
+        hal_vm_map(&tb->vm_space, SELFTEST_CELL_CODE_VA,
+                   arm64_virt_to_phys((uintptr_t)code_va), PAGE_SIZE,
+                   HAL_VM_PROT_USER | HAL_VM_PROT_READ | HAL_VM_PROT_EXEC) != 0 ||
+        hal_vm_map(&tb->vm_space, SELFTEST_CELL_STACK_VA,
+                   arm64_virt_to_phys((uintptr_t)stack_b), PAGE_SIZE,
+                   HAL_VM_PROT_USER | HAL_VM_PROT_READ | HAL_VM_PROT_WRITE) != 0) {
+        rc = -ENOMEM;
+        goto out_comp;
+    }
+
+    __atomic_store_n(&g_el0_fault_hits, 0U, __ATOMIC_RELEASE);
+    arm64_set_el0_fault_observer(selftest_fault_observer);
+    (void)task_ready(ta);
+    started_a = true;
+    (void)task_ready(tb);
+    started_b = true;
+
+    rc = nos_completion_wait(&ctx_a.done, 5000U);
+    if (rc == 0) {
+        rc = nos_completion_wait(&ctx_b.done, 5000U);
+    }
+    arm64_set_el0_fault_observer(NULL);
+
+    if (rc != 0 || ctx_a.exit_code != 0 || ctx_b.exit_code != 0 ||
+        __atomic_load_n(&g_el0_fault_hits, __ATOMIC_ACQUIRE) != 0U) {
+        pr_err("Stage5 SVE concurrent check failed (rc=%d a=%d b=%d faults=%u)\n",
+               rc, ctx_a.exit_code, ctx_b.exit_code, (unsigned int)g_el0_fault_hits);
+        rc = -EFAULT;
+    }
+
+out_comp:
+    if (!started_a && ta != NULL) {
+        task_del(ta);
+        (void)nos_completion_wait(&ctx_a.done, 3000U);
+    }
+    if (!started_b && tb != NULL) {
+        task_del(tb);
+        (void)nos_completion_wait(&ctx_b.done, 3000U);
+    }
+    (void)nos_object_close(&ctx_a.done.object);
+    (void)nos_object_retire(&ctx_a.done.object);
+    (void)nos_object_close(&ctx_b.done.object);
+    (void)nos_object_retire(&ctx_b.done.object);
+out_free:
+    if (code_va != 0U) {
+        free_page(code_va);
+    }
+    if (stack_a != 0U) {
+        free_page(stack_a);
+    }
+    if (stack_b != 0U) {
+        free_page(stack_b);
+    }
+    return rc;
+}
+
+static int run_stage5_selftest(void)
+{
+    const struct arm64_cpu_caps *caps = arm64_get_cpu_caps();
+    bool sve_hw = (caps != NULL && caps->has_sve && arm64_sve_get_vl() >= 16U);
+    int elf_exit = -1;
+    struct nos_cell_telemetry elf_tm;
+    int rc;
+
+    if (sve_hw) {
+        rc = run_stage5_sve_concurrency_test();
+        if (rc != 0) {
+            return rc;
+        }
+    }
+
+    memset(&elf_tm, 0, sizeof(elf_tm));
+    rc = nos_elf64_spawn_from_vfs("/bin/ai_agent.elf", NULL, &elf_exit, &elf_tm);
+    if (rc != 0 || elf_exit != 0 || elf_tm.accel_ops_used != 1ULL) {
+        pr_err("Stage5 ELF64 C Agent spawn failed (rc=%d exit=%d accel_used=%lu)\n",
+               rc, elf_exit, (unsigned long)elf_tm.accel_ops_used);
+        return (rc != 0) ? rc : -EFAULT;
+    }
+
+    pr_info("ARM64 Stage5 selftest PASS (elf64_c_agent=ok, sve_lazy_ctx=%s, sve_vl=%u)\n",
+            sve_hw ? "ok" : "na",
+            (unsigned int)arm64_sve_get_vl());
+    return 0;
+}
 #endif
 
 static int stage2_selftest_init(void)
@@ -1563,6 +1736,12 @@ static int stage2_selftest_init(void)
     rc = run_stage4_selftest();
     if (rc != 0) {
         pr_err("ARM64 Stage4 selftest FAILED (%d)\n", rc);
+        return rc;
+    }
+
+    rc = run_stage5_selftest();
+    if (rc != 0) {
+        pr_err("ARM64 Stage5 selftest FAILED (%d)\n", rc);
         return rc;
     }
 #endif

@@ -88,6 +88,10 @@ def main():
         wait_for(b"ARM64 Stage3 selftest PASS")
         wait_for(b"[EL0-STAGE4] SMMUv3 SVA, AccelQueue GEMV & ARMv9 Sec OK!")
         wait_for(b"ARM64 Stage4 selftest PASS")
+        wait_for(b"[EL0-ELF64] C Agent Cell (libnos SDK): topo+accel GEMV=[16,40] OK!")
+        wait_for(b"ARM64 Stage5 selftest PASS")
+        if args.cpu == "max":
+            wait_for(b"sve_lazy_ctx=ok")
         if args.iommu == "smmuv3":
             wait_for(b"ARM64 SMMUv3 hardware active")
             wait_for(b"smmuv3=hw")
@@ -101,6 +105,8 @@ def main():
             (b"ver\r", b"NOS Kernel"),
             (b"lsdev\r", b"UART1"),
             (b"ls /\r", b"dev"),
+            (b"ai\r", b"AccelQueue:"),
+            (b"runelf /bin/ai_agent.elf\r", b"exit=0"),
             (b"ps\r", b"idel"),
             (b"free\r", b"total"),
             (b"sleep 1\r", b"sleep 1"),

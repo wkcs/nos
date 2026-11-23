@@ -13,6 +13,7 @@ add_library(nos_arch OBJECT
     kernel/fdt_scan.c
     kernel/irq.c
     kernel/percpu.c
+    kernel/sve.S
     kernel/switch.S
     kernel/task.c
     kernel/timer.c

@@ -5,5 +5,7 @@ elseif(CONFIG_UART_NUC472)
     list(APPEND DRIVERS_SRCS serial/uart_nuc472.c serial/console_uart.c)
 elseif(CONFIG_ARCH_ARM64 AND CONFIG_BOARD_QEMU_VIRT)
     list(APPEND DRIVERS_SRCS serial/uart_pl011.c serial/console_uart.c)
+elseif(CONFIG_ARCH_ARM64 AND CONFIG_SOC_RK3588)
+    list(APPEND DRIVERS_SRCS serial/uart_dw8250.c serial/console_uart.c)
 endif()
 

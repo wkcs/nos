@@ -48,6 +48,12 @@ config BOARD_QEMU_VIRT
 	help
 	  QEMU Virt 通用仿真板。
 
+config BOARD_RK3588
+	bool "Rockchip RK3588 Edge AI"
+	depends on ARCH_ARM64
+	help
+	  Rockchip RK3588 (Cortex-A76/A55 big.LITTLE + 3-Core RKNPU + GIC-600) AI 开发板。
+
 endchoice
 
 config BOARD
@@ -59,6 +65,7 @@ config BOARD
 	default "zj-v3" if BOARD_ZJ_V3
 	default "nutiny-nuc472" if BOARD_NUTINY_NUC472
 	default "qemu-virt" if BOARD_QEMU_VIRT
+	default "rk3588" if BOARD_RK3588
 
 config QEMU
 	bool "Target runs under QEMU emulator"

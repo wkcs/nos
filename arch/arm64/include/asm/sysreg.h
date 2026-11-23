@@ -44,6 +44,10 @@
 
 /* CPACR_EL1 控制位 */
 #define CPACR_EL1_ZEN_SHIFT     16U             /* SVE 访问控制 */
+#define CPACR_EL1_ZEN_MASK      (3ULL << CPACR_EL1_ZEN_SHIFT)
+#define CPACR_EL1_ZEN_TRAP      (0ULL << CPACR_EL1_ZEN_SHIFT)
+#define CPACR_EL1_ZEN_EL1       (1ULL << CPACR_EL1_ZEN_SHIFT)
+#define CPACR_EL1_ZEN_FULL      (3ULL << CPACR_EL1_ZEN_SHIFT)
 #define CPACR_EL1_FPEN_SHIFT    20U             /* FP/ASIMD 访问控制 */
 #define CPACR_EL1_SMEN_SHIFT    24U             /* SME 访问控制 */
 #define CPACR_EL1_FPEN_MASK     (3ULL << CPACR_EL1_FPEN_SHIFT)
@@ -94,9 +98,11 @@
 #define SYS_ICC_IGRPEN1_EL1     S3_0_C12_C12_7
 #define SYS_ICC_SRE_EL2         S3_4_C12_C9_5
 
-/* ARMv8.3 PAC / ARMv8.5 MTE 系统寄存器通用编码 */
+/* ARMv8.3 PAC / ARMv8.5 MTE / SVE 系统寄存器通用编码 */
 #define SYS_APIAKEYLO_EL1       S3_0_C2_C1_0
 #define SYS_APIAKEYHI_EL1       S3_0_C2_C1_1
+#define SYS_ZCR_EL1             S3_0_C1_C2_0
+#define SYS_ZCR_EL2             S3_4_C1_C2_0
 #define SYS_RGSR_EL1            S3_0_C1_C0_5
 #define SYS_GCR_EL1             S3_0_C1_C0_6
 

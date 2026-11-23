@@ -51,13 +51,12 @@ static long sys_nos_yield(uintptr_t a0, uintptr_t a1, uintptr_t a2,
 static long sys_nos_exit(uintptr_t a0, uintptr_t a1, uintptr_t a2,
                          uintptr_t a3, uintptr_t a4, uintptr_t a5)
 {
-    (void)a0;
     (void)a1;
     (void)a2;
     (void)a3;
     (void)a4;
     (void)a5;
-    task_del(current);
+    task_exit_with_code((int)a0);
     return 0;
 }
 

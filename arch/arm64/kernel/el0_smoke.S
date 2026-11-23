@@ -498,3 +498,72 @@ arm64_el0_stage4_code_start:
     brk     #7
     b       1b
 arm64_el0_stage4_code_end:
+
+    .arch armv8-a+sve
+    .align 2
+    .global arm64_el0_sve_worker_start
+    .global arm64_el0_sve_worker_end
+arm64_el0_sve_worker_start:
+    /* x0 = 每线程唯一 64-bit 模式基准 */
+    mov     x19, x0
+    add     x20, x19, #1
+    dup     z0.d, x19
+    dup     z1.d, x20
+    add     z2.d, z0.d, z1.d
+    dup     z3.d, #7
+    add     z3.d, z3.d, z2.d
+    ptrue   p0.b, all
+    ptrue   p1.d, vl2
+    pfalse  p2.b
+
+    mov     x21, #20
+1:
+    mov     x8, #SYS_NOS_YIELD
+    svc     #0
+
+    /* 校验低 64 位、Z0/Z2/Z3 完整多通道归约和，确保跨切换零 SVE 高位串扰 */
+    mov     x0, v0.d[0]
+    cmp     x0, x19
+    b.ne    2f
+
+    rdvl    x4, #1
+    lsr     x4, x4, #3                  /* lane_cnt = VL / 8 */
+
+    uaddv   d4, p0, z0.d
+    fmov    x3, d4
+    mul     x5, x19, x4
+    cmp     x3, x5
+    b.ne    2f
+
+    add     x1, x19, x20
+    uaddv   d4, p0, z2.d
+    fmov    x3, d4
+    mul     x5, x1, x4
+    cmp     x3, x5
+    b.ne    2f
+
+    add     x2, x1, #7
+    uaddv   d4, p0, z3.d
+    fmov    x3, d4
+    mul     x5, x2, x4
+    cmp     x3, x5
+    b.ne    2f
+
+    /* 校验 SVE 谓词寄存器 p0/p1/p2 状态未遭破坏 */
+    cntp    x6, p1, p1.d
+    cmp     x6, #2
+    b.ne    2f
+    cntp    x6, p2, p0.b
+    cbnz    x6, 2f
+
+    subs    x21, x21, #1
+    b.ne    1b
+
+    mov     x0, #0
+    mov     x8, #SYS_NOS_EXIT
+    svc     #0
+2:
+    brk     #8
+    b       2b
+arm64_el0_sve_worker_end:
+    .arch armv8-a

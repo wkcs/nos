@@ -1,0 +1,113 @@
+/*
+ * Copyright (C) 2026 Nick Hu <huqihan@live.com>
+ *
+ * Rockchip RK3588 SoC (Quad Cortex-A55 + Quad Cortex-A76 big.LITTLE + GIC-600 + RKNPU) 设备树
+ */
+
+/dts-v1/;
+
+/ {
+    compatible = "rockchip,rk3588";
+    model = "Rockchip RK3588 Edge AI Board";
+    #address-cells = <2>;
+    #size-cells = <2>;
+
+    chosen {
+        nos,console = <&uart2>;
+    };
+
+    cpus {
+        #address-cells = <1>;
+        #size-cells = <0>;
+
+        cpu0: cpu@0 {
+            device_type = "cpu";
+            compatible = "arm,cortex-a55";
+            reg = <0x000>;
+            capacity-dmips-mhz = <450>;
+        };
+
+        cpu1: cpu@1 {
+            device_type = "cpu";
+            compatible = "arm,cortex-a55";
+            reg = <0x100>;
+            capacity-dmips-mhz = <450>;
+        };
+
+        cpu2: cpu@2 {
+            device_type = "cpu";
+            compatible = "arm,cortex-a55";
+            reg = <0x200>;
+            capacity-dmips-mhz = <450>;
+        };
+
+        cpu3: cpu@3 {
+            device_type = "cpu";
+            compatible = "arm,cortex-a55";
+            reg = <0x300>;
+            capacity-dmips-mhz = <450>;
+        };
+
+        cpu4: cpu@4 {
+            device_type = "cpu";
+            compatible = "arm,cortex-a76";
+            reg = <0x400>;
+            capacity-dmips-mhz = <1024>;
+        };
+
+        cpu5: cpu@5 {
+            device_type = "cpu";
+            compatible = "arm,cortex-a76";
+            reg = <0x500>;
+            capacity-dmips-mhz = <1024>;
+        };
+
+        cpu6: cpu@6 {
+            device_type = "cpu";
+            compatible = "arm,cortex-a76";
+            reg = <0x600>;
+            capacity-dmips-mhz = <1024>;
+        };
+
+        cpu7: cpu@7 {
+            device_type = "cpu";
+            compatible = "arm,cortex-a76";
+            reg = <0x700>;
+            capacity-dmips-mhz = <1024>;
+        };
+    };
+
+    memory@0 {
+        device_type = "memory";
+        reg = <0x0 0x00000000 0x0 0x20000000>;
+    };
+
+    psci {
+        compatible = "arm,psci-1.0", "arm,psci-0.2";
+        method = "smc";
+    };
+
+    gic: interrupt-controller@fe600000 {
+        compatible = "arm,gic-v3";
+        interrupt-controller;
+        reg = <0x0 0xFE600000 0x0 0x00010000>,
+              <0x0 0xFE680000 0x0 0x00100000>;
+    };
+
+    timer {
+        compatible = "arm,armv8-timer";
+    };
+
+    uart2: serial@feb50000 {
+        compatible = "snps,dw-apb-uart";
+        reg = <0x0 0xFEB50000 0x0 0x00001000>;
+        clock-frequency = <24000000>;
+        status = "okay";
+    };
+
+    rknpu: npu@fdab0000 {
+        compatible = "rockchip,rk3588-rknpu";
+        reg = <0x0 0xFDAB0000 0x0 0x00030000>;
+        status = "okay";
+    };
+};

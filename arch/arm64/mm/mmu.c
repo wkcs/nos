@@ -763,19 +763,19 @@ void arm64_mmu_init_kernel_wx(void)
     /* 1. 映射 512MB DRAM 线性直映区 (Physmap) */
     (void)arm64_pt_map_range(root_pa,
                              CONFIG_ARM64_VA_BITS,
-                             (uintptr_t)ARM64_PHYSMAP_BASE + 0x40000000UL,
-                             0x40000000UL,
+                             (uintptr_t)(ARM64_PHYSMAP_BASE + ARM64_DRAM_BASE),
+                             (uintptr_t)ARM64_DRAM_BASE,
                              512UL * 1024UL * 1024UL,
                              HAL_VM_PROT_READ | HAL_VM_PROT_WRITE,
                              false,
                              NULL);
 
-    /* 2. 映射 QEMU virt 基础 MMIO 窗口 (GIC / PL011 / VirtIO: 0x08000000..0x0C000000) */
+    /* 2. 映射平台早期基础 MMIO 窗口 */
     (void)arm64_pt_map_range(root_pa,
                              CONFIG_ARM64_VA_BITS,
-                             (uintptr_t)ARM64_MMIO_BASE + 0x08000000UL,
-                             0x08000000UL,
-                             64UL * 1024UL * 1024UL,
+                             (uintptr_t)(ARM64_MMIO_BASE + ARM64_EARLY_MMIO_BASE),
+                             (uintptr_t)ARM64_EARLY_MMIO_BASE,
+                             (size_t)ARM64_EARLY_MMIO_SIZE,
                              HAL_VM_PROT_READ | HAL_VM_PROT_WRITE | HAL_VM_PROT_DEV,
                              false,
                              NULL);

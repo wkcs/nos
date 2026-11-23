@@ -111,6 +111,9 @@ TESTS = [
     ("run_smmuv3_test.py",),
     ("run_arm64_security_test.py",),
     ("run_accel_queue_test.py",),
+    ("run_arm64_sve_test.py",),
+    ("run_elf64_loader_test.py",),
+    ("run_dw8250_uart_test.py",),
 ]
 
 

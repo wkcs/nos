@@ -1,6 +1,9 @@
 # Application component source selection.
 if(CONFIG_SHELL)
     list(APPEND APP_SRCS shell/nshell.c shell/session.c shell/parse.c shell/glob.c shell/glob_vfs.c shell/path.c shell/test_expr.c shell/printf_cmd.c shell/move_replace.c shell/pipe.c)
+    if(CONFIG_NOS_AI_CORE)
+        list(APPEND APP_SRCS shell/ai_cmds.c)
+    endif()
 elseif(CONFIG_SHELL_PIPE_TEST)
     list(APPEND APP_SRCS shell/pipe.c)
 endif()

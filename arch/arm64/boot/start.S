@@ -56,8 +56,16 @@ _start:
     mov     x0, #(CNTHCTL_EL2_EL1PCTEN | CNTHCTL_EL2_EL1PCEN)
     msr     cnthctl_el2, x0
     msr     cntvoff_el2, xzr
-    msr     cptr_el2, xzr                   /* 允许 EL1/EL0 访问 FP/SIMD */
+    msr     cptr_el2, xzr                   /* 允许 EL1/EL0 访问 FP/SIMD/SVE */
 
+    /* 若硬件支持 SVE，在 EL2 放行 EL1 使用最高 ZCR_EL1 长度 */
+    mrs     x0, id_aa64pfr0_el1
+    ubfx    x0, x0, #32, #4
+    cbz     x0, 15f
+    mov     x0, #0xF
+    msr     SYS_ZCR_EL2, x0
+    isb
+15:
     /* 若硬件支持 GICv3 系统寄存器接口，在 EL2 开放 EL1 访问权限 */
     mrs     x0, id_aa64pfr0_el1
     ubfx    x0, x0, #24, #4
@@ -109,7 +117,7 @@ el1_entry:
     str     xzr, [x0], #8
     b       4b
 5:
-    /* 6. 构建 TTBR0 临时恒等映射（0x40000000 起 32MB，2MB Block） */
+    /* 6. 构建 TTBR0 临时恒等映射（DRAM 基址起 32MB，2MB Block） */
     adrp    x2, boot_ttbr0_l1
     add     x2, x2, :lo12:boot_ttbr0_l1
     adrp    x3, boot_ttbr0_l2
@@ -121,12 +129,12 @@ el1_entry:
     orr     x5, x2, #(ARM64_PTE_VALID | ARM64_PTE_TABLE)
     str     x5, [x4]                        /* L0[0] -> L1 */
 #endif
-    /* 0x40000000 位于 L1 槽位 1 */
+    /* 将临时 2MB 恒等页表挂入 DRAM 所属 1GB 物理 L1 槽位 */
     orr     x5, x3, #(ARM64_PTE_VALID | ARM64_PTE_TABLE)
-    str     x5, [x2, #(1 * 8)]
+    str     x5, [x2, #(ARM64_DRAM_L1_IDX * 8)]
 
-    /* 填充 boot_ttbr0_l2[0..15]：覆盖 0x40000000 ~ 0x42000000 Normal 属性 */
-    ldr     x6, =0x40000000
+    /* 填充 boot_ttbr0_l2[0..15]：覆盖 DRAM 基址起 32MB Normal 属性 */
+    ldr     x6, =ARM64_DRAM_BASE
     ldr     x7, =(ARM64_PTE_VALID | ARM64_PTE_BLOCK | ARM64_PTE_AF | ARM64_PTE_SH_INNER | ARM64_PTE_ATTRINDX(MT_NORMAL))
     mov     x8, #0
 6:
@@ -159,28 +167,28 @@ el1_entry:
     adrp    x3, boot_ttbr1_l2_phys
     add     x3, x3, :lo12:boot_ttbr1_l2_phys
     orr     x5, x3, #(ARM64_PTE_VALID | ARM64_PTE_TABLE)
-    str     x5, [x2, #(1 * 8)]
+    str     x5, [x2, #(ARM64_DRAM_L1_IDX * 8)]
 
     adrp    x3, boot_ttbr1_l2_mmio
     add     x3, x3, :lo12:boot_ttbr1_l2_mmio
     orr     x5, x3, #(ARM64_PTE_VALID | ARM64_PTE_TABLE)
-    str     x5, [x10, #(0 * 8)]
+    str     x5, [x10, #(ARM64_EARLY_MMIO_L1_IDX * 8)]
 
     adrp    x3, boot_ttbr1_l2_kern
     add     x3, x3, :lo12:boot_ttbr1_l2_kern
     orr     x5, x3, #(ARM64_PTE_VALID | ARM64_PTE_TABLE)
     str     x5, [x11, #(448 * 8)]
 #else
-    /* 39-bit VA 下：Physmap 在 L1[1]，MMIO 在 L1[256]，Kernel 在 L1[448] */
+    /* 39-bit VA 下：Physmap 在 L1[DRAM_IDX]，MMIO 在 L1[256+MMIO_IDX]，Kernel 在 L1[448] */
     adrp    x3, boot_ttbr1_l2_phys
     add     x3, x3, :lo12:boot_ttbr1_l2_phys
     orr     x5, x3, #(ARM64_PTE_VALID | ARM64_PTE_TABLE)
-    str     x5, [x2, #(1 * 8)]
+    str     x5, [x2, #(ARM64_DRAM_L1_IDX * 8)]
 
     adrp    x3, boot_ttbr1_l2_mmio
     add     x3, x3, :lo12:boot_ttbr1_l2_mmio
     orr     x5, x3, #(ARM64_PTE_VALID | ARM64_PTE_TABLE)
-    str     x5, [x2, #(256 * 8)]
+    str     x5, [x2, #((256 + ARM64_EARLY_MMIO_L1_IDX) * 8)]
 
     adrp    x3, boot_ttbr1_l2_kern
     add     x3, x3, :lo12:boot_ttbr1_l2_kern
@@ -188,10 +196,10 @@ el1_entry:
     str     x5, [x2, #(448 * 8)]
 #endif
 
-    /* 填充 Physmap：512MB DRAM (0x40000000..0x60000000, PXN|UXN) */
+    /* 填充 Physmap：512MB DRAM (PXN|UXN) */
     adrp    x3, boot_ttbr1_l2_phys
     add     x3, x3, :lo12:boot_ttbr1_l2_phys
-    ldr     x6, =0x40000000
+    ldr     x6, =ARM64_DRAM_BASE
     ldr     x7, =(ARM64_PTE_VALID | ARM64_PTE_BLOCK | ARM64_PTE_AF | ARM64_PTE_SH_INNER | ARM64_PTE_ATTRINDX(MT_NORMAL) | ARM64_PTE_PXN | ARM64_PTE_UXN)
     mov     x8, #0
 7:
@@ -202,18 +210,18 @@ el1_entry:
     cmp     x8, #256
     b.lt    7b
 
-    /* 填充 MMIO：0x08000000..0x0C000000 (L2 索引 64..95，Device-nGnRnE + PXN|UXN) */
+    /* 填充早期 MMIO 窗口（Device-nGnRnE + PXN|UXN） */
     adrp    x3, boot_ttbr1_l2_mmio
     add     x3, x3, :lo12:boot_ttbr1_l2_mmio
-    ldr     x6, =0x08000000
+    ldr     x6, =ARM64_EARLY_MMIO_BASE
     ldr     x7, =(ARM64_PTE_VALID | ARM64_PTE_BLOCK | ARM64_PTE_AF | ARM64_PTE_ATTRINDX(MT_DEVICE_nGnRnE) | ARM64_PTE_PXN | ARM64_PTE_UXN)
-    mov     x8, #64
+    mov     x8, #ARM64_EARLY_MMIO_L2_START
 8:
     orr     x9, x6, x7
     str     x9, [x3, x8, lsl #3]
     add     x6, x6, #ARM64_BLOCK_2M_SIZE
     add     x8, x8, #1
-    cmp     x8, #96
+    cmp     x8, #ARM64_EARLY_MMIO_L2_END
     b.lt    8b
 
     /* 填充 Kernel Image：0x40200000 起 32MB (16 个 2MB Block，过渡映射) */
@@ -313,6 +321,13 @@ arm64_secondary_entry:
     msr     cntvoff_el2, xzr
     msr     cptr_el2, xzr
 
+    mrs     x0, id_aa64pfr0_el1
+    ubfx    x0, x0, #32, #4
+    cbz     x0, 16f
+    mov     x0, #0xF
+    msr     SYS_ZCR_EL2, x0
+    isb
+16:
     mrs     x0, id_aa64pfr0_el1
     ubfx    x0, x0, #24, #4
     cbz     x0, 10f

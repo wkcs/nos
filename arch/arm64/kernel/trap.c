@@ -22,8 +22,8 @@
 #include <asm/irq.h>
 #include <asm/mmu.h>
 #include <asm/switch.h>
+#include <asm/task.h>
 
-extern void arm64_fpu_trap_handler(void);
 static arm64_el0_fault_observer_t g_el0_fault_observer;
 
 void arm64_set_el0_fault_observer(arm64_el0_fault_observer_t cb)
@@ -332,7 +332,7 @@ void arm64_sync_handler(struct arm64_pt_regs *regs, bool from_el0)
     }
 
     if (ec == ESR_ELx_EC_FP_ASIMD || ec == ESR_ELx_EC_SVE || ec == ESR_ELx_EC_SME) {
-        arm64_fpu_trap_handler();
+        arm64_fpu_trap_handler(ec == ESR_ELx_EC_SVE);
         return;
     }
 

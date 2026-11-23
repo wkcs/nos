@@ -77,6 +77,16 @@
       }
     },
     {
+      "name": "rk3588",
+      "displayName": "Rockchip RK3588 Edge AI (A76/A55 + RKNPU + GIC-600)",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/rk3588",
+      "toolchainFile": "${sourceDir}/cmake/toolchains/aarch64-elf.cmake",
+      "cacheVariables": {
+        "NOS_DEFCONFIG": "${sourceDir}/configs/rk3588_defconfig"
+      }
+    },
+    {
       "name": "qemu-virt-riscv64",
       "displayName": "QEMU Virt RISC-V 64 (RV64GC Microkernel)",
       "generator": "Ninja",
@@ -125,6 +135,10 @@
     {
       "name": "qemu-virt-arm64",
       "configurePreset": "qemu-virt-arm64"
+    },
+    {
+      "name": "rk3588",
+      "configurePreset": "rk3588"
     }
   ]
 }
