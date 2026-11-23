@@ -51,6 +51,8 @@
 #define KS_CONFIG_SAVE_DELAY_MS 5000U
 #define KS_HID_KEYS 1U
 #define KS_HID_MEDIA 2U
+/* 上电后等待持久化配置加载的最长时间，超时回退到出厂灯效 */
+#define KS_LIGHT_FALLBACK_MS 5000U
 
 struct ks_hid_state {
     uint8_t keys[8];
@@ -419,7 +421,6 @@ static int ks_register_nlk_capability(struct keyboard_server *ks)
 
     if (ks->profile.light_zone_count > 0U && ks->profile.default_zone_cfgs != NULL) {
         const struct nlk_kb_zone_light_cfg *cfg = &ks->profile.default_zone_cfgs[0];
-        ks->kb_cap.light_cfg.enable = cfg->enable;
         ks->kb_cap.light_cfg.effect_id = cfg->effect_id;
         ks->kb_cap.light_cfg.brightness = cfg->brightness;
         ks->kb_cap.light_cfg.speed = cfg->speed;
@@ -427,6 +428,12 @@ static int ks_register_nlk_capability(struct keyboard_server *ks)
         ks->kb_cap.light_cfg.color_g = cfg->color_g;
         ks->kb_cap.light_cfg.color_b = cfg->color_b;
     }
+    /*
+     * 上电时背光保持全关：出厂灯效仅作为默认配置模板，
+     * 待配置服务从文件系统加载完成后，再由 light 文档按持久化的开关状态启用背光，
+     * 避免先闪一下出厂灯效再切换为用户真实灯效。
+     */
+    ks->kb_cap.light_cfg.enable = 0U;
 
     if (ks->profile.light_layer_count > CONFIG_KEYBOARD_LIGHT_MAX_LAYERS ||
         (ks->profile.light_layer_count != 0U && ks->profile.light_layers == NULL)) {
@@ -548,12 +555,33 @@ static int keyboard_server_control(struct device *dev, int cmd, void *args)
     return 0;
 }
 
+static void ks_light_fallback(struct keyboard_server *ks)
+{
+    uint8_t enable = 1U;
+
+    /*
+     * 存储迟迟未就绪（未挂载/配置损坏等）时回退到出厂灯效，避免背光永久熄灭。
+     * 出厂灯效图层已在注册阶段装载，这里只需按出厂开关打开背光；
+     * 之后若存储恢复并加载成功，light 文档会覆盖为用户真实配置。
+     */
+    if (ks->profile.light_zone_count > 0U && ks->profile.default_zone_cfgs != NULL) {
+        enable = ks->profile.default_zone_cfgs[0].enable;
+    }
+    pr_info("keyboard config not ready, fall back to factory lighting\n");
+    mutex_lock(&ks->lock);
+    ks->kb_cap.light_cfg.enable = enable;
+    mutex_unlock(&ks->lock);
+    ks_on_light_cfg(&ks->kb_cap.light_cfg, NULL, ks->kb_cap.indicator_leds, ks);
+}
+
 static void keyboard_server_task_entry(void *parameter)
 {
     struct keyboard_server *ks = (struct keyboard_server *)parameter;
     uint32_t key_sample[KS_MAX_KEY_WORDS];
     uint32_t key_words;
     uint32_t next_scan_ms = 0U;
+    uint32_t light_deadline_ms;
+    bool light_settled = false;
     bool scan_scheduled = false;
     size_t key_bytes;
     int i;
@@ -617,6 +645,12 @@ static void keyboard_server_task_entry(void *parameter)
             ks->profile.rows, ks->profile.cols, ks->profile.key_count, ks->profile.layer_count,
             ks->kb_cap.cap.cap_id);
 
+    /* 无持久化存储的 profile 无需等待加载，直接使用出厂灯效 */
+    light_deadline_ms = (uint32_t)tick_to_msec_64(cpu_run_ticks());
+    if (ks->profile.storage_device != NULL) {
+        light_deadline_ms += KS_LIGHT_FALLBACK_MS;
+    }
+
     while (true) {
         if (ks->enable) {
             bool changed = false;
@@ -627,6 +661,18 @@ static void keyboard_server_task_entry(void *parameter)
             mutex_lock(&ks->lock);
             (void)nlk_cap_keyboard_tick(&ks->kb_cap, now_ms);
             mutex_unlock(&ks->lock);
+            if (!light_settled) {
+                if (ks->config.ready) {
+                    light_settled = true;
+                } else if ((int32_t)(now_ms - light_deadline_ms) >= 0) {
+                    ks_light_fallback(ks);
+                    light_settled = true;
+                }
+            }
+            /* 配置加载早于 display-server 注册时，补发一次背光使能 */
+            if (ks->ds_dev == NULL && ks->kb_cap.light_cfg.enable != 0U) {
+                ks_on_light_cfg(&ks->kb_cap.light_cfg, NULL, ks->kb_cap.indicator_leds, ks);
+            }
             scan_ms = (ks->kb_cap.desc.debounce_ms >= 2U)
                           ? ((ks->kb_cap.desc.debounce_ms + 1U) / 2U)
                           : 1U;

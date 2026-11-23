@@ -321,8 +321,14 @@ static void display_server_task_entry(void* parameter)
     }
     pr_info("display device:[%s] %u*%u\n", CONFIG_LED_DEV, ds->dev_info.width, ds->dev_info.height);
 
-    ds->led_enable = true;
-    ds->led_dev->ops.control(ds->led_dev, LED_CTRL_ENABLE, NULL);
+    /*
+     * 注册了图层源（如键盘灯效）时，由图层源所有者通过 DS_CTRL_ENABLE 决定何时点亮，
+     * 上电默认保持 LED 断电，避免配置加载前出现任何灯光。
+     */
+    ds->led_enable = ds->source == NULL;
+    if (ds->led_enable) {
+        ds->led_dev->ops.control(ds->led_dev, LED_CTRL_ENABLE, NULL);
+    }
 
     device_register(&ds->ds_dev);
 
