@@ -1,6 +1,6 @@
 set(DRIVERS_SRCS "")
 
-foreach(_driver base block display gpio i2c misc serial spi flash usb)
+foreach(_driver accel base block display gpio i2c misc serial spi flash usb)
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${_driver}/sources.cmake")
         include("${CMAKE_CURRENT_SOURCE_DIR}/${_driver}/sources.cmake")
     endif()

@@ -383,3 +383,118 @@ arm64_el0_stage3_code_start:
     brk     #6
     b       1b
 arm64_el0_stage3_code_end:
+
+    .align 2
+    .global arm64_el0_stage4_code_start
+    .global arm64_el0_stage4_code_end
+arm64_el0_stage4_code_start:
+    /* x0 = 工作页 VA (0x460000):
+     * +0x00 accel_cap(4B), +0x04 weight_cap(4B), +0x08 input_cap(4B), +0x0C output_cap(4B),
+     * +0x10 has_pac(4B),   +0x18 output_va(8B),  +0x20 msg_len(8B),   +0x28 msg[64B],
+     * +0x80 caps[64B],     +0xC0 desc[64B],      +0x100 res[32B]
+     */
+    mov     x20, x0
+
+    /* 1. SYS_NOS_ACCEL_SUBMIT(NOS_ACCEL_OP_QUERY_CAPS=1, accel_cap, x20+0x80, 0) */
+    mov     x0, #1
+    ldr     w1, [x20, #0x00]
+    add     x2, x20, #0x80
+    mov     x3, #0
+    mov     x8, #SYS_NOS_ACCEL_SUBMIT
+    svc     #0
+    cbnz    x0, 1f
+    ldr     w1, [x20, #0x80]            /* caps.accel_type == NOS_ACCEL_TYPE_VIRTIO(1) */
+    cmp     w1, #1
+    b.ne    1f
+
+    /* 2. 构造 GEMV_I32 作业描述符并调用 SYS_NOS_ACCEL_SUBMIT(SUBMIT=3) */
+    mov     w1, #2                      /* NOS_ACCEL_KERNEL_GEMV_I32 */
+    str     w1, [x20, #0xC0]            /* desc.kernel_op */
+    str     wzr, [x20, #0xC4]           /* desc.flags */
+    mov     x1, #0x401
+    str     x1, [x20, #0xC8]            /* desc.req_id */
+    ldr     w1, [x20, #0x04]
+    str     w1, [x20, #0xD0]            /* desc.weight_vmo_cap */
+    ldr     w1, [x20, #0x08]
+    str     w1, [x20, #0xD4]            /* desc.input_vmo_cap */
+    ldr     w1, [x20, #0x0C]
+    str     w1, [x20, #0xD8]            /* desc.output_vmo_cap */
+    str     wzr, [x20, #0xDC]           /* desc.notify_cap = NOS_HANDLE_INVALID (0) */
+    str     wzr, [x20, #0xE0]           /* desc.weight_offset */
+    str     wzr, [x20, #0xE4]           /* desc.input_offset */
+    str     wzr, [x20, #0xE8]           /* desc.output_offset */
+    mov     w1, #2
+    str     w1, [x20, #0xEC]            /* desc.dim_m = 2 */
+    mov     w1, #1
+    str     w1, [x20, #0xF0]            /* desc.dim_n = 1 */
+    mov     w1, #4
+    str     w1, [x20, #0xF4]            /* desc.dim_k = 4 */
+    movz    x1, #0xF080
+    movk    x1, #0x02FA, lsl #16        /* 50,000,000 ns (50ms) */
+    str     x1, [x20, #0xF8]            /* desc.deadline_ns */
+
+    mov     x0, #3                      /* NOS_ACCEL_OP_SUBMIT */
+    ldr     w1, [x20, #0x00]
+    add     x2, x20, #0xC0
+    add     x3, x20, #0x100
+    mov     x8, #SYS_NOS_ACCEL_SUBMIT
+    svc     #0
+    cbnz    x0, 1f
+    ldr     w1, [x20, #0x108]           /* res.status == 0 */
+    cbnz    w1, 1f
+    ldr     w1, [x20, #0x10C]           /* res.output_bytes == 8 */
+    cmp     w1, #8
+    b.ne    1f
+
+    /* 3. 直接通过 EL0 映射读取输出 VMO，断言 y == [16, 40] */
+    ldr     x4, [x20, #0x18]
+    ldr     w1, [x4, #0]
+    cmp     w1, #16
+    b.ne    1f
+    ldr     w1, [x4, #4]
+    cmp     w1, #40
+    b.ne    1f
+
+    /* 4. 负向越界权限检验：以 Sealed 只读 weight_cap 作为 output_vmo_cap 提交必须返回 -EACCES (-13) */
+    ldr     w1, [x20, #0x04]
+    str     w1, [x20, #0xD8]            /* desc.output_vmo_cap = weight_cap */
+    mov     x1, #0x402
+    str     x1, [x20, #0xC8]
+    mov     x0, #3
+    ldr     w1, [x20, #0x00]
+    add     x2, x20, #0xC0
+    add     x3, x20, #0x100
+    mov     x8, #SYS_NOS_ACCEL_SUBMIT
+    svc     #0
+    cmn     x0, #13
+    b.ne    1f
+
+    /* 5. 若处理器开启 ARMv8.3+ PAC，硬件执行 pacia / autia 指令闭环验签 */
+    ldr     w1, [x20, #0x10]
+    cbz     w1, 2f
+    ldr     x10, [x20, #0x18]
+    mov     x12, x10
+    movz    x11, #0x1234
+    .inst   0xdac1016a                  /* pacia x10, x11 */
+    cmp     x10, x12
+    b.eq    1f
+    .inst   0xdac1116a                  /* autia x10, x11 */
+    cmp     x10, x12
+    b.ne    1f
+2:
+    /* 6. 打印 Stage 4 EL0 通过横幅并正常退出 */
+    add     x0, x20, #0x28
+    ldr     x1, [x20, #0x20]
+    mov     x2, #0
+    mov     x8, #SYS_NOS_DEBUG_CONSOLE
+    svc     #0
+    cmp     x0, #0
+    b.le    1f
+
+    mov     x0, #0
+    mov     x8, #SYS_NOS_EXIT
+    svc     #0
+1:
+    brk     #7
+    b       1b
+arm64_el0_stage4_code_end:

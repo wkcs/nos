@@ -16,6 +16,9 @@
 #include <kernel/timer.h>
 #include <kernel/sched.h>
 #include <asm/task.h>
+#ifdef CONFIG_ARCH_ARM64
+#include <asm/security.h>
+#endif
 #include <uapi/nos/ipc.h>
 #include <nos/cap.h>
 #include <nos/mm.h>
@@ -155,8 +158,9 @@ struct task_struct {
 #endif
 
 #ifdef CONFIG_ARCH_ARM64
-    /* ARM64 惰性 NEON/FP 上下文状态区（仅当该任务实际使用向量指令时按需保存） */
+    /* ARM64 惰性 NEON/FP 上下文状态区与每任务 PAC 密钥 */
     struct arm64_fp_state fp_state;
+    struct arm64_pac_keys pac_keys;
 #endif
 
     /* 通用等待底座记录与原子引用计数 */

@@ -28,6 +28,7 @@ struct arm64_cpu_caps {
     bool     has_pac;       /* 指针认证防 ROP */
     bool     has_bti;       /* 分支目标防 JOP */
     bool     has_mte;       /* 内存标签防堆越界 */
+    uint8_t  mte_version;   /* ID_AA64PFR1_EL1.MTE 版本 (0=无, 1=指令级, 2=完整同步检查) */
     uint8_t  pa_bits;       /* 物理地址位宽 (32..52) */
     uint8_t  boot_el;       /* 引导时入口异常级别 (1 或 2) */
     uint32_t dcache_line;   /* D-Cache 行大小 (字节) */

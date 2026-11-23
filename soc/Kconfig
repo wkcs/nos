@@ -46,4 +46,10 @@ config SOC_QEMU_VIRT
 	help
 	  启用 QEMU Virt 通用虚拟平台 SoC 支持。
 
+config SOC_RK3588
+	bool "Rockchip RK3588 Octa-Core AI SoC (ARM64)"
+	depends on ARCH_ARM64
+	help
+	  启用瑞芯微 RK3588（四核 A76 + 四核 A55 + 6 TOPS RKNPU v2）SoC 外设支持。
+
 endmenu

@@ -16,7 +16,9 @@
 #include <nos/hal_arch.h>
 #include <nos/completion.h>
 #ifdef CONFIG_NOS_AI_CORE
+#include <nos/accel.h>
 #include <nos/cap.h>
+#include <nos/iommu.h>
 #include <nos/vmo.h>
 #include <nos/cell.h>
 #include <nos/ring.h>
@@ -24,7 +26,9 @@
 #include <uapi/nos/ai.h>
 #include <uapi/nos/ipc.h>
 #endif
+#include <asm/cpufeature.h>
 #include <asm/mmu.h>
+#include <asm/security.h>
 #include <asm/switch.h>
 #include <asm/sysreg.h>
 #include <string.h>
@@ -48,13 +52,19 @@ extern const uint8_t arm64_el0_neon_worker_start[];
 extern const uint8_t arm64_el0_neon_worker_end[];
 extern const uint8_t arm64_el0_stage3_code_start[];
 extern const uint8_t arm64_el0_stage3_code_end[];
+extern const uint8_t arm64_el0_stage4_code_start[];
+extern const uint8_t arm64_el0_stage4_code_end[];
 
-#define SELFTEST_CELL_CODE_VA   0x0000000000400000UL
-#define SELFTEST_CELL_TELEM_VA  0x0000000000420000UL
-#define SELFTEST_CELL_VMO_VA    0x0000000000430000UL
-#define SELFTEST_STAGE3_RING_VA 0x0000000000440000UL
-#define SELFTEST_STAGE3_WORK_VA 0x0000000000450000UL
-#define SELFTEST_CELL_STACK_VA  0x0000000000800000UL
+#define SELFTEST_CELL_CODE_VA     0x0000000000400000UL
+#define SELFTEST_CELL_TELEM_VA    0x0000000000420000UL
+#define SELFTEST_CELL_VMO_VA      0x0000000000430000UL
+#define SELFTEST_STAGE3_RING_VA   0x0000000000440000UL
+#define SELFTEST_STAGE3_WORK_VA   0x0000000000450000UL
+#define SELFTEST_STAGE4_WORK_VA   0x0000000000460000UL
+#define SELFTEST_STAGE4_OUT_VA    0x0000000000470000UL
+#define SELFTEST_STAGE4_WEIGHT_VA 0x0000000000471000UL
+#define SELFTEST_STAGE4_RING_VA   0x0000000000480000UL
+#define SELFTEST_CELL_STACK_VA    0x0000000000800000UL
 #define SELFTEST_CELL_VMO_MAGIC 0x4E4F534149303032ULL
 #define SELFTEST_STAGE3_SCHEMA  0x0000544F4F4C0001ULL
 #endif
@@ -1053,6 +1063,446 @@ cleanup:
     }
     return rc;
 }
+
+static void el0_stage4_launcher_entry(void *param)
+{
+    (void)param;
+    arm64_enter_user_mode(SELFTEST_CELL_CODE_VA,
+                          SELFTEST_CELL_STACK_VA + PAGE_SIZE,
+                          SELFTEST_STAGE4_WORK_VA);
+}
+
+static int run_stage4_selftest(void)
+{
+    static const char s4_msg[] = "[EL0-STAGE4] SMMUv3 SVA, AccelQueue GEMV & ARMv9 Sec OK!\n";
+    static struct nos_completion agent_done;
+    static struct nos_audit_record audit_recs[16];
+    static struct task_struct ring_caller;
+    struct nos_cell_budget b_a = {
+        .cpu_ns_limit = 2000000000ULL,
+        .mem_bytes_limit = 262144ULL,
+        .tool_calls_limit = 8ULL,
+        .accel_ops_limit = 3ULL,
+        .max_child_cells = 0U,
+        .flags = 0U,
+    };
+    struct nos_cell_budget b_b = {
+        .cpu_ns_limit = 1000000000ULL,
+        .mem_bytes_limit = 65536ULL,
+        .tool_calls_limit = 2ULL,
+        .accel_ops_limit = 1ULL,
+        .max_child_cells = 0U,
+        .flags = 0U,
+    };
+    struct nos_vmo_create_args vargs = {
+        .size_bytes = PAGE_SIZE,
+        .kind = NOS_VMO_DMA_TENSOR,
+        .flags = 0U,
+        .block_bytes = 0U,
+    };
+    struct nos_vmo_create_args w_vargs = {
+        .size_bytes = PAGE_SIZE,
+        .kind = NOS_VMO_WEIGHT,
+        .flags = 0U,
+        .block_bytes = 0U,
+    };
+    uint64_t r_schemas[1] = { (uint64_t)NOS_ACCEL_KERNEL_RELU_I32 };
+    struct nos_ring_create_args rargs = {
+        .sq_entries = 8U,
+        .cq_entries = 8U,
+        .flags = NOS_RING_CREATE_SCHEMA_FILTER,
+        .schema_count = 1U,
+        .schema_list_ptr = (uint64_t)(uintptr_t)r_schemas,
+        .map_user_vaddr = SELFTEST_STAGE4_RING_VA,
+    };
+    int32_t w_data[8] = { 1, 2, 3, 4, 5, 6, 7, 8 };
+    int32_t x_data[4] = { 2, 1, 0, 3 };
+    int32_t relu_in[4] = { -5, 7, -1, 9 };
+    int32_t relu_out[4] = { 0, 0, 0, 0 };
+    uint8_t work_page[128];
+    struct nos_cell *cell_a = NULL;
+    struct nos_cell *cell_b = NULL;
+    struct nos_accel_device *accel_dev = NULL;
+    struct nos_vmo *weight_vmo = NULL;
+    struct nos_vmo *in_vmo = NULL;
+    struct nos_vmo *out_vmo = NULL;
+    struct nos_vmo *work_vmo = NULL;
+    struct nos_ring *s4_ring = NULL;
+    struct task_struct *s4_agent = NULL;
+    nos_handle_t accel_h = NOS_HANDLE_INVALID;
+    nos_handle_t weight_h = NOS_HANDLE_INVALID;
+    nos_handle_t in_h = NOS_HANDLE_INVALID;
+    nos_handle_t out_h = NOS_HANDLE_INVALID;
+    addr_t code_va = 0U;
+    addr_t stack_va = 0U;
+    size_t code_len = (size_t)(arm64_el0_stage4_code_end - arm64_el0_stage4_code_start);
+    struct arm64_sec_status sec_st;
+    struct nos_iommu_info iinfo;
+    uint32_t pasid_a = 0U;
+    uint32_t pasid_b = 0U;
+    uintptr_t xlate_pa = 0U;
+    uint32_t xlate_prot = 0U;
+    const struct nos_cell_telemetry *tm;
+    struct nos_ring_header *hdr;
+    struct nos_ring_sqe *sq;
+    struct nos_ring_cqe *cq;
+    struct nos_accel_job_desc nop_desc;
+    struct nos_accel_job_result nop_res;
+    bool agent_started = false;
+    bool seen_submit = false;
+    bool seen_budget = false;
+    int audit_n;
+    int rc = 0;
+
+    if (code_len > PAGE_SIZE) {
+        return -E2BIG;
+    }
+
+    accel_dev = nos_accel_get_default();
+    if (accel_dev == NULL) {
+        pr_err("Stage4 no default EL1 accel device\n");
+        return -ENODEV;
+    }
+
+    code_va = alloc_page(GFP_KERNEL | GFP_ZERO);
+    stack_va = alloc_page(GFP_KERNEL | GFP_ZERO);
+    if (code_va == 0U || stack_va == 0U) {
+        rc = -ENOMEM;
+        goto cleanup;
+    }
+    memcpy((void *)code_va, arm64_el0_stage4_code_start, code_len);
+    arm64_sync_icache_dcache((uintptr_t)code_va, PAGE_SIZE);
+
+    cell_a = nos_cell_create(NULL, &b_a);
+    cell_b = nos_cell_create(NULL, &b_b);
+    weight_vmo = nos_vmo_create(&w_vargs);
+    in_vmo = nos_vmo_create(&vargs);
+    out_vmo = nos_vmo_create(&vargs);
+    work_vmo = nos_vmo_create(&vargs);
+    if (cell_a == NULL || cell_b == NULL || weight_vmo == NULL ||
+        in_vmo == NULL || out_vmo == NULL || work_vmo == NULL) {
+        rc = -ENOMEM;
+        goto cleanup;
+    }
+
+    rc = nos_vmo_write(weight_vmo, 0U, w_data, sizeof(w_data));
+    if (rc == 0) {
+        rc = nos_vmo_seal(weight_vmo);
+    }
+    if (rc == 0) {
+        rc = nos_vmo_write(in_vmo, 0U, x_data, sizeof(x_data));
+    }
+    if (rc == 0) {
+        rc = nos_cap_alloc(nos_cell_cap_table(cell_a), NOS_CAP_ACCEL, accel_dev,
+                           NOS_CAP_RIGHT_READ | NOS_CAP_RIGHT_SEND, 0U, &accel_h);
+    }
+    if (rc == 0) {
+        rc = nos_cap_alloc(nos_cell_cap_table(cell_a), NOS_CAP_VMO, weight_vmo,
+                           NOS_CAP_RIGHT_ALL, 0U, &weight_h);
+    }
+    if (rc == 0) {
+        rc = nos_cap_alloc(nos_cell_cap_table(cell_a), NOS_CAP_VMO, in_vmo,
+                           NOS_CAP_RIGHT_ALL, 0U, &in_h);
+    }
+    if (rc == 0) {
+        rc = nos_cap_alloc(nos_cell_cap_table(cell_a), NOS_CAP_VMO, out_vmo,
+                           NOS_CAP_RIGHT_ALL, 0U, &out_h);
+    }
+    if (rc != 0) {
+        goto cleanup;
+    }
+
+    arm64_security_get_status(&sec_st);
+    memset(work_page, 0, sizeof(work_page));
+    *(uint32_t *)&work_page[0x00] = accel_h;
+    *(uint32_t *)&work_page[0x04] = weight_h;
+    *(uint32_t *)&work_page[0x08] = in_h;
+    *(uint32_t *)&work_page[0x0C] = out_h;
+    *(uint32_t *)&work_page[0x10] = sec_st.pac_enabled ? 1U : 0U;
+    *(uint64_t *)&work_page[0x18] = (uint64_t)SELFTEST_STAGE4_OUT_VA;
+    *(uint64_t *)&work_page[0x20] = (uint64_t)(sizeof(s4_msg) - 1U);
+    memcpy(&work_page[0x28], s4_msg, sizeof(s4_msg));
+
+    rc = nos_vmo_write(work_vmo, 0U, work_page, sizeof(work_page));
+    if (rc == 0) {
+        rc = nos_vmo_map(work_vmo, nos_cell_vm_space(cell_a), SELFTEST_STAGE4_WORK_VA,
+                         0U, PAGE_SIZE,
+                         HAL_VM_PROT_USER | HAL_VM_PROT_READ | HAL_VM_PROT_WRITE, NULL);
+    }
+    if (rc == 0) {
+        rc = nos_vmo_map(out_vmo, nos_cell_vm_space(cell_a), SELFTEST_STAGE4_OUT_VA,
+                         0U, PAGE_SIZE,
+                         HAL_VM_PROT_USER | HAL_VM_PROT_READ | HAL_VM_PROT_WRITE, NULL);
+    }
+    if (rc == 0) {
+        rc = nos_vmo_map(weight_vmo, nos_cell_vm_space(cell_a), SELFTEST_STAGE4_WEIGHT_VA,
+                         0U, PAGE_SIZE,
+                         HAL_VM_PROT_USER | HAL_VM_PROT_READ, NULL);
+    }
+    if (rc == 0) {
+        rc = hal_vm_map(nos_cell_vm_space(cell_a), SELFTEST_CELL_CODE_VA,
+                        arm64_virt_to_phys((uintptr_t)code_va), PAGE_SIZE,
+                        HAL_VM_PROT_USER | HAL_VM_PROT_READ | HAL_VM_PROT_EXEC);
+    }
+    if (rc == 0) {
+        rc = hal_vm_map(nos_cell_vm_space(cell_a), SELFTEST_CELL_STACK_VA,
+                        arm64_virt_to_phys((uintptr_t)stack_va), PAGE_SIZE,
+                        HAL_VM_PROT_USER | HAL_VM_PROT_READ | HAL_VM_PROT_WRITE);
+    }
+    if (rc != 0) {
+        goto cleanup;
+    }
+
+    /* 1. 验证 SMMUv3 SVA 绑定、读写权隔离、跨 Cell 边界隔离及 CMDQ 硬件同步 */
+    (void)nos_iommu_get_status(&iinfo);
+    if (iinfo.max_pasids > 1U) {
+        pasid_a = cell_a->cell_id % iinfo.max_pasids;
+        pasid_b = cell_b->cell_id % iinfo.max_pasids;
+        if (pasid_b == pasid_a) {
+            pasid_b = (pasid_a + 1U) % iinfo.max_pasids;
+        }
+    }
+
+    rc = nos_iommu_bind_space(accel_dev->caps.stream_id, pasid_a, nos_cell_vm_space(cell_a));
+    if (rc != 0) {
+        pr_err("Stage4 SMMUv3 bind cell_a failed (%d)\n", rc);
+        goto cleanup;
+    }
+    if (nos_iommu_translate(accel_dev->caps.stream_id, pasid_a,
+                            SELFTEST_STAGE4_OUT_VA, &xlate_pa, &xlate_prot) != 0 ||
+        (xlate_prot & HAL_VM_PROT_WRITE) == 0U) {
+        pr_err("Stage4 SMMUv3 RW translate mismatch (prot=0x%x)\n", (unsigned int)xlate_prot);
+        rc = -EFAULT;
+        goto cleanup;
+    }
+    if (nos_iommu_translate(accel_dev->caps.stream_id, pasid_a,
+                            SELFTEST_STAGE4_WEIGHT_VA, &xlate_pa, &xlate_prot) != 0 ||
+        (xlate_prot & HAL_VM_PROT_WRITE) != 0U) {
+        pr_err("Stage4 SMMUv3 RO weight isolation failed (prot=0x%x)\n", (unsigned int)xlate_prot);
+        rc = -EPERM;
+        goto cleanup;
+    }
+    rc = nos_iommu_bind_space(accel_dev->caps.stream_id, pasid_b, nos_cell_vm_space(cell_b));
+    if (rc != 0) {
+        pr_err("Stage4 SMMUv3 bind cell_b failed (%d)\n", rc);
+        goto cleanup;
+    }
+    if (nos_iommu_translate(accel_dev->caps.stream_id, pasid_b,
+                            SELFTEST_STAGE4_OUT_VA, &xlate_pa, &xlate_prot) == 0) {
+        pr_err("Stage4 SMMUv3 cross-cell isolation breach\n");
+        rc = -EFAULT;
+        goto cleanup;
+    }
+    (void)nos_iommu_unbind_space(accel_dev->caps.stream_id, pasid_b);
+
+    (void)nos_iommu_get_status(&iinfo);
+    if (iinfo.hw_present && iinfo.cmdq_submitted == 0ULL) {
+        pr_err("Stage4 SMMUv3 HW CMDQ unused\n");
+        rc = -EIO;
+        goto cleanup;
+    }
+
+    /* 2. 运行 EL0 Stage4 载荷（QUERY_CAPS + GEMV_I32 + Sealed -EACCES + PAC 指令自检） */
+    (void)nos_completion_init(&agent_done);
+    s4_agent = task_create_ex("s4_agent", el0_stage4_launcher_entry, &agent_done,
+                              SCHED_POLICY_NORMAL, 8U, 0, NOS_CPU_MASK_ALL,
+                              CONFIG_CORE_TASK_STACK_SIZE, 10U, el0_cell_task_cleanup);
+    if (s4_agent == NULL) {
+        rc = -ENOMEM;
+        goto cleanup;
+    }
+    rc = nos_cell_attach_task(s4_agent, cell_a);
+    if (rc != 0) {
+        goto cleanup;
+    }
+
+    __atomic_store_n(&g_el0_fault_hits, 0U, __ATOMIC_RELEASE);
+    arm64_set_el0_fault_observer(selftest_fault_observer);
+    (void)task_ready(s4_agent);
+    agent_started = true;
+
+    rc = nos_completion_wait(&agent_done, 5000U);
+    arm64_set_el0_fault_observer(NULL);
+    if (rc != 0 || __atomic_load_n(&g_el0_fault_hits, __ATOMIC_ACQUIRE) != 0U) {
+        pr_err("Stage4 EL0 agent failed (rc=%d faults=%u)\n",
+               rc, (unsigned int)g_el0_fault_hits);
+        rc = (rc != 0) ? rc : -EFAULT;
+        goto cleanup;
+    }
+
+    tm = nos_cell_telemetry_view(cell_a);
+    if (tm == NULL || tm->accel_ops_used != 1ULL) {
+        pr_err("Stage4 EL0 accel telemetry mismatch (used=%lu)\n",
+               tm ? (unsigned long)tm->accel_ops_used : 0UL);
+        rc = -EFAULT;
+        goto cleanup;
+    }
+
+    /* 3. 验证 RingIPC NOS_RING_OP_ACCEL_JOB (RELU_I32) 单次扣费与配额耗尽 -EDQUOT */
+    s4_ring = nos_ring_create(&rargs, r_schemas, nos_cell_vm_space(cell_a), cell_a);
+    if (s4_ring == NULL) {
+        rc = -ENOMEM;
+        goto cleanup;
+    }
+    rc = nos_vmo_write(in_vmo, 0U, relu_in, sizeof(relu_in));
+    if (rc != 0) {
+        goto cleanup;
+    }
+
+    memset(&ring_caller, 0, sizeof(ring_caller));
+    nos_refcount_init(&ring_caller.refcount, 1U);
+    ring_caller.cell = cell_a;
+
+    hdr = (struct nos_ring_header *)s4_ring->ring_vmo->pages[0]->kvaddr;
+    sq = (struct nos_ring_sqe *)((uint8_t *)hdr + hdr->sq_offset);
+    cq = (struct nos_ring_cqe *)((uint8_t *)hdr + hdr->cq_offset);
+    memset(&sq[0], 0, sizeof(sq[0]));
+    sq[0].opcode = NOS_RING_OP_ACCEL_JOB;
+    sq[0].target_cap = accel_h;
+    sq[0].req_id = 0x501ULL;
+    sq[0].schema_id = (uint64_t)NOS_ACCEL_KERNEL_RELU_I32;
+    sq[0].vmo_cap = in_h;
+    sq[0].vmo_offset = 0ULL;
+    sq[0].vmo_len = (uint32_t)sizeof(relu_in);
+    sq[0].inline_arg[0] = ((uint64_t)out_h << 32) | (uint64_t)NOS_HANDLE_INVALID;
+    sq[0].inline_arg[1] = 4ULL;
+    __atomic_store_n(&hdr->sq_tail, 1U, __ATOMIC_RELEASE);
+
+    rc = nos_ring_enter(s4_ring, &ring_caller, 1U, 1U,
+                        NOS_RING_ENTER_SUBMIT | NOS_RING_ENTER_WAIT_CQ,
+                        NOS_IPC_TIMEOUT_INFINITE);
+    if (rc != 1 || cq[0].req_id != 0x501ULL || cq[0].status != 0 || cq[0].result_len != 16U) {
+        pr_err("Stage4 RingIPC accel dispatch failed (rc=%d status=%d len=%u)\n",
+               rc, cq[0].status, (unsigned int)cq[0].result_len);
+        rc = -EFAULT;
+        goto cleanup;
+    }
+    rc = nos_vmo_read(out_vmo, 0U, relu_out, sizeof(relu_out));
+    if (rc != 0 || relu_out[0] != 0 || relu_out[1] != 7 || relu_out[2] != 0 || relu_out[3] != 9) {
+        pr_err("Stage4 RingIPC RELU result wrong\n");
+        rc = -EFAULT;
+        goto cleanup;
+    }
+    if (tm->accel_ops_used != 2ULL) {
+        pr_err("Stage4 RingIPC double-charge detected (used=%lu)\n",
+               (unsigned long)tm->accel_ops_used);
+        rc = -EFAULT;
+        goto cleanup;
+    }
+
+    memset(&nop_desc, 0, sizeof(nop_desc));
+    nop_desc.kernel_op = NOS_ACCEL_KERNEL_NOP;
+    nop_desc.req_id = 0x502ULL;
+    nop_desc.weight_vmo_cap = NOS_HANDLE_INVALID;
+    nop_desc.input_vmo_cap = NOS_HANDLE_INVALID;
+    nop_desc.output_vmo_cap = NOS_HANDLE_INVALID;
+    nop_desc.notify_cap = NOS_HANDLE_INVALID;
+    rc = nos_accel_submit(accel_dev, &ring_caller, &nop_desc, &nop_res);
+    if (rc != 0 || tm->accel_ops_used != 3ULL) {
+        pr_err("Stage4 3rd accel op failed (rc=%d used=%lu)\n",
+               rc, (unsigned long)tm->accel_ops_used);
+        rc = (rc != 0) ? rc : -EFAULT;
+        goto cleanup;
+    }
+    nop_desc.req_id = 0x503ULL;
+    if (nos_accel_submit(accel_dev, &ring_caller, &nop_desc, &nop_res) != -EDQUOT) {
+        pr_err("Stage4 accel quota exhaustion did not enforce -EDQUOT\n");
+        rc = -EFAULT;
+        goto cleanup;
+    }
+
+    audit_n = nos_cell_read_audit(cell_a, audit_recs, 16U);
+    for (int i = 0; i < audit_n; i++) {
+        if (audit_recs[i].event_type == NOS_AUDIT_ACCEL_SUBMIT) {
+            seen_submit = true;
+        } else if (audit_recs[i].event_type == NOS_AUDIT_BUDGET_HIT) {
+            seen_budget = true;
+        }
+    }
+    if (!seen_submit || !seen_budget) {
+        pr_err("Stage4 audit missing accel=%d budget=%d\n",
+               seen_submit ? 1 : 0, seen_budget ? 1 : 0);
+        rc = -ENOENT;
+        goto cleanup;
+    }
+
+    /* 4. 校验 ARMv9 BTI (GP) 与 MTE (MT_NORMAL_TAGGED) 页表属性位 */
+    if (sec_st.bti_enabled) {
+        uint64_t bti_pte = arm64_pte_make_leaf(0x90000000UL,
+                                               HAL_VM_PROT_READ | HAL_VM_PROT_EXEC |
+                                               HAL_VM_PROT_USER | HAL_VM_PROT_BTI,
+                                               false, false, true);
+        if ((bti_pte & ARM64_PTE_GP) == 0ULL) {
+            pr_err("Stage4 BTI PTE GP bit missing\n");
+            rc = -EFAULT;
+            goto cleanup;
+        }
+    }
+    if (sec_st.mte_enabled) {
+        uint64_t mte_pte = arm64_pte_make_leaf(0x90000000UL,
+                                               HAL_VM_PROT_READ | HAL_VM_PROT_WRITE |
+                                               HAL_VM_PROT_USER | HAL_VM_PROT_MTE,
+                                               false, false, true);
+        if (((mte_pte >> 2) & 7ULL) != (uint64_t)MT_NORMAL_TAGGED) {
+            pr_err("Stage4 MTE PTE MT_NORMAL_TAGGED missing\n");
+            rc = -EFAULT;
+            goto cleanup;
+        }
+    }
+
+    pr_info("ARM64 Stage4 selftest PASS (smmuv3=%s, accel_gemv=ok, ring_accel=ok, sec_pac=%u, sec_bti=%u, sec_mte=%u)\n",
+            iinfo.hw_present ? "hw" : "shadow",
+            sec_st.pac_enabled ? 1U : 0U,
+            sec_st.bti_enabled ? 1U : 0U,
+            sec_st.mte_enabled ? 1U : 0U);
+    rc = 0;
+
+cleanup:
+    (void)nos_iommu_unbind_space(accel_dev->caps.stream_id, pasid_a);
+    if (s4_ring != NULL) {
+        (void)nos_ring_destroy(s4_ring);
+    }
+    if (s4_agent != NULL && !agent_started) {
+        task_del(s4_agent);
+        (void)nos_completion_wait(&agent_done, 3000U);
+    }
+    if (s4_agent != NULL) {
+        (void)nos_object_close(&agent_done.object);
+        (void)nos_object_retire(&agent_done.object);
+    }
+    if (accel_dev != NULL) {
+        (void)nos_object_put(&accel_dev->header);
+    }
+    if (cell_b != NULL) {
+        (void)nos_cell_destroy(cell_b);
+    }
+    if (cell_a != NULL) {
+        (void)nos_cell_destroy(cell_a);
+    }
+    if (work_vmo != NULL) {
+        (void)nos_object_close(&work_vmo->header);
+        (void)nos_object_retire(&work_vmo->header);
+    }
+    if (out_vmo != NULL) {
+        (void)nos_object_close(&out_vmo->header);
+        (void)nos_object_retire(&out_vmo->header);
+    }
+    if (in_vmo != NULL) {
+        (void)nos_object_close(&in_vmo->header);
+        (void)nos_object_retire(&in_vmo->header);
+    }
+    if (weight_vmo != NULL) {
+        (void)nos_object_close(&weight_vmo->header);
+        (void)nos_object_retire(&weight_vmo->header);
+    }
+    if (code_va != 0U) {
+        free_page(code_va);
+    }
+    if (stack_va != 0U) {
+        free_page(stack_va);
+    }
+    return rc;
+}
 #endif
 
 static int stage2_selftest_init(void)
@@ -1107,6 +1557,12 @@ static int stage2_selftest_init(void)
     rc = run_stage3_selftest();
     if (rc != 0) {
         pr_err("ARM64 Stage3 selftest FAILED (%d)\n", rc);
+        return rc;
+    }
+
+    rc = run_stage4_selftest();
+    if (rc != 0) {
+        pr_err("ARM64 Stage4 selftest FAILED (%d)\n", rc);
         return rc;
     }
 #endif

@@ -108,6 +108,9 @@ TESTS = [
     ("run_agent_cell_test.py",),
     ("run_sched_infer_test.py",),
     ("run_ring_ipc_test.py",),
+    ("run_smmuv3_test.py",),
+    ("run_arm64_security_test.py",),
+    ("run_accel_queue_test.py",),
 ]
 
 

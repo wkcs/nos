@@ -18,6 +18,7 @@
 #include <kernel/cpu.h>
 #include <kernel/console.h>
 #ifdef CONFIG_NOS_AI_CORE
+#include <nos/accel.h>
 #include <nos/vmo.h>
 #include <nos/cell.h>
 #include <nos/ring.h>
@@ -1082,6 +1083,83 @@ static long sys_nos_sched_infer(uintptr_t op,
     (void)task_put(target);
     return (long)rc;
 }
+
+static long sys_nos_accel_submit(uintptr_t a0, uintptr_t a1, uintptr_t a2,
+                                 uintptr_t a3, uintptr_t a4, uintptr_t a5)
+{
+    uint32_t op = (uint32_t)a0;
+    nos_handle_t accel_cap = (nos_handle_t)a1;
+    struct nos_accel_device *dev = NULL;
+    struct nos_cap_table *cap_tbl;
+    int rc = 0;
+
+    (void)a4;
+    (void)a5;
+
+    if (current == NULL) {
+        return -EINVAL;
+    }
+
+    cap_tbl = nos_task_active_cap_table(current);
+    if (accel_cap != NOS_HANDLE_INVALID) {
+        nos_cap_rights_t need = (op == NOS_ACCEL_OP_QUERY_CAPS) ?
+                                NOS_CAP_RIGHT_READ : NOS_CAP_RIGHT_SEND;
+        void *obj = NULL;
+        if (cap_tbl == NULL) {
+            return -EBADF;
+        }
+        rc = nos_cap_lookup(cap_tbl, accel_cap, NOS_CAP_ACCEL, need, &obj, NULL);
+        if (rc < 0) {
+            return (long)rc;
+        }
+        dev = (struct nos_accel_device *)obj;
+    } else if (op == NOS_ACCEL_OP_QUERY_CAPS) {
+        dev = nos_accel_get_default();
+        if (dev == NULL) {
+            return -ENODEV;
+        }
+    } else {
+        return -EBADF;
+    }
+
+    switch (op) {
+    case NOS_ACCEL_OP_QUERY_CAPS: {
+        struct nos_accel_caps kcaps = { 0 };
+        if (a2 == 0U) {
+            rc = -EINVAL;
+            break;
+        }
+        rc = nos_accel_query_caps(dev, &kcaps);
+        if (rc == 0) {
+            *(struct nos_accel_caps *)a2 = kcaps;
+        }
+        break;
+    }
+    case NOS_ACCEL_OP_BIND_VMO:
+        rc = nos_accel_bind_vmo(dev, current, (nos_handle_t)a2);
+        break;
+    case NOS_ACCEL_OP_SUBMIT: {
+        struct nos_accel_job_desc kdesc;
+        struct nos_accel_job_result kres = { 0 };
+        if (a2 == 0U) {
+            rc = -EINVAL;
+            break;
+        }
+        kdesc = *(const struct nos_accel_job_desc *)a2;
+        rc = nos_accel_submit(dev, current, &kdesc, &kres);
+        if (a3 != 0U) {
+            *(struct nos_accel_job_result *)a3 = kres;
+        }
+        break;
+    }
+    default:
+        rc = -EINVAL;
+        break;
+    }
+
+    (void)nos_object_put(&dev->header);
+    return (long)rc;
+}
 #else
 static long sys_nos_cell_control(uintptr_t a0, uintptr_t a1, uintptr_t a2,
                                  uintptr_t a3, uintptr_t a4, uintptr_t a5)
@@ -1120,6 +1198,13 @@ static long sys_nos_ring_enter(uintptr_t a0, uintptr_t a1, uintptr_t a2,
 
 static long sys_nos_sched_infer(uintptr_t a0, uintptr_t a1, uintptr_t a2,
                                 uintptr_t a3, uintptr_t a4, uintptr_t a5)
+{
+    (void)a0; (void)a1; (void)a2; (void)a3; (void)a4; (void)a5;
+    return -ENOSYS;
+}
+
+static long sys_nos_accel_submit(uintptr_t a0, uintptr_t a1, uintptr_t a2,
+                                 uintptr_t a3, uintptr_t a4, uintptr_t a5)
 {
     (void)a0; (void)a1; (void)a2; (void)a3; (void)a4; (void)a5;
     return -ENOSYS;
@@ -1178,6 +1263,7 @@ static const nos_syscall_fn_t g_syscall_table[SYS_NOS_MAX] = {
     [SYS_NOS_RING_ENTER]      = sys_nos_ring_enter,
     [SYS_NOS_SCHED_INFER]     = sys_nos_sched_infer,
     [SYS_NOS_CAP_REVOKE_TREE] = sys_nos_cap_revoke_tree,
+    [SYS_NOS_ACCEL_SUBMIT]    = sys_nos_accel_submit,
 };
 
 long nos_syscall_dispatch(unsigned long sysno,

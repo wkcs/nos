@@ -8,6 +8,7 @@
 
 #include <asm/init.h>
 #include <asm/cpufeature.h>
+#include <asm/security.h>
 #include <kernel/mm.h>
 #include <asm/mmu.h>
 
@@ -18,5 +19,6 @@ __init void arch_early_init(void)
 __init void arch_init(void)
 {
     arm64_cpufeature_dump();
+    arm64_security_dump();
     arch_mmu_init();
 }

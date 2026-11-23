@@ -207,6 +207,20 @@ static bool arm64_validate_el0_syscall(unsigned long sysno, const struct arm64_p
             return false;
         }
         return true;
+    case SYS_NOS_ACCEL_SUBMIT:
+        if (a0 == NOS_ACCEL_OP_QUERY_CAPS &&
+            (a2 == 0U || !arm64_user_buf_mapped(task, a2, sizeof(struct nos_accel_caps), true))) {
+            return false;
+        }
+        if (a0 == NOS_ACCEL_OP_SUBMIT) {
+            if (a2 == 0U || !arm64_user_buf_mapped(task, a2, sizeof(struct nos_accel_job_desc), false)) {
+                return false;
+            }
+            if (a3 != 0U && !arm64_user_buf_mapped(task, a3, sizeof(struct nos_accel_job_result), true)) {
+                return false;
+            }
+        }
+        return true;
     case SYS_NOS_VMO_CREATE:
         if (a0 == 0U || !arm64_user_buf_mapped(task, a0, sizeof(struct nos_vmo_create_args), false)) {
             return false;

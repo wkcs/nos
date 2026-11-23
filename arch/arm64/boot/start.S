@@ -36,7 +36,21 @@ _start:
     cmp     x21, #2
     b.ne    el1_entry
 
-    mov     x0, #HCR_EL2_RW                 /* EL1 强制使用 AArch64 */
+    ldr     x0, =HCR_EL2_RW                 /* EL1 强制使用 AArch64 */
+    mrs     x1, id_aa64isar1_el1
+    ldr     x2, =0xFF000FF0
+    tst     x1, x2
+    b.eq    11f
+    ldr     x2, =(HCR_EL2_APK | HCR_EL2_API)
+    orr     x0, x0, x2
+11:
+    mrs     x1, S3_0_C0_C4_1                /* ID_AA64PFR1_EL1 */
+    ubfx    x1, x1, #8, #4
+    cmp     x1, #1
+    b.lo    12f
+    ldr     x2, =HCR_EL2_ATA
+    orr     x0, x0, x2
+12:
     msr     hcr_el2, x0
 
     mov     x0, #(CNTHCTL_EL2_EL1PCTEN | CNTHCTL_EL2_EL1PCEN)
@@ -278,7 +292,21 @@ arm64_secondary_entry:
     cmp     x21, #2
     b.ne    secondary_el1_entry
 
-    mov     x0, #HCR_EL2_RW
+    ldr     x0, =HCR_EL2_RW
+    mrs     x1, id_aa64isar1_el1
+    ldr     x2, =0xFF000FF0
+    tst     x1, x2
+    b.eq    13f
+    ldr     x2, =(HCR_EL2_APK | HCR_EL2_API)
+    orr     x0, x0, x2
+13:
+    mrs     x1, S3_0_C0_C4_1                /* ID_AA64PFR1_EL1 */
+    ubfx    x1, x1, #8, #4
+    cmp     x1, #1
+    b.lo    14f
+    ldr     x2, =HCR_EL2_ATA
+    orr     x0, x0, x2
+14:
     msr     hcr_el2, x0
     mov     x0, #(CNTHCTL_EL2_EL1PCTEN | CNTHCTL_EL2_EL1PCEN)
     msr     cnthctl_el2, x0

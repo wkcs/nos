@@ -15,12 +15,28 @@
 #define SCTLR_EL1_SA            (1ULL << 3)     /* EL1 SP 对齐检查 */
 #define SCTLR_EL1_SA0           (1ULL << 4)     /* EL0 SP 对齐检查 */
 #define SCTLR_EL1_I             (1ULL << 12)    /* 使能指令缓存 */
+#define SCTLR_EL1_ENDB          (1ULL << 13)    /* 使能指针认证 DB 密钥 */
 #define SCTLR_EL1_WXN           (1ULL << 19)    /* 硬件强制可写页不可执行 */
 #define SCTLR_EL1_SPAN          (1ULL << 23)    /* 禁止异常进入时自动清除 PAN */
 #define SCTLR_EL1_UCI           (1ULL << 26)    /* 允许 EL0 缓存清理指令 */
+#define SCTLR_EL1_ENDA          (1ULL << 27)    /* 使能指针认证 DA 密钥 */
+#define SCTLR_EL1_ENIB          (1ULL << 30)    /* 使能指针认证 IB 密钥 */
+#define SCTLR_EL1_ENIA          (1ULL << 31)    /* 使能指针认证 IA 密钥 */
+#define SCTLR_EL1_BT0           (1ULL << 35)    /* 强制 EL0 检查 PACIASP/BTI 落地目标 */
+#define SCTLR_EL1_BT            (1ULL << 36)    /* 强制 EL1 检查 BTI 落地目标 */
+#define SCTLR_EL1_TCF0_SYNC     (1ULL << 38)    /* EL0 MTE 同步标签检查故障 */
+#define SCTLR_EL1_TCF_SYNC      (1ULL << 40)    /* EL1 MTE 同步标签检查故障 */
+#define SCTLR_EL1_ATA0          (1ULL << 42)    /* 允许 EL0 访问内存分配标签 */
+#define SCTLR_EL1_ATA           (1ULL << 43)    /* 允许 EL1 访问内存分配标签 */
+
+/* TCR_EL1 安全扩展位 */
+#define TCR_EL1_TBI0            (1ULL << 37)    /* 启用 TTBR0 顶字节忽略（PAC/MTE 依赖） */
 
 /* HCR_EL2 控制位 */
 #define HCR_EL2_RW              (1ULL << 31)    /* EL1 运行于 AArch64 模式 */
+#define HCR_EL2_APK             (1ULL << 40)    /* 放行 EL1 访问 PAC 密钥寄存器 */
+#define HCR_EL2_API             (1ULL << 41)    /* 放行 EL1 执行 PAC 指令 */
+#define HCR_EL2_ATA             (1ULL << 56)    /* 放行 EL1 使用 MTE 标签访问指令 */
 
 /* CNTHCTL_EL2 控制位 */
 #define CNTHCTL_EL2_EL1PCTEN    (1ULL << 0)     /* 允许 EL1 读取物理计数器 */
@@ -77,6 +93,12 @@
 #define SYS_ICC_SRE_EL1         S3_0_C12_C12_5
 #define SYS_ICC_IGRPEN1_EL1     S3_0_C12_C12_7
 #define SYS_ICC_SRE_EL2         S3_4_C12_C9_5
+
+/* ARMv8.3 PAC / ARMv8.5 MTE 系统寄存器通用编码 */
+#define SYS_APIAKEYLO_EL1       S3_0_C2_C1_0
+#define SYS_APIAKEYHI_EL1       S3_0_C2_C1_1
+#define SYS_RGSR_EL1            S3_0_C1_C0_5
+#define SYS_GCR_EL1             S3_0_C1_C0_6
 
 #ifndef __ASSEMBLY__
 #include <stdint.h>

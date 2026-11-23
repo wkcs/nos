@@ -14,6 +14,7 @@
 #include <asm/cpufeature.h>
 #include <asm/percpu.h>
 #include <asm/psci.h>
+#include <asm/security.h>
 #include <asm/platform.h>
 #include <asm/sysreg.h>
 
@@ -51,6 +52,7 @@ void nos_arm64_boot(uint64_t dtb_pa, uint64_t boot_el)
     arm64_percpu_init(0U);
     arm64_cpufeature_init((uint8_t)boot_el);
     arm64_fpu_init_cpu();
+    arm64_security_init_cpu();
     arm64_mmu_init_kernel_wx();
 
     (void)nos_start();

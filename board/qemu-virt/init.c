@@ -15,6 +15,9 @@
 
 #ifdef CONFIG_ARCH_ARM64
 #include <asm/gic.h>
+#ifdef CONFIG_NOS_AI_CORE
+#include <asm/smmuv3.h>
+#endif
 #endif
 
 __init void board_early_init(void)
@@ -67,6 +70,9 @@ __init void board_init(void)
 
 __init void board_late_init(void)
 {
+#if defined(CONFIG_ARCH_ARM64) && defined(CONFIG_NOS_AI_CORE)
+    (void)arm64_smmuv3_probe_default();
+#endif
 }
 
 int board_write_boot_flag(uint32_t flag)

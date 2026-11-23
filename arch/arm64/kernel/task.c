@@ -14,6 +14,7 @@
 #include <asm/switch.h>
 #include <asm/percpu.h>
 #include <asm/irq.h>
+#include <asm/security.h>
 #include <string.h>
 
 extern void arm64_fpu_on_context_switch(struct task_struct *next);
@@ -43,8 +44,9 @@ void arm64_finish_first_switch(void)
 {
     struct sched_rq *rq = this_rq();
 
-    /* 必须在持锁关中断状态下完成 FPU 拥有者切换，防止开启中断后发生同核竞态 */
+    /* 必须在持锁关中断状态下完成 FPU 拥有者与 PAC 密钥切换，防止开启中断后发生同核竞态 */
     arm64_fpu_on_context_switch(rq->curr);
+    arm64_security_on_context_switch(rq->curr);
 
     if (spin_is_locked(&rq->lock)) {
         spin_unlock_irq(&rq->lock);
@@ -61,11 +63,13 @@ void arm64_do_context_switch(addr_t from_sp_ptr, addr_t to_sp_ptr)
     struct sched_rq *rq = this_rq();
 
     arm64_fpu_on_context_switch(rq->curr);
+    arm64_security_on_context_switch(rq->curr);
     __arm64_cpu_switch_to(from_sp_ptr, to_sp_ptr);
 
     /* 恢复后在当前任务栈上将切走前的 IRQ 标志写回当前 CPU 槽（天然兼容 SMP 迁移） */
     *__nos_irq_flags_ptr() = saved_flags;
     arm64_fpu_on_context_switch(this_rq()->curr);
+    arm64_security_on_context_switch(this_rq()->curr);
 }
 
 void context_switch(addr_t from, addr_t to)
@@ -92,5 +96,6 @@ void context_switch_to(addr_t to)
     struct sched_rq *rq = this_rq();
     kernel_running = 1U;
     arm64_fpu_on_context_switch(rq->curr);
+    arm64_security_on_context_switch(rq->curr);
     __arm64_cpu_switch_first(to);
 }

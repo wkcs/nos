@@ -38,6 +38,8 @@
 #define NOS_AUDIT_FAULT         6U
 #define NOS_AUDIT_CELL_SNAPSHOT 7U
 #define NOS_AUDIT_CELL_ROLLBACK 8U
+#define NOS_AUDIT_ACCEL_SUBMIT  9U
+#define NOS_AUDIT_IOMMU_FAULT   10U
 
 struct nos_cell_budget {
     uint64_t cpu_ns_limit;      /* 最大可用 CPU 时间配额（纳秒，0 表示无限制） */
@@ -231,6 +233,69 @@ struct nos_cpu_topo_info {
     uint64_t reserved;
 };
 
+/* ---------------- EL1 混合内核加速器与异构算子契约 ---------------- */
+
+#define NOS_ACCEL_OP_QUERY_CAPS     1U
+#define NOS_ACCEL_OP_BIND_VMO       2U
+#define NOS_ACCEL_OP_SUBMIT         3U
+#define NOS_ACCEL_OP_WAIT           4U
+#define NOS_ACCEL_OP_CANCEL         5U
+#define NOS_ACCEL_OP_RESET_CTX      6U
+
+#define NOS_ACCEL_KERNEL_NOP            0U
+#define NOS_ACCEL_KERNEL_MATMUL_I8      1U
+#define NOS_ACCEL_KERNEL_GEMV_I32       2U
+#define NOS_ACCEL_KERNEL_RELU_I32       3U
+#define NOS_ACCEL_KERNEL_CUSTOM_BLOB    4U
+
+#define NOS_ACCEL_TYPE_VIRTIO       1U
+#define NOS_ACCEL_TYPE_RKNPU        2U
+
+#define NOS_ACCEL_CAP_SVA           (1U << 0)
+#define NOS_ACCEL_CAP_PASID         (1U << 1)
+#define NOS_ACCEL_CAP_ASYNC_QUEUE   (1U << 2)
+#define NOS_ACCEL_CAP_INT8_MATMUL   (1U << 3)
+#define NOS_ACCEL_CAP_INT32_GEMV    (1U << 4)
+
+/* 加速器硬件能力查询结构体（严格 64 字节） */
+struct nos_accel_caps {
+    uint32_t accel_type;        /* NOS_ACCEL_TYPE_* */
+    uint32_t core_count;        /* 物理加速核心数量 */
+    uint32_t stream_id;         /* 绑定硬件 IOMMU StreamID */
+    uint32_t flags;             /* NOS_ACCEL_CAP_* */
+    uint64_t supported_kernels; /* 位掩码 (1ULL << NOS_ACCEL_KERNEL_*) */
+    uint64_t peak_tops_x100;    /* 峰值整型算力（TOPS * 100） */
+    uint64_t max_tensor_bytes;  /* 单次作业允许的最大张量字节数 */
+    char     name[24];          /* 加速器型号名称 */
+};
+
+/* 加速器提交作业描述符：严格 64 字节（零隐式填充） */
+struct nos_accel_job_desc {
+    uint32_t kernel_op;         /* NOS_ACCEL_KERNEL_* */
+    uint32_t flags;             /* 控制标志 */
+    uint64_t req_id;            /* 请求关联 ID */
+    uint32_t weight_vmo_cap;    /* 只读权重 VMO 句柄（部分算子可选） */
+    uint32_t input_vmo_cap;     /* 只读输入张量 VMO 句柄 */
+    uint32_t output_vmo_cap;    /* 可写输出张量 VMO 句柄（严禁 Sealed） */
+    uint32_t notify_cap;        /* 完成后异步唤醒的 Notification 句柄 */
+    uint32_t weight_offset;     /* 权重字节偏移 */
+    uint32_t input_offset;      /* 输入字节偏移 */
+    uint32_t output_offset;     /* 输出字节偏移 */
+    uint32_t dim_m;             /* 行数 M / 元素数 N */
+    uint32_t dim_n;             /* 列数 N */
+    uint32_t dim_k;             /* 归约维度 K */
+    uint64_t deadline_ns;       /* 端到端截止期（触发 Deadline Inheritance） */
+};
+
+/* 加速器作业完成结果：严格 32 字节 */
+struct nos_accel_job_result {
+    uint64_t req_id;            /* 对应作业 req_id */
+    int32_t  status;            /* 0 或 -errno */
+    uint32_t output_bytes;      /* 实际写出结果字节数 */
+    uint64_t elapsed_ns;        /* 执行耗时（纳秒） */
+    uint64_t reserved;          /* 对齐保留字段 */
+};
+
 #if defined(__STDC_VERSION__) && (__STDC_VERSION__ >= 201112L)
 _Static_assert(sizeof(struct nos_cell_budget) == 40, "nos_cell_budget ABI 尺寸必须为 40 字节");
 _Static_assert(sizeof(struct nos_cell_telemetry) == 96, "nos_cell_telemetry ABI 尺寸必须为 96 字节");
@@ -242,6 +307,9 @@ _Static_assert(sizeof(struct nos_ring_sqe) == 64, "nos_ring_sqe ABI 尺寸必须
 _Static_assert(sizeof(struct nos_ring_cqe) == 32, "nos_ring_cqe ABI 尺寸必须为 32 字节");
 _Static_assert(sizeof(struct nos_infer_sched_param) == 32, "nos_infer_sched_param ABI 尺寸必须为 32 字节");
 _Static_assert(sizeof(struct nos_cpu_topo_info) == 32, "nos_cpu_topo_info ABI 尺寸必须为 32 字节");
+_Static_assert(sizeof(struct nos_accel_caps) == 64, "nos_accel_caps ABI 尺寸必须为 64 字节");
+_Static_assert(sizeof(struct nos_accel_job_desc) == 64, "nos_accel_job_desc ABI 尺寸必须为 64 字节");
+_Static_assert(sizeof(struct nos_accel_job_result) == 32, "nos_accel_job_result ABI 尺寸必须为 32 字节");
 #endif
 
 #endif /* __NOS_UAPI_AI_H__ */

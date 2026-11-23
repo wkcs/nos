@@ -74,13 +74,15 @@
 #define MT_NORMAL_NC            2
 #define MT_NORMAL_WT            3
 #define MT_NORMAL               4
+#define MT_NORMAL_TAGGED        5
 
 #define ARM64_MAIR_VALUE        ( \
     (_AC(0x00, ULL) << (MT_DEVICE_nGnRnE * 8)) | \
     (_AC(0x04, ULL) << (MT_DEVICE_nGnRE  * 8)) | \
     (_AC(0x44, ULL) << (MT_NORMAL_NC     * 8)) | \
     (_AC(0xBB, ULL) << (MT_NORMAL_WT     * 8)) | \
-    (_AC(0xFF, ULL) << (MT_NORMAL        * 8))   \
+    (_AC(0xFF, ULL) << (MT_NORMAL        * 8)) | \
+    (_AC(0xF0, ULL) << (MT_NORMAL_TAGGED * 8))   \
 )
 
 /* TCR_EL1 标准配置组合位（动态补充 IPS 字段） */
@@ -117,6 +119,7 @@
 #define ARM64_PTE_SH_INNER      (_AC(3, ULL) << 8)
 #define ARM64_PTE_AF            (_AC(1, ULL) << 10)     /* Access Flag */
 #define ARM64_PTE_NG            (_AC(1, ULL) << 11)     /* Non-Global */
+#define ARM64_PTE_GP            (_AC(1, ULL) << 50)     /* Guarded Page (BTI 防 JOP) */
 #define ARM64_PTE_CONT          (_AC(1, ULL) << 52)     /* 64KB 连续 TLB 合并提示位 */
 #define ARM64_PTE_PXN           (_AC(1, ULL) << 53)     /* 特权级不可执行 */
 #define ARM64_PTE_UXN           (_AC(1, ULL) << 54)     /* 用户态不可执行 */

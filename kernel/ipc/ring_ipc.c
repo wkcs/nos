@@ -25,6 +25,20 @@
 
 #define NOS_RING_BATCH_SIZE 8U
 
+__attribute__((weak)) int nos_accel_dispatch_ring_sqe(void *accel_obj,
+                                                      struct task_struct *caller,
+                                                      const struct nos_ring_sqe *sqe,
+                                                      struct nos_ring_cqe *out_cqe)
+{
+    (void)caller;
+    (void)sqe;
+    (void)out_cqe;
+    if (accel_obj != NULL) {
+        (void)nos_object_put((struct nos_object *)accel_obj);
+    }
+    return -ENOSYS;
+}
+
 static nos_timeout_t ring_to_timeout(uint32_t timeout_ticks)
 {
     if (timeout_ticks == NOS_IPC_TIMEOUT_NONBLOCK) {
@@ -441,6 +455,45 @@ static void ring_dispatch_one_sqe(struct nos_ring *ring,
         }
         (void)nos_notify_signal_obj(&ring->cq_notif, 1ULL);
         return;
+    }
+
+    if (sqe->opcode == NOS_RING_OP_ACCEL_JOB && cap_tbl != NULL) {
+        void *accel_obj = NULL;
+        int lookup_rc = -EBADF;
+        if (sqe->target_cap != NOS_HANDLE_INVALID) {
+            lookup_rc = nos_cap_lookup(cap_tbl,
+                                       (nos_handle_t)sqe->target_cap,
+                                       NOS_CAP_ACCEL,
+                                       NOS_CAP_RIGHT_SEND,
+                                       &accel_obj,
+                                       NULL);
+        }
+        if (lookup_rc == 0) {
+            struct nos_ring_cqe cqe;
+            memset(&cqe, 0, sizeof(cqe));
+            cqe.req_id = sqe->req_id;
+            rc = nos_accel_dispatch_ring_sqe(accel_obj, caller, sqe, &cqe);
+            if (cqe.status == 0 && rc < 0) {
+                cqe.status = rc;
+            }
+
+            spin_lock_irq(&ring->lock);
+            (void)ring_push_cqe_locked(ring, &cqe);
+            spin_unlock_irq(&ring->lock);
+
+            if (boosted && server_ref != NULL) {
+                sched_infer_restore_deadline(server_ref);
+            }
+            if (server_ref != NULL) {
+                (void)task_put(server_ref);
+            }
+            (void)nos_notify_signal_obj(&ring->cq_notif, 1ULL);
+            return;
+        }
+        if (server_ref == NULL) {
+            ring_push_immediate_error(ring, sqe->req_id, lookup_rc);
+            return;
+        }
     }
 
     spin_lock_irq(&ring->lock);

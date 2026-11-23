@@ -52,9 +52,10 @@ void arm64_cpufeature_init(uint8_t boot_el)
     g_cpu_caps.has_sve   = (((pfr0 >> 32) & 0xFU) != 0ULL);
 
     /* ID_AA64PFR1_EL1 (BTI / MTE / SME) */
-    g_cpu_caps.has_bti   = ((pfr1 & 0xFU) >= 1ULL);
-    g_cpu_caps.has_mte   = (((pfr1 >> 8) & 0xFU) >= 1ULL);
-    g_cpu_caps.has_sme   = (((pfr1 >> 24) & 0xFU) >= 1ULL);
+    g_cpu_caps.has_bti     = ((pfr1 & 0xFU) >= 1ULL);
+    g_cpu_caps.mte_version = (uint8_t)((pfr1 >> 8) & 0xFU);
+    g_cpu_caps.has_mte     = (g_cpu_caps.mte_version >= 1U);
+    g_cpu_caps.has_sme     = (((pfr1 >> 24) & 0xFU) >= 1ULL);
 
     /* ID_AA64ISAR0_EL1 (LSE / DotProd) */
     g_cpu_caps.has_lse     = (((isar0 >> 20) & 0xFU) >= 2ULL);
@@ -92,7 +93,7 @@ void arm64_cpufeature_dump(void)
             (unsigned int)c->pa_bits,
             c->has_asid16 ? 16U : 8U,
             c->dcache_line);
-    pr_info("ARM64 ISA: %s%s%s%s%s%s%s%s%s%s%s%s%s\n",
+    pr_info("ARM64 ISA: %s%s%s%s%s%s%s%s%s%s%s%s%s%s\n",
             c->has_fp ? "FP " : "",
             c->has_asimd ? "ASIMD " : "",
             c->has_lse ? "LSE " : "",
@@ -105,7 +106,8 @@ void arm64_cpufeature_dump(void)
             c->has_i8mm ? "I8MM " : "",
             c->has_sve ? "SVE " : "",
             c->has_pac ? "PAC " : "",
-            c->has_bti ? "BTI " : "");
+            c->has_bti ? "BTI " : "",
+            (c->mte_version >= 2U) ? "MTE2 " : (c->has_mte ? "MTE " : ""));
 }
 
 #ifdef CONFIG_NOS_AI_CORE

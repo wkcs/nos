@@ -18,6 +18,8 @@ def main():
     parser.add_argument("--gic-version", choices=["2", "3"], default="3")
     parser.add_argument("--cpu", default="cortex-a53")
     parser.add_argument("--smp", default="4")
+    parser.add_argument("--iommu", choices=["none", "smmuv3"], default="none")
+    parser.add_argument("--mte", action="store_true")
     parser.add_argument("--log", type=Path, help="Optional raw UART log output path")
     args = parser.parse_args()
 
@@ -28,6 +30,10 @@ def main():
 
     elf = args.elf.resolve()
     machine = f"virt,gic-version={args.gic_version}"
+    if args.iommu != "none":
+        machine += f",iommu={args.iommu}"
+    if args.mte:
+        machine += ",mte=on"
     command = [
         qemu_bin,
         "-M", machine,
@@ -70,6 +76,7 @@ def main():
         wait_for(b"Welcome to NOS:")
         wait_for(b"ARM64 CPU:")
         wait_for(b"ARM64 ISA:")
+        wait_for(b"ARM64 Security:")
         wait_for(b"ARM64 GIC initialized")
         wait_for(b"vfs_smoke OK")
         wait_for(b"ARM64 SMP:")
@@ -79,6 +86,14 @@ def main():
         wait_for(b"ARM64 Stage2B selftest PASS")
         wait_for(b"[EL0-STAGE3] RingIPC, NEON Lazy-Ctx & SchedInfer OK!")
         wait_for(b"ARM64 Stage3 selftest PASS")
+        wait_for(b"[EL0-STAGE4] SMMUv3 SVA, AccelQueue GEMV & ARMv9 Sec OK!")
+        wait_for(b"ARM64 Stage4 selftest PASS")
+        if args.iommu == "smmuv3":
+            wait_for(b"ARM64 SMMUv3 hardware active")
+            wait_for(b"smmuv3=hw")
+        if args.mte and args.cpu == "max":
+            wait_for(b"ARM64 Security: PAC=on BTI=on MTE=on")
+            wait_for(b"sec_pac=1, sec_bti=1, sec_mte=1")
         wait_for(b"nos# ")
 
         for cmd, expected in (

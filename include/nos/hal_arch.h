@@ -38,6 +38,8 @@ bool hal_in_irq(void);
 #define HAL_VM_PROT_EXEC    (1U << 2)
 #define HAL_VM_PROT_USER    (1U << 3)
 #define HAL_VM_PROT_DEV     (1U << 4)
+#define HAL_VM_PROT_BTI     (1U << 5)
+#define HAL_VM_PROT_MTE     (1U << 6)
 
 int hal_vm_space_init(struct nos_vm_space *space);
 void hal_vm_space_destroy(struct nos_vm_space *space);

@@ -39,6 +39,7 @@ static bool cap_type_has_object_header(uint16_t type)
             type == NOS_CAP_VMO ||
             type == NOS_CAP_CELL ||
             type == NOS_CAP_RING ||
+            type == NOS_CAP_ACCEL ||
             type == NOS_CAP_SNAPSHOT);
 }
 

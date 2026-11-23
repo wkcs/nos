@@ -18,6 +18,7 @@
 #include <asm/mmu.h>
 #include <asm/percpu.h>
 #include <asm/psci.h>
+#include <asm/security.h>
 #include <asm/sysreg.h>
 #include <stdio.h>
 
@@ -78,6 +79,7 @@ void arm64_secondary_main(uint32_t cpu_id)
 
     arm64_percpu_init(cpu_id);
     arm64_fpu_init_cpu();
+    arm64_security_init_cpu();
     arm64_gic_cpu_init(cpu_id);
     arm64_timer_init_secondary();
 

@@ -16,6 +16,7 @@
 
 #ifndef __HOST_TEST__
 #include <asm/barrier.h>
+#include <asm/cpufeature.h>
 #include <kernel/mm.h>
 #include <kernel/printk.h>
 #endif
@@ -177,6 +178,8 @@ uint64_t arm64_pte_make_leaf(uintptr_t paddr,
     bool is_write = (prot_flags & HAL_VM_PROT_WRITE) != 0U;
     bool is_exec  = (prot_flags & HAL_VM_PROT_EXEC) != 0U;
     bool is_dev   = (prot_flags & HAL_VM_PROT_DEV) != 0U;
+    bool is_bti   = (prot_flags & HAL_VM_PROT_BTI) != 0U;
+    bool is_mte   = (prot_flags & HAL_VM_PROT_MTE) != 0U;
 
     uint64_t desc = ((uint64_t)paddr & ARM64_PTE_ADDR_MASK) |
                     ARM64_PTE_VALID |
@@ -187,6 +190,14 @@ uint64_t arm64_pte_make_leaf(uintptr_t paddr,
 
     if (is_dev) {
         desc |= ARM64_PTE_ATTRINDX(MT_DEVICE_nGnRnE);
+    } else if (is_mte) {
+#ifndef __HOST_TEST__
+        bool mte_hw = (arm64_get_cpu_caps()->mte_version >= 2U);
+#else
+        bool mte_hw = true;
+#endif
+        desc |= ARM64_PTE_ATTRINDX(mte_hw ? MT_NORMAL_TAGGED : MT_NORMAL) |
+                ARM64_PTE_SH_INNER;
     } else {
         desc |= ARM64_PTE_ATTRINDX(MT_NORMAL) | ARM64_PTE_SH_INNER;
     }
@@ -204,6 +215,9 @@ uint64_t arm64_pte_make_leaf(uintptr_t paddr,
             desc &= ~ARM64_PTE_UXN;
         } else {
             desc &= ~ARM64_PTE_PXN;
+        }
+        if (is_bti) {
+            desc |= ARM64_PTE_GP;
         }
     }
 

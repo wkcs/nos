@@ -52,6 +52,7 @@ if(CONFIG_NOS_AI_CORE)
     list(APPEND KERNEL_SRCS
         mm/vmo.c
         ai/cell.c
+        accel/accel_core.c
         sched/sched_infer.c
         ipc/ring_ipc.c
     )
